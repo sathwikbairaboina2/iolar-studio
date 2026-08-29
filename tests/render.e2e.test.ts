@@ -25,9 +25,9 @@ function makePost(template: string): Post {
 afterAll(async () => { await closeBrowser(); });
 
 describe('renderSlide', () => {
-  it('produces a 1080x1440 png with no overflow', async () => {
-    const out = path.join(tmpdir(), `iolar-test-${Date.now()}.png`);
-    const r = await renderSlide(makePost('spiral-notes'), 0, out);
+  it.each(['spiral-notes', 'margin-qa'])('%s produces a 1080x1440 png with no overflow', async (template) => {
+    const out = path.join(tmpdir(), `iolar-test-${template}-${Date.now()}.png`);
+    const r = await renderSlide(makePost(template), 0, out);
     expect(existsSync(out)).toBe(true);
     const meta = await sharp(out).metadata();
     expect([meta.width, meta.height]).toEqual([1080, 1440]);
