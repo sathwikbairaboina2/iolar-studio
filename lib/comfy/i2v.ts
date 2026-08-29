@@ -24,9 +24,16 @@ export const I2V_SLOTS = {
   aspect: '115.aspect_ratio',
   megapixels: '115.megapixels',
   filenamePrefix: '92.filename_prefix',
-  // The template ships with its Lightning LoRA switched off, which runs the base model at
-  // 20 steps: measured at ~13 minutes for a 4-second shot on a 4090. The 8-step turbo LoRA
-  // is already installed, and turning it on drops the sampler to 6 steps.
+  /**
+   * The template's Lightning LoRA switch: on = the 8-step LoRA at 6 sampler steps,
+   * off = the base model at 20.
+   *
+   * Fewer steps, but measured SLOWER here — 595s against 351s for the same 4-second
+   * shot at the same size. The base weights are int8 and the LoRA is bf16, so enabling
+   * it appears to pull the model off its quantised path and cost more than the steps
+   * save. Left off by default; the slot stays exposed for a machine where that trade
+   * comes out the other way.
+   */
   turbo: '105/126.value',
 } as const;
 

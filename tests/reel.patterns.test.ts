@@ -36,3 +36,18 @@ describe('patterns', () => {
     expect(await patternHookHtml('armand')).toContain('{{title}}');
   });
 });
+
+describe('pacing matches the reference reel', () => {
+  it('holds shots for the range measured off the reference, not the guess it started with', async () => {
+    const { loadPattern } = await import('@/lib/reel/patterns');
+    const p = await loadPattern('armand');
+    // measured: p20 1.0s, median 2.0s, p80 3.3s over 18 shots in 51.6s
+    expect(p.pacing.shotSec[0]).toBeLessThanOrEqual(2);
+    expect(p.pacing.shotSec[1]).toBeLessThanOrEqual(4.5);
+  });
+
+  it('sizes captions like the reference, which measures 2.3 against our first 4.1', async () => {
+    const { loadPattern } = await import('@/lib/reel/patterns');
+    expect((await loadPattern('armand')).caption.sizeVh).toBeLessThan(2.5);
+  });
+});

@@ -36,7 +36,7 @@ const DEFAULTS: Settings = {
   whisperModel: 'small',
   whisperDevice: 'cpu',
   i2vModel: '',
-  i2vTurbo: true,
+  i2vTurbo: false,
   // Local by default: no cloud generation happens unless it is turned on explicitly.
   voiceProvider: 'piper',
   piperVoice: 'en_US-ryan-high',

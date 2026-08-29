@@ -146,8 +146,8 @@ describe('turbo path', () => {
     expect(off).toContain(`${I2V_SLOTS.turbo}=false`);
   });
 
-  it('defaults to turbo, because the base path costs ~13 minutes a shot', async () => {
+  it('leaves the LoRA off by default: it measured slower on this int8 base model', async () => {
     const { getSettings } = await import('@/lib/settings');
-    expect(getSettings().i2vTurbo).toBe(true);
+    expect(getSettings().i2vTurbo).toBe(false);
   });
 });
