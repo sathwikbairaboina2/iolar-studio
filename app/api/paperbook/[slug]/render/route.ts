@@ -19,6 +19,12 @@ async function writeReport(
   } catch { /* fresh report */ }
   for (const r of results) existing[String(r.slide)] = { overflowPx: r.overflowPx, fillPct: r.fillPct };
   await fs.writeFile(reportPath, JSON.stringify(existing, null, 2));
+  try {
+    const { syncRenders } = await import('@/lib/graph');
+    syncRenders(slug, results);
+  } catch (err) {
+    console.warn('[iolar] render index failed', err);
+  }
 }
 
 export async function POST(req: Request, ctx: Ctx) {

@@ -3,7 +3,7 @@ import React from 'react';
 import { Layout, Menu, Button, Badge } from 'antd';
 import {
   HomeOutlined, FileTextOutlined, VideoCameraOutlined, ClockCircleOutlined,
-  MessageOutlined, SmileOutlined, PictureOutlined, SettingOutlined,
+  MessageOutlined, SmileOutlined, PictureOutlined, SettingOutlined, ShareAltOutlined,
   MoonOutlined, SunOutlined,
 } from '@ant-design/icons';
 import { usePathname, useRouter } from 'next/navigation';
@@ -23,6 +23,7 @@ const items = [
   { key: '/stories', icon: <ClockCircleOutlined />, label: soon('Stories'), disabled: true },
   { key: '/quotes', icon: <MessageOutlined />, label: soon('Quote cards'), disabled: true },
   { key: '/memes', icon: <SmileOutlined />, label: soon('Memes'), disabled: true },
+  { key: '/graph', icon: <ShareAltOutlined />, label: 'Knowledge graph' },
   { key: '/assets', icon: <PictureOutlined />, label: 'Assets' },
   { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
 ];

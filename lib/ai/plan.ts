@@ -82,15 +82,26 @@ export async function planSlidesFromBook(slug: string): Promise<Post> {
   const existing = await loadPost(slug).catch(() => null);
 
   const totalPoints = book.chapters.reduce((n, c) => n + c.points.length, 0);
+
+  // Knowledge-graph context: what other posts in this account already teach.
+  let covered: string[] = [];
+  try {
+    const { coveredElsewhere } = await import('../graph');
+    covered = coveredElsewhere(slug);
+  } catch { /* graph optional */ }
+
   const prompt = [
     `You are the content designer for "${s.brand}", an Instagram account publishing tech handbooks as handwritten-notes carousels.`,
     'Here is the approved book (syllabus). EVERY point in it must be taught somewhere in the slides — nothing may be dropped:',
     JSON.stringify(book),
     `That is ${book.chapters.length} chapters and ${totalPoints} points. Choose the slide count that covers them all at full page density (up to ${MAX_SLIDES}); merge thin chapters or split heavy ones as needed, keeping the book's order.`,
     'Write original prose — teach each point concretely with real examples, tables and code, the way dense study notes do.',
+    covered.length
+      ? `Other posts on this account already cover these topics — do not rehash them at length; reference them briefly if needed and spend the space on this book's own material:\n${covered.join(', ')}`
+      : '',
     SCHEMA_RULES,
     envelope(s.brand, existing?.template ?? s.defaultTemplate, existing?.ratio ?? s.defaultRatio),
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 
   const post = await generate(prompt);
   await savePost(slug, post);

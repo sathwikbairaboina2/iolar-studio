@@ -28,6 +28,12 @@ export async function PUT(req: Request, ctx: Ctx) {
     const clean = urls.map((u) => u.trim()).filter((u) => /^https?:\/\//.test(u));
     await fs.mkdir(postDir(slug), { recursive: true });
     await fs.writeFile(file(slug), JSON.stringify({ urls: clean }, null, 2));
+    try {
+      const { syncReferences } = await import('@/lib/graph');
+      syncReferences(slug, clean);
+    } catch (err) {
+      console.warn('[iolar] reference index failed', err);
+    }
     return NextResponse.json({ urls: clean });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

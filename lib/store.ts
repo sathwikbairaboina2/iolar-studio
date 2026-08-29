@@ -35,6 +35,7 @@ export async function createPost(slug: string, partial: Partial<Post> = {}): Pro
   });
   await fs.mkdir(postDir(slug), { recursive: true });
   await fs.writeFile(path.join(postDir(slug), 'post.json'), JSON.stringify(post, null, 2));
+  await indexPost(slug, post);
   return post;
 }
 
@@ -47,6 +48,17 @@ export async function savePost(slug: string, post: Post): Promise<void> {
   const valid = validatePost(post);
   await fs.mkdir(postDir(slug), { recursive: true });
   await fs.writeFile(path.join(postDir(slug), 'post.json'), JSON.stringify(valid, null, 2));
+  await indexPost(slug, valid);
+}
+
+/** Mirrors content into SQLite + the knowledge graph. Never fails a save. */
+async function indexPost(slug: string, post: Post) {
+  try {
+    const { syncPost } = await import('./graph');
+    syncPost(slug, post, await postStatus(slug));
+  } catch (err) {
+    console.warn('[iolar] index failed for', slug, err);
+  }
 }
 
 async function exists(p: string) {

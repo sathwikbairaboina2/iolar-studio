@@ -36,6 +36,12 @@ export async function saveBook(slug: string, book: Book): Promise<Book> {
   const valid = BookSchema.parse(book);
   await fs.mkdir(postDir(slug), { recursive: true });
   await fs.writeFile(bookPath(slug), JSON.stringify(valid, null, 2));
+  try {
+    const { syncBook } = await import('../graph');
+    syncBook(slug, valid);
+  } catch (err) {
+    console.warn('[iolar] book index failed for', slug, err);
+  }
   return valid;
 }
 
