@@ -61,7 +61,7 @@ describe('reel api', () => {
 
   it('lists patterns', async () => {
     const { GET } = await import('@/app/api/reel/patterns/route');
-    const out = await (await GET()).json();
+    const out = await (await GET(new Request('http://x/api/reel/patterns'))).json();
     expect(out.patterns.map((p: { name: string }) => p.name)).toContain('armand');
   });
 });
