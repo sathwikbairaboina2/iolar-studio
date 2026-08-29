@@ -87,6 +87,22 @@ function qa(b: Extract<Block, { type: 'qa' }>) {
   );
 }
 
+function forcesFullWidth(block: Block): boolean {
+  if (block.type === 'diagram') return true;
+  if (block.type === 'table' && block.headers.length >= 4) return true;
+  return false;
+}
+
+/** Wraps each block in a packing unit the layout engine can measure and place. */
+export function renderSlideBlocks(blocks: Block[]): string {
+  return blocks
+    .map((b, i) => {
+      const full = forcesFullWidth(b) ? ' data-force-full="1"' : '';
+      return `<div class="pk-unit" data-block-index="${i}" data-block-type="${b.type}"${full}>${renderBlockHtml(b)}</div>`;
+    })
+    .join('\n');
+}
+
 export function renderBlockHtml(block: Block): string {
   switch (block.type) {
     case 'heading': return heading(block);

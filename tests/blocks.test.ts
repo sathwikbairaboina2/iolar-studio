@@ -1,6 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { renderBlockHtml } from '@/lib/renderer/blocks';
+import { renderBlockHtml, renderSlideBlocks } from '@/lib/renderer/blocks';
 import type { Block } from '@/lib/schema';
+
+describe('renderSlideBlocks', () => {
+  it('wraps every block with index and type', () => {
+    const html = renderSlideBlocks([
+      { type: 'heading', text: 'H' },
+      { type: 'paragraph', text: 'P' },
+    ] as Block[]);
+    expect(html).toContain('data-block-index="0"');
+    expect(html).toContain('data-block-type="heading"');
+    expect(html).toContain('data-block-index="1"');
+    expect((html.match(/class="pk-unit"/g) ?? []).length).toBe(2);
+  });
+
+  it('marks wide tables and diagrams as force-full', () => {
+    const wide = renderSlideBlocks([
+      { type: 'table', headers: ['a', 'b', 'c', 'd'], rows: [['1', '2', '3', '4']] },
+    ] as Block[]);
+    expect(wide).toContain('data-force-full="1"');
+
+    const narrow = renderSlideBlocks([
+      { type: 'table', headers: ['a', 'b'], rows: [['1', '2']] },
+    ] as Block[]);
+    expect(narrow).not.toContain('data-force-full="1"');
+
+    const diagram = renderSlideBlocks([
+      { type: 'diagram', kind: 'flow', spec: { nodes: ['a'] } },
+    ] as Block[]);
+    expect(diagram).toContain('data-force-full="1"');
+  });
+});
 
 describe('renderBlockHtml', () => {
   it('escapes HTML in text', () => {
