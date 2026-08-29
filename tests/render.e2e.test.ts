@@ -25,7 +25,7 @@ function makePost(template: string): Post {
 afterAll(async () => { await closeBrowser(); });
 
 describe('renderSlide', () => {
-  it.each(['spiral-notes', 'margin-qa'])('%s produces a 1080x1440 png with no overflow', async (template) => {
+  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid'])('%s produces a 1080x1440 png with no overflow', async (template) => {
     const out = path.join(tmpdir(), `iolar-test-${template}-${Date.now()}.png`);
     const r = await renderSlide(makePost(template), 0, out);
     expect(existsSync(out)).toBe(true);
