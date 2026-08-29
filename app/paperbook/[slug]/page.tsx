@@ -9,6 +9,7 @@ import SlideChips from '@/components/editor/SlideChips';
 import BlockEditor from '@/components/editor/BlockEditor';
 import PreviewPane from '@/components/editor/PreviewPane';
 import AiDrawer from '@/components/editor/AiDrawer';
+import ReferencePanel from '@/components/editor/ReferencePanel';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v, label: `Ratio ${v}` }));
 
@@ -24,6 +25,8 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
   const [comfyUp, setComfyUp] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrefill, setAiPrefill] = useState('');
+  const [refUrls, setRefUrls] = useState<string[]>([]);
+  const [compareRefs, setCompareRefs] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -112,6 +115,12 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
         <Button icon={<PictureOutlined />} onClick={() => render(slide + 1)} loading={rendering}>Render slide</Button>
         <Button icon={<ThunderboltOutlined />} onClick={() => render()} loading={rendering}>Render all</Button>
         <Button icon={<StarOutlined />} disabled={!comfyUp} onClick={doPolish} title={comfyUp ? '' : 'ComfyUI offline'}>Polish</Button>
+        <ReferencePanel
+          slug={slug}
+          compare={compareRefs}
+          onCompareChange={setCompareRefs}
+          onUrlsChange={setRefUrls}
+        />
         <Button type="primary" icon={<ExportOutlined />} onClick={doPackage}>Package</Button>
       </Space>
 
@@ -146,6 +155,7 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
             version={version}
             overflowPx={currentOverflow}
             rendering={rendering}
+            referenceUrl={compareRefs ? refUrls[slide] : undefined}
             onRerender={() => render(slide + 1)}
             onAiFix={() => {
               setAiPrefill(`Slide ${slide + 1} overflows by ${currentOverflow}px. Move or condense content to fit; use another slide if needed (max 10 slides).`);

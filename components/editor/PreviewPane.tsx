@@ -4,7 +4,7 @@ import { Alert, Button, Modal, Space, Typography } from 'antd';
 import { ReloadOutlined, ExpandOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 export default function PreviewPane({
-  slug, slide, slideCount, version, overflowPx, onRerender, onAiFix, rendering,
+  slug, slide, slideCount, version, overflowPx, onRerender, onAiFix, rendering, referenceUrl,
 }: {
   slug: string;
   slide: number;
@@ -14,6 +14,7 @@ export default function PreviewPane({
   onRerender: () => void;
   onAiFix: () => void;
   rendering: boolean;
+  referenceUrl?: string;
 }) {
   const [full, setFull] = useState(false);
   const [sheet, setSheet] = useState(false);
@@ -36,18 +37,35 @@ export default function PreviewPane({
         />
       )}
 
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        key={version}
-        src={src}
-        alt={`slide ${slide} preview`}
-        style={{
-          width: '100%', borderRadius: 8, border: '1px solid rgba(128,128,128,.25)',
-          boxShadow: '0 0 40px rgba(124,92,255,.15), 0 14px 40px rgba(0,0,0,.3)',
-          background: '#0c0d13',
-        }}
-        onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.15'; }}
-      />
+      <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            key={version}
+            src={src}
+            alt={`slide ${slide} preview`}
+            style={{
+              width: '100%', borderRadius: 8, border: '1px solid rgba(128,128,128,.25)',
+              boxShadow: '0 0 40px rgba(124,92,255,.15), 0 14px 40px rgba(0,0,0,.3)',
+              background: '#0c0d13',
+            }}
+            onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.15'; }}
+          />
+          {referenceUrl && <div style={{ fontSize: 11, opacity: 0.6, textAlign: 'center' }}>render</div>}
+        </div>
+        {referenceUrl && (
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={referenceUrl}
+              alt={`reference for slide ${slide}`}
+              style={{ width: '100%', borderRadius: 8, border: '1px solid rgba(128,128,128,.25)' }}
+              onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.15'; }}
+            />
+            <div style={{ fontSize: 11, opacity: 0.6, textAlign: 'center' }}>reference {slide}</div>
+          </div>
+        )}
+      </div>
 
       <Space style={{ marginTop: 10, justifyContent: 'center', width: '100%' }}>
         <Button size="small" icon={<ReloadOutlined />} onClick={onRerender} loading={rendering}>Re-render</Button>
