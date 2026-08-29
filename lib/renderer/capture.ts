@@ -147,5 +147,70 @@ export async function renderAll(
     queue = queue.filter((q) => !keptSet.has(q.block));
   }
 
+  await balanceTail(post, slides, results, outDir);
   return { results, slides };
+}
+
+/**
+ * Pagination leaves whatever is left over on the final page, so a part can end on a page
+ * that is 15% full. Nothing is added or removed to fix that — blocks move back from the
+ * previous page until the two share the load. Earlier pages are untouched, because making
+ * every page equal is what left them all half empty before.
+ */
+async function balanceTail(
+  post: Post,
+  slides: Post['slides'],
+  results: { slide: number; overflowPx: number; fillPct: number; file: string }[],
+  outDir: string
+) {
+  const THIN = 55; // a final page below this reads as an accident
+  const TARGET = 70; // once the tail reaches this it no longer looks like a mistake
+  const FLOOR = 62; // never starve the page we borrow from
+
+  for (let move = 0; move < 10; move++) {
+    if (slides.length < 2) return;
+    const lastIndex = slides.length - 1;
+    const last = results[lastIndex];
+    const prev = results[lastIndex - 1];
+    if (!last || !prev) return;
+    if (last.fillPct >= (move === 0 ? THIN : TARGET)) return;
+    if (slides[lastIndex - 1].blocks.length < 2) return;
+
+    const trial = slides.map((s) => ({ ...s, blocks: [...s.blocks] }));
+    const moved = trial[lastIndex - 1].blocks.pop()!;
+    trial[lastIndex].blocks.unshift(moved);
+
+    const working: Post = { ...post, slides: trial };
+    const prevResult = await renderSlide(working, lastIndex - 1, prev.file);
+    const lastResult = await renderSlide(working, lastIndex, last.file);
+
+    // A single block is often a heading worth ~1% of a page, so one move can leave the
+    // rounded fill unchanged. Keep moving while it stays safe rather than giving up on the
+    // first move that does not visibly help.
+    const safe =
+      prevResult.fillPct >= FLOOR &&
+      prevResult.overflowPx === 0 &&
+      lastResult.overflowPx === 0 &&
+      lastResult.spillIndexes.length === 0;
+
+    if (process.env.INSTASTUDIO_DEBUG_TAIL) {
+      console.log('[tail]', JSON.stringify({
+        move, lastWas: last.fillPct, lastNow: lastResult.fillPct,
+        prevWas: prev.fillPct, prevNow: prevResult.fillPct,
+        lastSpill: lastResult.spillIndexes.length, lastOverflow: lastResult.overflowPx,
+        prevOverflow: prevResult.overflowPx, safe,
+      }));
+    }
+    if (!safe) {
+      // Put the pages back the way they were before this attempt.
+      await renderSlide(post, lastIndex - 1, prev.file);
+      await renderSlide(post, lastIndex, last.file);
+      return;
+    }
+
+    slides[lastIndex - 1] = trial[lastIndex - 1];
+    slides[lastIndex] = trial[lastIndex];
+    results[lastIndex - 1] = { ...prev, overflowPx: prevResult.overflowPx, fillPct: prevResult.fillPct };
+    results[lastIndex] = { ...last, overflowPx: lastResult.overflowPx, fillPct: lastResult.fillPct };
+  }
 }
