@@ -3,31 +3,51 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
-describe('store', () => {
-  beforeEach(() => {
-    process.env.IOLAR_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'iolar-'));
+beforeEach(() => {
+  process.env.IOLAR_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'is-store-'));
+});
+
+describe('handbook store', () => {
+  it('creates a subject and lists it with counts', async () => {
+    const { createSubject, listSubjects } = await import('@/lib/store');
+    await createSubject('python', { name: 'Python', emoji: '🐍' });
+    const subjects = await listSubjects();
+    expect(subjects[0]).toMatchObject({ slug: 'python', name: 'Python', emoji: '🐍', chapters: 0 });
   });
 
-  it('create -> load roundtrip and list', async () => {
-    const { createPost, loadPost, listPosts } = await import('@/lib/store');
-    await createPost('demo');
-    const p = await loadPost('demo');
-    expect(p.template).toBe('spiral-notes');
-    expect(p.brand).toBe('iolar');
-    expect((await listPosts())[0].slug).toBe('demo');
+  it('creates a chapter with its first part', async () => {
+    const { createSubject, createChapter, listChapters, listParts, loadPost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'lists', 'Python Lists');
+    expect(await listParts('python', 'lists')).toEqual([1]);
+    const chapters = await listChapters('python');
+    expect(chapters[0]).toMatchObject({ slug: 'lists', title: 'Python Lists', parts: 1 });
+    expect((await loadPost('python', 'lists', 1)).brand).toBe('iolar');
   });
 
-  it('savePost rejects invalid post', async () => {
-    const { createPost, savePost, loadPost } = await import('@/lib/store');
-    await createPost('demo2');
-    const p = await loadPost('demo2');
+  it('adds parts in order and reports the next number', async () => {
+    const { createSubject, createChapter, createPart, loadPost, nextPartNumber, listParts } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'lists');
+    const first = await loadPost('python', 'lists', 1);
+    expect(await nextPartNumber('python', 'lists')).toBe(2);
+    await createPart('python', 'lists', 2, first);
+    expect(await listParts('python', 'lists')).toEqual([1, 2]);
+  });
+
+  it('savePost validates', async () => {
+    const { createSubject, createChapter, loadPost, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'lists');
+    const p = await loadPost('python', 'lists', 1);
     (p as { ratio: string }).ratio = 'bogus';
-    await expect(savePost('demo2', p)).rejects.toThrow();
+    await expect(savePost('python', 'lists', 1, p)).rejects.toThrow();
   });
 
-  it('status is draft for fresh post', async () => {
-    const { createPost, postStatus } = await import('@/lib/store');
-    await createPost('demo3');
-    expect(await postStatus('demo3')).toBe('draft');
+  it('reports draft status for a fresh part', async () => {
+    const { createSubject, createChapter, partStatus } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'lists');
+    expect(await partStatus('python', 'lists', 1)).toBe('draft');
   });
 });
