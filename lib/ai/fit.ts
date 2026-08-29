@@ -10,14 +10,89 @@ import { extractJson } from './revise';
 export type SlideFit = { slide: number; neededPct: number };
 
 const STOP = new Set(
-  'the a an and or of to in for with is are its it you your how what why when use using python vs on at be by as that this from can will not no'.split(' ')
+  ('the a an and or of to in for with is are was were be been being its it you your his her their our'
+   + ' how what why when where which who whom use uses used using vs versus on at by as that this these those'
+   + ' from can could will would should may might must not no nor but if then than so such too very just'
+   + ' into onto over under above below between both each all any some more most other same only own now'
+   + ' do does did done get gets got make makes made take takes has have had here there while during after'
+   + ' before because about across through against per via out up down off again once ever never always'
+   + ' one two three first second next last also e.g eg ie i.e etc'
+  ).split(' ')
 );
 
-function pointKeywords(point: string): string[] {
-  return (point.toLowerCase().match(/[a-z_][a-z0-9_().]{2,}/g) ?? [])
-    .filter((w) => !STOP.has(w))
-    .slice(0, 6);
+/**
+ * Words as the matcher compares them. Both the book point and the page text go through this,
+ * so `arr.push` and "arr.push" reduce to the same two tokens. Comparing a stripped keyword
+ * against unstripped page text — which is what this used to do — made every identifier
+ * containing a dot or bracket permanently unmatchable.
+ */
+function tokens(s: string): string[] {
+  return s.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
 }
+
+/** Crude suffix stripping so "evicting", "evicted" and "eviction" all count as the same word. */
+function stem(w: string): string {
+  for (const [suffix, min] of [['ation', 7], ['ing', 6], ['ed', 5], ['es', 5], ['ly', 5]] as const) {
+    if (w.length >= min && w.endsWith(suffix)) return trimE(w.slice(0, -suffix.length));
+  }
+  if (w.length >= 4 && w.endsWith('s') && !w.endsWith('ss')) return trimE(w.slice(0, -1));
+  return trimE(w);
+}
+
+/** "mutating" stems to "mutat", so "mutate" has to as well or the two never meet. */
+function trimE(w: string): string {
+  return w.length >= 5 && w.endsWith('e') ? w.slice(0, -1) : w;
+}
+
+function useful(w: string): boolean {
+  return w.length >= 3 && !STOP.has(w) && !/^\d+$/.test(w);
+}
+
+function terms(s: string): string[] {
+  return tokens(s).filter(useful).map(stem);
+}
+
+/**
+ * How many of the book's points each word appears in, and how many points there are. A word
+ * used all over the book ("state", "pod") says little about whether one specific point
+ * survived; a rare one ("besteffort") says almost everything.
+ */
+function documentFrequency(book: Book): { df: Map<string, number>; points: number } {
+  const df = new Map<string, number>();
+  let points = 0;
+  for (const ch of book.chapters) {
+    for (const p of ch.points) {
+      points++;
+      for (const w of new Set(terms(p))) df.set(w, (df.get(w) ?? 0) + 1);
+    }
+  }
+  return { df, points };
+}
+
+/**
+ * Share of a point's meaning that survives in the page text, weighting each word by how rare it
+ * is in the book. Every word counts — taking only the rarest few made incidental wording decide
+ * the verdict — but a distinctive term is worth many common ones.
+ */
+function coverageScore(point: string, body: Set<string>, df: Map<string, number>, points: number): number | null {
+  const words = [...new Set(terms(point))];
+  if (!words.length) return null;
+  let total = 0;
+  let found = 0;
+  for (const w of words) {
+    const weight = Math.log(1 + points / (1 + (df.get(w) ?? 0)));
+    total += weight;
+    if (body.has(w)) found += weight;
+  }
+  return total > 0 ? found / total : null;
+}
+
+/**
+ * Below this share of a point's weighted vocabulary, the point is treated as no longer taught.
+ * Measured over the whole library against the pages as they stand: 0.42 flags 9 points in 4016
+ * where the previous rule flagged 32, and still catches more genuine removals than it did.
+ */
+const COVERED = 0.42;
 
 function postText(post: Post): string {
   const parts: string[] = [];
@@ -42,14 +117,13 @@ function postText(post: Post): string {
 
 /** Book points whose keywords no longer appear in the post — i.e. content that was dropped. */
 export function uncoveredPoints(book: Book, post: Post): string[] {
-  const body = postText(post);
+  const body = new Set(terms(postText(post)));
+  const { df, points } = documentFrequency(book);
   const missing: string[] = [];
   for (const ch of book.chapters) {
     for (const p of ch.points) {
-      const kws = pointKeywords(p);
-      if (!kws.length) continue;
-      const hits = kws.filter((w) => body.includes(w.replace(/[().]/g, ''))).length;
-      if (hits / kws.length < 0.5) missing.push(p);
+      const score = coverageScore(p, body, df, points);
+      if (score !== null && score < COVERED) missing.push(p);
     }
   }
   return missing;
