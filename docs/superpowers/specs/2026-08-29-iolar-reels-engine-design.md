@@ -88,6 +88,7 @@ graph are mirrors written by the existing indexer.
       "text": "xAI just dropped Grok Bot.",
       "shot": { "kind": "title",        // title | talking-head | screen | broll
                 "brief": "Elon on stage, slow push in",
+                "hero": false,          // true -> generate with Higgsfield instead of ComfyUI
                 "assetId": "a1" } }
   ],
 
@@ -166,7 +167,7 @@ Per beat with no ready asset, route by `shot.kind` and pattern policy:
 | shot.kind | default source |
 |---|---|
 | screen | ComfyUI image-to-video: user screenshot (or a captured page) animated into a 3-6s clip |
-| broll | ComfyUI i2v; Higgsfield `generate_video` when the beat is marked hero |
+| broll | ComfyUI i2v; Higgsfield `generate_video` when the beat carries `shot.hero: true` |
 | talking-head | user drop (recorded), else Higgsfield |
 | title | no asset of its own — an overlay over the neighboring clip |
 
