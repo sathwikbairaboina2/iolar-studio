@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { loadPost } from '../store';
+import { loadPost, listParts } from '../store';
 import { getSettings } from '../settings';
 import { rendersDir } from '../paths';
 import { loadBook } from '../ai/book';
@@ -56,10 +56,18 @@ export async function runGates(subject: string, chapter: string, part: number): 
     }
   }
 
-  // Every book point must survive; safety caveats block.
+  // Coverage belongs to the CHAPTER: its parts publish the book between them, so a point
+  // living in part 2 is not missing from part 1. Compare against every part combined.
   const book = await loadBook(subject, chapter);
   if (book) {
-    for (const point of uncoveredPoints(book, post)) {
+    const parts = await listParts(subject, chapter);
+    let combined = post;
+    for (const p of parts) {
+      if (p === part) continue;
+      const other = await loadPost(subject, chapter, p).catch(() => null);
+      if (other) combined = { ...combined, slides: [...combined.slides, ...other.slides] };
+    }
+    for (const point of uncoveredPoints(book, combined)) {
       const caveat = CAVEAT.test(point);
       findings.push({
         pass: 'coverage', rule: caveat ? 'coverage.caveat' : 'coverage.points',
