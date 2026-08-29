@@ -35,13 +35,9 @@ export async function loadReel(slug: string): Promise<Reel> {
 export async function saveReel(slug: string, reel: Reel): Promise<void> {
   const valid = validateReel(reel);
   await fs.mkdir(reelDir(slug), { recursive: true });
+  // Reels are filesystem-only on purpose: the knowledge graph and its SQLite index
+  // belong to handbooks, and a reel has no chapters or topics to contribute to them.
   await fs.writeFile(reelFile(slug), JSON.stringify(valid, null, 2));
-  try {
-    const { syncReel } = await import('../graph');
-    syncReel(slug, valid, reelStatus(valid));
-  } catch (err) {
-    console.warn('[instastudio] reel index failed for', slug, err);
-  }
 }
 
 export async function deleteReel(slug: string): Promise<void> {

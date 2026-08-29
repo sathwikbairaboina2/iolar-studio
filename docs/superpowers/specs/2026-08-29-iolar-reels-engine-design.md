@@ -66,8 +66,9 @@ patterns/<name>/
   pattern.json  caption.css  hook.html (optional)
 ```
 
-Same filesystem-is-the-store model as paperbook: `reel.json` is authoritative, SQLite and the knowledge
-graph are mirrors written by the existing indexer.
+`reel.json` is authoritative and reels are filesystem-only: the SQLite index and the knowledge
+graph belong to handbooks, which have chapters and topics to contribute. A reel has neither, so
+nothing about it is mirrored there.
 
 ## 4. Data model
 
@@ -309,7 +310,6 @@ Modified:
 
 - `components/AppShell.tsx` — enable the Reels nav item (drop `disabled` and the "soon" badge)
 - `app/reels/page.tsx` — replaced by the real list at `app/reel/page.tsx`; the old route redirects
-- `lib/graph.ts` and `lib/db.ts` — index reels alongside posts (new `reel` node kind)
 - `app/dashboard/page.tsx` — Reels card becomes active with counts
 - `lib/settings.ts` — reel defaults (fps, ratio, pattern, Higgsfield workspace, whisper model)
 

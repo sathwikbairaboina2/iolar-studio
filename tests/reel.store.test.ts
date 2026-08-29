@@ -75,3 +75,19 @@ describe('reel store', () => {
     expect((await listReels()).map((r) => r.slug)).toEqual(['good']);
   });
 });
+
+describe('the knowledge graph stays handbooks-only', () => {
+  it('writes nothing to the index when a reel is saved', async () => {
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { graph } = await import('@/lib/graph');
+    await createReel('grok-bot', { title: 'xAI drops Grok Bot' });
+    const reel = await loadReel('grok-bot');
+    await saveReel('grok-bot', {
+      ...reel,
+      beats: [{ id: 'b1', role: 'hook', text: 'Grok Bot ships today', shot: { kind: 'title', brief: '', hero: false } }],
+    });
+    const g = graph();
+    expect(g.nodes.filter((n) => n.id.startsWith('reel:'))).toEqual([]);
+    expect(g.edges.filter((e) => e.src.startsWith('reel:'))).toEqual([]);
+  });
+});

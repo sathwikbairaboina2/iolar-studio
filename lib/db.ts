@@ -61,18 +61,9 @@ CREATE TABLE IF NOT EXISTS renders (
   rendered_at TEXT,
   PRIMARY KEY (subject, chapter, part, slide)
 );
-CREATE TABLE IF NOT EXISTS reels (
-  slug        TEXT PRIMARY KEY,
-  title       TEXT,
-  pattern     TEXT,
-  beats       INTEGER,
-  duration_ms INTEGER,
-  status      TEXT,
-  updated_at  TEXT
-);
 CREATE TABLE IF NOT EXISTS nodes (
   id       TEXT PRIMARY KEY,
-  type     TEXT NOT NULL,          -- subject | chapter | topic | reel
+  type     TEXT NOT NULL,          -- subject | chapter | topic
   label    TEXT NOT NULL,
   subject  TEXT,
   chapter  TEXT,
