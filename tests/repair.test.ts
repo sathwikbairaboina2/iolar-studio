@@ -125,3 +125,35 @@ describe('repairCoverage', () => {
     expect((await loadPost('k8s', 'pods', 1)).slides).toHaveLength(1);
   });
 });
+
+describe('coverage route', () => {
+  const ctx = { params: Promise.resolve({ subject: 'k8s', chapter: 'pods' }) };
+  const req = (method: string) => new Request('http://t/api', { method });
+
+  it('reports the gaps a chapter has', async () => {
+    await seed();
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/coverage/route');
+    const body = await (await route.GET(req('GET'), ctx)).json();
+    expect(body.complete).toBe(false);
+    expect(body.missing[0]).toContain('requests are for the scheduler');
+  });
+
+  it('repairs on POST and reports what it recovered', async () => {
+    await seed();
+    mockClaude(withRecovery());
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/coverage/route');
+    const body = await (await route.POST(req('POST'), ctx)).json();
+    expect(body.repair).toMatchObject({ part: 1, missingAfter: 0 });
+  });
+
+  it('answers 500 rather than throwing when the repair is rejected', async () => {
+    await seed();
+    const useless = post();
+    useless.slides.push({ page_title: 'Filler', blocks: [{ type: 'paragraph', text: 'nothing new here' }] });
+    mockClaude(useless);
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/coverage/route');
+    const res = await route.POST(req('POST'), ctx);
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/covered none/);
+  });
+});

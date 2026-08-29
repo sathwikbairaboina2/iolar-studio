@@ -22,10 +22,16 @@ export default function BookPanel({
   const [book, setBook] = useState<Book | null>(null);
   const [proposal, setProposal] = useState<Book | null>(null);
   const [request, setRequest] = useState('');
-  const [busy, setBusy] = useState<'' | 'generate' | 'revise' | 'slides'>('');
+  const [busy, setBusy] = useState<'' | 'generate' | 'revise' | 'slides' | 'repair'>('');
+  const [gaps, setGaps] = useState<string[] | null>(null);
 
   const load = () => fetch(`/api/handbooks/${subject}/${chapter}/book`).then((r) => r.json()).then((d) => setBook(d.book));
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [subject, chapter]);
+  const loadGaps = () =>
+    fetch(`/api/handbooks/${subject}/${chapter}/coverage`)
+      .then((r) => r.json())
+      .then((d) => setGaps(d.missing ?? []))
+      .catch(() => setGaps(null));
+  useEffect(() => { load(); loadGaps(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [subject, chapter]);
 
   const points = book?.chapters.reduce((n, c) => n + c.points.length, 0) ?? 0;
 
@@ -93,6 +99,24 @@ export default function BookPanel({
     }
   };
 
+  // The book is the record of what the chapter promised; a gap means pages lost content.
+  const repair = async () => {
+    setBusy('repair');
+    message.info('Writing pages for the points the chapter no longer covers…');
+    try {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/coverage`, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'failed');
+      message.success(`Restored ${d.repair.recovered.length} point(s) into part ${d.repair.part}`);
+      await loadGaps();
+      await onSlidesPlanned();
+    } catch (err) {
+      message.error(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
   const view = proposal ?? book;
 
   return (
@@ -142,6 +166,41 @@ export default function BookPanel({
               </Button>
               <Button size="small" loading={busy === 'generate'} onClick={generate}>Rebuild from references</Button>
             </Space>
+
+            {gaps !== null && (
+              gaps.length ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={`${gaps.length} book point${gaps.length > 1 ? 's are' : ' is'} not taught on any page`}
+                  description={
+                    <>
+                      <ul style={{ margin: '4px 0 8px', paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+                        {gaps.slice(0, 4).map((g, i) => <li key={i}>{g.length > 110 ? `${g.slice(0, 110)}…` : g}</li>)}
+                      </ul>
+                      {gaps.length > 4 && (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          and {gaps.length - 4} more
+                        </Typography.Text>
+                      )}
+                      <div style={{ marginTop: 8 }}>
+                        <Button size="small" loading={busy === 'repair'} onClick={repair}>
+                          ✦ Restore missing points
+                        </Button>
+                      </div>
+                    </>
+                  }
+                />
+              ) : (
+                <Alert
+                  type="success"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message="Every point in the book is taught on a page"
+                />
+              )
+            )}
 
             <Collapse
               size="small"
