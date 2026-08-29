@@ -4,8 +4,8 @@ import ThemeProvider from '@/components/ThemeProvider';
 import AppShell from '@/components/AppShell';
 
 export const metadata: Metadata = {
-  title: 'iolar studio',
-  description: 'Instagram content generation studio',
+  title: 'instastudio',
+  description: 'Instagram content studio',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -1,11 +1,15 @@
-# iolar studio
+# instastudio
 
-Local studio for Instagram content. Two categories are built: **paperbook**, handwritten-notes
-carousels rendered from structured JSON, and **reel**, scripted vertical video assembled from a
-voiceover and generated shots. Three more (stories, quote cards, memes) are scaffolded.
+Local studio for Instagram content. Two categories are built:
 
-Spec: `docs/superpowers/specs/2026-08-29-iolar-type1-notes-carousels-design.md`
-Plan: `docs/superpowers/plans/2026-08-29-paperbook-generator.md`
+- **handbooks** — structured JSON rendered into handwritten-notes carousels, with an AI revise
+  chat and optional ComfyUI polish
+- **reel** — scripted vertical video assembled from a voiceover and generated shots
+
+Three more (stories, quote cards, memes) are scaffolded for later build cycles.
+
+Specs: `docs/superpowers/specs/` — notes carousels, handbooks hierarchy, reels engine
+Plans: `docs/superpowers/plans/`
 
 ## Quickstart
 
@@ -66,13 +70,23 @@ node scripts/approve-goldens.mjs   # regenerate
 ## Data layout
 
 ```
-data/paperbook/<slug>/post.json        # single source of truth (editable by hand, UI, or AI)
-data/paperbook/<slug>/renders/         # slide-NN.png + render-report.json (+ polished/)
-data/paperbook/<slug>/export/          # final package
-data/settings.json                     # brand, defaults, comfy url/checkpoint
-assets/doodles/                        # ComfyUI-generated sketch assets
+data/handbooks/<subject>/subject.json                     # name, emoji, description
+data/handbooks/<subject>/<chapter>/chapter.json           # title
+data/handbooks/<subject>/<chapter>/book.json              # the syllabus, owned by the chapter
+data/handbooks/<subject>/<chapter>/references.json        # reference URLs, owned by the chapter
+data/handbooks/<subject>/<chapter>/refs/ref-NN.jpg        # downloaded reference pages
+data/handbooks/<subject>/<chapter>/parts/<NN>/post.json   # one carousel, <=10 pages
+data/handbooks/<subject>/<chapter>/parts/<NN>/renders/    # slide-NN.png + render-report.json
+data/handbooks/<subject>/<chapter>/parts/<NN>/export/     # final package
+data/settings.json                                        # brand, defaults, comfy url/checkpoint
+assets/doodles/                                           # ComfyUI-generated sketch assets
 ```
 
+Content is organised **Subject → Chapter → Part**. A chapter owns one book and one reference
+list; its parts are the successive carousels that publish that book. When a part renders past
+the 10-image limit the surplus becomes the next part of the same chapter — content is never
+trimmed to fit. `npx tsx scripts/migrate.mts` moves a legacy `data/paperbook/` tree into this
+layout, and `npx tsx scripts/reindex.mts` rebuilds the SQLite index and knowledge graph.
 
 ## Reels
 
@@ -130,7 +144,7 @@ was measured from what was guessed. Always a draft — read it before you trust 
 | need | note |
 |---|---|
 | ffmpeg + ffprobe | on PATH; the export and every measurement go through them |
-| Playwright chromium | shared with paperbook |
+| Playwright chromium | shared with handbooks |
 | whisper | `npm run setup:whisper` (openai-whisper: PyAV, which faster-whisper needs, is blocked by Windows Application Control on this machine). CPU by default; the setup script prints the CUDA install line |
 | Higgsfield | reached through the `claude` CLI's MCP tools — the app borrows a Claude session for TTS and hero shots |
 | ComfyUI | image-to-video via the bundled MiniMax H3 template, `lib/comfy/workflows/i2v.template.json` |

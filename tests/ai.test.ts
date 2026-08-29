@@ -55,23 +55,25 @@ describe('revise route', () => {
       ClaudeUnavailableError: class extends Error {},
     }));
 
-    const { createPost, loadPost } = await import('@/lib/store');
-    await createPost('ai-demo', base());
-    const route = await import('@/app/api/paperbook/[slug]/revise/route');
+    const { createSubject, createChapter, savePost, loadPost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'ai-demo');
+    await savePost('python', 'ai-demo', 1, base());
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/parts/[part]/revise/route');
     const res = await route.POST(
       new Request('http://t/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request: 'change it', scope: 'post' }) }),
-      { params: Promise.resolve({ slug: 'ai-demo' }) }
+      { params: Promise.resolve({ subject: 'python', chapter: 'ai-demo', part: '1' }) }
     );
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body.diff.length).toBe(1);
     // disk unchanged
-    const onDisk = await loadPost('ai-demo');
+    const onDisk = await loadPost('python', 'ai-demo', 1);
     expect((onDisk.slides[0].blocks[0] as { text: string }).text).toBe('A');
     // chat history persisted
     const dataDir = process.env.IOLAR_DATA_DIR!;
-    expect(existsSync(path.join(dataDir, 'paperbook', 'ai-demo', 'chat.json'))).toBe(true);
-    expect(readFileSync(path.join(dataDir, 'paperbook', 'ai-demo', 'chat.json'), 'utf8')).toContain('change it');
+    expect(existsSync(path.join(dataDir, 'handbooks', 'python', 'ai-demo', 'parts', '01', 'chat.json'))).toBe(true);
+    expect(readFileSync(path.join(dataDir, 'handbooks', 'python', 'ai-demo', 'parts', '01', 'chat.json'), 'utf8')).toContain('change it');
   });
 
   it('accepts more than ten slides — the cap is advisory', async () => {
@@ -83,12 +85,14 @@ describe('revise route', () => {
       ClaudeUnavailableError: class extends Error {},
     }));
 
-    const { createPost } = await import('@/lib/store');
-    await createPost('ai-cap', base());
-    const route = await import('@/app/api/paperbook/[slug]/revise/route');
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'ai-cap');
+    await savePost('python', 'ai-cap', 1, base());
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/parts/[part]/revise/route');
     const res = await route.POST(
       new Request('http://t/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request: 'expand', scope: 'post' }) }),
-      { params: Promise.resolve({ slug: 'ai-cap' }) }
+      { params: Promise.resolve({ subject: 'python', chapter: 'ai-cap', part: '1' }) }
     );
     expect(res.status).toBe(200);
     expect((await res.json()).proposal.slides.length).toBe(11);
@@ -103,12 +107,14 @@ describe('revise route', () => {
       ClaudeUnavailableError: class extends Error {},
     }));
 
-    const { createPost } = await import('@/lib/store');
-    await createPost('ai-bad', base());
-    const route = await import('@/app/api/paperbook/[slug]/revise/route');
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'ai-bad');
+    await savePost('python', 'ai-bad', 1, base());
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/parts/[part]/revise/route');
     const res = await route.POST(
       new Request('http://t/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request: 'break it', scope: 'post' }) }),
-      { params: Promise.resolve({ slug: 'ai-bad' }) }
+      { params: Promise.resolve({ subject: 'python', chapter: 'ai-bad', part: '1' }) }
     );
     expect(res.status).toBeGreaterThanOrEqual(400);
   });

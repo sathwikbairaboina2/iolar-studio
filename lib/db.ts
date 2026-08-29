@@ -89,12 +89,32 @@ CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
 `;
 
+/**
+ * The database is a derived index, rebuildable from the files with `scripts/reindex.mts`.
+ * When it predates the subject/chapter layout, dropping it beats migrating columns.
+ */
+function dropLegacySchema(handle: DatabaseSync) {
+  const tables = handle
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+    .all() as { name: string }[];
+  if (!tables.some((t) => t.name === 'nodes')) return;
+
+  const cols = handle.prepare(`PRAGMA table_info(nodes)`).all() as { name: string }[];
+  if (cols.some((c) => c.name === 'subject')) return;
+
+  for (const t of ['posts', 'books', 'refs', 'renders', 'nodes', 'edges', 'chapters', 'parts', 'subjects']) {
+    handle.exec(`DROP TABLE IF EXISTS ${t}`);
+  }
+  console.warn('[instastudio] rebuilt the index for the handbooks layout — run scripts/reindex.mts');
+}
+
 export function getDb(): DatabaseSync {
   const want = path.join(dataRoot(), 'iolar.db');
   if (db && dbPath === want) return db;
   mkdirSync(path.dirname(want), { recursive: true });
   db = new DatabaseSync(want);
   db.exec('PRAGMA journal_mode = WAL;');
+  dropLegacySchema(db);
   db.exec(SCHEMA);
   dbPath = want;
   return db;

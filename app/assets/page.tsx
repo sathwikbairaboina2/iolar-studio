@@ -48,7 +48,7 @@ export default function AssetsPage() {
           <Form.Item name="prompt" rules={[{ required: true }]} style={{ flex: 1 }}>
             <Input placeholder="the Python snake logo" />
           </Form.Item>
-          <Button type="primary" htmlType="submit" loading={busy}>Generate</Button>
+          <Button htmlType="submit" loading={busy}>Generate</Button>
         </Form>
       </Card>
 

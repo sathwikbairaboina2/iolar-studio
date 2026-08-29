@@ -9,9 +9,11 @@ import { MAX_SLIDES, type Post } from '@/lib/schema';
  * drop the ones you do not want, then accept the cut and package it.
  */
 export default function ReviewPanel({
-  slug, post, version, fill, open, onClose, onApplied,
+  subject, chapter, part, post, version, fill, open, onClose, onApplied,
 }: {
-  slug: string;
+  subject: string;
+  chapter: string;
+  part: number;
   post: Post;
   version: number;
   fill: Record<number, number>;
@@ -48,7 +50,7 @@ export default function ReviewPanel({
         delete s.cont;
         return s;
       });
-      const saved = await fetch(`/api/paperbook/${slug}`, {
+      const saved = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ...post, slides }),
@@ -56,7 +58,7 @@ export default function ReviewPanel({
       if (!saved.ok) throw new Error((await saved.json()).error ?? 'save failed');
       const fresh = await saved.json();
 
-      const pkg = await fetch(`/api/paperbook/${slug}/package`, { method: 'POST' });
+      const pkg = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/package`, { method: 'POST' });
       const body = await pkg.json();
       if (!pkg.ok) throw new Error(body.error ?? 'package failed');
 
@@ -143,7 +145,7 @@ export default function ReviewPanel({
             </div>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={`/api/paperbook/${slug}/render?slide=${slideIndex + 1}&t=${version}`}
+              src={`/api/handbooks/${subject}/${chapter}/parts/${part}/render?slide=${slideIndex + 1}&t=${version}`}
               alt={`page ${pos + 1}`}
               style={{ width: '100%', borderRadius: 4, pointerEvents: 'none' }}
               onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.15'; }}

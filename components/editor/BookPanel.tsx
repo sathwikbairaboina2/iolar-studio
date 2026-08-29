@@ -9,22 +9,29 @@ export type Book = {
   chapters: { title: string; points: string[] }[];
 };
 
-export default function BookPanel({ slug, onSlidesPlanned }: { slug: string; onSlidesPlanned: () => void | Promise<void> }) {
+export default function BookPanel({
+  subject, chapter, part, onSlidesPlanned,
+}: {
+  subject: string;
+  chapter: string;
+  part: number;
+  onSlidesPlanned: () => void | Promise<void>;
+}) {
   const [open, setOpen] = useState(false);
   const [book, setBook] = useState<Book | null>(null);
   const [proposal, setProposal] = useState<Book | null>(null);
   const [request, setRequest] = useState('');
   const [busy, setBusy] = useState<'' | 'generate' | 'revise' | 'slides'>('');
 
-  const load = () => fetch(`/api/paperbook/${slug}/book`).then((r) => r.json()).then((d) => setBook(d.book));
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [slug]);
+  const load = () => fetch(`/api/handbooks/${subject}/${chapter}/book`).then((r) => r.json()).then((d) => setBook(d.book));
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [subject, chapter]);
 
   const points = book?.chapters.reduce((n, c) => n + c.points.length, 0) ?? 0;
 
   const call = async (body: object, phase: typeof busy) => {
     setBusy(phase);
     try {
-      const r = await fetch(`/api/paperbook/${slug}/book`, {
+      const r = await fetch(`/api/handbooks/${subject}/${chapter}/book`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -55,7 +62,7 @@ export default function BookPanel({ slug, onSlidesPlanned }: { slug: string; onS
   };
 
   const applyProposal = async () => {
-    const r = await fetch(`/api/paperbook/${slug}/book`, {
+    const r = await fetch(`/api/handbooks/${subject}/${chapter}/book`, {
       method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(proposal),
     });
     if (r.ok) {
@@ -70,7 +77,7 @@ export default function BookPanel({ slug, onSlidesPlanned }: { slug: string; onS
     setBusy('slides');
     message.info('Writing slides that cover every point in the book…');
     try {
-      const r = await fetch(`/api/paperbook/${slug}/plan`, {
+      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
       });
       const d = await r.json();
@@ -96,7 +103,7 @@ export default function BookPanel({ slug, onSlidesPlanned }: { slug: string; onS
       <Drawer title="Handbook — topic coverage" open={open} onClose={() => setOpen(false)} width={520}>
         {!book && (
           <Empty description="No book yet — build one from the reference images">
-            <Button type="primary" loading={busy === 'generate'} onClick={generate}>
+            <Button loading={busy === 'generate'} onClick={generate}>
               ✦ Build book from references
             </Button>
           </Empty>
