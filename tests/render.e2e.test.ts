@@ -103,3 +103,42 @@ describe('renderSlide', () => {
     expect(Buffer.compare(ba, bb)).toBe(0);
   }, 120_000);
 });
+
+describe('balanceTail', () => {
+  it('lifts a starved final page without starving the one before it', async () => {
+    // Enough blocks to need two pages, with the remainder small: greedy pagination alone
+    // would leave the tail nearly empty.
+    const post = makePost('spiral-notes');
+    post.slides[0].blocks = Array.from({ length: 26 }, (_, i) => ({
+      type: 'bullets' as const,
+      items: [`point ${i} alpha`, `point ${i} beta`, `point ${i} gamma`, `point ${i} delta`],
+    }));
+    const dir = path.join(tmpdir(), `iolar-tail-${Date.now()}`);
+    const { results, slides } = await renderAll(post, dir);
+
+    expect(results.length).toBeGreaterThan(1);
+    const last = results[results.length - 1];
+    const prev = results[results.length - 2];
+    // The tail is not left as a scrap, and the page it borrowed from is still substantial.
+    expect(last.fillPct).toBeGreaterThan(20);
+    expect(prev.fillPct).toBeGreaterThan(55);
+    // Nothing was invented or lost while rebalancing.
+    expect(slides.reduce((n, s) => n + s.blocks.length, 0)).toBe(26);
+  }, 300_000);
+
+  it('renders a post whose pagination exceeds its authored page count', async () => {
+    // Regression: reverting a rejected move indexed the authored post, which is shorter
+    // than the paginated result, and threw.
+    const post = makePost('spiral-notes');
+    post.slides[0].blocks = Array.from({ length: 60 }, (_, i) => ({
+      type: 'paragraph' as const,
+      text: `Paragraph ${i} with enough words to occupy a fair slice of the column. `.repeat(2),
+    }));
+    const dir = path.join(tmpdir(), `iolar-overflow-${Date.now()}`);
+    const { results, slides } = await renderAll(post, dir);
+
+    expect(slides.length).toBeGreaterThan(post.slides.length);
+    expect(results.every((r) => r.overflowPx === 0)).toBe(true);
+    expect(slides.reduce((n, s) => n + s.blocks.length, 0)).toBe(60);
+  }, 300_000);
+});

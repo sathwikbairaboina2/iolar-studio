@@ -202,9 +202,12 @@ async function balanceTail(
       }));
     }
     if (!safe) {
-      // Put the pages back the way they were before this attempt.
-      await renderSlide(post, lastIndex - 1, prev.file);
-      await renderSlide(post, lastIndex, last.file);
+      // Put the pages back as they were. This must re-render the PAGINATED slides, not
+      // post.slides — pagination can produce more pages than there are authored chapters,
+      // so indexing the original post here reads past its end.
+      const restore: Post = { ...post, slides };
+      await renderSlide(restore, lastIndex - 1, prev.file);
+      await renderSlide(restore, lastIndex, last.file);
       return;
     }
 
