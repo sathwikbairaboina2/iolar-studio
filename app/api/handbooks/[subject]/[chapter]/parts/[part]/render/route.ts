@@ -1,17 +1,18 @@
 import { NextResponse } from 'next/server';
 import path from 'path';
 import { promises as fs } from 'fs';
-import { loadPost, postDir, savePost } from '@/lib/store';
+import { loadPost, savePost } from '@/lib/store';
+import { rendersDir } from '@/lib/paths';
 import { MAX_SLIDES } from '@/lib/schema';
 import { renderSlide, renderAll } from '@/lib/renderer/capture';
 
-type Ctx = { params: Promise<{ slug: string }> };
+type Ctx = { params: Promise<{ subject: string; chapter: string; part: string }> };
 
 async function writeReport(
-  slug: string,
+  subject: string, chapter: string, part: number,
   results: { slide: number; overflowPx: number; fillPct: number; file: string }[]
 ) {
-  const dir = path.join(postDir(slug), 'renders');
+  const dir = rendersDir(subject, chapter, part);
   await fs.mkdir(dir, { recursive: true });
   const reportPath = path.join(dir, 'render-report.json');
   let existing: Record<string, { overflowPx: number; fillPct?: number }> = {};
@@ -22,22 +23,26 @@ async function writeReport(
   await fs.writeFile(reportPath, JSON.stringify(existing, null, 2));
   try {
     const { syncRenders } = await import('@/lib/graph');
-    syncRenders(slug, results);
+    syncRenders(subject, chapter, part, results);
   } catch (err) {
-    console.warn('[iolar] render index failed', err);
+    console.warn('[instastudio] render index failed', err);
   }
 }
 
+export const maxDuration = 900;
+
 export async function POST(req: Request, ctx: Ctx) {
-  const { slug } = await ctx.params;
+  const { subject, chapter, part: partParam } = await ctx.params;
+  const part = Number(partParam);
   try {
     const body = await req.json().catch(() => ({}));
-    const post = await loadPost(slug);
-    const outDir = path.join(postDir(slug), 'renders');
+    const post = await loadPost(subject, chapter, part);
+    const outDir = rendersDir(subject, chapter, part);
 
     let results;
     let split = false;
-    let followUp: { moved: number; childSlug: string } | null = null;
+    let followUp: { moved: number; part: number } | null = null;
+
     if (typeof body.slide === 'number') {
       const i = body.slide - 1;
       if (i < 0 || i >= post.slides.length) {
@@ -50,15 +55,15 @@ export async function POST(req: Request, ctx: Ctx) {
       const out = await renderAll(post, outDir);
       results = out.results;
       if (out.slides.length !== post.slides.length) {
-        await savePost(slug, { ...post, slides: out.slides });
+        await savePost(subject, chapter, part, { ...post, slides: out.slides });
         split = true;
       }
-      // Content is never trimmed: pages past the carousel limit become a follow-up post.
+      // Content is never trimmed: pages past the carousel limit become the next part.
       if (body.spillToFollowUp !== false && out.slides.length > MAX_SLIDES) {
         const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
-        followUp = await splitIntoFollowUp(slug);
+        followUp = await splitIntoFollowUp(subject, chapter, part);
         if (followUp) {
-          const trimmed = await loadPost(slug);
+          const trimmed = await loadPost(subject, chapter, part);
           const rerun = await renderAll(trimmed, outDir);
           results = rerun.results;
           for (const f of await fs.readdir(outDir)) {
@@ -68,7 +73,8 @@ export async function POST(req: Request, ctx: Ctx) {
         }
       }
     }
-    await writeReport(slug, results);
+
+    await writeReport(subject, chapter, part, results);
     return NextResponse.json({ results, slides: results.length, split, followUp });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
@@ -76,9 +82,9 @@ export async function POST(req: Request, ctx: Ctx) {
 }
 
 export async function GET(req: Request, ctx: Ctx) {
-  const { slug } = await ctx.params;
+  const { subject, chapter, part } = await ctx.params;
   const slide = Number(new URL(req.url).searchParams.get('slide') ?? '1');
-  const file = path.join(postDir(slug), 'renders', `slide-${String(slide).padStart(2, '0')}.png`);
+  const file = path.join(rendersDir(subject, chapter, Number(part)), `slide-${String(slide).padStart(2, '0')}.png`);
   try {
     const buf = await fs.readFile(file);
     return new NextResponse(new Uint8Array(buf), {

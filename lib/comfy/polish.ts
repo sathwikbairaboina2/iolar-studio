@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { postDir } from '../store';
+import { rendersDir } from '../paths';
 import { getSettings } from '../settings';
 import { queuePrompt, waitForJob, fetchImage, uploadImage, firstCheckpoint, saveWorkflowToDesktop } from './client';
 
@@ -40,12 +40,14 @@ export async function polishSlide(pngPath: string, outPath: string): Promise<voi
   await fs.writeFile(outPath, buf);
 }
 
-export async function polishPost(slug: string): Promise<{ slides: number }> {
-  const rendersDir = path.join(postDir(slug), 'renders');
-  const files = (await fs.readdir(rendersDir)).filter((f) => /^slide-\d+\.png$/.test(f));
+export async function polishPost(
+  subject: string, chapter: string, part: number
+): Promise<{ slides: number }> {
+  const dir = rendersDir(subject, chapter, part);
+  const files = (await fs.readdir(dir)).filter((f) => /^slide-\d+\.png$/.test(f));
   if (!files.length) throw new Error('render first');
   for (const f of files.sort()) {
-    await polishSlide(path.join(rendersDir, f), path.join(rendersDir, 'polished', f));
+    await polishSlide(path.join(dir, f), path.join(dir, 'polished', f));
   }
   return { slides: files.length };
 }
