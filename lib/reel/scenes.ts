@@ -53,15 +53,24 @@ export type SceneOptions = {
    * enough overflow for a scroll to actually travel.
    */
   viewport?: { width: number; height: number };
+  /**
+   * Where in the scene's own animation the recording starts, 0..1.
+   *
+   * A scene that begins at zero opens on its empty state — a terminal showing nothing but
+   * a prompt, a list before its first row lands — and a shot that opens on almost nothing
+   * is a hole in the cut. Starting a little way in means the shot is already underway.
+   */
+  startAt?: number;
 };
 
 export function frameCount(seconds: number, fps: number): number {
   return Math.max(1, Math.round(seconds * fps));
 }
 
-/** Progress through the shot, 0..1, for frame `i` of `total`. */
-export function frameProgress(i: number, total: number): number {
-  return total <= 1 ? 0 : i / (total - 1);
+/** Progress through the scene's animation for frame `i` of `total`, from `startAt` to 1. */
+export function frameProgress(i: number, total: number, startAt = 0): number {
+  const raw = total <= 1 ? 0 : i / (total - 1);
+  return startAt + raw * (1 - startAt);
 }
 
 /**
@@ -75,6 +84,7 @@ export async function recordScene(opts: SceneOptions): Promise<{ path: string; f
   const fps = opts.fps ?? 30;
   const [outW, outH] = REEL_RATIOS[opts.ratio ?? '9:16'];
   const viewport = opts.viewport ?? { width: 430, height: 764 };
+  const startAt = opts.startAt ?? 0.12;
   const total = frameCount(opts.seconds, fps);
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'iolar-scene-'));
@@ -86,7 +96,7 @@ export async function recordScene(opts: SceneOptions): Promise<{ path: string; f
     await page.evaluate(() => document.fonts.ready);
 
     for (let i = 0; i < total; i++) {
-      const t = frameProgress(i, total);
+      const t = frameProgress(i, total, startAt);
       await page.evaluate((progress) => {
         document.body.dataset.t = String(progress);
         // --t drives the shared drift, so every scene moves even between its own steps

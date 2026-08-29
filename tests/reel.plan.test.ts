@@ -11,9 +11,9 @@ beforeEach(() => {
 const BEATS = JSON.stringify({
   title: 'xAI drops Grok Bot',
   beats: [
-    { id: 'b1', role: 'hook', text: 'xAI just dropped Grok Bot.', shot: { kind: 'title', brief: 'Elon on stage', hero: true } },
-    { id: 'b2', role: 'body', text: 'It is an agent with its own computer.', shot: { kind: 'screen', brief: 'chat list UI' } },
-    { id: 'b3', role: 'close', text: 'Beta today for Heavy subscribers.', shot: { kind: 'talking-head', brief: 'creator to camera' } },
+    { id: 'b1', role: 'hook', text: 'xAI just dropped Grok Bot.', shot: { kind: 'title', brief: 'Elon on stage', hero: true, alsoAssetIds: [] } },
+    { id: 'b2', role: 'body', text: 'It is an agent with its own computer.', shot: { kind: 'screen', brief: 'chat list UI' , alsoAssetIds: [] } },
+    { id: 'b3', role: 'close', text: 'Beta today for Heavy subscribers.', shot: { kind: 'talking-head', brief: 'creator to camera' , alsoAssetIds: [] } },
   ],
   caption: { text: 'Grok Bot is here.', hashtags: ['#ai', '#xai'] },
 });
@@ -54,9 +54,9 @@ describe('reel plan', () => {
         title: 'T',
         caption: { text: '', hashtags: [] },
         beats: [
-          { id: 'b1', role: 'hook', text: 'One.', shot: { kind: 'broll', brief: 'x' } },
-          { id: 'b2', role: 'body', text: 'Two.', shot: { kind: 'screen', brief: 'y' } },
-          { id: 'b3', role: 'close', text: 'Three.', shot: { kind: 'talking-head', brief: 'z' } },
+          { id: 'b1', role: 'hook', text: 'One.', shot: { kind: 'broll', brief: 'x' , alsoAssetIds: [] } },
+          { id: 'b2', role: 'body', text: 'Two.', shot: { kind: 'screen', brief: 'y' , alsoAssetIds: [] } },
+          { id: 'b3', role: 'close', text: 'Three.', shot: { kind: 'talking-head', brief: 'z' , alsoAssetIds: [] } },
         ],
       })
     );
@@ -132,8 +132,8 @@ describe('paste mode keeps the script word for word', () => {
     const { wordingDrift } = await import('@/lib/ai/reel/plan');
     const script = 'One two three. Four five six.';
     const faithful = [
-      { id: 'b1', role: 'hook' as const, text: 'One two three.', shot: { kind: 'broll' as const, brief: '', hero: false } },
-      { id: 'b2', role: 'close' as const, text: 'Four five six.', shot: { kind: 'broll' as const, brief: '', hero: false } },
+      { id: 'b1', role: 'hook' as const, text: 'One two three.', shot: { kind: 'broll' as const, brief: '', hero: false, alsoAssetIds: [] } },
+      { id: 'b2', role: 'close' as const, text: 'Four five six.', shot: { kind: 'broll' as const, brief: '', hero: false, alsoAssetIds: [] } },
     ];
     expect(wordingDrift(script, faithful)).toBeNull();
 
@@ -150,8 +150,8 @@ describe('paste mode keeps the script word for word', () => {
     expect(normaliseScript('  a   b \n c ')).toBe('a b c');
     expect(
       wordingDrift('a b\nc', [
-        { id: 'b1', role: 'hook', text: 'a b', shot: { kind: 'broll', brief: '', hero: false } },
-        { id: 'b2', role: 'close', text: 'c', shot: { kind: 'broll', brief: '', hero: false } },
+        { id: 'b1', role: 'hook', text: 'a b', shot: { kind: 'broll', brief: '', hero: false, alsoAssetIds: [] } },
+        { id: 'b2', role: 'close', text: 'c', shot: { kind: 'broll', brief: '', hero: false, alsoAssetIds: [] } },
       ])
     ).toBeNull();
   });
@@ -160,8 +160,8 @@ describe('paste mode keeps the script word for word', () => {
     const bad = JSON.stringify({
       title: 'T', caption: { text: '', hashtags: [] },
       beats: [
-        { id: 'b1', role: 'hook', text: 'One two', shot: { kind: 'broll', brief: 'x' } },
-        { id: 'b2', role: 'close', text: 'two three.', shot: { kind: 'broll', brief: 'y' } },
+        { id: 'b1', role: 'hook', text: 'One two', shot: { kind: 'broll', brief: 'x' , alsoAssetIds: [] } },
+        { id: 'b2', role: 'close', text: 'two three.', shot: { kind: 'broll', brief: 'y' , alsoAssetIds: [] } },
       ],
     });
     const runClaude = vi.fn().mockResolvedValue(bad);

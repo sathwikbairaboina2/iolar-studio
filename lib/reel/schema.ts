@@ -17,6 +17,15 @@ const ShotSchema = z.object({
   brief: z.string().default(''),
   hero: z.boolean().default(false),
   assetId: z.string().optional(),
+  /**
+   * Further footage for the same line.
+   *
+   * One sentence of voiceover is rarely one shot: the reference cuts about every two
+   * seconds, roughly twice per line. When a beat is long enough to split, the pieces walk
+   * this list instead of all showing the same footage, which is what makes a split read as
+   * a cut rather than a seam.
+   */
+  alsoAssetIds: z.array(z.string()).default([]),
 });
 
 const BeatSchema = z.object({

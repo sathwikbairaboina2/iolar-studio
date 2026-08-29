@@ -151,6 +151,8 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     const span = spans.get(beat.id);
     const assetId = beat.shot.assetId;
     if (!span || !assetId || !ready.has(assetId)) continue;
+    // the footage this line can cut between, primary first
+    const pool = [assetId, ...beat.shot.alsoAssetIds].filter((id) => ready.has(id));
 
     const held = lockedClips.filter((c) => c.beatId === beat.id);
     if (held.length) {
@@ -166,17 +168,20 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     const pieces = Math.max(1, Math.ceil(total / maxShot));
     const each = total / pieces;
     const isScreen = beat.shot.kind === 'screen';
-    const isStill = reel.assets.find((a) => a.id === assetId)?.kind === 'image';
     for (let p = 0; p < pieces; p++) {
+      const pieceAsset = pool[p % pool.length];
+      const isStill = reel.assets.find((a) => a.id === pieceAsset)?.kind === 'image';
       const motion = pickMotion(rand, pattern, isScreen, isStill, p, prevMotion);
       prevMotion = motion;
       clips.push({
         id: `c${clips.length + 1}`,
-        assetId,
+        assetId: pieceAsset,
         beatId: beat.id,
         start: r3(start + p * each),
         end: r3(start + (p + 1) * each),
-        srcIn: r3(p * each),
+        // a piece on its own footage starts at the top of it; only pieces reusing the
+        // previous shot continue through it
+        srcIn: pool.length > 1 ? 0 : r3(p * each),
         fit: 'cover',
         motion,
         transition: pattern.transitions[clips.length % pattern.transitions.length],

@@ -325,3 +325,46 @@ describe('motion is compensation for a still', () => {
     }
   });
 });
+
+describe('a line can cut between several shots', () => {
+  it('walks the beat through its extra footage instead of holding one shot', async () => {
+    const { assemble } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const words = Array.from({ length: 24 }, (_, i) => ({ w: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.35 }));
+    const reel = validateReel({
+      pattern: 'test', title: 'T', seed: 3,
+      beats: [{
+        id: 'b1', role: 'body', text: words.map((w) => w.w).join(' '),
+        shot: { kind: 'screen', brief: '', assetId: 'a1', alsoAssetIds: ['a2', 'a3'] },
+      }],
+      vo: { words, durationSec: 10 },
+      assets: ['a1', 'a2', 'a3'].map((id) => ({
+        id, kind: 'video', path: `assets/${id}.mp4`, origin: 'comfy', status: 'ready',
+      })),
+    });
+    const tl = assemble({ reel, pattern: PATTERN });
+    expect(tl.clips.length).toBeGreaterThan(1);
+    expect(new Set(tl.clips.map((c) => c.assetId)).size).toBeGreaterThan(1);
+    // each piece opens its own footage rather than continuing the last one
+    for (const c of tl.clips) expect(c.srcIn).toBe(0);
+  });
+
+  it('ignores extra footage that is not ready yet', async () => {
+    const { assemble } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const words = Array.from({ length: 24 }, (_, i) => ({ w: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.35 }));
+    const reel = validateReel({
+      pattern: 'test', title: 'T', seed: 3,
+      beats: [{
+        id: 'b1', role: 'body', text: words.map((w) => w.w).join(' '),
+        shot: { kind: 'screen', brief: '', assetId: 'a1', alsoAssetIds: ['a2'] },
+      }],
+      vo: { words, durationSec: 10 },
+      assets: [
+        { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' },
+        { id: 'a2', kind: 'video', path: '', origin: 'comfy', status: 'queued' },
+      ],
+    });
+    for (const c of assemble({ reel, pattern: PATTERN }).clips) expect(c.assetId).toBe('a1');
+  });
+});

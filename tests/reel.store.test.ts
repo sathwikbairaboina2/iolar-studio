@@ -84,7 +84,7 @@ describe('the knowledge graph stays handbooks-only', () => {
     const reel = await loadReel('grok-bot');
     await saveReel('grok-bot', {
       ...reel,
-      beats: [{ id: 'b1', role: 'hook', text: 'Grok Bot ships today', shot: { kind: 'title', brief: '', hero: false } }],
+      beats: [{ id: 'b1', role: 'hook', text: 'Grok Bot ships today', shot: { kind: 'title', brief: '', hero: false , alsoAssetIds: [] } }],
     });
     const g = graph();
     expect(g.nodes.filter((n) => n.id.startsWith('reel:'))).toEqual([]);

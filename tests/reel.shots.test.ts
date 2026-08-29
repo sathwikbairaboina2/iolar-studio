@@ -22,9 +22,9 @@ async function seed(slug = 'grok') {
     ...reel,
     vo: { ...reel.vo, words: WORDS, durationSec: 5 },
     beats: [
-      { id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'title', brief: 'title card', hero: false } },
-      { id: 'b2', role: 'body', text: 'three four', shot: { kind: 'screen', brief: 'chat ui', hero: false } },
-      { id: 'b3', role: 'close', text: 'five six', shot: { kind: 'broll', brief: 'city', hero: true } },
+      { id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'title', brief: 'title card', hero: false , alsoAssetIds: [] } },
+      { id: 'b2', role: 'body', text: 'three four', shot: { kind: 'screen', brief: 'chat ui', hero: false , alsoAssetIds: [] } },
+      { id: 'b3', role: 'close', text: 'five six', shot: { kind: 'broll', brief: 'city', hero: true , alsoAssetIds: [] } },
     ],
   });
   return loadReel(slug);
@@ -78,8 +78,8 @@ describe('shot planning', () => {
         { id: 'a2', kind: 'video' as const, path: '', origin: 'comfy' as const, status: 'running' as const, brief: '' },
       ],
       beats: reel.beats.map((b) =>
-        b.id === 'b2' ? { ...b, shot: { ...b.shot, assetId: 'a1' } }
-        : b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a2' } }
+        b.id === 'b2' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [] } }
+        : b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a2' , alsoAssetIds: [] } }
         : b
       ),
     };
@@ -229,7 +229,7 @@ describe('shot refresh', () => {
       assets: [
         { id: 'a1', kind: 'video', path: '', origin: 'comfy', status: 'running', jobId: 'p-1', brief: '' },
       ],
-      beats: reel.beats.map((b) => (b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a1' } } : b)),
+      beats: reel.beats.map((b) => (b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [] } } : b)),
     });
     mockComfy({
       jobState: vi.fn().mockResolvedValue('ready'),

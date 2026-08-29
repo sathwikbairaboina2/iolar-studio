@@ -73,3 +73,39 @@ describe('recording a scene', () => {
     expect(diff / pa.length).toBeGreaterThan(4);
   }, 300_000);
 });
+
+describe('scenes start underway', () => {
+  it('never opens on the scene empty state', async () => {
+    const { frameProgress } = await import('@/lib/reel/scenes');
+    expect(frameProgress(0, 120, 0.12)).toBeCloseTo(0.12, 5);
+    expect(frameProgress(119, 120, 0.12)).toBeCloseTo(1, 5);
+    // and still spans the whole animation when asked to start at zero
+    expect(frameProgress(0, 120, 0)).toBe(0);
+  });
+
+  it('records a first frame carrying more than the scene empty state', async () => {
+    if (!ffmpeg) return;
+    const { recordScene } = await import('@/lib/reel/scenes');
+    const { extractFrames } = await import('@/lib/reel/probe');
+    const sharp = (await import('sharp')).default;
+    const dir = process.env.IOLAR_DATA_DIR!;
+    const scene = path.join(process.cwd(), 'scenes', 'terminal-install', 'scene.html');
+
+    const ink = async (file: string) => {
+      const { data, info } = await sharp(file).greyscale().raw().toBuffer({ resolveWithObject: true });
+      let lit = 0;
+      for (let i = 0; i < data.length; i++) if (data[i] > 60) lit++;
+      return lit / (info.width * info.height);
+    };
+
+    // the terminal is the worst case: at zero it is a bare prompt on black
+    const cold = path.join(dir, 'cold.mp4');
+    await recordScene({ htmlPath: scene, outPath: cold, seconds: 1, startAt: 0 });
+    const warm = path.join(dir, 'warm.mp4');
+    await recordScene({ htmlPath: scene, outPath: warm, seconds: 1 });
+
+    const [coldFirst] = await extractFrames(cold, [0.02], path.join(dir, 'c'), 240);
+    const [warmFirst] = await extractFrames(warm, [0.02], path.join(dir, 'w'), 240);
+    expect(await ink(warmFirst)).toBeGreaterThan(await ink(coldFirst));
+  }, 300_000);
+});

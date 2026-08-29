@@ -75,6 +75,7 @@ export function parseBeats(raw: string): PlanOut {
       kind: b.shot?.kind ?? 'broll',
       brief: String(b.shot?.brief ?? '').trim() || 'establishing shot for this line',
       hero: Boolean(b.shot?.hero),
+      alsoAssetIds: [],
     },
   })) as Beat[];
   if (!beats.length) throw new Error('plan returned no beats');
