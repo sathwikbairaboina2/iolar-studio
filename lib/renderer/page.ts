@@ -1,13 +1,18 @@
 import { readFileSync } from 'fs';
 import path from 'path';
 import { Post, RATIOS } from '../schema';
-import { renderBlockHtml } from './blocks';
+import { renderSlideBlocks } from './blocks';
 
 export function templatesRoot() {
   return path.join(process.cwd(), 'templates');
 }
 
-export function templateManifest(template: string): { contentSelector: string; inks: Record<string, string> } {
+export function templateManifest(template: string): {
+  contentSelector: string;
+  inks: Record<string, string>;
+  maxColumns?: number;
+  columnGap?: string;
+} {
   return JSON.parse(readFileSync(path.join(templatesRoot(), template, 'manifest.json'), 'utf8'));
 }
 
@@ -23,11 +28,16 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
   const [width, height] = RATIOS[post.ratio];
   const tpl = readFileSync(path.join(templatesRoot(), post.template, 'template.html'), 'utf8');
 
+  const manifest = templateManifest(post.template);
+  const columns = manifest.maxColumns ?? 2;
+  const columnGap = manifest.columnGap ?? '2.2vw';
+
   const head =
     `<link rel="stylesheet" href="../_shared/fonts.css">` +
-    `<link rel="stylesheet" href="../_shared/base.css">`;
+    `<link rel="stylesheet" href="../_shared/base.css">` +
+    `<style>#content{--pk-cols:${columns};--pk-col-gap:${columnGap}}</style>`;
 
-  const content = slide.blocks.map(renderBlockHtml).join('\n');
+  const content = renderSlideBlocks(slide.blocks);
 
   const pageVars = `<script>window.PAGE = ${JSON.stringify({
     brand: post.brand,
@@ -40,6 +50,8 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     seed: post.seed,
     width,
     height,
+    columns,
+    rowGapPx: Math.round(height * 2 * 0.012),
   })};</script>`;
 
   return tpl

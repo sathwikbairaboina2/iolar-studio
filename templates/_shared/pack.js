@@ -1,7 +1,9 @@
 // Pure block packer: decides span + column for each unit and reports what did not fit.
 // Loaded as a classic script in templates and required directly by Node tests.
 (function (root) {
-  var SQUEEZE_LIMIT = 1.6;
+  // Half-width wins on area while halfH < 2 x fullH, so the break-even is 2.0.
+  // Sit just under it: a unit that more than doubles when squeezed goes full width.
+  var SQUEEZE_LIMIT = 1.95;
 
   function spanOf(unit) {
     if (unit.forceFull) return 'full';

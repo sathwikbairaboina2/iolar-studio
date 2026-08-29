@@ -23,9 +23,14 @@ describe('packUnits', () => {
     expect(rows[1].items[0].unit.index).toBe(1);
   });
 
-  it('forces full width when half-width height exceeds 1.6x full height', () => {
-    const { rows } = packUnits([u(0, 100, 170)], { columns: 2, pageHeight: 1000, rowGap: 10 });
-    expect(rows[0].items[0].span).toBe('full');
+  it('forces full width only when squeezing more than doubles the height', () => {
+    const squeezed = packUnits([u(0, 100, 250)], { columns: 2, pageHeight: 1000, rowGap: 10 });
+    expect(squeezed.rows[0].items[0].span).toBe('full');
+
+    // Prose roughly 1.7x when halved — still a win on area, so it stays half.
+    const prose = packUnits([u(0, 100, 170), u(1, 100, 170)], { columns: 2, pageHeight: 1000, rowGap: 10 });
+    expect(prose.rows[0].items[0].span).toBe('half');
+    expect(prose.rows[0].items.length).toBe(2);
   });
 
   it('spills units that do not fit, whole and in order', () => {
