@@ -32,7 +32,14 @@ topic  OR  reference image URLs
   -> PACKAGE  export/01.png..NN.png + caption.txt
 ```
 
-Hard rules: max **10 slides**; overflow errors are surfaced, never auto-shrunk; AI edits always go through diff-approve; renders are pixel-deterministic per seed.
+Pages are laid out as a packed two-column grid (three for `sticky-wall`): each block is
+measured in the browser at full and column width, wide tables and diagrams span the page,
+short blocks pair off, and headings bind to the block below them. Anything that does not fit
+reflows onto a continuation page — the new slide array is written back to `post.json` and an
+AI pass rewrites the titles.
+
+Hard rules: text is never shrunk to fit; AI edits always go through diff-approve; renders are
+pixel-deterministic per seed. The **10-slide** limit is advisory — the UI warns past it.
 
 ## Template authoring
 

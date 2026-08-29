@@ -29,9 +29,9 @@ Block types (discriminated by "type"):
 
 "page_title" is the section name ONLY — never write "Page 3:" or a page number in it; the template adds that.
 
-FILL THE PAGE. Each slide is a full handwritten notebook page and must look densely used, like real study notes — never half empty. Target 45-55 rendered lines per slide, where: heading = 1 line, each bullet = 1 line, each table row = 1 line (plus 1 for headers), each code line = 1 line, paragraph = 1 line per 85 characters, callout/sidebox = 2 lines plus its items. That is normally 7-10 blocks per slide with 3-5 numbered sections. Going a little under is wasted space; going over is rejected as overflow. Aim for 50 lines.
+FILL THE PAGE. Each slide is a full handwritten notebook page laid out as a TWO-COLUMN grid, so it holds roughly 95-110 rendered lines — about twice a single column. Count: heading = 1 line, each bullet = 1 line, each table row = 1 line (plus 1 for headers), each code line = 1 line, paragraph = 1 line per 85 characters, callout/sidebox = 2 lines plus its items. Wide tables (4+ columns) and diagrams span the full width; everything else is packed two-up automatically, so short blocks pair off. That is normally 12-16 blocks per slide with 4-6 numbered sections. Overflowing is safe — the renderer reflows the excess onto a new page — but a half-empty page is wasted space, so aim high.
 
-HARD LIMIT: at most ${MAX_SLIDES} slides. Tables max 6 rows x 4 cols with short cells; code max 7 lines.`;
+SLIDE COUNT: aim for ${MAX_SLIDES} slides (Instagram shows 10 carousel images). Going over is allowed when the book demands it, but prefer denser pages to extra pages. Tables max 6 rows x 4 cols with short cells; code max 7 lines.`;
 
 function envelope(brand: string, template: string, ratio: string) {
   return `Use "brand": "${brand}", "template": "${template}", "ratio": "${ratio}", "seed": 42, today's date ${new Date().toLocaleDateString('en-GB')}. Write an engaging caption (2-3 sentences, hook first) and 8-12 relevant hashtags.`;

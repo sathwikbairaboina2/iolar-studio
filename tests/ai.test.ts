@@ -74,7 +74,7 @@ describe('revise route', () => {
     expect(readFileSync(path.join(dataDir, 'paperbook', 'ai-demo', 'chat.json'), 'utf8')).toContain('change it');
   });
 
-  it('422 when AI returns too many slides', async () => {
+  it('accepts more than ten slides — the cap is advisory', async () => {
     const big = base();
     big.slides = Array.from({ length: 11 }, (_, i) => ({ page_title: `P${i}`, blocks: [{ type: 'heading' as const, text: 'x' }] }));
 
@@ -90,6 +90,26 @@ describe('revise route', () => {
       new Request('http://t/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request: 'expand', scope: 'post' }) }),
       { params: Promise.resolve({ slug: 'ai-cap' }) }
     );
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(200);
+    expect((await res.json()).proposal.slides.length).toBe(11);
+  });
+
+  it('500 when the AI returns an invalid block type', async () => {
+    const bad = JSON.parse(JSON.stringify(base()));
+    bad.slides[0].blocks[0].type = 'not-a-block';
+
+    vi.doMock('@/lib/ai/claude', () => ({
+      runClaude: vi.fn().mockResolvedValue(JSON.stringify(bad)),
+      ClaudeUnavailableError: class extends Error {},
+    }));
+
+    const { createPost } = await import('@/lib/store');
+    await createPost('ai-bad', base());
+    const route = await import('@/app/api/paperbook/[slug]/revise/route');
+    const res = await route.POST(
+      new Request('http://t/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request: 'break it', scope: 'post' }) }),
+      { params: Promise.resolve({ slug: 'ai-bad' }) }
+    );
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 });

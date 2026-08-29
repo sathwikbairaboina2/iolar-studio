@@ -62,6 +62,29 @@ describe('renderSlide', () => {
     expect(totalBlocks).toBe(40);
   }, 240_000);
 
+  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall'])(
+    '%s fills a dense page without overflowing',
+    async (template) => {
+      const dense = makePost(template);
+      dense.slides[0].blocks = [
+        { type: 'heading', text: '1. Overview' },
+        { type: 'paragraph', text: 'A dense page exercising the packer with mixed block widths and heights.' },
+        { type: 'bullets', items: ['first point', 'second point', 'third point', 'fourth point'] },
+        { type: 'heading', text: '2. Comparison' },
+        { type: 'table', headers: ['Type', 'Ordered', 'Mutable', 'Use'], rows: [['list', 'yes', 'yes', 'sequence'], ['tuple', 'yes', 'no', 'fixed'], ['set', 'no', 'yes', 'unique']] },
+        { type: 'heading', text: '3. Example' },
+        { type: 'code', lang: 'python', lines: ['xs = [1, 2, 3]', 'xs.append(4)', 'print(xs)'] },
+        { type: 'sidebox', title: 'Remember', items: ['sets drop duplicates', 'tuples hash'], ink: 'green' },
+        { type: 'callout', style: 'tip', title: 'Interview Tip', text: 'Name the complexity before you pick the container.' },
+      ];
+      const out = path.join(tmpdir(), `iolar-dense-${template}-${Date.now()}.png`);
+      const r = await renderSlide(dense, 0, out);
+      expect(r.overflowPx).toBe(0);
+      expect(r.spillIndexes).toEqual([]);
+    },
+    120_000
+  );
+
   it('is deterministic: same seed => identical bytes', async () => {
     const a = path.join(tmpdir(), `iolar-a-${Date.now()}.png`);
     const b = path.join(tmpdir(), `iolar-b-${Date.now()}.png`);
