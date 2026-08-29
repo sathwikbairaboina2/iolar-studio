@@ -6,8 +6,10 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
-    // The suite runs Chromium renders and sandboxed Python alongside the component
-    // tests, so a starved jsdom test can exceed the 5s default while being fast itself.
+    // The suite runs Chromium page renders and sandboxed Python alongside the component
+    // tests. Left unbounded they saturate every core and starve the jsdom suites into
+    // spurious timeouts, so cap the workers and give a starved test room to finish.
+    maxWorkers: 4,
     testTimeout: 30_000,
     hookTimeout: 30_000,
   },

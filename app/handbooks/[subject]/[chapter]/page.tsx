@@ -12,6 +12,7 @@ import AiDrawer from '@/components/editor/AiDrawer';
 import ReferencePanel from '@/components/editor/ReferencePanel';
 import BookPanel from '@/components/editor/BookPanel';
 import ReviewPanel from '@/components/editor/ReviewPanel';
+import VerifyDrawer from '@/components/editor/VerifyDrawer';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v, label: `Ratio ${v}` }));
 
@@ -32,6 +33,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
   const [aiPrefill, setAiPrefill] = useState('');
   const [refUrls, setRefUrls] = useState<string[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [verifyOpen, setVerifyOpen] = useState(false);
   const openReviewOnLoad = useRef(
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('review') === '1'
   );
@@ -199,6 +201,16 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
           onPlanned={reloadAndRender}
         />
         <Button icon={<ExportOutlined />} onClick={doPackage}>Package</Button>
+        <VerifyDrawer
+          subject={subject}
+          chapter={chapter}
+          part={part}
+          open={verifyOpen}
+          onOpen={() => setVerifyOpen(true)}
+          onClose={() => setVerifyOpen(false)}
+          onGoToPage={(p) => setSlide(Math.max(0, p - 1))}
+          onApplied={async (p) => { setPost(p); await render(); }}
+        />
         <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => setReviewOpen(true)}>Review &amp; accept</Button>
       </Space>
 

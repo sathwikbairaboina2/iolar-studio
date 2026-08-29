@@ -11,7 +11,7 @@ for (const s of await listSubjects()) {
     let merged: Post | null = null;
     for (const p of parts) {
       const post = await loadPost(s.slug, c.slug, p);
-      merged = merged ? { ...merged, slides: [...merged.slides, ...post.slides] } : post;
+      merged = merged === null ? post : { ...merged, slides: [...merged.slides, ...post.slides] };
     }
     if (!merged) continue;
     const total = book.chapters.reduce((n, x) => n + x.points.length, 0);
