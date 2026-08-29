@@ -77,6 +77,16 @@
 
     measure(container, units, columns, colGapPx);
 
+    // What fraction of one page ALL of this slide's content needs. >100% means the author
+    // wrote more than a page holds; the fit pass uses this to trim by a measured amount.
+    var unconstrained = window.packUnits(units, {
+      columns: columns, pageHeight: Number.MAX_SAFE_INTEGER, rowGap: rowGapPx
+    });
+    var neededPx = 0;
+    for (var q = 0; q < unconstrained.rows.length; q++) {
+      neededPx += unconstrained.rows[q].height + (q ? rowGapPx : 0);
+    }
+
     // How many pages this content needs when each page is filled to `frac` of the sheet.
     function pagesFor(frac) {
       var remaining = units.slice();
@@ -130,7 +140,12 @@
       used += row.height + (r ? rowGapPx : 0);
     }
 
-    window.LAYOUT = { spillIndexes: spillIndexes, usedPx: Math.round(used), usablePx: Math.round(usable) };
+    window.LAYOUT = {
+      spillIndexes: spillIndexes,
+      usedPx: Math.round(used),
+      usablePx: Math.round(usable),
+      neededPct: Math.round((neededPx / usable) * 100)
+    };
     document.body.dataset.layoutDone = '1';
   };
 })();

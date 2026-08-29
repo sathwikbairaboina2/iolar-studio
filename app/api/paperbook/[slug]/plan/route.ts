@@ -11,6 +11,12 @@ export async function POST(req: Request, ctx: Ctx) {
   try {
     const body = await req.json().catch(() => ({}));
 
+    if (body.mode === 'fit') {
+      const { fitToPages } = await import('@/lib/ai/fit');
+      const { proposal, before } = await fitToPages(slug);
+      return NextResponse.json({ proposal, before });
+    }
+
     if (body.mode === 'headings') {
       const { fixHeadings } = await import('@/lib/ai/headings');
       return NextResponse.json({ proposal: await fixHeadings(slug) });

@@ -27,11 +27,11 @@ export async function closeBrowser() {
 
 declare global {
   interface Window {
-    LAYOUT: { spillIndexes: number[]; usedPx: number; usablePx: number };
+    LAYOUT: { spillIndexes: number[]; usedPx: number; usablePx: number; neededPct: number };
   }
 }
 
-export type RenderResult = { overflowPx: number; fillPct: number; spillIndexes: number[] };
+export type RenderResult = { overflowPx: number; fillPct: number; spillIndexes: number[]; neededPct: number };
 
 export async function renderSlide(post: Post, slideIndex: number, outPath: string): Promise<RenderResult> {
   const [w, h] = RATIOS[post.ratio];
@@ -66,7 +66,7 @@ export async function renderSlide(post: Post, slideIndex: number, outPath: strin
       await fs.mkdir(path.dirname(outPath), { recursive: true });
       await sharp(shot).resize(w, h, { kernel: 'lanczos3' }).png().toFile(outPath);
 
-      return { overflowPx, fillPct, spillIndexes: layout.spillIndexes };
+      return { overflowPx, fillPct, spillIndexes: layout.spillIndexes, neededPct: layout.neededPct };
     } finally {
       await page.close();
     }
