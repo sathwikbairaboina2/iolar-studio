@@ -22,7 +22,7 @@ const items = [
     label: 'Create',
     children: [
       { key: '/handbooks', icon: <BookOutlined />, label: 'Handbooks' },
-      { key: '/reels', icon: <VideoCameraOutlined />, label: soon('Reels'), disabled: true },
+      { key: '/reel', icon: <VideoCameraOutlined />, label: 'Reels' },
       { key: '/stories', icon: <ClockCircleOutlined />, label: soon('Stories'), disabled: true },
       { key: '/quotes', icon: <MessageOutlined />, label: soon('Quote cards'), disabled: true },
       { key: '/memes', icon: <SmileOutlined />, label: soon('Memes'), disabled: true },

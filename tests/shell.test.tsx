@@ -32,7 +32,7 @@ describe('AppShell', () => {
     expect(screen.getByText('Library')).toBeTruthy();
     expect(screen.getByText('Handbooks')).toBeTruthy();
     expect(screen.getByText('Knowledge graph')).toBeTruthy();
-    expect(screen.getByText('Reels').closest('li')?.className).toContain('ant-menu-item-disabled');
+    expect(screen.getByText('Reels').closest('li')?.className).not.toContain('ant-menu-item-disabled');
 
     expect(document.documentElement.dataset.theme).toBe('light');
     fireEvent.click(screen.getByLabelText('toggle theme'));
