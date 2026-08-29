@@ -11,16 +11,38 @@ export function parseUrls(text: string): string[] {
 }
 
 export default function ReferencePanel({
-  slug, compare, onCompareChange, onUrlsChange,
+  slug, compare, onCompareChange, onUrlsChange, onPlanned,
 }: {
   slug: string;
   compare: boolean;
   onCompareChange: (on: boolean) => void;
   onUrlsChange: (urls: string[]) => void;
+  onPlanned: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [urls, setUrls] = useState<string[]>([]);
   const [text, setText] = useState('');
+  const [planning, setPlanning] = useState(false);
+
+  const analyze = async () => {
+    setPlanning(true);
+    message.info('AI analyzing references and generating fresh slides… (can take a few minutes)');
+    try {
+      const r = await fetch(`/api/paperbook/${slug}/plan`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'references' }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? 'plan failed');
+      message.success('Slides generated — rendering');
+      setOpen(false);
+      await onPlanned();
+    } catch (err) {
+      message.error(String(err));
+    } finally {
+      setPlanning(false);
+    }
+  };
 
   useEffect(() => {
     fetch(`/api/paperbook/${slug}/references`)
@@ -69,8 +91,16 @@ export default function ReferencePanel({
           placeholder={'http://localhost:3000/api/media/…?child=1\nhttp://localhost:3000/api/media/…?child=2'}
           style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 8 }}
         />
-        <Space style={{ marginBottom: 16 }}>
+        <Space style={{ marginBottom: 16 }} wrap>
           <Button type="primary" onClick={save}>Save</Button>
+          <Button
+            onClick={analyze}
+            loading={planning}
+            disabled={!urls.length}
+            style={{ background: 'linear-gradient(135deg,#7c5cff,#3ec5ff)', color: '#fff', border: 'none' }}
+          >
+            ✦ Analyze &amp; generate slides
+          </Button>
           <span>
             Compare beside preview <Switch checked={compare} onChange={onCompareChange} size="small" />
           </span>

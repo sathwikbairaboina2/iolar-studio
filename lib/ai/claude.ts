@@ -7,12 +7,17 @@ export class ClaudeUnavailableError extends Error {
   }
 }
 
-export function runClaude(prompt: string, opts: { timeoutMs?: number } = {}): Promise<string> {
+export function runClaude(
+  prompt: string,
+  opts: { timeoutMs?: number; allowedTools?: string[] } = {}
+): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
+  const args = ['-p', prompt, '--output-format', 'text'];
+  if (opts.allowedTools?.length) args.push('--allowedTools', opts.allowedTools.join(','));
   return new Promise((resolve, reject) => {
     execFile(
       'claude',
-      ['-p', prompt, '--output-format', 'text'],
+      args,
       { timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024, shell: process.platform === 'win32' },
       (err, stdout, stderr) => {
         if (err) {

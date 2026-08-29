@@ -38,7 +38,7 @@ describe('paperbook list page', () => {
     fireEvent.click(screen.getByText('New post'));
     const input = await screen.findByPlaceholderText(/post-slug/);
     fireEvent.change(input, { target: { value: 'Bad Slug!' } });
-    const create = screen.getByRole('button', { name: 'Create' });
+    const create = screen.getByRole('button', { name: /Create/ });
     expect((create as HTMLButtonElement).disabled).toBe(true);
   });
 });

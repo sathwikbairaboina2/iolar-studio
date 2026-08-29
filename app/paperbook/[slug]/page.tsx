@@ -120,6 +120,12 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
           compare={compareRefs}
           onCompareChange={setCompareRefs}
           onUrlsChange={setRefUrls}
+          onPlanned={async () => {
+            const p = await fetch(`/api/paperbook/${slug}`).then((r) => r.json());
+            setPost(p);
+            setSlide(0);
+            await render();
+          }}
         />
         <Button type="primary" icon={<ExportOutlined />} onClick={doPackage}>Package</Button>
       </Space>
