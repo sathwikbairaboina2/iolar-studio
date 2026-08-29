@@ -11,6 +11,9 @@ vi.mock('next/navigation', () => ({
 }));
 
 beforeEach(() => {
+  global.ResizeObserver = global.ResizeObserver ?? class {
+    observe() {} unobserve() {} disconnect() {}
+  };
   window.matchMedia = window.matchMedia ?? ((q: string) => ({
     matches: false, media: q, addListener: () => {}, removeListener: () => {},
     addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false, onchange: null,
