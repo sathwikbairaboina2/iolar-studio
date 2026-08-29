@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { renderSlide, closeBrowser } from '@/lib/renderer/capture';
+import { renderSlide, renderAll, closeBrowser } from '@/lib/renderer/capture';
 import { validatePost, Post } from '@/lib/schema';
 import path from 'path';
 import { tmpdir } from 'os';
@@ -34,7 +34,7 @@ describe('renderSlide', () => {
     expect(r.overflowPx).toBe(0);
   }, 90_000);
 
-  it('reports overflow for absurd content, never shrinks', async () => {
+  it('spills overflowing content instead of overflowing the page', async () => {
     const big = makePost('spiral-notes');
     big.slides[0].blocks = Array.from({ length: 40 }, () => ({
       type: 'paragraph' as const,
@@ -42,8 +42,25 @@ describe('renderSlide', () => {
     }));
     const out = path.join(tmpdir(), `iolar-ovf-${Date.now()}.png`);
     const r = await renderSlide(big, 0, out);
-    expect(r.overflowPx).toBeGreaterThan(0);
+    expect(r.overflowPx).toBe(0);
+    expect(r.spillIndexes.length).toBeGreaterThan(0);
   }, 90_000);
+
+  it('renderAll chains spill onto new slides', async () => {
+    const big = makePost('spiral-notes');
+    big.slides[0].blocks = Array.from({ length: 40 }, () => ({
+      type: 'paragraph' as const,
+      text: 'Long line of handwritten content that keeps going. '.repeat(4),
+    }));
+    const dir = path.join(tmpdir(), `iolar-flow-${Date.now()}`);
+    const { results, slides } = await renderAll(big, dir);
+    expect(slides.length).toBeGreaterThan(1);
+    expect(results.length).toBe(slides.length);
+    expect(results.every((r) => r.overflowPx === 0)).toBe(true);
+    expect(slides[1].page_title).toContain('(cont.)');
+    const totalBlocks = slides.reduce((n, s) => n + s.blocks.length, 0);
+    expect(totalBlocks).toBe(40);
+  }, 240_000);
 
   it('is deterministic: same seed => identical bytes', async () => {
     const a = path.join(tmpdir(), `iolar-a-${Date.now()}.png`);

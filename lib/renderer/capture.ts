@@ -25,7 +25,13 @@ export async function closeBrowser() {
   }
 }
 
-export type RenderResult = { overflowPx: number; fillPct: number };
+declare global {
+  interface Window {
+    LAYOUT: { spillIndexes: number[]; usedPx: number; usablePx: number };
+  }
+}
+
+export type RenderResult = { overflowPx: number; fillPct: number; spillIndexes: number[] };
 
 export async function renderSlide(post: Post, slideIndex: number, outPath: string): Promise<RenderResult> {
   const [w, h] = RATIOS[post.ratio];
@@ -48,27 +54,19 @@ export async function renderSlide(post: Post, slideIndex: number, outPath: strin
     });
     try {
       await page.goto('file://' + tmpFile.replace(/\\/g, '/'));
-      await page.waitForSelector('body[data-jitter-done="1"]', { timeout: 15000 });
+      await page.waitForSelector('body[data-layout-done="1"]', { timeout: 20000 });
+      await page.waitForSelector('body[data-jitter-done="1"]', { timeout: 20000 });
       await page.evaluate(() => document.fonts.ready);
 
-      const { overflowPx, fillPct } = await page.evaluate((selector) => {
-        const content = document.querySelector(selector) as HTMLElement | null;
-        const pageEl = document.getElementById('page');
-        if (!content || !pageEl) return { overflowPx: 0, fillPct: 0 };
-        const pad = parseFloat(getComputedStyle(pageEl).paddingBottom);
-        const usable = pageEl.clientHeight - pad;
-        const bottom = content.offsetTop + content.scrollHeight;
-        return {
-          overflowPx: Math.max(0, Math.round(bottom - usable)),
-          fillPct: Math.round((bottom / usable) * 100),
-        };
-      }, manifest.contentSelector);
+      const layout = await page.evaluate(() => window.LAYOUT);
+      const overflowPx = Math.max(0, layout.usedPx - layout.usablePx);
+      const fillPct = Math.round((layout.usedPx / layout.usablePx) * 100);
 
       const shot = await page.screenshot({ type: 'png' });
       await fs.mkdir(path.dirname(outPath), { recursive: true });
       await sharp(shot).resize(w, h, { kernel: 'lanczos3' }).png().toFile(outPath);
 
-      return { overflowPx, fillPct };
+      return { overflowPx, fillPct, spillIndexes: layout.spillIndexes };
     } finally {
       await page.close();
     }
@@ -77,15 +75,36 @@ export async function renderSlide(post: Post, slideIndex: number, outPath: strin
   }
 }
 
+const MAX_AUTOFLOW_PAGES = 30; // guard against a single unsplittable block looping forever
+
 export async function renderAll(
   post: Post,
   outDir: string
-): Promise<{ slide: number; overflowPx: number; fillPct: number; file: string }[]> {
+): Promise<{
+  results: { slide: number; overflowPx: number; fillPct: number; file: string }[];
+  slides: Post['slides'];
+}> {
+  const slides = post.slides.map((s) => ({ ...s, blocks: [...s.blocks] }));
   const results: { slide: number; overflowPx: number; fillPct: number; file: string }[] = [];
-  for (let i = 0; i < post.slides.length; i++) {
+
+  for (let i = 0; i < slides.length && i < MAX_AUTOFLOW_PAGES; i++) {
     const file = path.join(outDir, `slide-${String(i + 1).padStart(2, '0')}.png`);
-    const r = await renderSlide(post, i, file);
+    const working: Post = { ...post, slides };
+    const r = await renderSlide(working, i, file);
+
+    // A page whose every block spilled cannot be split further — keep it and move on.
+    if (r.spillIndexes.length && r.spillIndexes.length < slides[i].blocks.length) {
+      const spilled = new Set(r.spillIndexes);
+      const kept = slides[i].blocks.filter((_, j) => !spilled.has(j));
+      const moved = slides[i].blocks.filter((_, j) => spilled.has(j));
+      const title = slides[i].page_title.replace(/ \(cont\.\)$/, '');
+      slides[i] = { ...slides[i], blocks: kept };
+      slides.splice(i + 1, 0, { page_title: `${title} (cont.)`, blocks: moved });
+      i--; // re-render this page now that it is trimmed
+      continue;
+    }
     results.push({ slide: i + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file });
   }
-  return results;
+
+  return { results, slides };
 }
