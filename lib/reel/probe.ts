@@ -110,6 +110,30 @@ export async function extractFrames(
   return out;
 }
 
+/**
+ * Samples frames at a fixed rate in ONE ffmpeg pass, optionally cropping first.
+ * Per-frame `-ss` seeks cost a process each; this is the difference between
+ * two seconds and two minutes when walking a whole reel.
+ */
+export async function sampleFrames(
+  file: string,
+  outDir: string,
+  opts: { fps: number; width?: number; crop?: { w: number; h: number; x: number; y: number } }
+): Promise<string[]> {
+  await fs.mkdir(outDir, { recursive: true });
+  const chain: string[] = [];
+  if (opts.crop) chain.push(`crop=${opts.crop.w}:${opts.crop.h}:${opts.crop.x}:${opts.crop.y}`);
+  chain.push(`fps=${opts.fps}`);
+  if (opts.width) chain.push(`scale=${opts.width}:-1`);
+
+  const { code, stderr } = await run('ffmpeg', [
+    '-v', 'error', '-y', '-i', file, '-vf', chain.join(','), path.join(outDir, 'f%04d.png'),
+  ]);
+  if (code !== 0) throw new Error(`frame sampling failed: ${stderr.slice(0, 300)}`);
+  const files = (await fs.readdir(outDir)).filter((f) => f.endsWith('.png')).sort();
+  return files.map((f) => path.join(outDir, f));
+}
+
 /** Synthetic clip so tests need no binary fixtures in git. */
 export async function makeTestClip(
   outPath: string,
