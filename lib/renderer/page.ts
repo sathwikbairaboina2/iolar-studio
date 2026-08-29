@@ -51,7 +51,7 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     width,
     height,
     columns,
-    rowGapPx: Math.round(height * 2 * 0.012),
+    rowGapPx: Math.round(height * 2 * 0.006),
   })};</script>`;
 
   return tpl

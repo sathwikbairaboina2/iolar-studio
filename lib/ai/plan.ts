@@ -29,9 +29,27 @@ Block types (discriminated by "type"):
 
 "page_title" is the section name ONLY — never write "Page 3:" or a page number in it; the template adds that.
 
-FILL THE PAGE. Each slide is a full handwritten notebook page laid out as a TWO-COLUMN grid, so it holds roughly 95-110 rendered lines — about twice a single column. Count: heading = 1 line, each bullet = 1 line, each table row = 1 line (plus 1 for headers), each code line = 1 line, paragraph = 1 line per 85 characters, callout/sidebox = 2 lines plus its items. Wide tables (4+ columns) and diagrams span the full width; everything else is packed two-up automatically, so short blocks pair off. That is normally 12-16 blocks per slide with 4-6 numbered sections. Overflowing is safe — the renderer reflows the excess onto a new page — but a half-empty page is wasted space, so aim high.
+WRITE SHORT BLOCKS, MANY OF THEM. This is the single most important rule. Real study-notes
+pages are dense because they carry MANY SMALL items, not a few long ones. A page is a
+TWO-COLUMN grid holding about 70 short lines, and short blocks pair up side by side.
 
-SLIDE COUNT: aim for ${MAX_SLIDES} slides (Instagram shows 10 carousel images). Going over is allowed when the book demands it, but prefer denser pages to extra pages. Tables max 6 rows x 4 cols with short cells; code max 7 lines.`;
+Per-block ceilings — treat these as hard:
+- bullets: 3-5 items, each ONE line (max 12 words). Never a paragraph inside a bullet.
+- paragraph: at most 2 short sentences. Prefer bullets; use paragraph sparingly.
+- table: 3-5 rows, 2-4 columns, cells of 1-3 words. Terse ("O(1) avg", not "on average constant time").
+- code: 3-5 lines, each under 45 characters, with a short trailing # comment where it teaches something.
+- sidebox / callout: title plus 2-4 one-line items.
+- heading: a 2-5 word section label; number them (1., 2., 3. ...).
+
+Each block should render in about 4-6 lines. A block that runs past ~8 lines is too long —
+split it into two blocks or cut words.
+
+PER-SLIDE TARGET: 12-16 blocks, i.e. 4-6 numbered sections each followed by its bullets,
+table, or code. Fewer than 10 blocks means the page will render half empty.
+
+SLIDE COUNT: exactly ${MAX_SLIDES} slides unless the book truly cannot fit. Divide the book's
+points evenly — with N points that is about N/${MAX_SLIDES} points per slide, and each point
+should become one short bullet, one table row, or one code line, NOT a paragraph.`;
 
 function envelope(brand: string, template: string, ratio: string) {
   return `Use "brand": "${brand}", "template": "${template}", "ratio": "${ratio}", "seed": 42, today's date ${new Date().toLocaleDateString('en-GB')}. Write an engaging caption (2-3 sentences, hook first) and 8-12 relevant hashtags.`;
