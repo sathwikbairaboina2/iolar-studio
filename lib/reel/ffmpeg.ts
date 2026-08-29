@@ -31,12 +31,14 @@ export const LOUDNORM = `loudnorm=I=${TARGET_LUFS}:TP=${TARGET_TRUE_PEAK}:LRA=${
 /**
  * Voiceover mastering, applied before the normaliser.
  *
- * A raw TTS track measures quiet but peaks near 0 dBFS, so normalising alone cannot lift
- * it without clipping — measured -15.6 LUFS at -0.17 dBTP, where the reference sits at
- * -14.3. Rolling off rumble and evening the peaks first is what makes the level reachable,
- * and it is what a creator's voice track gets anyway.
+ * A raw TTS track measures quiet but peaks near 0 dBFS — around 25 dB of crest factor —
+ * so no amount of gain reaches -14 LUFS without clipping, and loudnorm gives up on linear
+ * mode and lands short. Rolling off rumble, compressing and limiting first is what makes
+ * the level reachable, and it is what a voice track gets anyway. Measured on this reel:
+ * -15.3 LUFS before, -14.8 after, against the reference's -14.3.
  */
-export const VOICE_CHAIN = 'highpass=f=80,acompressor=threshold=-18dB:ratio=3:attack=5:release=80';
+export const VOICE_CHAIN =
+  'highpass=f=80,acompressor=threshold=-24dB:ratio=4:attack=5:release=120,alimiter=limit=0.9';
 
 export type LoudnessStats = {
   input_i: string;
@@ -113,7 +115,11 @@ export function buildExportArgs(input: ExportInput): string[] {
     const dur = r3(clip.end - clip.start + (needsXfade ? XFADE_SEC : 0));
     // A still has no timeline of its own, so it is looped for exactly as long as the
     // clip needs and read from the start — its srcIn is meaningless.
+    //
+    // Footage shorter than its clip is looped rather than frozen: cloning the last frame
+    // to fill the gap is what put three dead stretches of up to a second into the cut.
     if (isStill) args.push('-loop', '1', '-t', String(dur));
+    else args.push('-stream_loop', '-1');
     args.push('-i', file);
     clipInput.push(inputIndex++);
   });
@@ -147,7 +153,7 @@ export function buildExportArgs(input: ExportInput): string[] {
       `[${clipInput[i]}:v]` +
         // Pad BEFORE the cut, not after: a clip that starts partway into a short source
         // would otherwise trim past the end and yield no frames at all, silently
-        // shortening the reel. Cloning the last frame first guarantees the cut lands.
+        // shortening the reel. Video inputs loop, so this only ever catches a still.
         `tpad=stop_mode=clone:stop_duration=${r3(srcIn + dur + 1)},` +
         `trim=start=${srcIn}:duration=${dur},setpts=PTS-STARTPTS,` +
         `fps=${fps},${fit},${motionFfmpeg(clip.motion, { fps, frames, width, height })},` +
@@ -210,7 +216,11 @@ export function buildExportArgs(input: ExportInput): string[] {
 
   args.push('-filter_complex', filters.join(';'), ...maps);
   args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '19', '-pix_fmt', 'yuv420p', '-r', String(fps));
-  if (voInput >= 0 || musicInput >= 0) args.push('-c:a', 'aac', '-b:a', '192k', '-shortest');
+  if (voInput >= 0 || musicInput >= 0) {
+    // 48kHz stereo is what every platform expects and what the reference ships; a TTS wav
+    // arrives mono at whatever rate the model runs at, and shipping 96kHz mono is wrong.
+    args.push('-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-shortest');
+  }
   args.push('-movflags', '+faststart', '-progress', 'pipe:1', outPath);
   return args;
 }

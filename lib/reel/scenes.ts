@@ -89,6 +89,8 @@ export async function recordScene(opts: SceneOptions): Promise<{ path: string; f
       const t = frameProgress(i, total);
       await page.evaluate((progress) => {
         document.body.dataset.t = String(progress);
+        // --t drives the shared drift, so every scene moves even between its own steps
+        document.documentElement.style.setProperty('--t', String(progress));
         const w = window as unknown as { SCENE?: { frame?: (p: number) => void } };
         w.SCENE?.frame?.(progress);
       }, t);

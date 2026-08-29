@@ -387,3 +387,104 @@ describe('two-pass loudness', () => {
     expect(Math.abs(Number(stats!.input_i) - TARGET_LUFS)).toBeLessThan(1);
   }, 300_000);
 });
+
+describe('delivery format', () => {
+  it('ships 48kHz stereo audio, whatever the voice engine produced', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture();
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(), voPath: 'C:/x/vo.mp3', musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    const joined = args.join(' ');
+    expect(joined).toContain('-ar 48000');
+    expect(joined).toContain('-ac 2');
+  });
+
+  it('limits the voice, because gain alone cannot reach the target', async () => {
+    const { VOICE_CHAIN } = await import('@/lib/reel/ffmpeg');
+    expect(VOICE_CHAIN).toContain('alimiter');
+    expect(VOICE_CHAIN).toContain('acompressor');
+  });
+
+  it('really lands 48kHz stereo after an encode', async () => {
+    if (!ffmpeg) return;
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { makeTestClip, run, ffprobeMedia } = await import('@/lib/reel/probe');
+    const { reelAssetsDir, reelVoFile } = await import('@/lib/paths');
+    const { exportReel } = await import('@/lib/reel/ffmpeg');
+
+    await createReel('fmt', { title: 'Fmt' });
+    await makeTestClip(path.join(reelAssetsDir('fmt'), 'a1.mp4'), {
+      seconds: 3, width: 720, height: 1280, fps: 30, audio: false,
+    });
+    // a mono 24kHz voice track, the way the local engines hand it over
+    await run('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=3',
+      '-ac', '1', '-ar', '24000', reelVoFile('fmt')]);
+
+    const reel = await loadReel('fmt');
+    await saveReel('fmt', {
+      ...reel, fps: 30,
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'user', status: 'ready', brief: '' }],
+      timeline: { ...reel.timeline, clips: [clip('c1', 0, 2)], captions: [], overlays: [] },
+    });
+    const out = await exportReel('fmt');
+    const { stdout } = await run('ffprobe', ['-v', 'error', '-select_streams', 'a',
+      '-show_entries', 'stream=sample_rate,channels', '-of', 'json', out.path]);
+    const a = JSON.parse(stdout).streams[0];
+    expect(a.sample_rate).toBe('48000');
+    expect(a.channels).toBe(2);
+    expect((await ffprobeMedia(out.path)).hasAudio).toBe(true);
+  }, 300_000);
+});
+
+describe('footage shorter than its clip', () => {
+  it('loops video rather than freezing on its last frame', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture();
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(), voPath: null, musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    expect(args.join(' ')).toContain('-stream_loop -1');
+  });
+
+  it('does not loop a still, which is looped by duration instead', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture();
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/frame.png']]),
+      overlayPaths: new Map(), voPath: null, musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    const joined = args.join(' ');
+    expect(joined).toContain('-loop 1');
+    expect(joined).not.toContain('-stream_loop');
+  });
+
+  it('fills a long clip from short footage without a frozen frame', async () => {
+    if (!ffmpeg) return;
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { makeTestClip, run } = await import('@/lib/reel/probe');
+    const { reelAssetsDir } = await import('@/lib/paths');
+    const { exportReel } = await import('@/lib/reel/ffmpeg');
+
+    await createReel('loopy', { title: 'Loopy' });
+    // two seconds of footage asked to cover five
+    await makeTestClip(path.join(reelAssetsDir('loopy'), 'a1.mp4'), {
+      seconds: 2, width: 720, height: 1280, fps: 30, audio: false,
+    });
+    const reel = await loadReel('loopy');
+    await saveReel('loopy', {
+      ...reel, fps: 30,
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'user', status: 'ready', brief: '' }],
+      timeline: { ...reel.timeline, clips: [clip('c1', 0, 5)], captions: [], overlays: [] },
+    });
+    const out = await exportReel('loopy');
+    const { stdout, stderr } = await run('ffmpeg', ['-v', 'info', '-i', out.path,
+      '-vf', 'freezedetect=n=0.003:d=0.8', '-f', 'null', '-']);
+    expect(`${stdout}${stderr}`).not.toContain('freeze_start');
+  }, 300_000);
+});
