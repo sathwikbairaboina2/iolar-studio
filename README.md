@@ -1,6 +1,8 @@
 # iolar studio
 
-Local studio that turns structured JSON into Instagram-ready handwritten-notes carousels (category **paperbook**), with an AI revise chat and optional ComfyUI polish. Four more categories (reels, stories, quote cards, memes) are scaffolded for later build cycles.
+Local studio for Instagram content. Two categories are built: **paperbook**, handwritten-notes
+carousels rendered from structured JSON, and **reel**, scripted vertical video assembled from a
+voiceover and generated shots. Three more (stories, quote cards, memes) are scaffolded.
 
 Spec: `docs/superpowers/specs/2026-08-29-iolar-type1-notes-carousels-design.md`
 Plan: `docs/superpowers/plans/2026-08-29-paperbook-generator.md`
@@ -70,3 +72,69 @@ data/paperbook/<slug>/export/          # final package
 data/settings.json                     # brand, defaults, comfy url/checkpoint
 assets/doodles/                        # ComfyUI-generated sketch assets
 ```
+
+
+## Reels
+
+`data/reel/<slug>/reel.json` is the single source of truth for a reel; six re-runnable stages
+fill it in.
+
+```
+topic / pasted script / reference reel
+  -> PLAN      Claude writes beats (hook/body/close) + a shot brief per beat, in a creator's voice
+  -> VOICE     Higgsfield TTS -> vo.mp3, then whisper word timestamps -> vo.words.json
+  -> SHOTS     per beat: ComfyUI image-to-video by default, Higgsfield for hero shots,
+               your own dropped files override both
+  -> ASSEMBLE  word timings + creator pattern -> clips, karaoke captions, hook overlay (seeded)
+  -> STUDIO    watch and edit it in the browser while shots are still generating
+  -> EXPORT    ffmpeg -> export/reel.mp4 + caption.txt
+```
+
+The **word timings are the timing authority**: captions and cuts both hang off them, so the
+edit lands on the voiceover rather than near it.
+
+### Preview and export cannot drift
+
+The studio plays the timeline in the DOM (instant scrub, no encode) while ffmpeg renders the
+same timeline. They stay identical by construction, not by discipline:
+
+- one stylesheet — `patterns/<name>/caption.css`, linked by the preview and loaded by the
+  export's Playwright pass
+- one motion module — `lib/reel/motion.ts` emits both the CSS transform and the ffmpeg
+  `zoompan` expression from the same spec
+- one timeline resolver — `lib/reel/timeline.ts` answers "what is on screen at t" for both
+- one pixel test — `tests/reel.parity.test.ts` exports a reel and asserts the caption lands on
+  the same pixels the preview paints
+
+### Editing is a pass over finished work
+
+The studio is autonomous first: everything you see was assembled without you. Edits are
+deliberately few — trim, split, reorder, delete, four motion presets, caption text and nudge.
+Anything you touch is marked `locked: true` and survives re-assembly untouched while the rest
+reflows around it.
+
+### Creator patterns
+
+A pattern is `patterns/<name>/`: `pattern.json` (caption geometry, pacing, hook, shot mix) plus
+`caption.css` (the real styling; the JSON only feeds CSS custom properties) and an optional
+`hook.html`.
+
+`POST /api/reel/patterns/clone { mediaUrl }` drafts one from a reference reel: it measures cut
+rhythm with `ffmpeg scdet`, finds the caption band by shape (short, centred, not full-width, so
+a white screenshot behind the text is not mistaken for it), and counts how often that band
+changes to get the beat rate. It writes `patterns/<name>-draft/` with a report separating what
+was measured from what was guessed. Always a draft — read it before you trust it.
+
+### Requirements
+
+| need | note |
+|---|---|
+| ffmpeg + ffprobe | on PATH; the export and every measurement go through them |
+| Playwright chromium | shared with paperbook |
+| whisper | `npm run setup:whisper` (openai-whisper: PyAV, which faster-whisper needs, is blocked by Windows Application Control on this machine). CPU by default; the setup script prints the CUDA install line |
+| Higgsfield | reached through the `claude` CLI's MCP tools — the app borrows a Claude session for TTS and hero shots |
+| ComfyUI | image-to-video via the bundled MiniMax H3 template, `lib/comfy/workflows/i2v.template.json` |
+
+Every one of these degrades rather than crashes: no ComfyUI leaves shots `awaiting-manual` for
+you to drop in, no whisper stops VOICE after the audio is saved, no Higgsfield disables TTS and
+hero shots while your own files still work.

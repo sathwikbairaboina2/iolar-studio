@@ -15,7 +15,7 @@ const STATUS_COLOR: Record<string, string> = {
 
 const CATS = [
   { name: 'Paperbook', icon: <FileTextOutlined />, sub: 'Handwritten notes carousels', href: '/paperbook', active: true },
-  { name: 'Reels', icon: <VideoCameraOutlined />, sub: 'Short video content', active: false },
+  { name: 'Reels', icon: <VideoCameraOutlined />, sub: 'Scripted vertical video', href: '/reel', active: true },
   { name: 'Stories', icon: <ClockCircleOutlined />, sub: '24h vertical frames', active: false },
   { name: 'Quote cards', icon: <MessageOutlined />, sub: 'Single-image quotes', active: false },
   { name: 'Memes', icon: <SmileOutlined />, sub: 'Template-based memes', active: false },
@@ -23,10 +23,12 @@ const CATS = [
 
 export default function Dashboard() {
   const [posts, setPosts] = useState<Meta[]>([]);
+  const [reels, setReels] = useState<{ slug: string; status: string }[]>([]);
   const router = useRouter();
 
   useEffect(() => {
     fetch('/api/paperbook').then((r) => r.json()).then((d) => setPosts(d.posts ?? []));
+    fetch('/api/reel').then((r) => r.json()).then((d) => setReels(d.reels ?? []));
   }, []);
 
   const slides = posts.reduce((n, p) => n + (p.status !== 'draft' ? p.slideCount : 0), 0);
@@ -37,7 +39,7 @@ export default function Dashboard() {
         <Col span={6}><Card><Statistic title="Total posts" value={posts.length} /></Card></Col>
         <Col span={6}><Card><Statistic title="Slides rendered" value={slides} /></Card></Col>
         <Col span={6}><Card><Statistic title="Ready to publish" value={posts.filter((p) => p.status === 'packaged').length} /></Card></Col>
-        <Col span={6}><Card><Statistic title="Drafts" value={posts.filter((p) => p.status === 'draft').length} /></Card></Col>
+        <Col span={6}><Card><Statistic title="Reels" value={reels.length} /></Card></Col>
       </Row>
 
       <Row gutter={16} style={{ marginBottom: 20 }}>
@@ -50,6 +52,7 @@ export default function Dashboard() {
             >
               <div style={{ fontSize: 24, marginBottom: 8 }}>{c.icon}</div>
               <b>{c.name}</b> {c.active ? <Tag color="blue">active</Tag> : <Tag>soon</Tag>}
+              {c.name === 'Reels' && reels.length > 0 && <Tag>{reels.length}</Tag>}
               <div style={{ fontSize: 12, opacity: 0.6 }}>{c.sub}</div>
             </Card>
           </Col>
