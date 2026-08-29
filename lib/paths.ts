@@ -39,3 +39,16 @@ export function partDir(s: string, c: string, part: number) { return path.join(p
 export function postFile(s: string, c: string, part: number) { return path.join(partDir(s, c, part), 'post.json'); }
 export function rendersDir(s: string, c: string, part: number) { return path.join(partDir(s, c, part), 'renders'); }
 export function exportDir(s: string, c: string, part: number) { return path.join(partDir(s, c, part), 'export'); }
+
+/** Reels live in a flat per-slug tree; patterns are repo assets, not user data. */
+export function reelsRoot() { return path.join(dataRoot(), 'reel'); }
+export function reelDir(slug: string) { return path.join(reelsRoot(), slug); }
+export function reelFile(slug: string) { return path.join(reelDir(slug), 'reel.json'); }
+export function reelAssetsDir(slug: string) { return path.join(reelDir(slug), 'assets'); }
+export function reelRefsDir(slug: string) { return path.join(reelDir(slug), 'refs'); }
+export function reelVoFile(slug: string) { return path.join(reelDir(slug), 'vo.mp3'); }
+export function reelWordsFile(slug: string) { return path.join(reelDir(slug), 'vo.words.json'); }
+export function reelRendersDir(slug: string) { return path.join(reelDir(slug), 'renders'); }
+export function reelExportDir(slug: string) { return path.join(reelDir(slug), 'export'); }
+export function patternsRoot() { return path.join(process.cwd(), 'patterns'); }
+export function patternDir(name: string) { return path.join(patternsRoot(), name); }
