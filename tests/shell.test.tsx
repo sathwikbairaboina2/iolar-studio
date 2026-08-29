@@ -3,12 +3,12 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/dashboard',
+  usePathname: () => '/handbooks',
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-// jsdom: fetch for ComfyPill
 beforeEach(() => {
+  global.ResizeObserver = global.ResizeObserver ?? class { observe() {} unobserve() {} disconnect() {} };
   global.fetch = vi.fn().mockResolvedValue({ json: async () => ({ up: false }) }) as unknown as typeof fetch;
   window.matchMedia = window.matchMedia ?? ((q: string) => ({
     matches: false, media: q, addListener: () => {}, removeListener: () => {},
@@ -17,7 +17,7 @@ beforeEach(() => {
 });
 
 describe('AppShell', () => {
-  it('renders menu with paperbook active and reels disabled; theme toggles', async () => {
+  it('renders both sidebar groups, disables the soon categories, defaults to light', async () => {
     const ThemeProvider = (await import('@/components/ThemeProvider')).default;
     const AppShell = (await import('@/components/AppShell')).default;
     render(
@@ -27,12 +27,15 @@ describe('AppShell', () => {
         </AppShell>
       </ThemeProvider>
     );
-    expect(screen.getByText('Paperbook')).toBeTruthy();
-    const reels = screen.getByText('Reels').closest('li');
-    expect(reels?.className).toContain('ant-menu-item-disabled');
 
-    expect(document.documentElement.dataset.theme).toBe('dark');
-    fireEvent.click(screen.getByLabelText('toggle theme'));
+    expect(screen.getByText('Create')).toBeTruthy();
+    expect(screen.getByText('Library')).toBeTruthy();
+    expect(screen.getByText('Handbooks')).toBeTruthy();
+    expect(screen.getByText('Knowledge graph')).toBeTruthy();
+    expect(screen.getByText('Reels').closest('li')?.className).toContain('ant-menu-item-disabled');
+
     expect(document.documentElement.dataset.theme).toBe('light');
+    fireEvent.click(screen.getByLabelText('toggle theme'));
+    expect(document.documentElement.dataset.theme).toBe('dark');
   });
 });
