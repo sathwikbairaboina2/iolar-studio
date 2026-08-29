@@ -3,8 +3,21 @@ const slug = process.argv[2] ?? 'python-data-structures';
 const base = 'http://localhost:3100/api/paperbook/' + slug;
 const MAX_ROUNDS = Number(process.argv[3] ?? 3);
 
+// A dropped connection mid-run used to abort a chapter that was minutes of AI work
+// from finishing, so network-level failures get a few attempts.
+const RETRY = 3;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const json = async (url, init) => {
-  const r = await fetch(url, init);
+  let r;
+  for (let attempt = 1; ; attempt++) {
+    try { r = await fetch(url, init); break; }
+    catch (err) {
+      if (attempt >= RETRY) throw new Error(`${url} failed after ${RETRY} attempts: ${err}`);
+      console.log(`  retry ${attempt}/${RETRY - 1} after ${String(err).slice(0, 60)}`);
+      await sleep(1000 * attempt);
+    }
+  }
   const b = await r.json();
   if (!r.ok) throw new Error(b.error ?? `HTTP ${r.status}`);
   return b;

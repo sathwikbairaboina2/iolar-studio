@@ -13,6 +13,7 @@ import ReferencePanel from '@/components/editor/ReferencePanel';
 import BookPanel from '@/components/editor/BookPanel';
 import ReviewPanel from '@/components/editor/ReviewPanel';
 import VerifyDrawer from '@/components/editor/VerifyDrawer';
+import { fetchWithRetry } from '@/lib/http';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v, label: `Ratio ${v}` }));
 
@@ -77,7 +78,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     setRendering(true);
     if (dirty) await save(post);
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(which !== undefined ? { slide: which } : {}),
@@ -134,7 +135,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     setRendering(true);
     message.info(`Asking AI to fill ${underfilled.length} slide(s) from the book…`);
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode: 'densify', underfilled }),

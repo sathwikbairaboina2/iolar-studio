@@ -5,6 +5,7 @@ import { SendOutlined } from '@ant-design/icons';
 import type { Post } from '@/lib/schema';
 import type { SlideDiff } from '@/lib/ai/diff';
 import DiffCard from './DiffCard';
+import { fetchWithRetry } from '@/lib/http';
 
 type Msg = { role: string; text: string; ts: string };
 type Scope = 'slide' | 'post' | 'caption';
@@ -51,7 +52,7 @@ export default function AiDrawer({
     setDiff([]);
     setHistory((h) => [...h, { role: 'user', text: request, ts: new Date().toISOString() }]);
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/revise`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/revise`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ request, scope, slideIndex: scope === 'slide' ? slideIndex : undefined }),

@@ -5,6 +5,7 @@ import { SafetyCertificateOutlined } from '@ant-design/icons';
 import type { Post } from '@/lib/schema';
 import type { Finding } from '@/lib/verify/gates';
 import type { Review } from '@/lib/verify/review';
+import { fetchWithRetry } from '@/lib/http';
 
 const SEVERITY_COLOR: Record<string, string> = { blocker: 'error', major: 'warning', minor: 'default' };
 
@@ -39,7 +40,7 @@ export default function VerifyDrawer({
     setBusy(mode);
     if (mode === 'full') message.info('Running the full review — facts, visuals, pedagogy and brand. This takes a few minutes.');
     try {
-      const r = await fetch(`${base}/review`, {
+      const r = await fetchWithRetry(`${base}/review`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(mode === 'gates' ? { mode: 'gates' } : {}),
@@ -70,7 +71,7 @@ export default function VerifyDrawer({
         'Apply exactly this fix. Do not remove any other content.',
       ].filter(Boolean).join('\n');
 
-      const r = await fetch(`${base}/revise`, {
+      const r = await fetchWithRetry(`${base}/revise`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ request, scope: f.page ? 'slide' : 'post', slideIndex: f.page ? f.page - 1 : undefined }),

@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Button, Drawer, Input, Space, Switch, Typography, message } from 'antd';
 import { PictureOutlined } from '@ant-design/icons';
+import { fetchWithRetry } from '@/lib/http';
 
 export function parseUrls(text: string): string[] {
   return text
@@ -29,7 +30,7 @@ export default function ReferencePanel({
     setPlanning(true);
     message.info('AI reading references and building the book… (a few minutes)');
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/book`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/book`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'generate', mode: 'references' }),

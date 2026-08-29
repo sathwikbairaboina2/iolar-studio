@@ -1,8 +1,21 @@
 // End-to-end: several chapters inside existing subjects, then verify listings and the graph.
 const BASE = 'http://localhost:3100/api/handbooks';
 
+// A dropped connection mid-run used to abort a chapter that was minutes of AI work
+// from finishing, so network-level failures get a few attempts.
+const RETRY = 3;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const json = async (url, init) => {
-  const r = await fetch(url, init);
+  let r;
+  for (let attempt = 1; ; attempt++) {
+    try { r = await fetch(url, init); break; }
+    catch (err) {
+      if (attempt >= RETRY) throw new Error(`${url} failed after ${RETRY} attempts: ${err}`);
+      console.log(`  retry ${attempt}/${RETRY - 1} after ${String(err).slice(0, 60)}`);
+      await sleep(1000 * attempt);
+    }
+  }
   const b = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`${init?.method ?? 'GET'} ${url} -> ${r.status} ${b.error ?? ''}`);
   return b;
