@@ -276,7 +276,7 @@ describe('loudness', () => {
 
     const { stdout, stderr } = await run('ffmpeg', ['-hide_banner', '-i', out.path,
       '-af', 'loudnorm=print_format=json', '-f', 'null', '-']);
-    const m = /\{[^{}]*input_i[^{}]*\}/s.exec(`${stdout}${stderr}`);
+    const m = /\{[^{}]*input_i[^{}]*\}/.exec(`${stdout}${stderr}`);
     expect(m).not.toBeNull();
     const measured = Number(JSON.parse(m![0]).input_i);
     expect(Math.abs(measured - TARGET_LUFS)).toBeLessThan(2.5);
