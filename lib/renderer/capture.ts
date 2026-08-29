@@ -122,7 +122,9 @@ export async function renderAll(
     const candidate: Post['slides'][number] = {
       page_title: isCont ? `${base} (cont.)` : base,
       blocks: queue.map((q) => q.block),
-      ...(page > 0 ? { cont: true } : {}),
+      // Only a page continuing the SAME chapter is a continuation. Marking every page
+      // after the first would make mergeContinuations collapse the whole post into one.
+      ...(isCont ? { cont: true } : {}),
     };
 
     const file = path.join(outDir, `slide-${String(page + 1).padStart(2, '0')}.png`);

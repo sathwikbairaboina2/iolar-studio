@@ -101,6 +101,16 @@ export async function fitToPages(slug: string): Promise<{ proposal: Post; before
   if (proposal.slides.length !== post.slides.length) {
     throw new Error('fit pass changed the slide count — rejected');
   }
+
+  // The fit pass may only ADD. Counting blocks catches deletions that a keyword check
+  // misses, because dropped material often shares vocabulary with what survives.
+  const blocksBefore = post.slides.reduce((n, s) => n + s.blocks.length, 0);
+  const blocksAfter = proposal.slides.reduce((n, s) => n + s.blocks.length, 0);
+  if (blocksAfter < blocksBefore) {
+    throw new Error(
+      `fit pass removed content (${blocksBefore} blocks -> ${blocksAfter}) — rejected; it may only add`
+    );
+  }
   if (book) {
     // Hard gate: the fit pass may only add. Anything the book covered must still be covered.
     const lostNow = uncoveredPoints(book, proposal);
