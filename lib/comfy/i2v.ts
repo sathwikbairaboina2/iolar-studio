@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
+import { getSettings } from '../settings';
 import { run } from '../reel/probe';
 import { comfyUrl, getStats, uploadImage } from './client';
 
@@ -11,6 +12,7 @@ export type I2vOpts = {
   seed: number;
   ratio?: string;
   megapixels?: number;
+  turbo?: boolean;
 };
 
 /** Slot addresses of the bundled MiniMax H3 image-to-video template. */
@@ -22,6 +24,10 @@ export const I2V_SLOTS = {
   aspect: '115.aspect_ratio',
   megapixels: '115.megapixels',
   filenamePrefix: '92.filename_prefix',
+  // The template ships with its Lightning LoRA switched off, which runs the base model at
+  // 20 steps: measured at ~13 minutes for a 4-second shot on a 4090. The 8-step turbo LoRA
+  // is already installed, and turning it on drops the sampler to 6 steps.
+  turbo: '105/126.value',
 } as const;
 
 const ASPECTS: Record<string, string> = {
@@ -69,6 +75,7 @@ export function slotOverrides(o: {
   ratio: string;
   megapixels: number;
   prefix: string;
+  turbo: boolean;
 }): string[] {
   return [
     `${I2V_SLOTS.image}=${JSON.stringify(o.imageName)}`,
@@ -78,6 +85,7 @@ export function slotOverrides(o: {
     `${I2V_SLOTS.aspect}=${JSON.stringify(ASPECTS[o.ratio] ?? ASPECTS['9:16'])}`,
     `${I2V_SLOTS.megapixels}=${o.megapixels}`,
     `${I2V_SLOTS.filenamePrefix}=${JSON.stringify(o.prefix)}`,
+    `${I2V_SLOTS.turbo}=${o.turbo}`,
   ];
 }
 
@@ -100,6 +108,7 @@ export async function writeParameterisedWorkflow(o: I2vOpts & { prefix: string }
     ratio: o.ratio ?? '9:16',
     megapixels: o.megapixels ?? 0.9,
     prefix: o.prefix,
+    turbo: o.turbo ?? getSettings().i2vTurbo,
   });
   const { code, stderr } = await run('comfy', ['workflow', 'set-slot', dest, ...overrides], {
     timeoutMs: 120_000,

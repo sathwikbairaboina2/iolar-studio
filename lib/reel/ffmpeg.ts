@@ -13,6 +13,17 @@ import { reelDir, reelExportDir, reelRendersDir, reelVoFile } from '../paths';
  *  so a transition never shortens the reel and captions stay where the words are. */
 export const XFADE_SEC = 0.25;
 
+/**
+ * Loudness target for the finished reel.
+ *
+ * Instagram and the rest normalise to about -14 LUFS; the reference reel measures -14.3.
+ * A local TTS track lands quieter and flatter than that, so the export normalises rather
+ * than shipping something the platform will turn up unpredictably.
+ */
+export const TARGET_LUFS = -14;
+export const TARGET_TRUE_PEAK = -1.5;
+export const LOUDNORM = `loudnorm=I=${TARGET_LUFS}:TP=${TARGET_TRUE_PEAK}:LRA=11`;
+
 export type ExportInput = {
   reel: Reel;
   pattern: Pattern;
@@ -121,13 +132,15 @@ export function buildExportArgs(input: ExportInput): string[] {
     filters.push(
       `[${musicInput}:a]volume=${gain}dB[music]`,
       `[music][${voInput}:a]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=250[ducked]`,
-      `[ducked][${voInput}:a]amix=inputs=2:duration=first:dropout_transition=0[aout]`
+      `[ducked][${voInput}:a]amix=inputs=2:duration=first:dropout_transition=0,${LOUDNORM}[aout]`
     );
     maps.push('-map', '[aout]');
   } else if (voInput >= 0) {
-    maps.push('-map', `${voInput}:a`);
+    filters.push(`[${voInput}:a]${LOUDNORM}[aout]`);
+    maps.push('-map', '[aout]');
   } else if (musicInput >= 0) {
-    maps.push('-map', `${musicInput}:a`);
+    filters.push(`[${musicInput}:a]${LOUDNORM}[aout]`);
+    maps.push('-map', '[aout]');
   }
 
   args.push('-filter_complex', filters.join(';'), ...maps);

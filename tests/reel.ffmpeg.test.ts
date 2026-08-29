@@ -222,3 +222,63 @@ describe('real encode', () => {
     expect(readFileSync(capFile, 'utf8')).toContain('#x');
   }, 300_000);
 });
+
+describe('loudness', () => {
+  it('normalises the voiceover to the platform target', async () => {
+    const { buildExportArgs, LOUDNORM } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture();
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(),
+      voPath: 'C:/x/vo.mp3', musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    const graph = args[args.indexOf('-filter_complex') + 1];
+    expect(graph).toContain(LOUDNORM);
+    expect(args).toContain('[aout]');
+  });
+
+  it('normalises the mix, not just a bare voiceover', async () => {
+    const { buildExportArgs, LOUDNORM } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture();
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(),
+      voPath: 'C:/x/vo.mp3', musicPath: 'C:/x/m.mp3', outPath: 'C:/x/out.mp4',
+    });
+    const graph = args[args.indexOf('-filter_complex') + 1];
+    expect(graph).toContain(`amix=inputs=2:duration=first:dropout_transition=0,${LOUDNORM}`);
+  });
+
+  it('really lands near the target after an encode', async () => {
+    if (!ffmpeg) return;
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { makeTestClip, run } = await import('@/lib/reel/probe');
+    const { reelAssetsDir, reelVoFile } = await import('@/lib/paths');
+    const { exportReel, TARGET_LUFS } = await import('@/lib/reel/ffmpeg');
+
+    await createReel('loud', { title: 'Loud' });
+    await makeTestClip(path.join(reelAssetsDir('loud'), 'a1.mp4'), {
+      seconds: 4, width: 720, height: 1280, fps: 30, audio: false,
+    });
+    // a deliberately quiet source, the way a local TTS track arrives
+    await run('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=4',
+      '-af', 'volume=-20dB', reelVoFile('loud')]);
+
+    const reel = await loadReel('loud');
+    await saveReel('loud', {
+      ...reel, fps: 30,
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'user', status: 'ready', brief: '' }],
+      timeline: { ...reel.timeline, clips: [clip('c1', 0, 3)], captions: [], overlays: [] },
+    });
+    const out = await exportReel('loud');
+
+    const { stdout, stderr } = await run('ffmpeg', ['-hide_banner', '-i', out.path,
+      '-af', 'loudnorm=print_format=json', '-f', 'null', '-']);
+    const m = /\{[^{}]*input_i[^{}]*\}/s.exec(`${stdout}${stderr}`);
+    expect(m).not.toBeNull();
+    const measured = Number(JSON.parse(m![0]).input_i);
+    expect(Math.abs(measured - TARGET_LUFS)).toBeLessThan(2.5);
+  }, 300_000);
+});

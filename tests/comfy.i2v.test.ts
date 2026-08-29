@@ -26,7 +26,7 @@ describe('comfy image-to-video', () => {
     const { slotOverrides } = await import('@/lib/comfy/i2v');
     const out = slotOverrides({
       imageName: 'shot.png', brief: 'slow zoom over a chat UI', seconds: 5, seed: 7,
-      ratio: '9:16', megapixels: 0.4, prefix: 'video/reel-7',
+      ratio: '9:16', megapixels: 0.4, prefix: 'video/reel-7', turbo: true,
     });
     const joined = out.join(' ');
     expect(joined).toContain('slow zoom over a chat UI');
@@ -115,7 +115,7 @@ describe('scene prompting', () => {
     const { slotOverrides, scenePrompt } = await import('@/lib/comfy/i2v');
     const out = slotOverrides({
       imageName: 'shot.png', brief: 'chat list UI', seconds: 4, seed: 1,
-      ratio: '9:16', megapixels: 0.9, prefix: 'video/x',
+      ratio: '9:16', megapixels: 0.9, prefix: 'video/x', turbo: true,
     }).join(' ');
     expect(out).toContain('Live footage of: chat list UI.');
     expect(out).toContain(JSON.stringify(scenePrompt('chat list UI')).slice(1, 40));
@@ -129,4 +129,25 @@ describe('scene prompting', () => {
     });
     expect(readFileSync(out, 'utf8')).toContain('0.9');
   }, 120_000);
+});
+
+describe('turbo path', () => {
+  it('turns the Lightning LoRA on, which is what drops the sampler from 20 steps to 6', async () => {
+    const { slotOverrides, I2V_SLOTS } = await import('@/lib/comfy/i2v');
+    const on = slotOverrides({
+      imageName: 'a.png', brief: 'x', seconds: 4, seed: 1,
+      ratio: '9:16', megapixels: 0.9, prefix: 'p', turbo: true,
+    });
+    expect(on).toContain(`${I2V_SLOTS.turbo}=true`);
+    const off = slotOverrides({
+      imageName: 'a.png', brief: 'x', seconds: 4, seed: 1,
+      ratio: '9:16', megapixels: 0.9, prefix: 'p', turbo: false,
+    });
+    expect(off).toContain(`${I2V_SLOTS.turbo}=false`);
+  });
+
+  it('defaults to turbo, because the base path costs ~13 minutes a shot', async () => {
+    const { getSettings } = await import('@/lib/settings');
+    expect(getSettings().i2vTurbo).toBe(true);
+  });
 });
