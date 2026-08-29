@@ -17,15 +17,32 @@ window.applyJitter = function (seed) {
     const nodes = [];
     while (walk.nextNode()) nodes.push(walk.currentNode);
     nodes.forEach((n) => {
+      // Atomic inline-blocks break parent text-decoration; copy it onto each span.
+      const parent = n.parentElement || el;
+      const cs = getComputedStyle(parent);
+      const deco = cs.textDecorationLine !== 'none'
+        ? cs.textDecorationLine + ' ' + cs.textDecorationStyle + ' ' + cs.textDecorationColor + ' ' + cs.textDecorationThickness
+        : '';
       const frag = document.createDocumentFragment();
-      for (const ch of n.textContent) {
-        if (ch === ' ') { frag.append(' '); continue; }
-        const s = document.createElement('span');
-        s.textContent = ch;
-        s.style.display = 'inline-block';
-        s.style.transform =
-          'rotate(' + ((r() * 2 - 1) * 1.6).toFixed(2) + 'deg) translateY(' + ((r() * 2 - 1) * 0.8).toFixed(2) + 'px)';
-        frag.append(s);
+      for (const part of n.textContent.split(/(\s+)/)) {
+        if (!part) continue;
+        if (/^\s+$/.test(part)) { frag.append(part); continue; }
+        // One nowrap span per word so lines break only at spaces.
+        const word = document.createElement('span');
+        word.style.whiteSpace = 'nowrap';
+        for (const ch of part) {
+          const s = document.createElement('span');
+          s.textContent = ch;
+          s.style.display = 'inline-block';
+          if (deco) {
+            s.style.textDecoration = deco;
+            s.style.textUnderlineOffset = cs.textUnderlineOffset;
+          }
+          s.style.transform =
+            'rotate(' + ((r() * 2 - 1) * 1.6).toFixed(2) + 'deg) translateY(' + ((r() * 2 - 1) * 0.8).toFixed(2) + 'px)';
+          word.append(s);
+        }
+        frag.append(word);
       }
       n.replaceWith(frag);
     });
