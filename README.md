@@ -22,8 +22,11 @@ Requirements:
 ## Pipeline
 
 ```
-topic / raw notes
-  -> PLAN     Claude writes data/paperbook/<slug>/post.json (chat or in-app AI drawer)
+topic  OR  reference image URLs
+  -> PLAN     Claude writes data/paperbook/<slug>/post.json
+              (New post modal: "AI from topic" | "AI from reference images" | blank;
+               reference mode downloads the images to <slug>/refs/, reads them with
+               vision, and writes FRESH original slides on the same topic/arc)
   -> RENDER   post.json + templates/<name> -> renders/slide-NN.png   (deterministic, seeded)
   -> POLISH   optional ComfyUI img2img (denoise ~0.12), jobs visible in Desktop app
   -> PACKAGE  export/01.png..NN.png + caption.txt
