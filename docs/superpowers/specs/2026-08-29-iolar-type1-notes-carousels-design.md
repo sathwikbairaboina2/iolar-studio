@@ -8,7 +8,9 @@
 
 Generate Instagram carousel posts (single or multi image) that look like premium handwritten tech notes — the style of the two analyzed reference posts (handwritten notebook pages: headings, tables, code snippets, diagrams, callout boxes, multi-color ink). Content must be **100% accurate and editable** — no diffusion-generated text. Brand: **iolar**.
 
-This is category 1 of 5. Categories 2-5 (reels, stories, quote cards, memes) get placeholder pages now, own build cycles later.
+This is category 1 of 5, named **paperbook**. Categories 2-5 (reels, stories, quote cards, memes) get placeholder pages now, own build cycles later.
+
+Hard limit: **max 10 slides per post** (Instagram carousel cap the reference posts use). Enforced in schema validation, editor UI (add-slide disabled at 10), and AI pagination (Claude instructed to fit content within 10 slides; refuses/splits into a second post suggestion if content cannot fit).
 
 ## 2. Architecture
 
@@ -39,9 +41,9 @@ iolar-studio/
   templates/                # one dir per page template (HTML/CSS + manifest)
   assets/doodles/           # ComfyUI-generated reusable sketch assets
   data/
-    posts/<slug>/post.json  # single source of truth per post
-    posts/<slug>/renders/   # slide-NN.png + polished/
-    posts/<slug>/export/    # final package
+    paperbook/<slug>/post.json  # single source of truth per post
+    paperbook/<slug>/renders/   # slide-NN.png + polished/
+    paperbook/<slug>/export/    # final package
   docs/superpowers/specs/
 ```
 
@@ -50,11 +52,11 @@ iolar-studio/
 Dark glass aesthetic, violet/blue gradient accents, glow highlights. **Light theme variant** included; toggle in topbar; implemented via antd theme tokens (two token sets, `ConfigProvider`), default **dark**.
 
 Screens:
-1. **Dashboard** — stat row, 5 category cards (Posts active; Reels/Stories/Quote cards/Memes "soon"), recent posts table, ComfyUI status pill (live: up/down, GPU, VRAM via `/system_stats`)
-2. **Posts list** — table: slug, title, template, slides, status (draft/rendered/polished/packaged), actions
+1. **Dashboard** — stat row, 5 category cards (Paperbook active; Reels/Stories/Quote cards/Memes "soon"), recent posts table, ComfyUI status pill (live: up/down, GPU, VRAM via `/system_stats`)
+2. **Paperbook list** — table: slug, title, template, slides, status (draft/rendered/polished/packaged), actions
 3. **Post editor** (core) —
    - toolbar: template picker (all 8), ratio picker, save state, Render slide / Render all / Polish / Package
-   - slide chips 1..N + add
+   - slide chips 1..N + add (disabled at 10 — max slides cap)
    - left: block editor (antd forms; add/remove/reorder/duplicate blocks; per-type editors incl. mini table grid and code area)
    - right: sticky live preview of selected slide, re-render on save (~2s), full-size view, contact sheet (all slides grid)
    - **AI chat drawer** (see §6)
@@ -163,4 +165,5 @@ App shows ComfyUI liveness/VRAM in UI; degrades gracefully when ComfyUI down (re
 | Ratio | 3:4 default; 4:5, 1:1 optional |
 | UI direction | Midnight Studio (dark) + light variant, antd tokens |
 | ComfyUI visibility | all jobs through Desktop instance on 8188 |
-| Categories | posts now; reels, stories, quote cards, memes scaffolded |
+| Categories | paperbook now; reels, stories, quote cards, memes scaffolded |
+| Max slides | 10 per post (schema + UI + AI pagination enforced) |
