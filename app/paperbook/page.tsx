@@ -78,7 +78,8 @@ export default function PaperbookList() {
         });
       }
       setOpen(false);
-      router.push(`/paperbook/${slug}`);
+      // Land straight in review so the first thing you see is the finished pages.
+      router.push(`/paperbook/${slug}${mode === 'blank' ? '' : '?review=1'}`);
     } catch (err) {
       message.error(String(err));
     } finally {

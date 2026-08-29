@@ -2,7 +2,7 @@
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Col, Row, Select, Space, Tag, Typography, message } from 'antd';
 import {
-  PictureOutlined, ThunderboltOutlined, StarOutlined, ExportOutlined,
+  PictureOutlined, ThunderboltOutlined, StarOutlined, ExportOutlined, CheckCircleOutlined,
 } from '@ant-design/icons';
 import { MAX_SLIDES, type Post, type Slide } from '@/lib/schema';
 import SlideChips from '@/components/editor/SlideChips';
@@ -11,6 +11,7 @@ import PreviewPane from '@/components/editor/PreviewPane';
 import AiDrawer from '@/components/editor/AiDrawer';
 import ReferencePanel from '@/components/editor/ReferencePanel';
 import BookPanel from '@/components/editor/BookPanel';
+import ReviewPanel from '@/components/editor/ReviewPanel';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v, label: `Ratio ${v}` }));
 
@@ -28,11 +29,21 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrefill, setAiPrefill] = useState('');
   const [refUrls, setRefUrls] = useState<string[]>([]);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const openReviewOnLoad = useRef(
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('review') === '1'
+  );
   const [compareRefs, setCompareRefs] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    fetch(`/api/paperbook/${slug}`).then((r) => r.json()).then(setPost);
+    fetch(`/api/paperbook/${slug}`).then((r) => r.json()).then((p) => {
+      setPost(p);
+      if (openReviewOnLoad.current) {
+        openReviewOnLoad.current = false;
+        setReviewOpen(true);
+      }
+    });
     fetch('/api/paperbook').then((r) => r.json()).then((d) => setTemplates(d.templates ?? []));
     fetch('/api/comfy/status').then((r) => r.json()).then((s) => setComfyUp(!!s.up));
   }, [slug]);
@@ -181,7 +192,8 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
           onUrlsChange={setRefUrls}
           onPlanned={reloadAndRender}
         />
-        <Button type="primary" icon={<ExportOutlined />} onClick={doPackage}>Package</Button>
+        <Button icon={<ExportOutlined />} onClick={doPackage}>Package</Button>
+        <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => setReviewOpen(true)}>Review &amp; accept</Button>
       </Space>
 
       <SlideChips
@@ -226,6 +238,16 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
           />
         </Col>
       </Row>
+
+      <ReviewPanel
+        slug={slug}
+        post={post}
+        version={version}
+        fill={fill}
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        onApplied={async (p) => { setPost(p); await render(); }}
+      />
 
       <AiDrawer
         slug={slug}
