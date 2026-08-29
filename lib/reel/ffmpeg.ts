@@ -22,7 +22,62 @@ export const XFADE_SEC = 0.25;
  */
 export const TARGET_LUFS = -14;
 export const TARGET_TRUE_PEAK = -1.5;
-export const LOUDNORM = `loudnorm=I=${TARGET_LUFS}:TP=${TARGET_TRUE_PEAK}:LRA=11`;
+/** LRA is the range the normaliser will tolerate before it gives up on linear mode and
+ *  starts compressing. Speech runs wider than the 11 LU default, and a compressed
+ *  voiceover is exactly the flatness we are trying not to add. */
+export const TARGET_LRA = 20;
+export const LOUDNORM = `loudnorm=I=${TARGET_LUFS}:TP=${TARGET_TRUE_PEAK}:LRA=${TARGET_LRA}`;
+
+/**
+ * Voiceover mastering, applied before the normaliser.
+ *
+ * A raw TTS track measures quiet but peaks near 0 dBFS, so normalising alone cannot lift
+ * it without clipping — measured -15.6 LUFS at -0.17 dBTP, where the reference sits at
+ * -14.3. Rolling off rumble and evening the peaks first is what makes the level reachable,
+ * and it is what a creator's voice track gets anyway.
+ */
+export const VOICE_CHAIN = 'highpass=f=80,acompressor=threshold=-18dB:ratio=3:attack=5:release=80';
+
+export type LoudnessStats = {
+  input_i: string;
+  input_tp: string;
+  input_lra: string;
+  input_thresh: string;
+  target_offset: string;
+};
+
+export function parseLoudness(output: string): LoudnessStats | null {
+  const m = /\{[^{}]*"input_i"[^{}]*\}/.exec(output);
+  if (!m) return null;
+  try {
+    return JSON.parse(m[0]) as LoudnessStats;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * loudnorm in one pass only estimates, and on a flat TTS track it lands about a decibel
+ * short — measured -15.3 against a -14 target. Feeding it the measurements from a first
+ * pass turns it into the linear normaliser it is meant to be.
+ */
+export function loudnormFilter(stats: LoudnessStats | null): string {
+  if (!stats) return LOUDNORM;
+  return (
+    `${LOUDNORM}:measured_I=${stats.input_i}:measured_TP=${stats.input_tp}` +
+    `:measured_LRA=${stats.input_lra}:measured_thresh=${stats.input_thresh}` +
+    `:offset=${stats.target_offset}:linear=true:print_format=summary`
+  );
+}
+
+/** First pass: what the voiceover actually measures. */
+export async function measureLoudness(file: string, pre = ''): Promise<LoudnessStats | null> {
+  const chain = pre ? `${pre},loudnorm=print_format=json` : 'loudnorm=print_format=json';
+  const { stdout, stderr } = await run('ffmpeg', [
+    '-hide_banner', '-i', file, '-af', chain, '-f', 'null', '-',
+  ]);
+  return parseLoudness(`${stdout}${stderr}`);
+}
 
 export type ExportInput = {
   reel: Reel;
@@ -32,12 +87,14 @@ export type ExportInput = {
   voPath: string | null;
   musicPath: string | null;
   outPath: string;
+  loudness?: LoudnessStats | null;
 };
 
 const r3 = (n: number) => Math.round(n * 1e3) / 1e3;
 
 export function buildExportArgs(input: ExportInput): string[] {
   const { reel, pattern, assetPaths, overlayPaths, voPath, musicPath, outPath } = input;
+  const loudnorm = loudnormFilter(input.loudness ?? null);
   const timeline = sortTimeline(reel.timeline);
   const [width, height] = REEL_RATIOS[reel.ratio];
   const fps = reel.fps;
@@ -138,15 +195,16 @@ export function buildExportArgs(input: ExportInput): string[] {
     const gain = reel.timeline.music.gainDb;
     filters.push(
       `[${musicInput}:a]volume=${gain}dB[music]`,
-      `[music][${voInput}:a]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=250[ducked]`,
+      `[${voInput}:a]${VOICE_CHAIN}[vo]`,
+      `[music][vo]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=250[ducked]`,
       `[ducked][${voInput}:a]amix=inputs=2:duration=first:dropout_transition=0,${LOUDNORM}[aout]`
     );
     maps.push('-map', '[aout]');
   } else if (voInput >= 0) {
-    filters.push(`[${voInput}:a]${LOUDNORM}[aout]`);
+    filters.push(`[${voInput}:a]${VOICE_CHAIN},${loudnorm}[aout]`);
     maps.push('-map', '[aout]');
   } else if (musicInput >= 0) {
-    filters.push(`[${musicInput}:a]${LOUDNORM}[aout]`);
+    filters.push(`[${musicInput}:a]${loudnorm}[aout]`);
     maps.push('-map', '[aout]');
   }
 
@@ -194,7 +252,9 @@ export async function exportReel(
   const outPath = path.join(outDir, 'reel.mp4');
 
   const total = timelineDuration(reel.timeline);
-  const args = buildExportArgs({ reel, pattern, assetPaths, overlayPaths, voPath, musicPath, outPath });
+  // Measure before encoding so the normaliser runs linear instead of guessing.
+  const loudness = voPath && !musicPath ? await measureLoudness(voPath, VOICE_CHAIN) : null;
+  const args = buildExportArgs({ reel, pattern, assetPaths, overlayPaths, voPath, musicPath, outPath, loudness });
 
   const { code, stderr } = await run('ffmpeg', args, {
     onStdout: (chunk) => {

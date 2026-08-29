@@ -99,10 +99,18 @@ const SCREEN_MOTIONS: Clip['motion']['type'][] = ['pan-up', 'pan-down'];
 const FOOTAGE_MOTIONS: Clip['motion']['type'][] = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right'];
 export const SCREEN_MOTION_GAIN = 2.2;
 
+/**
+ * A long beat is split across several clips of the same footage. Left alone those pieces
+ * look like one unbroken shot, so each piece is framed on a different part of the picture:
+ * the join then reads as a cut to somewhere else rather than a seam nobody notices.
+ */
+const PIECE_ORIGINS = [0.32, 0.68, 0.5, 0.8];
+
 function pickMotion(
   rand: () => number,
   pattern: Pattern,
   isScreen: boolean,
+  piece: number,
   prev?: Clip['motion']
 ): Clip['motion'] {
   const kinds = isScreen ? SCREEN_MOTIONS : FOOTAGE_MOTIONS;
@@ -110,10 +118,11 @@ function pickMotion(
   const type = choices[Math.floor(rand() * choices.length)] ?? kinds[0];
   const jitter = (rand() - 0.5) * 0.12;
   const gain = isScreen ? SCREEN_MOTION_GAIN : 1;
+  const originY = piece === 0 ? 0.45 + jitter : PIECE_ORIGINS[(piece - 1) % PIECE_ORIGINS.length];
   return {
     type,
     strength: Math.round(pattern.motion.strength * gain * (0.8 + rand() * 0.4) * 1e5) / 1e5,
-    origin: [0.5, Math.round((0.45 + jitter) * 1e5) / 1e5],
+    origin: [0.5, Math.round(originY * 1e5) / 1e5],
   };
 }
 
@@ -152,7 +161,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     const each = total / pieces;
     const isScreen = beat.shot.kind === 'screen';
     for (let p = 0; p < pieces; p++) {
-      const motion = pickMotion(rand, pattern, isScreen, prevMotion);
+      const motion = pickMotion(rand, pattern, isScreen, p, prevMotion);
       prevMotion = motion;
       clips.push({
         id: `c${clips.length + 1}`,

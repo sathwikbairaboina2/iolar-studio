@@ -343,3 +343,47 @@ describe('clips that start partway into their source', () => {
     expect((await ffprobeMedia(out.path)).durationSec).toBeCloseTo(4, 0);
   }, 300_000);
 });
+
+describe('two-pass loudness', () => {
+  it('reads the measurement out of ffmpeg json', async () => {
+    const { parseLoudness } = await import('@/lib/reel/ffmpeg');
+    const out = 'noise\n{"input_i":"-19.4","input_tp":"-3.1","input_lra":"2.0","input_thresh":"-29.6","target_offset":"0.2"}\n';
+    expect(parseLoudness(out)?.input_i).toBe('-19.4');
+    expect(parseLoudness('nothing here')).toBeNull();
+  });
+
+  it('runs linear when it has measurements, and falls back when it does not', async () => {
+    const { loudnormFilter, LOUDNORM } = await import('@/lib/reel/ffmpeg');
+    const f = loudnormFilter({
+      input_i: '-19.4', input_tp: '-3.1', input_lra: '2.0', input_thresh: '-29.6', target_offset: '0.2',
+    });
+    expect(f).toContain('measured_I=-19.4');
+    expect(f).toContain('linear=true');
+    expect(loudnormFilter(null)).toBe(LOUDNORM);
+  });
+
+  it('lands within half a decibel of target on a quiet flat source', async () => {
+    if (!ffmpeg) return;
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { makeTestClip, run } = await import('@/lib/reel/probe');
+    const { reelAssetsDir, reelVoFile } = await import('@/lib/paths');
+    const { exportReel, measureLoudness, TARGET_LUFS } = await import('@/lib/reel/ffmpeg');
+
+    await createReel('loud2', { title: 'Loud2' });
+    await makeTestClip(path.join(reelAssetsDir('loud2'), 'a1.mp4'), {
+      seconds: 4, width: 720, height: 1280, fps: 30, audio: false,
+    });
+    await run('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=4',
+      '-af', 'volume=-22dB', reelVoFile('loud2')]);
+
+    const reel = await loadReel('loud2');
+    await saveReel('loud2', {
+      ...reel, fps: 30,
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'user', status: 'ready', brief: '' }],
+      timeline: { ...reel.timeline, clips: [clip('c1', 0, 3)], captions: [], overlays: [] },
+    });
+    const out = await exportReel('loud2');
+    const stats = await measureLoudness(out.path);
+    expect(Math.abs(Number(stats!.input_i) - TARGET_LUFS)).toBeLessThan(1);
+  }, 300_000);
+});

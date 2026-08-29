@@ -279,3 +279,22 @@ describe('screen beats scroll, footage beats drift', () => {
     }
   });
 });
+
+describe('a split beat reads as a cut', () => {
+  it('frames each piece of a split beat differently', async () => {
+    const { assemble } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const long = Array.from({ length: 30 }, (_, i) => ({ w: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.35 }));
+    const reel = validateReel({
+      pattern: 'test', title: 'Long', seed: 5,
+      beats: [{ id: 'b1', role: 'body', text: long.map((w) => w.w).join(' '), shot: { kind: 'screen', brief: '', assetId: 'a1' } }],
+      vo: { words: long, durationSec: 12 },
+      assets: [{ id: 'a1', kind: 'image', path: 'assets/a1.png', origin: 'user', status: 'ready' }],
+    });
+    const tl = assemble({ reel, pattern: PATTERN });
+    expect(tl.clips.length).toBeGreaterThanOrEqual(2);
+    const origins = tl.clips.map((c) => c.motion.origin[1]);
+    // consecutive pieces of one beat must not sit on the same part of the picture
+    for (let i = 1; i < origins.length; i++) expect(origins[i]).not.toBe(origins[i - 1]);
+  });
+});

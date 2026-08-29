@@ -46,6 +46,25 @@ export function beatsPrompt(pattern: Pattern, mode: PlanMode, source: string): s
   return [task, voice, pacing, mix, SHAPE].join('\n\n');
 }
 
+/** Whitespace-insensitive comparison; everything else must match exactly. */
+export function normaliseScript(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Paste mode promises the script comes back word for word — that is the whole reason to
+ * paste one rather than describe it. Nothing enforced that, and a re-split duplicated a
+ * clause across two beats without failing anything.
+ */
+export function wordingDrift(script: string, beats: Beat[]): string | null {
+  const want = normaliseScript(script);
+  const got = normaliseScript(beats.map((b) => b.text).join(' '));
+  if (want === got) return null;
+  let i = 0;
+  while (i < want.length && i < got.length && want[i] === got[i]) i += 1;
+  return `the beats stop matching the script around "${got.slice(Math.max(0, i - 40), i + 40)}"`;
+}
+
 export function parseBeats(raw: string): PlanOut {
   const data = extractJson(raw) as Partial<PlanOut>;
   const beats = (data.beats ?? []).map((b, i) => ({
@@ -76,6 +95,13 @@ async function applyPlan(slug: string, out: PlanOut): Promise<Reel> {
   return next;
 }
 
+function checked(mode: PlanMode, source: string, out: PlanOut): PlanOut {
+  if (mode !== 'paste') return out;
+  const drift = wordingDrift(source, out.beats);
+  if (drift) throw new Error(`the script must come back word for word, but ${drift}`);
+  return out;
+}
+
 async function generate(slug: string, mode: PlanMode, source: string): Promise<Reel> {
   if (!source.trim()) throw new Error(`plan mode "${mode}" needs a source`);
   const reel = await loadReel(slug);
@@ -83,13 +109,13 @@ async function generate(slug: string, mode: PlanMode, source: string): Promise<R
   const prompt = beatsPrompt(pattern, mode, source);
   const first = await runClaude(prompt, { timeoutMs: 900_000 });
   try {
-    return await applyPlan(slug, parseBeats(first));
+    return await applyPlan(slug, checked(mode, source, parseBeats(first)));
   } catch (err) {
     const retry = await runClaude(
       `${prompt}\n\nYour previous output failed validation: ${String(err).slice(0, 400)}. Return corrected JSON only.`,
       { timeoutMs: 900_000 }
     );
-    return applyPlan(slug, parseBeats(retry));
+    return applyPlan(slug, checked(mode, source, parseBeats(retry)));
   }
 }
 

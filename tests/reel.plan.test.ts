@@ -94,8 +94,9 @@ describe('reel plan', () => {
   it('tells Claude the pattern pacing so beats land near the shot length', async () => {
     const { beatsPrompt } = await import('@/lib/ai/reel/plan');
     const { loadPattern } = await import('@/lib/reel/patterns');
-    const prompt = beatsPrompt(await loadPattern('armand'), 'topic', 'anything');
-    expect(prompt).toContain('3-6 seconds');
+    const p = await loadPattern('armand');
+    const prompt = beatsPrompt(p, 'topic', 'anything');
+    expect(prompt).toContain(`${p.pacing.shotSec[0]}-${p.pacing.shotSec[1]} seconds`);
     expect(prompt).toContain('hook');
     expect(prompt).toContain('Armand Segall');
   });
@@ -117,5 +118,58 @@ describe('reel plan', () => {
       { params: Promise.resolve({ slug: 'grok' }) }
     );
     expect(res.status).toBe(503);
+  });
+});
+
+describe('paste mode keeps the script word for word', () => {
+  // an earlier test mocks this module wholesale; these need the real thing
+  beforeEach(() => {
+    vi.doUnmock('@/lib/ai/reel/plan');
+    vi.resetModules();
+  });
+
+  it('accepts a faithful split and names where an unfaithful one diverges', async () => {
+    const { wordingDrift } = await import('@/lib/ai/reel/plan');
+    const script = 'One two three. Four five six.';
+    const faithful = [
+      { id: 'b1', role: 'hook' as const, text: 'One two three.', shot: { kind: 'broll' as const, brief: '', hero: false } },
+      { id: 'b2', role: 'close' as const, text: 'Four five six.', shot: { kind: 'broll' as const, brief: '', hero: false } },
+    ];
+    expect(wordingDrift(script, faithful)).toBeNull();
+
+    // the real failure: a clause repeated across two beats
+    const duplicated = [
+      faithful[0],
+      { ...faithful[1], text: 'three. Four five six.' },
+    ];
+    expect(wordingDrift(script, duplicated)).toMatch(/stop matching/);
+  });
+
+  it('ignores whitespace differences', async () => {
+    const { wordingDrift, normaliseScript } = await import('@/lib/ai/reel/plan');
+    expect(normaliseScript('  a   b \n c ')).toBe('a b c');
+    expect(
+      wordingDrift('a b\nc', [
+        { id: 'b1', role: 'hook', text: 'a b', shot: { kind: 'broll', brief: '', hero: false } },
+        { id: 'b2', role: 'close', text: 'c', shot: { kind: 'broll', brief: '', hero: false } },
+      ])
+    ).toBeNull();
+  });
+
+  it('retries when the model drops or repeats words, and fails loudly if it keeps doing it', async () => {
+    const bad = JSON.stringify({
+      title: 'T', caption: { text: '', hashtags: [] },
+      beats: [
+        { id: 'b1', role: 'hook', text: 'One two', shot: { kind: 'broll', brief: 'x' } },
+        { id: 'b2', role: 'close', text: 'two three.', shot: { kind: 'broll', brief: 'y' } },
+      ],
+    });
+    const runClaude = vi.fn().mockResolvedValue(bad);
+    vi.doMock('@/lib/ai/claude', () => ({ runClaude, ClaudeUnavailableError: class extends Error {} }));
+    const { createReel } = await import('@/lib/reel/store');
+    await createReel('paste2');
+    const { planFromScript } = await import('@/lib/ai/reel/plan');
+    await expect(planFromScript('paste2', 'One two three.')).rejects.toThrow(/word for word/);
+    expect(runClaude).toHaveBeenCalledTimes(2);
   });
 });
