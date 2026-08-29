@@ -10,6 +10,7 @@ import BlockEditor from '@/components/editor/BlockEditor';
 import PreviewPane from '@/components/editor/PreviewPane';
 import AiDrawer from '@/components/editor/AiDrawer';
 import ReferencePanel from '@/components/editor/ReferencePanel';
+import BookPanel from '@/components/editor/BookPanel';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v, label: `Ratio ${v}` }));
 
@@ -22,6 +23,7 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
   const [version, setVersion] = useState(Date.now());
   const [rendering, setRendering] = useState(false);
   const [overflow, setOverflow] = useState<Record<number, number>>({});
+  const [fill, setFill] = useState<Record<number, number>>({});
   const [comfyUp, setComfyUp] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrefill, setAiPrefill] = useState('');
@@ -65,12 +67,49 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
       const body = await r.json();
       if (!r.ok) throw new Error(body.error);
       const ovf: Record<number, number> = { ...overflow };
-      for (const res of body.results) ovf[res.slide] = res.overflowPx;
+      const fl: Record<number, number> = { ...fill };
+      for (const res of body.results) {
+        ovf[res.slide] = res.overflowPx;
+        fl[res.slide] = res.fillPct;
+      }
       setOverflow(ovf);
+      setFill(fl);
       setVersion(Date.now());
       const bad = body.results.filter((x: { overflowPx: number }) => x.overflowPx > 0);
       if (bad.length) message.warning(`${bad.length} slide(s) overflow`);
       else message.success('Rendered');
+    } catch (err) {
+      message.error(String(err));
+    } finally {
+      setRendering(false);
+    }
+  };
+
+  const reloadAndRender = async () => {
+    const p = await fetch(`/api/paperbook/${slug}`).then((r) => r.json());
+    setPost(p);
+    setSlide(0);
+    await render();
+  };
+
+  const densify = async () => {
+    const underfilled = Object.entries(fill)
+      .filter(([, pct]) => pct < 80)
+      .map(([slide, pct]) => ({ slide: Number(slide), fillPct: pct }));
+    if (!underfilled.length) return message.info('Every slide is already well filled');
+    setRendering(true);
+    message.info(`Asking AI to fill ${underfilled.length} slide(s) from the book…`);
+    try {
+      const r = await fetch(`/api/paperbook/${slug}/plan`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'densify', underfilled }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'densify failed');
+      await save(d.proposal);
+      setPost(d.proposal);
+      await render();
     } catch (err) {
       message.error(String(err));
     } finally {
@@ -115,17 +154,13 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
         <Button icon={<PictureOutlined />} onClick={() => render(slide + 1)} loading={rendering}>Render slide</Button>
         <Button icon={<ThunderboltOutlined />} onClick={() => render()} loading={rendering}>Render all</Button>
         <Button icon={<StarOutlined />} disabled={!comfyUp} onClick={doPolish} title={comfyUp ? '' : 'ComfyUI offline'}>Polish</Button>
+        <BookPanel slug={slug} onSlidesPlanned={reloadAndRender} />
         <ReferencePanel
           slug={slug}
           compare={compareRefs}
           onCompareChange={setCompareRefs}
           onUrlsChange={setRefUrls}
-          onPlanned={async () => {
-            const p = await fetch(`/api/paperbook/${slug}`).then((r) => r.json());
-            setPost(p);
-            setSlide(0);
-            await render();
-          }}
+          onPlanned={reloadAndRender}
         />
         <Button type="primary" icon={<ExportOutlined />} onClick={doPackage}>Package</Button>
       </Space>
@@ -160,6 +195,8 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
             slideCount={post.slides.length}
             version={version}
             overflowPx={currentOverflow}
+            fillPct={fill[slide + 1] ?? null}
+            onDensify={densify}
             rendering={rendering}
             referenceUrl={compareRefs ? refUrls[slide] : undefined}
             onRerender={() => render(slide + 1)}

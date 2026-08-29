@@ -4,15 +4,17 @@ import { Alert, Button, Modal, Space, Typography } from 'antd';
 import { ReloadOutlined, ExpandOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 export default function PreviewPane({
-  slug, slide, slideCount, version, overflowPx, onRerender, onAiFix, rendering, referenceUrl,
+  slug, slide, slideCount, version, overflowPx, fillPct, onRerender, onAiFix, onDensify, rendering, referenceUrl,
 }: {
   slug: string;
   slide: number;
   slideCount: number;
   version: number;
   overflowPx: number | null;
+  fillPct?: number | null;
   onRerender: () => void;
   onAiFix: () => void;
+  onDensify?: () => void;
   rendering: boolean;
   referenceUrl?: string;
 }) {
@@ -24,8 +26,25 @@ export default function PreviewPane({
     <div style={{ position: 'sticky', top: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
         <Typography.Text strong>Preview — slide {slide}/{slideCount}</Typography.Text>
-        {rendering && <Typography.Text type="secondary">rendering…</Typography.Text>}
+        <span>
+          {fillPct != null && (
+            <Typography.Text type={fillPct >= 80 ? 'success' : 'warning'} style={{ fontSize: 12, marginRight: 8 }}>
+              {fillPct}% full
+            </Typography.Text>
+          )}
+          {rendering && <Typography.Text type="secondary">rendering…</Typography.Text>}
+        </span>
       </div>
+
+      {fillPct != null && fillPct < 80 && overflowPx === 0 && onDensify && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={`Page only ${fillPct}% used — wasted space`}
+          action={<Button size="small" onClick={onDensify}>Fill pages with AI</Button>}
+        />
+      )}
 
       {overflowPx !== null && overflowPx > 0 && (
         <Alert

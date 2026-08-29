@@ -46,11 +46,28 @@ export default function PaperbookList() {
         });
       }
       if (mode !== 'blank') {
-        message.info(mode === 'topic' ? 'AI planning slides…' : 'AI analyzing references and planning slides… (can take a few minutes)');
+        message.info(
+          mode === 'topic'
+            ? 'AI building the book (topic outline)…'
+            : 'AI reading references and building the book… (a few minutes)'
+        );
+        const b = await fetch(`/api/paperbook/${slug}/book`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(
+            mode === 'topic'
+              ? { action: 'generate', mode: 'topic', topic }
+              : { action: 'generate', mode: 'references', urls: refUrls }
+          ),
+        });
+        const bd = await b.json();
+        if (!b.ok) throw new Error(bd.error ?? 'book failed');
+        message.info(`Book: ${bd.book.chapters.length} chapters — writing slides that cover every point…`);
+
         const p = await fetch(`/api/paperbook/${slug}/plan`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(mode === 'topic' ? { mode: 'topic', topic } : { mode: 'references', urls: refUrls }),
+          body: JSON.stringify({}),
         });
         if (!p.ok) throw new Error((await p.json()).error ?? 'plan failed');
         message.info('Rendering slides…');

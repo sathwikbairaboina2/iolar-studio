@@ -26,15 +26,16 @@ export default function ReferencePanel({
 
   const analyze = async () => {
     setPlanning(true);
-    message.info('AI analyzing references and generating fresh slides… (can take a few minutes)');
+    message.info('AI reading references and building the book… (a few minutes)');
     try {
-      const r = await fetch(`/api/paperbook/${slug}/plan`, {
+      const r = await fetch(`/api/paperbook/${slug}/book`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ mode: 'references' }),
+        body: JSON.stringify({ action: 'generate', mode: 'references' }),
       });
-      if (!r.ok) throw new Error((await r.json()).error ?? 'plan failed');
-      message.success('Slides generated — rendering');
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? 'book failed');
+      message.success(`Book built: ${d.book.chapters.length} chapters — open Book to review, then generate slides`);
       setOpen(false);
       await onPlanned();
     } catch (err) {
@@ -99,7 +100,7 @@ export default function ReferencePanel({
             disabled={!urls.length}
             style={{ background: 'linear-gradient(135deg,#7c5cff,#3ec5ff)', color: '#fff', border: 'none' }}
           >
-            ✦ Analyze &amp; generate slides
+            ✦ Analyze &amp; build book
           </Button>
           <span>
             Compare beside preview <Switch checked={compare} onChange={onCompareChange} size="small" />
