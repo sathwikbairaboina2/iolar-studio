@@ -17,12 +17,12 @@ describe('PostSchema', () => {
     (bad.slides[0].blocks[0] as { type: string }).type = 'nope';
     expect(() => validatePost(bad)).toThrow();
   });
-  it('rejects more than MAX_SLIDES slides', () => {
-    const bad = structuredClone(minimal);
-    bad.slides = Array.from({ length: MAX_SLIDES + 1 }, (_, i) => ({
+  it('accepts more than MAX_SLIDES slides (the cap is advisory)', () => {
+    const many = structuredClone(minimal);
+    many.slides = Array.from({ length: MAX_SLIDES + 2 }, (_, i) => ({
       page_title: `P${i}`, blocks: [{ type: 'heading', text: 'x' }],
     }));
-    expect(() => validatePost(bad)).toThrow(/10/);
+    expect(validatePost(many).slides.length).toBe(MAX_SLIDES + 2);
   });
   it('rejects bad ratio', () => {
     expect(() => validatePost({ ...minimal, ratio: '9:16' })).toThrow();

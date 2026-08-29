@@ -4,7 +4,7 @@ import { Button, Col, Row, Select, Space, Tag, Typography, message } from 'antd'
 import {
   PictureOutlined, ThunderboltOutlined, StarOutlined, ExportOutlined,
 } from '@ant-design/icons';
-import type { Post, Slide } from '@/lib/schema';
+import { MAX_SLIDES, type Post, type Slide } from '@/lib/schema';
 import SlideChips from '@/components/editor/SlideChips';
 import BlockEditor from '@/components/editor/BlockEditor';
 import PreviewPane from '@/components/editor/PreviewPane';
@@ -75,9 +75,25 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
       setOverflow(ovf);
       setFill(fl);
       setVersion(Date.now());
-      const bad = body.results.filter((x: { overflowPx: number }) => x.overflowPx > 0);
-      if (bad.length) message.warning(`${bad.length} slide(s) overflow`);
-      else message.success('Rendered');
+      if (body.split) {
+        const fresh = await fetch(`/api/paperbook/${slug}`).then((r) => r.json());
+        setPost(fresh);
+        message.info(`Content reflowed onto ${body.slides} pages`);
+
+        const h = await fetch(`/api/paperbook/${slug}/plan`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: 'headings' }),
+        });
+        if (h.ok) {
+          const { proposal } = await h.json();
+          setPost(proposal);
+          await save(proposal);
+          message.success('Page titles updated for the new pages');
+        }
+      } else {
+        message.success('Rendered');
+      }
     } catch (err) {
       message.error(String(err));
     } finally {
@@ -151,6 +167,9 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
           style={{ width: 130 }}
         />
         <Tag color={dirty ? 'orange' : 'green'}>{dirty ? 'unsaved' : 'saved'}</Tag>
+        {post.slides.length > MAX_SLIDES && (
+          <Tag color="warning">{post.slides.length} slides — over Instagram&apos;s {MAX_SLIDES}</Tag>
+        )}
         <Button icon={<PictureOutlined />} onClick={() => render(slide + 1)} loading={rendering}>Render slide</Button>
         <Button icon={<ThunderboltOutlined />} onClick={() => render()} loading={rendering}>Render all</Button>
         <Button icon={<StarOutlined />} disabled={!comfyUp} onClick={doPolish} title={comfyUp ? '' : 'ComfyUI offline'}>Polish</Button>

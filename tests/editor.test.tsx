@@ -13,10 +13,10 @@ beforeEach(() => {
 });
 
 describe('SlideChips', () => {
-  it('disables add at 10 slides', async () => {
+  it('still allows adding past 10 slides (the cap is advisory)', async () => {
     const SlideChips = (await import('@/components/editor/SlideChips')).default;
     render(<SlideChips count={10} selected={0} onSelect={() => {}} onAdd={() => {}} onDelete={() => {}} />);
-    expect((screen.getByLabelText('add slide') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText('add slide') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('allows add below 10', async () => {

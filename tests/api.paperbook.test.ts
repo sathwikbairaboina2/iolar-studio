@@ -40,7 +40,7 @@ describe('paperbook api', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects put with 11 slides', async () => {
+  it('accepts a put with 11 slides and reports the count', async () => {
     const list = await import('@/app/api/paperbook/route');
     const item = await import('@/app/api/paperbook/[slug]/route');
     const created = await (await list.POST(req('POST', { slug: 'cap' }))).json();
@@ -48,7 +48,8 @@ describe('paperbook api', () => {
       page_title: `P${i}`, blocks: [{ type: 'heading', text: 'x' }],
     }));
     const res = await item.PUT(req('PUT', created), params('cap'));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect((await res.json()).slides.length).toBe(11);
   });
 
   it('render endpoint writes png and reports overflow', async () => {

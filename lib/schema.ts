@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+/** Instagram shows 10 carousel images. Advisory: the UI warns past this, nothing rejects it. */
 export const MAX_SLIDES = 10;
 
 export const RATIOS: Record<string, [number, number]> = {
@@ -36,8 +37,7 @@ export const PostSchema = z.object({
   date: z.string(),
   slides: z
     .array(z.object({ page_title: z.string(), blocks: z.array(BlockSchema).min(1) }))
-    .min(1)
-    .max(MAX_SLIDES, `max ${MAX_SLIDES} slides`),
+    .min(1),
   caption: z.object({ text: z.string(), hashtags: z.array(z.string()) }).default({ text: '', hashtags: [] }),
 });
 

@@ -32,8 +32,14 @@ export default function SlideChips({
           </Button>
         </Dropdown>
       ))}
-      <Tooltip title={count >= MAX_SLIDES ? `max ${MAX_SLIDES} slides` : 'add slide'}>
-        <Button onClick={onAdd} disabled={count >= MAX_SLIDES} aria-label="add slide" style={{ borderStyle: 'dashed' }}>
+      <Tooltip
+        title={
+          count >= MAX_SLIDES
+            ? `${count} slides — over Instagram's ${MAX_SLIDES}-image limit`
+            : 'add slide'
+        }
+      >
+        <Button onClick={onAdd} aria-label="add slide" style={{ borderStyle: 'dashed' }}>
           +
         </Button>
       </Tooltip>

@@ -11,6 +11,11 @@ export async function POST(req: Request, ctx: Ctx) {
   try {
     const body = await req.json().catch(() => ({}));
 
+    if (body.mode === 'headings') {
+      const { fixHeadings } = await import('@/lib/ai/headings');
+      return NextResponse.json({ proposal: await fixHeadings(slug) });
+    }
+
     if (body.mode === 'densify') {
       if (!Array.isArray(body.underfilled) || !body.underfilled.length) {
         return NextResponse.json({ error: 'underfilled slides required' }, { status: 400 });

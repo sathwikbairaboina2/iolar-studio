@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import path from 'path';
 import { promises as fs } from 'fs';
-import { loadPost, postDir } from '@/lib/store';
+import { loadPost, postDir, savePost } from '@/lib/store';
 import { renderSlide, renderAll } from '@/lib/renderer/capture';
 
 type Ctx = { params: Promise<{ slug: string }> };
@@ -35,6 +35,7 @@ export async function POST(req: Request, ctx: Ctx) {
     const outDir = path.join(postDir(slug), 'renders');
 
     let results;
+    let split = false;
     if (typeof body.slide === 'number') {
       const i = body.slide - 1;
       if (i < 0 || i >= post.slides.length) {
@@ -44,10 +45,15 @@ export async function POST(req: Request, ctx: Ctx) {
       const r = await renderSlide(post, i, file);
       results = [{ slide: body.slide, overflowPx: r.overflowPx, fillPct: r.fillPct, file }];
     } else {
-      results = await renderAll(post, outDir);
+      const out = await renderAll(post, outDir);
+      results = out.results;
+      if (out.slides.length !== post.slides.length) {
+        await savePost(slug, { ...post, slides: out.slides });
+        split = true;
+      }
     }
     await writeReport(slug, results);
-    return NextResponse.json({ results });
+    return NextResponse.json({ results, slides: results.length, split });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
