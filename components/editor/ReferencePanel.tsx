@@ -94,7 +94,7 @@ export default function ReferencePanel({
           style={{ fontFamily: 'monospace', fontSize: 12, marginBottom: 8 }}
         />
         <Space style={{ marginBottom: 16 }} wrap>
-          <Button type="primary" onClick={save}>Save</Button>
+          <Button onClick={save}>Save</Button>
           <Button
             onClick={analyze}
             loading={planning}

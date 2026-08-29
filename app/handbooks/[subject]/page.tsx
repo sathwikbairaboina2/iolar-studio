@@ -97,7 +97,7 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
                 ))}
               </Space>
               <Tag color={STATUS_COLOR[c.status] ?? 'default'}>{c.status}</Tag>
-              <Button type="primary" size="small">open</Button>
+              <Button size="small">open</Button>
             </div>
           </Card>
         ))

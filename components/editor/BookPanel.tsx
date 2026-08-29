@@ -103,7 +103,7 @@ export default function BookPanel({
       <Drawer title="Handbook — topic coverage" open={open} onClose={() => setOpen(false)} width={520}>
         {!book && (
           <Empty description="No book yet — build one from the reference images">
-            <Button type="primary" loading={busy === 'generate'} onClick={generate}>
+            <Button loading={busy === 'generate'} onClick={generate}>
               ✦ Build book from references
             </Button>
           </Empty>
