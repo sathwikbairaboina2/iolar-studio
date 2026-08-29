@@ -49,9 +49,11 @@ describe('fitToPages guard', () => {
       return { ...actual, renderSlide: vi.fn().mockResolvedValue({ overflowPx: 0, fillPct: 40, spillIndexes: [], neededPct: 40 }) };
     });
 
-    const { createPost } = await import('@/lib/store');
-    await createPost('fit-demo', base());
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'fit-demo');
+    await savePost('python', 'fit-demo', 1, base());
     const { fitToPages } = await import('@/lib/ai/fit');
-    await expect(fitToPages('fit-demo')).rejects.toThrow(/removed content/);
+    await expect(fitToPages('python', 'fit-demo', 1)).rejects.toThrow(/removed content/);
   });
 });

@@ -1,6 +1,7 @@
 import path from 'path';
 import { Post, validatePost } from '../schema';
-import { loadPost, postDir } from '../store';
+import { loadPost } from '../store';
+import { partDir } from '../paths';
 import { renderSlide, mergeContinuations } from '../renderer/capture';
 import { Book, loadBook } from './book';
 import { runClaude } from './claude';
@@ -57,7 +58,7 @@ export function uncoveredPoints(book: Book, post: Post): string[] {
 /** How much of one page each authored slide needs. Over 100% spills onto the next page. */
 export async function measureSlides(post: Post): Promise<SlideFit[]> {
   const out: SlideFit[] = [];
-  const dir = path.join(postDir('.measure'), 'tmp');
+  const dir = path.join(partDir('.measure', 'tmp', 1));
   for (let i = 0; i < post.slides.length; i++) {
     const r = await renderSlide(post, i, path.join(dir, `m-${i}.png`));
     out.push({ slide: i + 1, neededPct: r.neededPct });
@@ -71,12 +72,14 @@ export async function measureSlides(post: Post): Promise<SlideFit[]> {
  * the renderer spills them onto the next page, and content that runs past the carousel
  * belongs in a follow-up post, not in the bin.
  */
-export async function fitToPages(slug: string): Promise<{ proposal: Post; before: SlideFit[] }> {
-  const post = { ...(await loadPost(slug)) };
+export async function fitToPages(
+  subject: string, chapter: string, part: number
+): Promise<{ proposal: Post; before: SlideFit[] }> {
+  const post = { ...(await loadPost(subject, chapter, part)) };
   post.slides = mergeContinuations(post.slides);
 
   const before = await measureSlides(post);
-  const book = await loadBook(slug);
+  const book = await loadBook(subject, chapter);
   const under = before.filter((m) => m.neededPct < 92);
   if (!under.length) return { proposal: post, before };
 

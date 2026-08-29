@@ -8,8 +8,8 @@ import { extractJson } from './revise';
  * This rewrites the affected titles so the sequence reads like a designed handbook.
  * Returns a proposal; saving is the caller's decision.
  */
-export async function fixHeadings(slug: string): Promise<Post> {
-  const post = await loadPost(slug);
+export async function fixHeadings(subject: string, chapter: string, part: number): Promise<Post> {
+  const post = await loadPost(subject, chapter, part);
   const titles = post.slides.map((s, i) => `${i + 1}. ${s.page_title}`).join('\n');
   const prompt = [
     'A handwritten-notes carousel was reflowed, so some pages were split and carry "(cont.)" placeholder titles.',

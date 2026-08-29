@@ -1,15 +1,18 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { loadPost, postDir } from './store';
+import { loadPost } from './store';
+import { rendersDir, exportDir } from './paths';
 
-export async function packagePost(slug: string): Promise<{ dir: string; files: string[] }> {
-  const post = await loadPost(slug);
-  const rendersDir = path.join(postDir(slug), 'renders');
-  const polishedDir = path.join(rendersDir, 'polished');
+export async function packagePost(
+  subject: string, chapter: string, part: number
+): Promise<{ dir: string; files: string[] }> {
+  const post = await loadPost(subject, chapter, part);
+  const rDir = rendersDir(subject, chapter, part);
+  const polishedDir = path.join(rDir, 'polished');
 
   let files: string[] = [];
   try {
-    files = (await fs.readdir(rendersDir)).filter((f) => /^slide-\d+\.png$/.test(f)).sort();
+    files = (await fs.readdir(rDir)).filter((f) => /^slide-\d+\.png$/.test(f)).sort();
   } catch {
     throw new Error('render first');
   }
@@ -20,7 +23,7 @@ export async function packagePost(slug: string): Promise<{ dir: string; files: s
 
   // Refuse packaging when the last render reported overflow.
   try {
-    const report = JSON.parse(await fs.readFile(path.join(rendersDir, 'render-report.json'), 'utf8'));
+    const report = JSON.parse(await fs.readFile(path.join(rDir, 'render-report.json'), 'utf8'));
     const bad = Object.entries(report as Record<string, { overflowPx: number }>)
       .filter(([, v]) => v.overflowPx > 0)
       .map(([k]) => k);
@@ -31,22 +34,22 @@ export async function packagePost(slug: string): Promise<{ dir: string; files: s
   }
 
   const usePolished = await fs.readdir(polishedDir).then((p) => p.length >= files.length).catch(() => false);
-  const srcDir = usePolished ? polishedDir : rendersDir;
+  const srcDir = usePolished ? polishedDir : rDir;
 
-  const exportDir = path.join(postDir(slug), 'export');
-  await fs.rm(exportDir, { recursive: true, force: true });
-  await fs.mkdir(exportDir, { recursive: true });
+  const outDir = exportDir(subject, chapter, part);
+  await fs.rm(outDir, { recursive: true, force: true });
+  await fs.mkdir(outDir, { recursive: true });
 
   const out: string[] = [];
   for (let i = 0; i < files.length; i++) {
     const dest = `${String(i + 1).padStart(2, '0')}.png`;
-    await fs.copyFile(path.join(srcDir, files[i]), path.join(exportDir, dest));
+    await fs.copyFile(path.join(srcDir, files[i]), path.join(outDir, dest));
     out.push(dest);
   }
 
   const caption = `${post.caption.text}\n\n${post.caption.hashtags.join(' ')}\n`;
-  await fs.writeFile(path.join(exportDir, 'caption.txt'), caption);
+  await fs.writeFile(path.join(outDir, 'caption.txt'), caption);
   out.push('caption.txt');
 
-  return { dir: exportDir, files: out };
+  return { dir: outDir, files: out };
 }

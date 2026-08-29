@@ -28,13 +28,15 @@ describe('fixHeadings', () => {
       ClaudeUnavailableError: class extends Error {},
     }));
 
-    const { createPost, loadPost } = await import('@/lib/store');
-    await createPost('head', base());
+    const { createSubject, createChapter, savePost, loadPost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'head');
+    await savePost('python', 'head', 1, base());
     const { fixHeadings } = await import('@/lib/ai/headings');
-    const out = await fixHeadings('head');
+    const out = await fixHeadings('python', 'head', 1);
 
     expect(out.slides[1].page_title).toBe('Lists — Methods');
-    expect((await loadPost('head')).slides[1].page_title).toBe('Lists (cont.)');
+    expect((await loadPost('python', 'head', 1)).slides[1].page_title).toBe('Lists (cont.)');
   });
 
   it('rejects a proposal that changes the slide count', async () => {
@@ -45,9 +47,11 @@ describe('fixHeadings', () => {
       ClaudeUnavailableError: class extends Error {},
     }));
 
-    const { createPost } = await import('@/lib/store');
-    await createPost('head2', base());
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'head2');
+    await savePost('python', 'head2', 1, base());
     const { fixHeadings } = await import('@/lib/ai/headings');
-    await expect(fixHeadings('head2')).rejects.toThrow(/slide count/);
+    await expect(fixHeadings('python', 'head2', 1)).rejects.toThrow(/slide count/);
   });
 });

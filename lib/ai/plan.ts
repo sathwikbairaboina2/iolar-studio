@@ -2,7 +2,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { Post, validatePost, MAX_SLIDES } from '../schema';
 import { getSettings } from '../settings';
-import { postDir, savePost, loadPost } from '../store';
+import { savePost, loadPost } from '../store';
+import { refsDir } from '../paths';
 import { runClaude } from './claude';
 import { extractJson } from './revise';
 import { Book, bookFromReferences, bookFromTopic, loadBook } from './book';
@@ -68,8 +69,8 @@ async function generate(prompt: string, allowedTools?: string[]): Promise<Post> 
   }
 }
 
-export async function downloadReferences(slug: string, urls: string[]): Promise<string[]> {
-  const dir = path.join(postDir(slug), 'refs');
+export async function downloadReferences(subject: string, chapter: string, urls: string[]): Promise<string[]> {
+  const dir = refsDir(subject, chapter);
   await fs.mkdir(dir, { recursive: true });
   const files: string[] = [];
   for (let i = 0; i < urls.length; i++) {
@@ -84,20 +85,22 @@ export async function downloadReferences(slug: string, urls: string[]): Promise<
 }
 
 /** Step 1 of the pipeline: build the book (syllabus) from references or a topic. */
-export async function planBook(slug: string, mode: 'topic' | 'references', input: string | string[]): Promise<Book> {
+export async function planBook(
+  subject: string, chapter: string, mode: 'topic' | 'references', input: string | string[]
+): Promise<Book> {
   if (mode === 'references') {
-    const files = await downloadReferences(slug, input as string[]);
-    return bookFromReferences(slug, files);
+    const files = await downloadReferences(subject, chapter, input as string[]);
+    return bookFromReferences(subject, chapter, files);
   }
-  return bookFromTopic(slug, input as string);
+  return bookFromTopic(subject, chapter, input as string);
 }
 
 /** Step 2: turn the approved book into slides — every point must be covered somewhere. */
-export async function planSlidesFromBook(slug: string): Promise<Post> {
-  const book = await loadBook(slug);
+export async function planSlidesFromBook(subject: string, chapter: string, part: number): Promise<Post> {
+  const book = await loadBook(subject, chapter);
   if (!book) throw new Error('no book yet — generate the book first');
   const s = getSettings();
-  const existing = await loadPost(slug).catch(() => null);
+  const existing = await loadPost(subject, chapter, part).catch(() => null);
 
   const totalPoints = book.chapters.reduce((n, c) => n + c.points.length, 0);
   const hasLayout = book.chapters.some((c) => c.layout?.length);
@@ -106,7 +109,7 @@ export async function planSlidesFromBook(slug: string): Promise<Post> {
   let covered: string[] = [];
   try {
     const { coveredElsewhere } = await import('../graph');
-    covered = coveredElsewhere(slug);
+    covered = coveredElsewhere(subject, chapter);
   } catch { /* graph optional */ }
 
   const prompt = [
@@ -125,17 +128,17 @@ export async function planSlidesFromBook(slug: string): Promise<Post> {
   ].filter(Boolean).join('\n\n');
 
   const post = await generate(prompt);
-  await savePost(slug, post);
+  await savePost(subject, chapter, part, post);
   return post;
 }
 
 /** Ask the AI to grow under-filled slides using the book, without touching the ones that fit. */
 export async function densifySlides(
-  slug: string,
+  subject: string, chapter: string, part: number,
   underfilled: { slide: number; fillPct: number }[]
 ): Promise<Post> {
-  const post = await loadPost(slug);
-  const book = await loadBook(slug);
+  const post = await loadPost(subject, chapter, part);
+  const book = await loadBook(subject, chapter);
   const list = underfilled.map((u) => `slide ${u.slide} (only ${u.fillPct}% full)`).join(', ');
   const prompt = [
     'You are tightening a handwritten-notes carousel so every page looks fully used.',
