@@ -8,12 +8,10 @@ for (const s of await listSubjects()) {
     const book = await loadBook(s.slug, c.slug);
     if (!book) continue;
     const parts = await listParts(s.slug, c.slug);
-    let merged: Post | null = null;
-    for (const p of parts) {
-      const post = await loadPost(s.slug, c.slug, p);
-      merged = merged === null ? post : { ...merged, slides: [...merged.slides, ...post.slides] };
-    }
-    if (!merged) continue;
+    const posts: Post[] = [];
+    for (const p of parts) posts.push(await loadPost(s.slug, c.slug, p));
+    if (!posts.length) continue;
+    const merged: Post = { ...posts[0], slides: posts.flatMap((x) => x.slides) };
     const total = book.chapters.reduce((n, x) => n + x.points.length, 0);
     const missing = uncoveredPoints(book, merged);
     const pct = Math.round((1 - missing.length / total) * 100);
