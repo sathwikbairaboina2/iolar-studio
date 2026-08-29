@@ -1,0 +1,121 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
+
+beforeEach(() => {
+  vi.resetModules();
+  process.env.IOLAR_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'reel-plan-'));
+});
+
+const BEATS = JSON.stringify({
+  title: 'xAI drops Grok Bot',
+  beats: [
+    { id: 'b1', role: 'hook', text: 'xAI just dropped Grok Bot.', shot: { kind: 'title', brief: 'Elon on stage', hero: true } },
+    { id: 'b2', role: 'body', text: 'It is an agent with its own computer.', shot: { kind: 'screen', brief: 'chat list UI' } },
+    { id: 'b3', role: 'close', text: 'Beta today for Heavy subscribers.', shot: { kind: 'talking-head', brief: 'creator to camera' } },
+  ],
+  caption: { text: 'Grok Bot is here.', hashtags: ['#ai', '#xai'] },
+});
+
+describe('reel plan', () => {
+  it('writes beats from a topic into the reel', async () => {
+    vi.doMock('@/lib/ai/claude', () => ({
+      runClaude: vi.fn().mockResolvedValue(BEATS),
+      ClaudeUnavailableError: class extends Error {},
+    }));
+    const { createReel } = await import('@/lib/reel/store');
+    await createReel('grok');
+    const { planFromTopic } = await import('@/lib/ai/reel/plan');
+    const reel = await planFromTopic('grok', 'xAI released Grok Bot today');
+    expect(reel.beats).toHaveLength(3);
+    expect(reel.beats[0].role).toBe('hook');
+    expect(reel.beats[0].shot.hero).toBe(true);
+    expect(reel.title).toBe('xAI drops Grok Bot');
+    expect(reel.caption.hashtags).toContain('#ai');
+  });
+
+  it('persists the plan so a reload sees it', async () => {
+    vi.doMock('@/lib/ai/claude', () => ({
+      runClaude: vi.fn().mockResolvedValue(BEATS),
+      ClaudeUnavailableError: class extends Error {},
+    }));
+    const { createReel, loadReel } = await import('@/lib/reel/store');
+    await createReel('grok');
+    const { planFromTopic } = await import('@/lib/ai/reel/plan');
+    await planFromTopic('grok', 'anything');
+    expect((await loadReel('grok')).beats).toHaveLength(3);
+  });
+
+  it('keeps pasted wording verbatim across the beats', async () => {
+    const script = 'One. Two. Three.';
+    const runClaude = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        title: 'T',
+        caption: { text: '', hashtags: [] },
+        beats: [
+          { id: 'b1', role: 'hook', text: 'One.', shot: { kind: 'broll', brief: 'x' } },
+          { id: 'b2', role: 'body', text: 'Two.', shot: { kind: 'screen', brief: 'y' } },
+          { id: 'b3', role: 'close', text: 'Three.', shot: { kind: 'talking-head', brief: 'z' } },
+        ],
+      })
+    );
+    vi.doMock('@/lib/ai/claude', () => ({ runClaude, ClaudeUnavailableError: class extends Error {} }));
+    const { createReel } = await import('@/lib/reel/store');
+    await createReel('paste');
+    const { planFromScript } = await import('@/lib/ai/reel/plan');
+    const reel = await planFromScript('paste', script);
+    expect(reel.beats.map((b) => b.text).join(' ')).toBe(script);
+    expect(runClaude.mock.calls[0][0]).toContain('Do not rewrite');
+  });
+
+  it('retries once with the validation error when the first reply is unusable', async () => {
+    const runClaude = vi
+      .fn()
+      .mockResolvedValueOnce('{"title":"x","beats":[]}')
+      .mockResolvedValueOnce(BEATS);
+    vi.doMock('@/lib/ai/claude', () => ({ runClaude, ClaudeUnavailableError: class extends Error {} }));
+    const { createReel } = await import('@/lib/reel/store');
+    await createReel('grok');
+    const { planFromTopic } = await import('@/lib/ai/reel/plan');
+    const reel = await planFromTopic('grok', 'topic');
+    expect(reel.beats).toHaveLength(3);
+    expect(runClaude).toHaveBeenCalledTimes(2);
+    expect(runClaude.mock.calls[1][0]).toContain('failed validation');
+  });
+
+  it('gives every beat a shot brief and a unique id', async () => {
+    const { parseBeats } = await import('@/lib/ai/reel/plan');
+    const out = parseBeats(BEATS);
+    expect(new Set(out.beats.map((b) => b.id)).size).toBe(3);
+    for (const b of out.beats) expect(b.shot.brief.length).toBeGreaterThan(0);
+  });
+
+  it('tells Claude the pattern pacing so beats land near the shot length', async () => {
+    const { beatsPrompt } = await import('@/lib/ai/reel/plan');
+    const { loadPattern } = await import('@/lib/reel/patterns');
+    const prompt = beatsPrompt(await loadPattern('armand'), 'topic', 'anything');
+    expect(prompt).toContain('3-6 seconds');
+    expect(prompt).toContain('hook');
+    expect(prompt).toContain('Armand Segall');
+  });
+
+  it('rejects a reply with no beats', async () => {
+    const { parseBeats } = await import('@/lib/ai/reel/plan');
+    expect(() => parseBeats('{"title":"x","beats":[]}')).toThrow(/beat/i);
+  });
+
+  it('returns 503 from the route when the claude CLI is missing', async () => {
+    vi.doMock('@/lib/ai/reel/plan', () => ({
+      planFromTopic: vi.fn().mockRejectedValue(new Error('Claude CLI not found. Install Claude Code.')),
+      planFromScript: vi.fn(),
+      planFromReference: vi.fn(),
+    }));
+    const { POST } = await import('@/app/api/reel/[slug]/plan/route');
+    const res = await POST(
+      new Request('http://x', { method: 'POST', body: JSON.stringify({ mode: 'topic', topic: 'x' }) }),
+      { params: Promise.resolve({ slug: 'grok' }) }
+    );
+    expect(res.status).toBe(503);
+  });
+});
