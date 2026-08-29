@@ -1,6 +1,6 @@
-# iolar studio
+# instastudio
 
-Local studio that turns structured JSON into Instagram-ready handwritten-notes carousels (category **paperbook**), with an AI revise chat and optional ComfyUI polish. Four more categories (reels, stories, quote cards, memes) are scaffolded for later build cycles.
+Local studio that turns structured JSON into Instagram-ready handwritten-notes carousels (category **handbooks**), with an AI revise chat and optional ComfyUI polish. Four more categories (reels, stories, quote cards, memes) are scaffolded for later build cycles.
 
 Spec: `docs/superpowers/specs/2026-08-29-iolar-type1-notes-carousels-design.md`
 Plan: `docs/superpowers/plans/2026-08-29-paperbook-generator.md`
@@ -64,9 +64,20 @@ node scripts/approve-goldens.mjs   # regenerate
 ## Data layout
 
 ```
-data/paperbook/<slug>/post.json        # single source of truth (editable by hand, UI, or AI)
-data/paperbook/<slug>/renders/         # slide-NN.png + render-report.json (+ polished/)
-data/paperbook/<slug>/export/          # final package
-data/settings.json                     # brand, defaults, comfy url/checkpoint
-assets/doodles/                        # ComfyUI-generated sketch assets
+data/handbooks/<subject>/subject.json                     # name, emoji, description
+data/handbooks/<subject>/<chapter>/chapter.json           # title
+data/handbooks/<subject>/<chapter>/book.json              # the syllabus, owned by the chapter
+data/handbooks/<subject>/<chapter>/references.json        # reference URLs, owned by the chapter
+data/handbooks/<subject>/<chapter>/refs/ref-NN.jpg        # downloaded reference pages
+data/handbooks/<subject>/<chapter>/parts/<NN>/post.json   # one carousel, <=10 pages
+data/handbooks/<subject>/<chapter>/parts/<NN>/renders/    # slide-NN.png + render-report.json
+data/handbooks/<subject>/<chapter>/parts/<NN>/export/     # final package
+data/settings.json                                        # brand, defaults, comfy url/checkpoint
+assets/doodles/                                           # ComfyUI-generated sketch assets
 ```
+
+Content is organised **Subject → Chapter → Part**. A chapter owns one book and one reference
+list; its parts are the successive carousels that publish that book. When a part renders past
+the 10-image limit the surplus becomes the next part of the same chapter — content is never
+trimmed to fit. `npx tsx scripts/migrate.mts` moves a legacy `data/paperbook/` tree into this
+layout, and `npx tsx scripts/reindex.mts` rebuilds the SQLite index and knowledge graph.

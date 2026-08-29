@@ -1,7 +1,7 @@
 import path from 'path';
+import { tmpdir } from 'os';
 import { Post, validatePost } from '../schema';
 import { loadPost } from '../store';
-import { partDir } from '../paths';
 import { renderSlide, mergeContinuations } from '../renderer/capture';
 import { Book, loadBook } from './book';
 import { runClaude } from './claude';
@@ -58,7 +58,8 @@ export function uncoveredPoints(book: Book, post: Post): string[] {
 /** How much of one page each authored slide needs. Over 100% spills onto the next page. */
 export async function measureSlides(post: Post): Promise<SlideFit[]> {
   const out: SlideFit[] = [];
-  const dir = path.join(partDir('.measure', 'tmp', 1));
+  // Measurement renders are throwaway: keep them out of the content tree.
+  const dir = path.join(tmpdir(), 'instastudio-measure');
   for (let i = 0; i < post.slides.length; i++) {
     const r = await renderSlide(post, i, path.join(dir, `m-${i}.png`));
     out.push({ slide: i + 1, neededPct: r.neededPct });
