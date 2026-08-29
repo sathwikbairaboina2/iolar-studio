@@ -230,7 +230,7 @@ export async function clonePattern(
   else guessed.push('caption.yPct', 'caption.sizeVh', 'caption.pill');
 
   // How fast they change: watch the band itself rather than inferring from speech pauses.
-  let rhythm = { wordsPerBeat: [1, 3] as [number, number], beatSec: [0.4, 1.1] as [number, number] };
+  const rhythm = { wordsPerBeat: [1, 3] as [number, number], beatSec: [0.4, 1.1] as [number, number] };
   if (band) {
     const padding = Math.round((band.bottomPx - band.topPx) * 0.6);
     const bandFrames = await sampleFrames(file, path.join(work, 'band'), {
