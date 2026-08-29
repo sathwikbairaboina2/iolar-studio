@@ -1,5 +1,5 @@
 import { MAX_SLIDES, Post, validatePost } from '../schema';
-import { createPart, loadPost, nextPartNumber, savePost } from '../store';
+import { createPart, loadPost, savePost } from '../store';
 
 /**
  * Content is never trimmed to fit a carousel. When a part renders past the 10-image limit,
@@ -17,7 +17,9 @@ export async function splitIntoFollowUp(
 
   const kept = post.slides.slice(0, limit);
   const moved = post.slides.slice(limit);
-  const next = await nextPartNumber(subject, chapter);
+  // Reuse the part immediately after this one. Appending max+1 on every render made a
+  // chapter grow a new part each time it was re-rendered.
+  const next = part + 1;
 
   await createPart(subject, chapter, next, validatePost({
     ...post,

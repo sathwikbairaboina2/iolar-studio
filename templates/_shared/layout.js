@@ -35,6 +35,24 @@
 
     var els = [].slice.call(container.querySelectorAll('.pk-unit'));
 
+    // Consecutive code blocks are one worked example split over two blocks. Merged into a
+    // single unit they can never land in different columns, where the continuation reads as
+    // an unlabelled panel floating free of the class or function it belongs to.
+    for (var m = 0; m < els.length - 1; m++) {
+      if (els[m].getAttribute('data-block-type') !== 'code') continue;
+      var follower = els[m + 1];
+      if (follower.getAttribute('data-block-type') !== 'code') continue;
+      var pair = document.createElement('div');
+      pair.className = 'pk-unit';
+      pair.setAttribute('data-block-index', els[m].getAttribute('data-block-index'));
+      pair.setAttribute('data-block-type', 'code');
+      container.insertBefore(pair, els[m]);
+      pair.appendChild(els[m]);
+      pair.appendChild(follower);
+      els.splice(m, 2, pair);
+      m -= 1;
+    }
+
     // Bind each heading to the block that follows it so the pair never splits.
     var units = [];
     for (var i = 0; i < els.length; i++) {

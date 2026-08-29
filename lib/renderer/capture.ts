@@ -117,7 +117,6 @@ export async function renderAll(
     const source = queue[0].from;
     const base = authored[source].page_title.replace(/ \(cont\.\)$/, '');
     const isCont = started.has(source);
-    started.add(source);
 
     const candidate: Post['slides'][number] = {
       page_title: isCont ? `${base} (cont.)` : base,
@@ -137,6 +136,12 @@ export async function renderAll(
     const kept = queue.filter((_, j) => !spilled.has(j)).slice(0, Math.max(keepCount, 1));
     const keptSet = new Set(kept.map((k) => k.block));
 
+    // Content flows across chapter boundaries, so no mechanical rule titles a page well:
+    // naming it after the first block describes the previous chapter's tail, and naming it
+    // after the chapter with the most blocks shifts titles backwards whenever that tail is
+    // long. The first block wins here because it is stable; the AI heading pass is what
+    // makes titles describe the page, and it runs after a split.
+    started.add(source);
     slides.push({ ...candidate, blocks: kept.map((k) => k.block) });
     results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file });
     queue = queue.filter((q) => !keptSet.has(q.block));
