@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# iolar studio
 
-## Getting Started
+Local studio that turns structured JSON into Instagram-ready handwritten-notes carousels (category **paperbook**), with an AI revise chat and optional ComfyUI polish. Four more categories (reels, stories, quote cards, memes) are scaffolded for later build cycles.
 
-First, run the development server:
+Spec: `docs/superpowers/specs/2026-08-29-iolar-type1-notes-carousels-design.md`
+Plan: `docs/superpowers/plans/2026-08-29-paperbook-generator.md`
+
+## Quickstart
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npx playwright install chromium
+npm run dev          # http://localhost:3100 (port 3000 is the local media server)
+npm test             # full suite (includes real-Chromium render tests)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Requirements:
+- Node 20+, Windows paths assumed in defaults
+- `claude` CLI on PATH (AI revise chat; app works without it, chat returns 503)
+- ComfyUI Desktop on `127.0.0.1:8188` (polish + doodle assets; app works without it)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Pipeline
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+topic / raw notes
+  -> PLAN     Claude writes data/paperbook/<slug>/post.json (chat or in-app AI drawer)
+  -> RENDER   post.json + templates/<name> -> renders/slide-NN.png   (deterministic, seeded)
+  -> POLISH   optional ComfyUI img2img (denoise ~0.12), jobs visible in Desktop app
+  -> PACKAGE  export/01.png..NN.png + caption.txt
+```
 
-## Learn More
+Hard rules: max **10 slides**; overflow errors are surfaced, never auto-shrunk; AI edits always go through diff-approve; renders are pixel-deterministic per seed.
 
-To learn more about Next.js, take a look at the following resources:
+## Template authoring
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+A template is a directory under `templates/<name>/`:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `template.html` — full page with three markers: `<!--HEAD-->` (shared css links injected), `<!--CONTENT-->` (block HTML), `<!--PAGEVARS-->` (`window.PAGE = {brand,date,series,page_title,pageNum,pageCount,seed,width,height}`). Must load `../_shared/rough.min.js` + `../_shared/jitter.js` and call `applyJitter(PAGE.seed + PAGE.pageNum)`.
+- `manifest.json` — `{ name, displayName, inks: {blue,red,green,black,accent}, supports: [...], contentSelector }`.
 
-## Deploy on Vercel
+Style the block classes `.b-heading .b-paragraph .b-bullets .b-sidebox .b-table .b-code .b-diagram .b-callout .b-qa`. Elements with `data-jitter` get per-character wobble; `data-rough="<color>"` gets a hand-drawn rough.js frame (hide with `svg{display:none}` if the template has native frames). Use `vh/vw` units — pages render at 2× and downscale.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Gotcha: never use `display:table` on jittered text (whitespace collapses); use `display:block;width:fit-content`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Golden render tests
+
+`npm test` re-renders `tests/fixtures/golden-post.json` with every template and byte-compares against `tests/golden/*.png`. After intentional visual changes:
+
+```bash
+node scripts/approve-goldens.mjs   # regenerate
+# inspect tests/golden/*.png, then commit them
+```
+
+## Data layout
+
+```
+data/paperbook/<slug>/post.json        # single source of truth (editable by hand, UI, or AI)
+data/paperbook/<slug>/renders/         # slide-NN.png + render-report.json (+ polished/)
+data/paperbook/<slug>/export/          # final package
+data/settings.json                     # brand, defaults, comfy url/checkpoint
+assets/doodles/                        # ComfyUI-generated sketch assets
+```
