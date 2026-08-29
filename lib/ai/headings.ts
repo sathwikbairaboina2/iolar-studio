@@ -27,5 +27,7 @@ export async function fixHeadings(slug: string): Promise<Post> {
   if (proposal.slides.length !== post.slides.length) {
     throw new Error('heading pass changed the slide count — rejected');
   }
+  // Titles change; split provenance must not, or a later re-render cannot rebalance the chain.
+  proposal.slides = proposal.slides.map((s, i) => ({ ...s, cont: post.slides[i].cont }));
   return proposal;
 }

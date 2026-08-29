@@ -77,7 +77,38 @@
 
     measure(container, units, columns, colGapPx);
 
-    var packed = window.packUnits(units, { columns: columns, pageHeight: usable, rowGap: rowGapPx });
+    // How many pages this content needs when each page is filled to `frac` of the sheet.
+    function pagesFor(frac) {
+      var remaining = units.slice();
+      var count = 0;
+      while (remaining.length && count < 40) {
+        var r = window.packUnits(remaining, {
+          columns: columns, pageHeight: usable * frac, rowGap: rowGapPx
+        });
+        var placed = remaining.length - r.spill.length;
+        if (placed <= 0) return 99; // a single unit is taller than the budget
+        remaining = r.spill;
+        count++;
+      }
+      return count;
+    }
+
+    // Balance: greedy packing fills page 1 and starves the last page. Find the smallest
+    // page budget that still needs the same number of pages, so every page carries an
+    // equal share instead.
+    var pageCount = pagesFor(1);
+    var frac = 1;
+    if (pageCount > 1) {
+      var lo = 0.35;
+      var hi = 1;
+      for (var it = 0; it < 12; it++) {
+        var mid = (lo + hi) / 2;
+        if (pagesFor(mid) <= pageCount) hi = mid; else lo = mid;
+      }
+      frac = hi;
+    }
+
+    var packed = window.packUnits(units, { columns: columns, pageHeight: usable * frac, rowGap: rowGapPx });
 
     var spillIndexes = [];
     for (var s = 0; s < packed.spill.length; s++) {

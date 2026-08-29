@@ -84,7 +84,19 @@ export async function renderAll(
   results: { slide: number; overflowPx: number; fillPct: number; file: string }[];
   slides: Post['slides'];
 }> {
-  const slides = post.slides.map((s) => ({ ...s, blocks: [...s.blocks] }));
+  // Merge continuation pages back into their parent first: re-rendering must re-split from
+  // the authored content, otherwise each run splits an already-split page again and the
+  // page count creeps upward with ever thinner tails.
+  const slides: Post['slides'] = [];
+  for (const s of post.slides) {
+    const prev = slides[slides.length - 1];
+    if (prev && s.cont) {
+      prev.blocks.push(...s.blocks);
+      continue;
+    }
+    slides.push({ ...s, blocks: [...s.blocks] });
+  }
+
   const results: { slide: number; overflowPx: number; fillPct: number; file: string }[] = [];
 
   for (let i = 0; i < slides.length && i < MAX_AUTOFLOW_PAGES; i++) {
@@ -99,7 +111,7 @@ export async function renderAll(
       const moved = slides[i].blocks.filter((_, j) => spilled.has(j));
       const title = slides[i].page_title.replace(/ \(cont\.\)$/, '');
       slides[i] = { ...slides[i], blocks: kept };
-      slides.splice(i + 1, 0, { page_title: `${title} (cont.)`, blocks: moved });
+      slides.splice(i + 1, 0, { page_title: `${title} (cont.)`, blocks: moved, cont: true });
       i--; // re-render this page now that it is trimmed
       continue;
     }

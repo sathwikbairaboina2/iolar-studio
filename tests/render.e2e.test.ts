@@ -58,9 +58,18 @@ describe('renderSlide', () => {
     expect(results.length).toBe(slides.length);
     expect(results.every((r) => r.overflowPx === 0)).toBe(true);
     expect(slides[1].page_title).toContain('(cont.)');
+    expect(slides[1].cont).toBe(true);
     const totalBlocks = slides.reduce((n, s) => n + s.blocks.length, 0);
     expect(totalBlocks).toBe(40);
-  }, 240_000);
+
+    // Balanced: no page carries a starved tail once the chain is spread evenly.
+    const fills = results.map((r) => r.fillPct);
+    expect(Math.max(...fills) - Math.min(...fills)).toBeLessThan(35);
+
+    // Idempotent: re-rendering the split result must not split it again.
+    const again = await renderAll({ ...big, slides }, dir);
+    expect(again.slides.length).toBe(slides.length);
+  }, 480_000);
 
   it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall'])(
     '%s fills a dense page without overflowing',

@@ -36,7 +36,15 @@ export const PostSchema = z.object({
   series: z.string(),
   date: z.string(),
   slides: z
-    .array(z.object({ page_title: z.string(), blocks: z.array(BlockSchema).min(1) }))
+    .array(
+      z.object({
+        page_title: z.string(),
+        blocks: z.array(BlockSchema).min(1),
+        /** Set by auto-flow: this page holds content spilled from the page before it.
+         *  Survives title rewrites, so a re-render can merge the chain and re-split evenly. */
+        cont: z.boolean().optional(),
+      })
+    )
     .min(1),
   caption: z.object({ text: z.string(), hashtags: z.array(z.string()) }).default({ text: '', hashtags: [] }),
 });
