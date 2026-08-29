@@ -44,6 +44,15 @@ async function baseReel() {
   });
 }
 
+/** The same fixture, but every shot is a still — the case camera motion exists for. */
+async function stillReel() {
+  const reel = await baseReel();
+  return {
+    ...reel,
+    assets: reel.assets.map((a) => ({ ...a, kind: 'image' as const, path: a.path.replace('.mp4', '.png') })),
+  };
+}
+
 describe('assemble', () => {
   it('gives every beat a clip spanning its own words', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
@@ -87,7 +96,7 @@ describe('assemble', () => {
 
   it('is deterministic for a seed and varies motion between neighbours', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const reel = await baseReel();
+    const reel = await stillReel();
     const a = assemble({ reel, pattern: PATTERN });
     const b = assemble({ reel, pattern: PATTERN });
     expect(b).toEqual(a);
@@ -264,7 +273,7 @@ describe('captions read the script, not the transcript', () => {
 describe('screen beats scroll, footage beats drift', () => {
   it('gives a screen beat a vertical pan, and a bigger one', async () => {
     const { assemble, SCREEN_MOTION_GAIN } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await baseReel(), pattern: PATTERN });
+    const tl = assemble({ reel: await stillReel(), pattern: PATTERN });
     const screen = tl.clips.find((c) => c.beatId === 'b2')!; // the screen beat
     expect(['pan-up', 'pan-down']).toContain(screen.motion.type);
     expect(screen.motion.strength).toBeGreaterThan(PATTERN.motion.strength * (SCREEN_MOTION_GAIN - 1));
@@ -272,7 +281,7 @@ describe('screen beats scroll, footage beats drift', () => {
 
   it('leaves footage beats on the gentler drift', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await baseReel(), pattern: PATTERN });
+    const tl = assemble({ reel: await stillReel(), pattern: PATTERN });
     for (const c of tl.clips.filter((c) => c.beatId !== 'b2')) {
       expect(['zoom-in', 'zoom-out', 'pan-left', 'pan-right']).toContain(c.motion.type);
       expect(c.motion.strength).toBeLessThan(PATTERN.motion.strength * 1.5);
@@ -296,5 +305,23 @@ describe('a split beat reads as a cut', () => {
     const origins = tl.clips.map((c) => c.motion.origin[1]);
     // consecutive pieces of one beat must not sit on the same part of the picture
     for (let i = 1; i < origins.length; i++) expect(origins[i]).not.toBe(origins[i - 1]);
+  });
+});
+
+describe('motion is compensation for a still', () => {
+  it('holds footage that already moves, so its edges are not cropped away', async () => {
+    const { assemble, HELD } = await import('@/lib/reel/assemble');
+    const reel = await baseReel(); // every asset in the fixture is a video
+    for (const clip of assemble({ reel, pattern: PATTERN }).clips) {
+      expect(clip.motion).toEqual(HELD);
+    }
+  });
+
+  it('still moves a still', async () => {
+    const { assemble } = await import('@/lib/reel/assemble');
+    for (const clip of assemble({ reel: await stillReel(), pattern: PATTERN }).clips) {
+      expect(clip.motion.type).not.toBe('hold');
+      expect(clip.motion.strength).toBeGreaterThan(0);
+    }
   });
 });

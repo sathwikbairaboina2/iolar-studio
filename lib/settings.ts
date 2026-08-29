@@ -44,7 +44,9 @@ const DEFAULTS: Settings = {
   voiceProvider: 'kokoro',
   kokoroDir: 'models/kokoro',
   kokoroVoice: 'am_michael',
-  kokoroSpeed: 1.0,
+  // Kokoro reads at about 155 wpm unprompted; the reference reel runs at 239. A reel is
+  // paced faster than an audiobook, and this is where it lands close to the reference.
+  kokoroSpeed: 1.35,
   piperVoice: 'en_US-ryan-high',
   piperDataDir: 'models/piper',
   heroProvider: 'comfy',

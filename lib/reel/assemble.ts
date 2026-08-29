@@ -91,9 +91,11 @@ export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
 }
 
 /**
- * A screen shot is a frozen capture, so its move has to do the work a real recording
- * would: scrolling. Vertical pans, and further than a b-roll drift, so a page visibly
- * travels instead of merely breathing.
+ * Camera motion is compensation for a still.
+ *
+ * Footage that already moves — a recorded scene, a generated clip — is composed to fill the
+ * frame, and panning across it only crops the edges off: a recorded UI came back with its
+ * own headings sliced in half. Video is held; only stills get a move.
  */
 const SCREEN_MOTIONS: Clip['motion']['type'][] = ['pan-up', 'pan-down'];
 const FOOTAGE_MOTIONS: Clip['motion']['type'][] = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right'];
@@ -106,13 +108,17 @@ export const SCREEN_MOTION_GAIN = 2.2;
  */
 const PIECE_ORIGINS = [0.32, 0.68, 0.5, 0.8];
 
+export const HELD: Clip['motion'] = { type: 'hold', strength: 0, origin: [0.5, 0.5] };
+
 function pickMotion(
   rand: () => number,
   pattern: Pattern,
   isScreen: boolean,
+  isStill: boolean,
   piece: number,
   prev?: Clip['motion']
 ): Clip['motion'] {
+  if (!isStill) return HELD;
   const kinds = isScreen ? SCREEN_MOTIONS : FOOTAGE_MOTIONS;
   const choices = kinds.length > 1 && prev ? kinds.filter((k) => k !== prev.type) : kinds;
   const type = choices[Math.floor(rand() * choices.length)] ?? kinds[0];
@@ -160,8 +166,9 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     const pieces = Math.max(1, Math.ceil(total / maxShot));
     const each = total / pieces;
     const isScreen = beat.shot.kind === 'screen';
+    const isStill = reel.assets.find((a) => a.id === assetId)?.kind === 'image';
     for (let p = 0; p < pieces; p++) {
-      const motion = pickMotion(rand, pattern, isScreen, p, prevMotion);
+      const motion = pickMotion(rand, pattern, isScreen, isStill, p, prevMotion);
       prevMotion = motion;
       clips.push({
         id: `c${clips.length + 1}`,

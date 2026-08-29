@@ -151,3 +151,37 @@ describe('turbo path', () => {
     expect(getSettings().i2vTurbo).toBe(false);
   });
 });
+
+describe('generated clips', () => {
+  // an earlier test mocks probe wholesale; this one needs the real ffmpeg helpers
+  beforeEach(() => {
+    vi.doUnmock('@/lib/reel/probe');
+    vi.doUnmock('@/lib/comfy/client');
+    vi.resetModules();
+  });
+
+  it('drops the unreliable opening of a generated clip', async () => {
+    if (!(await (await import('@/lib/reel/probe')).ffmpegAvailable())) return;
+    const { makeTestClip, ffprobeMedia } = await import('@/lib/reel/probe');
+    const { GENERATED_LEAD_IN_SEC, collectVideo } = await import('@/lib/comfy/i2v');
+    const dir = process.env.IOLAR_DATA_DIR!;
+    const source = path.join(dir, 'raw.mp4');
+    await makeTestClip(source, { seconds: 3, width: 320, height: 568, fps: 24, audio: false });
+
+    // stand in for ComfyUI: history says the job is done, /view hands back the file
+    const bytes = (await import('fs')).readFileSync(source);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) =>
+      String(url).includes('/history/')
+        ? { ok: true, json: async () => ({ p1: { outputs: { '92': { videos: [{ filename: 'x.mp4', subfolder: 'v', type: 'output' }] } } } }) }
+        : { ok: true, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) }) as never;
+    try {
+      const out = path.join(dir, 'clip.mp4');
+      await collectVideo('p1', out);
+      const info = await ffprobeMedia(out);
+      expect(info.durationSec).toBeCloseTo(3 - GENERATED_LEAD_IN_SEC, 1);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }, 300_000);
+});

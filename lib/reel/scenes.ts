@@ -45,7 +45,13 @@ export type SceneOptions = {
   seconds: number;
   fps?: number;
   ratio?: string;
-  /** Rendered at a phone-sized viewport and scaled up, so type stays a sane size. */
+  /**
+   * Rendered at a phone-sized viewport and scaled up.
+   *
+   * Deliberately smaller than the output frame: the UI then fills the shot the way a real
+   * phone capture does, instead of sitting in a pool of empty background, and there is
+   * enough overflow for a scroll to actually travel.
+   */
   viewport?: { width: number; height: number };
 };
 
@@ -68,7 +74,7 @@ export function frameProgress(i: number, total: number): number {
 export async function recordScene(opts: SceneOptions): Promise<{ path: string; frames: number }> {
   const fps = opts.fps ?? 30;
   const [outW, outH] = REEL_RATIOS[opts.ratio ?? '9:16'];
-  const viewport = opts.viewport ?? { width: 540, height: 960 };
+  const viewport = opts.viewport ?? { width: 430, height: 764 };
   const total = frameCount(opts.seconds, fps);
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'iolar-scene-'));

@@ -171,6 +171,16 @@ export function pickVideoOutput(entry: unknown): OutputRef | null {
   return files.find((f) => /\.(mp4|webm|mkv)$/i.test(f.filename)) ?? files[0] ?? null;
 }
 
+/**
+ * Seconds dropped from the front of a generated clip.
+ *
+ * The model's opening frames are not reliably the image it was given: a mascot clip came
+ * back with six-tenths of a second of an entirely different picture — a screenshot from an
+ * earlier job — before settling onto its own subject. Cutting the lead-in is cheaper than
+ * catching it by eye, and a shot is trimmed to its beat anyway.
+ */
+export const GENERATED_LEAD_IN_SEC = 0.6;
+
 /** ComfyUI keeps finished outputs in /history; pull the clip out and save it. */
 export async function collectVideo(promptId: string, dest: string): Promise<{ path: string }> {
   const r = await fetch(`${comfyUrl()}/history/${promptId}`, { cache: 'no-store' });
@@ -186,7 +196,17 @@ export async function collectVideo(promptId: string, dest: string): Promise<{ pa
   const dl = await fetch(`${comfyUrl()}/view?${q}`);
   if (!dl.ok) throw new Error(`comfy view -> ${dl.status}`);
   await fs.mkdir(path.dirname(dest), { recursive: true });
-  await fs.writeFile(dest, Buffer.from(await dl.arrayBuffer()));
+
+  const raw = `${dest}.raw${path.extname(vid.filename) || '.mp4'}`;
+  await fs.writeFile(raw, Buffer.from(await dl.arrayBuffer()));
+  const { code, stderr } = await run('ffmpeg', [
+    '-v', 'error', '-y',
+    '-ss', String(GENERATED_LEAD_IN_SEC), '-i', raw,
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p', '-an',
+    dest,
+  ]);
+  await fs.unlink(raw).catch(() => {});
+  if (code !== 0) throw new Error(`trimming the generated clip failed: ${stderr.slice(0, 300)}`);
   return { path: dest };
 }
 
