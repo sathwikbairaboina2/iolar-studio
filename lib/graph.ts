@@ -1,8 +1,9 @@
 import { getDb } from './db';
 import type { Post } from './schema';
 import type { Book } from './ai/book';
+import type { Subject } from './store';
 
-/** Normalises a phrase to a topic key so the same concept from different posts collides. */
+/** Normalises a phrase to a topic key so the same concept from different chapters collides. */
 export function topicKey(text: string): string {
   return text
     .toLowerCase()
@@ -13,166 +14,191 @@ export function topicKey(text: string): string {
     .trim();
 }
 
-/** Pulls the salient topic phrase out of a syllabus point ("Slicing: lst[1:4] returns ..." -> "slicing"). */
+/** Pulls the salient topic phrase out of a syllabus point ("Slicing: lst[1:4] ..." -> "slicing"). */
 export function topicFromPoint(point: string): string {
   const head = point.split(/[:—–\-(]/)[0];
-  const key = topicKey(head);
-  const words = key.split(' ').filter(Boolean).slice(0, 4);
-  return words.join(' ');
+  return topicKey(head).split(' ').filter(Boolean).slice(0, 4).join(' ');
 }
 
-export type GraphNode = { id: string; type: 'post' | 'chapter' | 'topic'; label: string; slug: string | null; weight: number };
+export type GraphNode = {
+  id: string;
+  type: 'subject' | 'chapter' | 'topic';
+  label: string;
+  subject: string | null;
+  chapter: string | null;
+  weight: number;
+};
 export type GraphEdge = { src: string; dst: string; rel: string };
 
-export function syncPost(slug: string, post: Post, status: string) {
+export const subjectId = (s: string) => `subject:${s}`;
+export const chapterId = (s: string, c: string) => `chapter:${s}/${c}`;
+
+export function syncSubject(subject: Subject) {
   const db = getDb();
   db.prepare(
-    `INSERT INTO posts (slug, category, series, template, ratio, slide_count, status, post_json, updated_at)
-     VALUES (?, 'paperbook', ?, ?, ?, ?, ?, ?, datetime('now'))
+    `INSERT INTO subjects (slug, name, emoji, description, updated_at)
+     VALUES (?, ?, ?, ?, datetime('now'))
      ON CONFLICT(slug) DO UPDATE SET
-       series=excluded.series, template=excluded.template, ratio=excluded.ratio,
-       slide_count=excluded.slide_count, status=excluded.status,
-       post_json=excluded.post_json, updated_at=excluded.updated_at`
-  ).run(slug, post.series, post.template, post.ratio, post.slides.length, status, JSON.stringify(post));
+       name=excluded.name, emoji=excluded.emoji,
+       description=excluded.description, updated_at=excluded.updated_at`
+  ).run(subject.slug, subject.name, subject.emoji, subject.description);
 
-  const postId = `post:${slug}`;
   db.prepare(
-    `INSERT INTO nodes (id, type, label, slug, weight) VALUES (?, 'post', ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET label=excluded.label, weight=excluded.weight`
-  ).run(postId, post.series, slug, post.slides.length);
+    `INSERT INTO nodes (id, type, label, subject, chapter, weight) VALUES (?, 'subject', ?, ?, NULL, 1)
+     ON CONFLICT(id) DO UPDATE SET label=excluded.label`
+  ).run(subjectId(subject.slug), `${subject.emoji} ${subject.name}`.trim(), subject.slug);
+}
 
-  // Slide headings are the post's own claim of what it teaches.
+export function syncChapter(subject: string, chapter: string, post: Post, status: string) {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO chapters (subject, slug, title, parts, points, pages, avg_fill, status, updated_at)
+     VALUES (?, ?, ?, 1, 0, 0, 0, ?, datetime('now'))
+     ON CONFLICT(subject, slug) DO UPDATE SET
+       title=excluded.title, status=excluded.status, updated_at=excluded.updated_at`
+  ).run(subject, chapter, post.series, status);
+
+  const id = chapterId(subject, chapter);
+  db.prepare(
+    `INSERT INTO nodes (id, type, label, subject, chapter, weight) VALUES (?, 'chapter', ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET label=excluded.label, weight=excluded.weight`
+  ).run(id, post.series, subject, chapter, post.slides.length);
+
+  db.prepare(`INSERT INTO edges (src, dst, rel) VALUES (?, ?, 'has_chapter') ON CONFLICT DO NOTHING`)
+    .run(subjectId(subject), id);
+
+  // Slide headings are the chapter's own claim of what it teaches.
   for (const slide of post.slides) {
     for (const b of slide.blocks) {
       if (b.type !== 'heading') continue;
       const key = topicFromPoint(b.text);
       if (key.length < 3) continue;
-      linkTopic(postId, key, b.text.replace(/^\d+\.\s*/, ''));
+      linkTopic(id, key, b.text.replace(/^\d+\.\s*/, ''));
     }
   }
   rebuildSharedTopicEdges();
 }
 
-export function syncBook(slug: string, book: Book) {
+export function syncBook(subject: string, chapter: string, book: Book) {
   const db = getDb();
   db.prepare(
-    `INSERT INTO books (slug, title, summary, book_json, updated_at)
-     VALUES (?, ?, ?, ?, datetime('now'))
-     ON CONFLICT(slug) DO UPDATE SET
-       title=excluded.title, summary=excluded.summary, book_json=excluded.book_json, updated_at=excluded.updated_at`
-  ).run(slug, book.title, book.summary, JSON.stringify(book));
+    `INSERT INTO books (subject, chapter, title, summary, book_json, updated_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(subject, chapter) DO UPDATE SET
+       title=excluded.title, summary=excluded.summary,
+       book_json=excluded.book_json, updated_at=excluded.updated_at`
+  ).run(subject, chapter, book.title, book.summary, JSON.stringify(book));
 
-  const postId = `post:${slug}`;
+  const id = chapterId(subject, chapter);
   db.prepare(
-    `INSERT INTO nodes (id, type, label, slug, weight) VALUES (?, 'post', ?, ?, 1)
+    `INSERT INTO nodes (id, type, label, subject, chapter, weight) VALUES (?, 'chapter', ?, ?, ?, 1)
      ON CONFLICT(id) DO NOTHING`
-  ).run(postId, book.title, slug);
+  ).run(id, book.title, subject, chapter);
+  db.prepare(`INSERT INTO edges (src, dst, rel) VALUES (?, ?, 'has_chapter') ON CONFLICT DO NOTHING`)
+    .run(subjectId(subject), id);
 
-  book.chapters.forEach((ch, i) => {
-    const chId = `chapter:${slug}:${i}`;
-    db.prepare(
-      `INSERT INTO nodes (id, type, label, slug, weight) VALUES (?, 'chapter', ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET label=excluded.label, weight=excluded.weight`
-    ).run(chId, ch.title, slug, ch.points.length);
-    db.prepare(`INSERT INTO edges (src, dst, rel) VALUES (?, ?, 'has_chapter') ON CONFLICT DO NOTHING`).run(postId, chId);
-
+  for (const ch of book.chapters) {
     for (const p of ch.points) {
       const key = topicFromPoint(p);
       if (key.length < 3) continue;
-      linkTopic(chId, key, p.split(/[:—–]/)[0].trim());
+      linkTopic(id, key, p.split(/[:—–]/)[0].trim());
     }
-  });
+  }
   rebuildSharedTopicEdges();
 }
 
 function linkTopic(srcId: string, key: string, label: string) {
   const db = getDb();
-  const topicId = `topic:${key}`;
+  const id = `topic:${key}`;
   db.prepare(
-    `INSERT INTO nodes (id, type, label, slug, weight) VALUES (?, 'topic', ?, NULL, 1)
+    `INSERT INTO nodes (id, type, label, subject, chapter, weight) VALUES (?, 'topic', ?, NULL, NULL, 1)
      ON CONFLICT(id) DO UPDATE SET weight = nodes.weight + 1`
-  ).run(topicId, label.slice(0, 60));
-  db.prepare(`INSERT INTO edges (src, dst, rel) VALUES (?, ?, 'covers') ON CONFLICT DO NOTHING`).run(srcId, topicId);
+  ).run(id, label.slice(0, 60));
+  db.prepare(`INSERT INTO edges (src, dst, rel) VALUES (?, ?, 'covers') ON CONFLICT DO NOTHING`).run(srcId, id);
 }
 
-/** Posts that teach the same topic get a direct edge — this is what makes the graph useful for context. */
+/** Chapters teaching the same topic get a direct edge — this is what makes the graph useful. */
 function rebuildSharedTopicEdges() {
   const db = getDb();
   db.prepare(`DELETE FROM edges WHERE rel = 'shares_topic'`).run();
   const rows = db.prepare(
-    `SELECT DISTINCT a.slug AS a_slug, b.slug AS b_slug
+    `SELECT DISTINCT a.id AS a_id, b.id AS b_id
        FROM edges ea JOIN nodes a ON a.id = ea.src
        JOIN edges eb ON eb.dst = ea.dst
        JOIN nodes b ON b.id = eb.src
       WHERE ea.rel = 'covers' AND eb.rel = 'covers'
-        AND a.slug IS NOT NULL AND b.slug IS NOT NULL AND a.slug < b.slug`
-  ).all() as { a_slug: string; b_slug: string }[];
+        AND a.type = 'chapter' AND b.type = 'chapter' AND a.id < b.id`
+  ).all() as { a_id: string; b_id: string }[];
   for (const r of rows) {
     db.prepare(`INSERT INTO edges (src, dst, rel) VALUES (?, ?, 'shares_topic') ON CONFLICT DO NOTHING`)
-      .run(`post:${r.a_slug}`, `post:${r.b_slug}`);
+      .run(r.a_id, r.b_id);
   }
 }
 
-export function syncRenders(slug: string, results: { slide: number; overflowPx: number; fillPct: number }[]) {
+export function syncRenders(
+  subject: string, chapter: string, part: number,
+  results: { slide: number; overflowPx: number; fillPct: number }[]
+) {
   const db = getDb();
   for (const r of results) {
     db.prepare(
-      `INSERT INTO renders (slug, slide, overflow_px, fill_pct, rendered_at)
-       VALUES (?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(slug, slide) DO UPDATE SET
+      `INSERT INTO renders (subject, chapter, part, slide, overflow_px, fill_pct, rendered_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(subject, chapter, part, slide) DO UPDATE SET
          overflow_px=excluded.overflow_px, fill_pct=excluded.fill_pct, rendered_at=excluded.rendered_at`
-    ).run(slug, r.slide, r.overflowPx, r.fillPct);
+    ).run(subject, chapter, part, r.slide, r.overflowPx, r.fillPct);
   }
 }
 
-export function syncReferences(slug: string, urls: string[]) {
+export function syncReferences(subject: string, chapter: string, urls: string[]) {
   const db = getDb();
-  db.prepare(`DELETE FROM refs WHERE slug = ?`).run(slug);
-  urls.forEach((u, i) => db.prepare(`INSERT INTO refs (slug, idx, url) VALUES (?, ?, ?)`).run(slug, i, u));
+  db.prepare(`DELETE FROM refs WHERE subject = ? AND chapter = ?`).run(subject, chapter);
+  urls.forEach((u, i) =>
+    db.prepare(`INSERT INTO refs (subject, chapter, idx, url) VALUES (?, ?, ?, ?)`).run(subject, chapter, i, u)
+  );
 }
 
 export function graph(): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const db = getDb();
   return {
-    nodes: db.prepare(`SELECT id, type, label, slug, weight FROM nodes ORDER BY weight DESC`).all() as GraphNode[],
+    nodes: db.prepare(`SELECT id, type, label, subject, chapter, weight FROM nodes ORDER BY weight DESC`).all() as GraphNode[],
     edges: db.prepare(`SELECT src, dst, rel FROM edges`).all() as GraphEdge[],
   };
 }
 
-/** Context for the AI and the user: what this post covers, and who else covers it. */
-export function postContext(slug: string) {
+/** Context for the AI and the user: what this chapter covers, and who else covers it. */
+export function chapterContext(subject: string, chapter: string) {
   const db = getDb();
   const topics = db.prepare(
     `SELECT DISTINCT n.id, n.label, n.weight FROM edges e
        JOIN nodes n ON n.id = e.dst
-       JOIN nodes s ON s.id = e.src
-      WHERE e.rel = 'covers' AND s.slug = ?
+      WHERE e.rel = 'covers' AND e.src = ?
       ORDER BY n.weight DESC`
-  ).all(slug) as { id: string; label: string; weight: number }[];
+  ).all(chapterId(subject, chapter)) as { id: string; label: string; weight: number }[];
 
   const related = db.prepare(
-    `SELECT p.slug, p.series, COUNT(*) AS shared FROM edges e1
+    `SELECT n2.subject AS subject, n2.chapter AS chapter, n2.label AS title, COUNT(*) AS shared
+       FROM edges e1
        JOIN edges e2 ON e1.dst = e2.dst AND e1.rel = 'covers' AND e2.rel = 'covers'
-       JOIN nodes n1 ON n1.id = e1.src
        JOIN nodes n2 ON n2.id = e2.src
-       JOIN posts p ON p.slug = n2.slug
-      WHERE n1.slug = ? AND n2.slug != ?
-      GROUP BY p.slug ORDER BY shared DESC LIMIT 10`
-  ).all(slug, slug) as { slug: string; series: string; shared: number }[];
+      WHERE e1.src = ? AND e2.src != ? AND n2.type = 'chapter'
+      GROUP BY n2.id ORDER BY shared DESC LIMIT 10`
+  ).all(chapterId(subject, chapter), chapterId(subject, chapter)) as
+    { subject: string; chapter: string; title: string; shared: number }[];
 
   return { topics, related };
 }
 
-/** Topics already covered elsewhere — lets the planner avoid repeating a past post. */
-export function coveredElsewhere(slug: string): string[] {
+/** Topics covered by other chapters — lets the planner avoid repeating a past chapter. */
+export function coveredElsewhere(subject: string, chapter: string): string[] {
   const db = getDb();
   const rows = db.prepare(
     `SELECT DISTINCT n.label FROM edges e
        JOIN nodes n ON n.id = e.dst
        JOIN nodes s ON s.id = e.src
-      WHERE e.rel = 'covers' AND s.slug IS NOT NULL AND s.slug != ?
+      WHERE e.rel = 'covers' AND s.type = 'chapter' AND s.id != ?
       ORDER BY n.weight DESC LIMIT 60`
-  ).all(slug) as { label: string }[];
+  ).all(chapterId(subject, chapter)) as { label: string }[];
   return rows.map((r) => r.label);
 }
 
@@ -180,10 +206,10 @@ export function searchTopics(q: string) {
   const db = getDb();
   return db.prepare(
     `SELECT n.id, n.label, n.weight,
-            (SELECT GROUP_CONCAT(DISTINCT s.slug) FROM edges e JOIN nodes s ON s.id = e.src
-              WHERE e.dst = n.id AND e.rel = 'covers' AND s.slug IS NOT NULL) AS slugs
+            (SELECT GROUP_CONCAT(DISTINCT s.chapter) FROM edges e JOIN nodes s ON s.id = e.src
+              WHERE e.dst = n.id AND e.rel = 'covers' AND s.type = 'chapter') AS chapters
        FROM nodes n
       WHERE n.type = 'topic' AND n.label LIKE ?
       ORDER BY n.weight DESC LIMIT 50`
-  ).all(`%${q}%`) as { id: string; label: string; weight: number; slugs: string | null }[];
+  ).all(`%${q}%`) as { id: string; label: string; weight: number; chapters: string | null }[];
 }
