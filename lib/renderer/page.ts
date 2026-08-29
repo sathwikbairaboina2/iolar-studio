@@ -33,7 +33,8 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     brand: post.brand,
     date: post.date,
     series: post.series,
-    page_title: slide.page_title,
+    // Templates render their own "Page N" prefix; drop any the author typed.
+    page_title: slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, ''),
     pageNum: slideIndex + 1,
     pageCount: post.slides.length,
     seed: post.seed,

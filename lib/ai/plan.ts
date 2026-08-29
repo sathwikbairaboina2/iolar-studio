@@ -26,7 +26,9 @@ Block types (discriminated by "type"):
 - {"type":"callout","style":"tip"|"takeaway"|"cloud","title":string,"text":string}
 - {"type":"qa","q":string,"a_bullets":[string,...],"example_code"?:[string,...]}
 
-HARD LIMITS: at most ${MAX_SLIDES} slides. Per slide keep content that fits one notebook page: roughly 4-7 blocks, tables max 5 rows x 4 cols, paragraphs max 3 sentences, code max 6 lines. Content must be technically accurate. Numbered section headings ("1. ...", "2. ...") like handwritten study notes. Slide 1 = overview, last slide = summary/best practices when it fits the topic.`;
+HARD LIMITS: at most ${MAX_SLIDES} slides.
+"page_title" is the section name ONLY — never write "Page 3:" or any page number in it; the template adds that.
+DENSITY BUDGET — a slide that exceeds this overflows the page and is rejected. Per slide use AT MOST 6 blocks and stay under ~55 rendered lines, counting: heading = 1 line, each bullet/table row/code line = 1 line, paragraph = 1 line per 90 characters, callout/sidebox = 2 lines plus its items. Tables max 5 rows x 4 cols with short cells, paragraphs max 2 sentences, code max 5 lines. Prefer splitting across slides over cramming. Content must be technically accurate. Numbered section headings ("1. ...", "2. ...") like handwritten study notes. Slide 1 = overview, last slide = summary/best practices when it fits the topic.`;
 
 async function generate(prompt: string, allowedTools?: string[]): Promise<Post> {
   const first = await runClaude(prompt, { timeoutMs: 600_000, allowedTools });
