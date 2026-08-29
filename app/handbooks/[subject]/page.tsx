@@ -1,6 +1,6 @@
 'use client';
 import { use, useEffect, useState } from 'react';
-import { Button, Card, Empty, Input, Modal, Space, Tag, Typography, message } from 'antd';
+import { Button, Card, Empty, Input, Modal, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { isSlug, slugify } from '@/lib/paths';
@@ -8,12 +8,13 @@ import { SWEEP } from '@/components/ThemeProvider';
 
 type ChapterMeta = {
   subject: string; slug: string; title: string; parts: number;
-  points: number; pages: number; avgFill: number; status: string; updatedAt: string;
+  points: number; pages: number; avgFill: number; status: string;
+  partStatuses?: string[]; updatedAt: string;
 };
 type Subject = { slug: string; name: string; emoji: string; description: string };
 
 const STATUS_COLOR: Record<string, string> = {
-  draft: 'default', rendered: 'blue', polished: 'purple', packaged: 'success',
+  draft: 'default', rendered: 'blue', polished: 'purple', packaged: 'gold', published: 'success',
 };
 
 export default function SubjectPage({ params }: { params: Promise<{ subject: string }> }) {
@@ -87,14 +88,22 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
                 </div>
               </div>
               <Space size={4}>
-                {Array.from({ length: c.parts }, (_, p) => (
-                  <span key={p} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    {p > 0 && <span style={{ opacity: 0.5, fontSize: 11 }}>⛓</span>}
-                    <Tag color={p === 0 ? 'magenta' : 'purple'} style={{ marginInlineEnd: 0 }}>
-                      part {p + 1}
-                    </Tag>
-                  </span>
-                ))}
+                {Array.from({ length: c.parts }, (_, p) => {
+                  const st = c.partStatuses?.[p];
+                  return (
+                    <Tooltip key={p} title={st ? `part ${p + 1}: ${st}` : `part ${p + 1}`}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        {p > 0 && <span style={{ opacity: 0.5, fontSize: 11 }}>⛓</span>}
+                        <Tag
+                          color={st === 'published' ? 'success' : p === 0 ? 'magenta' : 'purple'}
+                          style={{ marginInlineEnd: 0 }}
+                        >
+                          part {p + 1}{st === 'published' ? ' ✓' : ''}
+                        </Tag>
+                      </span>
+                    </Tooltip>
+                  );
+                })}
               </Space>
               <Tag color={STATUS_COLOR[c.status] ?? 'default'}>{c.status}</Tag>
               <Button size="small">open</Button>
