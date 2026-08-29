@@ -1,4 +1,4 @@
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { Post, validatePost } from './schema';
 import { getSettings } from './settings';
@@ -84,6 +84,11 @@ export async function listSubjects(): Promise<SubjectMeta[]> {
 /* ── chapters ─────────────────────────────────────────── */
 
 export async function createChapter(subject: string, slug: string, title?: string): Promise<ChapterMeta> {
+  // Creating over a chapter that exists would reset part 1 to the placeholder page and throw
+  // away everything written there. Refuse instead: the caller wants a different slug.
+  if (existsSync(chapterFile(subject, slug))) {
+    throw new Error(`chapter ${subject}/${slug} already exists`);
+  }
   await fs.mkdir(chapterDir(subject, slug), { recursive: true });
   await fs.writeFile(
     chapterFile(subject, slug),

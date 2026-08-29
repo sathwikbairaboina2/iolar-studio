@@ -25,6 +25,18 @@ describe('handbook store', () => {
     expect((await loadPost('python', 'lists', 1)).brand).toBe('iolar');
   });
 
+  it('refuses to create a chapter over one that exists', async () => {
+    const { createSubject, createChapter, savePost, loadPost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'lists', 'Python Lists');
+    const post = await loadPost('python', 'lists', 1);
+    await savePost('python', 'lists', 1, { ...post, series: 'WRITTEN WORK' });
+
+    await expect(createChapter('python', 'lists')).rejects.toThrow(/already exists/);
+    // The work that was there is still there.
+    expect((await loadPost('python', 'lists', 1)).series).toBe('WRITTEN WORK');
+  });
+
   it('adds parts in order and reports the next number', async () => {
     const { createSubject, createChapter, createPart, loadPost, nextPartNumber, listParts } = await import('@/lib/store');
     await createSubject('python');
