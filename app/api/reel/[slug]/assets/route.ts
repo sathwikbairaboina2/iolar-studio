@@ -17,10 +17,13 @@ export async function POST(req: Request, ctx: Ctx) {
     if (!(file instanceof File) || !beatId) {
       return NextResponse.json({ error: 'file and beatId required' }, { status: 400 });
     }
-    const reel = await attachAsset(slug, beatId, {
-      name: file.name,
-      bytes: Buffer.from(await file.arrayBuffer()),
-    });
+    const role = form.get('role') === 'shot' ? 'shot' : 'still';
+    const reel = await attachAsset(
+      slug,
+      beatId,
+      { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) },
+      role
+    );
     return NextResponse.json({ reel });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

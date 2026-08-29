@@ -96,16 +96,22 @@ fill it in.
 ```
 topic / pasted script / reference reel
   -> PLAN      Claude writes beats (hook/body/close) + a shot brief per beat, in a creator's voice
-  -> VOICE     Higgsfield TTS -> vo.mp3, then whisper word timestamps -> vo.words.json
-  -> SHOTS     per beat: ComfyUI image-to-video by default, Higgsfield for hero shots,
-               your own dropped files override both
+  -> VOICE     local TTS -> vo.mp3, then whisper word timestamps -> vo.words.json
+  -> SHOTS     per beat: ComfyUI image-to-video, or a still with a Ken Burns move,
+               and your own dropped files override either
   -> ASSEMBLE  word timings + creator pattern -> clips, karaoke captions, hook overlay (seeded)
   -> STUDIO    watch and edit it in the browser while shots are still generating
   -> EXPORT    ffmpeg -> export/reel.mp4 + caption.txt
 ```
 
 The **word timings are the timing authority**: captions and cuts both hang off them, so the
-edit lands on the voiceover rather than near it.
+edit lands on the voiceover rather than near it. The recogniser supplies only those timings —
+caption text comes from the script, because the voiceover was synthesised from it and a
+transcript is just a lossy round trip (whisper hears "Rock Bot" for "Grok Bot").
+
+**Nothing leaves this machine unless you say so.** `voiceProvider` defaults to the local
+engine and `heroProvider` to the local ComfyUI; Higgsfield is used only when a setting names
+it.
 
 ### Preview and export cannot drift
 
@@ -146,8 +152,9 @@ was measured from what was guessed. Always a draft — read it before you trust 
 | ffmpeg + ffprobe | on PATH; the export and every measurement go through them |
 | Playwright chromium | shared with handbooks |
 | whisper | `npm run setup:whisper` (openai-whisper: PyAV, which faster-whisper needs, is blocked by Windows Application Control on this machine). CPU by default; the setup script prints the CUDA install line |
-| Higgsfield | reached through the `claude` CLI's MCP tools — the app borrows a Claude session for TTS and hero shots |
-| ComfyUI | image-to-video via the bundled MiniMax H3 template, `lib/comfy/workflows/i2v.template.json` |
+| voice | `npm run setup:voice` — Piper, a small offline neural voice. Windows' own SAPI voice is the automatic fallback. ComfyUI has no local speech model here: every TTS node it exposes is a paid cloud API |
+| ComfyUI | image-to-video via the bundled MiniMax H3 template, `lib/comfy/workflows/i2v.template.json`. Measured on a 4090: about 13 minutes for a 4-second shot, so a whole reel of generated shots is an overnight job — stills with a Ken Burns move carry the rest, which is how the reference reel is built too |
+| Higgsfield | opt-in only, reached through the `claude` CLI's MCP tools |
 
 Every one of these degrades rather than crashes: no ComfyUI leaves shots `awaiting-manual` for
 you to drop in, no whisper stops VOICE after the audio is saved, no Higgsfield disables TTS and

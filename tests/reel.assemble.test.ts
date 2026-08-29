@@ -203,3 +203,60 @@ describe('degenerate word timings', () => {
     expect(() => validateReel({ ...reel, timeline: tl })).not.toThrow();
   });
 });
+
+describe('captions read the script, not the transcript', () => {
+  it('keeps the script wording and the recogniser timings', async () => {
+    const { scriptAlignedWords } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const reel = validateReel({
+      pattern: 'test',
+      title: 'T',
+      beats: [{ id: 'b1', role: 'hook', text: 'Grok Bot ships', shot: { kind: 'broll', brief: '' } }],
+      // whisper misheard the product name, as it does with any coined word
+      vo: { words: [
+        { w: 'Rock', start: 0, end: 0.3 },
+        { w: 'Bot', start: 0.3, end: 0.6 },
+        { w: 'ships', start: 0.6, end: 1 },
+      ] },
+    });
+    expect(scriptAlignedWords(reel).map((w) => w.w)).toEqual(['Grok', 'Bot', 'ships']);
+    expect(scriptAlignedWords(reel).map((w) => w.start)).toEqual([0, 0.3, 0.6]);
+  });
+
+  it('falls back to the transcript for a beat whose word counts disagree', async () => {
+    const { scriptAlignedWords } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const reel = validateReel({
+      pattern: 'test',
+      title: 'T',
+      beats: [
+        { id: 'b1', role: 'hook', text: 'one two three', shot: { kind: 'broll', brief: '' } },
+        { id: 'b2', role: 'close', text: 'four five', shot: { kind: 'broll', brief: '' } },
+      ],
+      vo: { words: [
+        { w: 'wun', start: 0, end: 0.2 },
+        { w: 'too', start: 0.2, end: 0.4 },
+        { w: 'three', start: 0.4, end: 0.6 },
+        { w: 'four', start: 0.6, end: 0.8 },
+      ] },
+    });
+    // b1 matches 3-for-3 and is corrected; b2 expected two words but only one was heard
+    expect(scriptAlignedWords(reel).map((w) => w.w)).toEqual(['one', 'two', 'three', 'four']);
+  });
+
+  it('captions the whole voiceover even when the recogniser runs past the script', async () => {
+    const { scriptAlignedWords } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const reel = validateReel({
+      pattern: 'test',
+      title: 'T',
+      beats: [{ id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'broll', brief: '' } }],
+      vo: { words: [
+        { w: 'one', start: 0, end: 0.2 },
+        { w: 'two', start: 0.2, end: 0.4 },
+        { w: 'extra', start: 0.4, end: 0.6 },
+      ] },
+    });
+    expect(scriptAlignedWords(reel).map((w) => w.w)).toEqual(['one', 'two', 'extra']);
+  });
+});

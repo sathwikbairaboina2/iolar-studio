@@ -89,8 +89,21 @@ describe('shot planning', () => {
 });
 
 describe('shot generation', () => {
-  it('sends hero beats to higgsfield and marks them ready', async () => {
+  it('keeps hero beats on comfyui by default, so nothing leaves the machine', async () => {
     await seed();
+    mockComfy();
+    mockHf();
+    const { runShots } = await import('@/lib/reel/shots');
+    const reel = await runShots('grok');
+    const heroBeat = reel.beats.find((b) => b.id === 'b3')!;
+    const hero = reel.assets.find((a) => a.id === heroBeat.shot.assetId)!;
+    expect(hero.origin).toBe('comfy');
+  });
+
+  it('sends hero beats to higgsfield only when heroProvider asks for it', async () => {
+    await seed();
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ heroProvider: 'higgsfield' });
     mockComfy();
     mockHf();
     const { runShots } = await import('@/lib/reel/shots');
@@ -128,6 +141,8 @@ describe('shot generation', () => {
 
   it('records a failed hero generation without stopping the rest', async () => {
     await seed();
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ heroProvider: 'higgsfield' });
     mockComfy();
     mockHf({ hfGenerateVideo: vi.fn().mockRejectedValue(new Error('credits exhausted')) });
     const { runShots } = await import('@/lib/reel/shots');
@@ -150,7 +165,31 @@ describe('shot generation', () => {
 });
 
 describe('manual drops', () => {
-  it('attaches a dropped file to its beat and wins over generation', async () => {
+  it('treats a dropped image as the seed for image-to-video, not as the shot', async () => {
+    await seed();
+    vi.doMock('@/lib/reel/probe', () => ({
+      ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 0, width: 1080, height: 1920, fps: 0, hasAudio: false }),
+    }));
+    const { attachAsset, planShots } = await import('@/lib/reel/shots');
+    const reel = await attachAsset('grok', 'b2', { name: 'screenshot.png', bytes: Buffer.from('img') });
+    expect(reel.assets[0]).toMatchObject({ kind: 'image', brief: 'still:b2' });
+    expect(reel.beats.find((b) => b.id === 'b2')!.shot.assetId).toBeUndefined();
+    // still queued, because the still is what ComfyUI will animate
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b2');
+  });
+
+  it('uses a dropped image as the shot itself when asked', async () => {
+    await seed();
+    vi.doMock('@/lib/reel/probe', () => ({
+      ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 0, width: 1080, height: 1920, fps: 0, hasAudio: false }),
+    }));
+    const { attachAsset, planShots } = await import('@/lib/reel/shots');
+    const reel = await attachAsset('grok', 'b2', { name: 'card.png', bytes: Buffer.from('img') }, 'shot');
+    expect(reel.beats.find((b) => b.id === 'b2')!.shot.assetId).toBe(reel.assets[0].id);
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).not.toContain('b2');
+  });
+
+  it('attaches a dropped clip to its beat and wins over generation', async () => {
     await seed();
     vi.doMock('@/lib/reel/probe', () => ({
       ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 4, width: 1080, height: 1920, fps: 30, hasAudio: false }),

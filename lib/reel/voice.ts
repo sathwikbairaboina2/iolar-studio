@@ -4,6 +4,8 @@ import { loadReel, saveReel } from './store';
 import { loadPattern } from './patterns';
 import { reelVoFile, reelWordsFile } from '../paths';
 import { alignVoice } from './align';
+import { speak } from './tts';
+import { getSettings } from '../settings';
 import { downloadTo, hfGenerateAudio } from '../higgsfield/client';
 import { ffprobeMedia } from './probe';
 
@@ -26,18 +28,30 @@ export async function alignExistingVoice(slug: string): Promise<Reel> {
   return next;
 }
 
+/**
+ * Speaks the script and aligns it.
+ *
+ * The engine comes from `voiceProvider`, which defaults to the local one. Higgsfield is
+ * only used when it is asked for by name — nothing reaches a paid service on its own.
+ */
 export async function synthesizeVoice(slug: string): Promise<Reel> {
   const reel = await loadReel(slug);
-  const pattern = await loadPattern(reel.pattern);
-  const { url } = await hfGenerateAudio({
-    text: voScript(reel),
-    voiceId: pattern.voice.higgsfieldVoiceId,
-  });
-  await downloadTo(url, reelVoFile(slug));
+  const script = voScript(reel);
+  const provider = getSettings().voiceProvider;
+
+  if (provider === 'higgsfield') {
+    const pattern = await loadPattern(reel.pattern);
+    const { url } = await hfGenerateAudio({ text: script, voiceId: pattern.voice.higgsfieldVoiceId });
+    await downloadTo(url, reelVoFile(slug));
+    await saveReel(slug, {
+      ...reel,
+      vo: { ...reel.vo, provider: 'higgsfield', voiceId: pattern.voice.higgsfieldVoiceId },
+    });
+  } else {
+    const { provider: used } = await speak(script, reelVoFile(slug));
+    await saveReel(slug, { ...reel, vo: { ...reel.vo, provider: 'local', voiceId: used } });
+  }
+
   // The audio is on disk before alignment runs, so a whisper failure never loses the voiceover.
-  await saveReel(slug, {
-    ...reel,
-    vo: { ...reel.vo, provider: 'higgsfield', voiceId: pattern.voice.higgsfieldVoiceId },
-  });
   return alignExistingVoice(slug);
 }

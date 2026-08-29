@@ -5,6 +5,7 @@ import { addAsset, loadReel, saveReel, updateAsset } from './store';
 import { beatSpans } from './assemble';
 import { loadPattern } from './patterns';
 import { reelAssetsDir } from '../paths';
+import { getSettings } from '../settings';
 import { ffprobeMedia } from './probe';
 import { animateImage, collectVideo, i2vAvailable, jobState } from '../comfy/i2v';
 import { HiggsfieldUnavailableError, downloadTo, hfGenerateVideo } from '../higgsfield/client';
@@ -55,11 +56,20 @@ async function pointBeatAt(slug: string, beatId: string, assetId: string): Promi
   });
 }
 
-/** A dropped file always wins over generation for its beat. */
+export type DropRole = 'shot' | 'still';
+
+/**
+ * A dropped file always wins over generation for its beat.
+ *
+ * A video is the shot. An image is ambiguous — it can be the seed ComfyUI animates, or
+ * the shot itself with a Ken Burns move over it, which is how half of a real reel is
+ * built. `role` says which; images default to seeding.
+ */
 export async function attachAsset(
   slug: string,
   beatId: string,
-  file: { name: string; bytes: Buffer }
+  file: { name: string; bytes: Buffer },
+  role: DropRole = 'still'
 ): Promise<Reel> {
   const dir = reelAssetsDir(slug);
   await fs.mkdir(dir, { recursive: true });
@@ -82,21 +92,24 @@ export async function attachAsset(
     path: path.join('assets', safe),
     origin: 'user',
     status: 'ready',
-    brief: 'dropped by hand',
+    brief: isVideo || role === 'shot' ? 'dropped by hand' : `still:${beatId}`,
     durationSec: info.durationSec,
     width: info.width,
     height: info.height,
   });
-  await pointBeatAt(slug, beatId, asset.id);
+  if (isVideo || role === 'shot') await pointBeatAt(slug, beatId, asset.id);
   return loadReel(slug);
 }
 
 async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<void> {
   const [width, height] = REEL_RATIOS[reel.ratio];
+  // A hero shot only leaves this machine when heroProvider says so; the default keeps
+  // every generation on the local ComfyUI.
+  const useHiggsfield = req.hero && getSettings().heroProvider === 'higgsfield';
   const asset = await addAsset(slug, {
     kind: 'video',
     path: '',
-    origin: req.hero ? 'higgsfield' : 'comfy',
+    origin: useHiggsfield ? 'higgsfield' : 'comfy',
     status: 'queued',
     brief: req.brief,
     width,
@@ -105,7 +118,7 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<
   await pointBeatAt(slug, req.beatId, asset.id);
 
   try {
-    if (req.hero) {
+    if (useHiggsfield) {
       const { url } = await hfGenerateVideo({ prompt: req.brief, seconds: req.seconds });
       const rel = path.join('assets', `${asset.id}.mp4`);
       await downloadTo(url, path.join(reelAssetsDir(slug), `${asset.id}.mp4`));
@@ -121,8 +134,11 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<
       return;
     }
 
-    // ComfyUI animates a still; without one there is nothing to drive image-to-video.
-    const still = reel.assets.find((a) => a.kind === 'image' && a.status === 'ready');
+    // ComfyUI animates a still. Prefer the one dropped for this beat, then any spare.
+    const still =
+      reel.assets.find(
+        (a) => a.kind === 'image' && a.status === 'ready' && a.brief === `still:${req.beatId}`
+      ) ?? reel.assets.find((a) => a.kind === 'image' && a.status === 'ready');
     if (!still) {
       await updateAsset(slug, asset.id, {
         status: 'awaiting-manual',

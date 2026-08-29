@@ -104,7 +104,7 @@ export const ReelSchema = z.object({
   beats: z.array(BeatSchema).min(1),
   vo: z
     .object({
-      provider: z.enum(['higgsfield', 'manual']).default('higgsfield'),
+      provider: z.enum(['local', 'higgsfield', 'manual']).default('local'),
       voiceId: z.string().default(''),
       file: z.string().default('vo.mp3'),
       durationSec: z.number().default(0),

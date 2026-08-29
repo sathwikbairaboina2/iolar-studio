@@ -13,6 +13,10 @@ export type Settings = {
   whisperModel: string;
   whisperDevice: 'cuda' | 'cpu';
   i2vModel: string;
+  voiceProvider: 'piper' | 'sapi' | 'higgsfield' | 'manual';
+  piperVoice: string;
+  piperDataDir: string;
+  heroProvider: 'comfy' | 'higgsfield';
   reelFps: number;
   reelRatio: string;
   reelPattern: string;
@@ -31,6 +35,11 @@ const DEFAULTS: Settings = {
   whisperModel: 'small',
   whisperDevice: 'cpu',
   i2vModel: '',
+  // Local by default: no cloud generation happens unless it is turned on explicitly.
+  voiceProvider: 'piper',
+  piperVoice: 'en_US-ryan-high',
+  piperDataDir: 'models/piper',
+  heroProvider: 'comfy',
   reelFps: 30,
   reelRatio: '9:16',
   reelPattern: 'armand',

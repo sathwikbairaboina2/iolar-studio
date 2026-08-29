@@ -28,13 +28,14 @@ const WORDS = [
   { w: 'four.', start: 1.1, end: 1.5 },
 ];
 
+/** The local engine is the default path, so that is what these mock. */
 function mockTts() {
-  vi.doMock('@/lib/higgsfield/client', () => ({
-    hfGenerateAudio: vi.fn().mockResolvedValue({ url: 'https://cdn/vo.mp3' }),
-    downloadTo: vi.fn(async (_u: string, dest: string) => {
+  vi.doMock('@/lib/reel/tts', () => ({
+    speak: vi.fn(async (_text: string, dest: string) => {
       writeFileSync(dest, 'audio');
+      return { provider: 'piper' };
     }),
-    HiggsfieldUnavailableError: class extends Error {},
+    TtsUnavailableError: class extends Error {},
   }));
   vi.doMock('@/lib/reel/probe', () => ({
     ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 1.5, width: 0, height: 0, fps: 0, hasAudio: true }),
@@ -49,7 +50,7 @@ describe('voice stage', () => {
     expect(voScript(await loadReel('grok'))).toBe('One two. Three four.');
   });
 
-  it('downloads the TTS audio, aligns it and stores the words', async () => {
+  it('speaks the script locally, aligns it and stores the words', async () => {
     await seed();
     mockTts();
     vi.doMock('@/lib/reel/align', () => ({
@@ -60,8 +61,36 @@ describe('voice stage', () => {
     const reel = await synthesizeVoice('grok');
     expect(reel.vo.words).toHaveLength(4);
     expect(reel.vo.durationSec).toBeCloseTo(1.5, 3);
+    expect(reel.vo.provider).toBe('local');
+    expect(reel.vo.voiceId).toBe('piper');
     const { reelWordsFile } = await import('@/lib/paths');
     expect(existsSync(reelWordsFile('grok'))).toBe(true);
+  });
+
+  it('only calls higgsfield when the setting names it', async () => {
+    await seed();
+    const hfGenerateAudio = vi.fn().mockResolvedValue({ url: 'https://cdn/vo.mp3' });
+    vi.doMock('@/lib/higgsfield/client', () => ({
+      hfGenerateAudio,
+      downloadTo: vi.fn(async (_u: string, dest: string) => {
+        writeFileSync(dest, 'audio');
+      }),
+      HiggsfieldUnavailableError: class extends Error {},
+    }));
+    vi.doMock('@/lib/reel/probe', () => ({
+      ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 1.5, width: 0, height: 0, fps: 0, hasAudio: true }),
+    }));
+    vi.doMock('@/lib/reel/align', () => ({
+      alignVoice: vi.fn().mockResolvedValue(WORDS),
+      WhisperUnavailableError: class extends Error {},
+    }));
+
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ voiceProvider: 'higgsfield' });
+    const { synthesizeVoice } = await import('@/lib/reel/voice');
+    const reel = await synthesizeVoice('grok');
+    expect(hfGenerateAudio).toHaveBeenCalled();
+    expect(reel.vo.provider).toBe('higgsfield');
   });
 
   it('passes the script to alignment as the decoder context', async () => {

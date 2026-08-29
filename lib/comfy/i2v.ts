@@ -44,6 +44,23 @@ export async function i2vAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * Wraps a shot brief into a prompt MiniMax H3 will not try to type out.
+ *
+ * The model renders text: fed a bare direction like "slow, steady push in", it burns those
+ * words into the frame as a caption, which then degrades into garbled letters over the clip.
+ * The brief is stated as a scene, and on-screen text is ruled out explicitly.
+ */
+export function scenePrompt(brief: string): string {
+  const scene = brief.trim().replace(/\s+/g, ' ');
+  return [
+    `Live footage of: ${scene}.`,
+    'Camera moves slowly and steadily. The existing content stays sharp, legible and unchanged.',
+    'Do not add or alter any text. No captions, no subtitles, no titles, no watermarks, no logos.',
+    'No cuts, no transitions, no people entering the frame.',
+  ].join(' ');
+}
+
 export function slotOverrides(o: {
   imageName: string;
   brief: string;
@@ -55,7 +72,7 @@ export function slotOverrides(o: {
 }): string[] {
   return [
     `${I2V_SLOTS.image}=${JSON.stringify(o.imageName)}`,
-    `${I2V_SLOTS.prompt}=${JSON.stringify(o.brief)}`,
+    `${I2V_SLOTS.prompt}=${JSON.stringify(scenePrompt(o.brief))}`,
     `${I2V_SLOTS.seed}=${o.seed}`,
     `${I2V_SLOTS.seconds}=${o.seconds}`,
     `${I2V_SLOTS.aspect}=${JSON.stringify(ASPECTS[o.ratio] ?? ASPECTS['9:16'])}`,
@@ -81,7 +98,7 @@ export async function writeParameterisedWorkflow(o: I2vOpts & { prefix: string }
     seconds: o.seconds,
     seed: o.seed,
     ratio: o.ratio ?? '9:16',
-    megapixels: o.megapixels ?? 0.4,
+    megapixels: o.megapixels ?? 0.9,
     prefix: o.prefix,
   });
   const { code, stderr } = await run('comfy', ['workflow', 'set-slot', dest, ...overrides], {

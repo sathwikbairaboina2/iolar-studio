@@ -100,3 +100,33 @@ describe('comfy image-to-video', () => {
     expect(uploadImage).toHaveBeenCalled();
   });
 });
+
+describe('scene prompting', () => {
+  it('states the brief as a scene and rules out the text the model would otherwise draw', async () => {
+    const { scenePrompt } = await import('@/lib/comfy/i2v');
+    const p = scenePrompt('slow, steady push in on a phone chat interface');
+    expect(p).toContain('Live footage of: slow, steady push in on a phone chat interface.');
+    expect(p).toMatch(/no captions/i);
+    expect(p).toMatch(/no subtitles/i);
+    expect(p).toMatch(/do not add or alter any text/i);
+  });
+
+  it('sends the wrapped prompt to the workflow, not the bare brief', async () => {
+    const { slotOverrides, scenePrompt } = await import('@/lib/comfy/i2v');
+    const out = slotOverrides({
+      imageName: 'shot.png', brief: 'chat list UI', seconds: 4, seed: 1,
+      ratio: '9:16', megapixels: 0.9, prefix: 'video/x',
+    }).join(' ');
+    expect(out).toContain('Live footage of: chat list UI.');
+    expect(out).toContain(JSON.stringify(scenePrompt('chat list UI')).slice(1, 40));
+  });
+
+  it('asks for enough pixels to scale into a 1080x1920 frame', async () => {
+    const { writeParameterisedWorkflow } = await import('@/lib/comfy/i2v');
+    const { readFileSync } = await import('fs');
+    const out = await writeParameterisedWorkflow({
+      imagePath: 'shot.png', brief: 'x', seconds: 4, seed: 1, prefix: 'video/x',
+    });
+    expect(readFileSync(out, 'utf8')).toContain('0.9');
+  }, 120_000);
+});

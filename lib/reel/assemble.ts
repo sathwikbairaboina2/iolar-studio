@@ -25,6 +25,33 @@ export function beatSpans(reel: Reel): Map<string, { start: number; end: number 
  *  Whisper does emit words whose start equals their end, usually at the very end of a take. */
 export const MIN_CUE_SEC = 0.12;
 
+/**
+ * The script's own words, carrying the timings the recogniser found.
+ *
+ * Captions must read like the script, not like a transcript: the voiceover was synthesised
+ * FROM the script, so whisper's text is only ever a lossy round trip of it — it heard
+ * "Rock Bot" for "Grok Bot". Timings are all we want from it. Word counts are compared per
+ * beat, and a beat whose counts disagree keeps the recogniser's text rather than risk
+ * pairing the wrong word with the wrong moment.
+ */
+export function scriptAlignedWords(reel: Reel): Word[] {
+  const out: Word[] = [];
+  let i = 0;
+  for (const beat of reel.beats) {
+    const tokens = beat.text.trim().split(/\s+/).filter(Boolean);
+    const heard = reel.vo.words.slice(i, i + tokens.length);
+    i += tokens.length;
+    if (!heard.length) continue;
+    out.push(
+      ...(heard.length === tokens.length
+        ? heard.map((w, n) => ({ ...w, w: tokens[n] }))
+        : heard)
+    );
+  }
+  // Anything the recogniser found past the end of the script still needs to be captioned.
+  return [...out, ...reel.vo.words.slice(i)];
+}
+
 export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
   const [, maxW] = pattern.caption.wordsPerBeat;
   const [, maxSec] = pattern.pacing.captionBeatSec;
@@ -127,7 +154,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     cursor = clips.at(-1)!.end;
   }
 
-  const generated = groupCaptions(reel.vo.words, pattern)
+  const generated = groupCaptions(scriptAlignedWords(reel), pattern)
     .filter((c) => !lockedCaptions.some((l) => c.start < l.end && l.start < c.end))
     .map((c, i) => ({ ...c, id: `k${lockedCaptions.length + i + 1}` }));
   const captions = [...lockedCaptions, ...generated];
