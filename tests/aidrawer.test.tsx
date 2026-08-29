@@ -47,7 +47,7 @@ describe('AiDrawer', () => {
     await waitFor(() => expect(screen.getByText('earlier message')).toBeTruthy());
 
     fireEvent.change(screen.getByPlaceholderText(/fit this into/), { target: { value: 'change heading' } });
-    fireEvent.click(screen.getByLabelText('send'));
+    fireEvent.click(screen.getByLabelText('send-request'));
 
     await waitFor(() => expect(screen.getByText(/Proposed changes to 1 slide/)).toBeTruthy());
     expect(screen.getByText(/CHANGED/)).toBeTruthy();

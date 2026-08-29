@@ -37,7 +37,7 @@ export default function AiDrawer({
   }, [open, slug, prefill]);
 
   useEffect(() => {
-    bodyRef.current?.scrollTo({ top: bodyRef.current.scrollHeight });
+    bodyRef.current?.scrollTo?.({ top: bodyRef.current.scrollHeight });
   }, [history, diff, busy]);
 
   const send = async () => {
@@ -146,7 +146,7 @@ export default function AiDrawer({
             autoSize={{ minRows: 1, maxRows: 4 }}
             disabled={busy}
           />
-          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={busy} aria-label="send" />
+          <Button type="primary" icon={<SendOutlined />} onClick={send} loading={busy} aria-label="send-request" />
         </div>
       </Drawer>
     </>
