@@ -19,6 +19,17 @@ export type ShotRequest = {
 };
 
 /**
+ * Shot kinds a video model may generate.
+ *
+ * `screen` is excluded on purpose. A screen recording is mostly text, and an image-to-video
+ * model redraws text rather than preserving it — a UI screenshot comes back with the words
+ * melted into plausible-looking nonsense. The same rule the carousels are built on applies
+ * here: diffusion never renders text. Screen beats keep their screenshot and get a camera
+ * move over it, which is also what the reference reel does with its captures.
+ */
+export const GENERATABLE: Beat['shot']['kind'][] = ['broll', 'talking-head'];
+
+/**
  * Beats still needing footage. Title beats are overlays, not clips, so they never queue.
  *
  * A beat that already points at an asset is left alone whatever its state — including
@@ -33,6 +44,7 @@ export function planShots(reel: Reel, shotSec: [number, number]): ShotRequest[] 
 
   for (const beat of reel.beats) {
     if (beat.shot.kind === 'title') continue;
+    if (!GENERATABLE.includes(beat.shot.kind)) continue;
     const id = beat.shot.assetId;
     if (id && known.has(id)) continue;
     const span = spans.get(beat.id);
@@ -164,8 +176,27 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<
   }
 }
 
+/**
+ * Promotes each screen beat's own screenshot to being its shot.
+ *
+ * Nothing is generated for these: the still carries the text intact and ASSEMBLE gives it a
+ * camera move, so the UI stays readable.
+ */
+export async function useStillsForScreens(slug: string): Promise<Reel> {
+  const reel = await loadReel(slug);
+  for (const beat of reel.beats) {
+    if (beat.shot.kind !== 'screen' || beat.shot.assetId) continue;
+    const still = reel.assets.find(
+      (a) => a.kind === 'image' && a.status === 'ready' && a.brief === `still:${beat.id}`
+    );
+    if (still) await pointBeatAt(slug, beat.id, still.id);
+  }
+  return loadReel(slug);
+}
+
 /** Queues every beat that still needs footage. Idempotent: pending beats are skipped. */
 export async function runShots(slug: string): Promise<Reel> {
+  await useStillsForScreens(slug);
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
   for (const req of planShots(reel, pattern.pacing.shotSec)) {

@@ -77,3 +77,36 @@ describe('motion', () => {
     expect(f).toContain("z='1'");
   });
 });
+
+describe('vertical pans read as a scroll', () => {
+  it('travels down the frame over the clip', async () => {
+    const { motionScaleAt } = await import('@/lib/reel/motion');
+    const up = { type: 'pan-up' as const, strength: 0.3, origin: [0.5, 0.5] as [number, number] };
+    expect(motionScaleAt(up, 0).ty).toBeCloseTo(0.15, 5);
+    expect(motionScaleAt(up, 1).ty).toBeCloseTo(-0.15, 5);
+    expect(motionScaleAt(up, 0.5).tx).toBe(0);
+    // zoomed in throughout, so the travel never exposes an edge
+    expect(motionScaleAt(up, 0.5).scale).toBeCloseTo(1.3, 5);
+  });
+
+  it('pan-down is pan-up reversed', async () => {
+    const { motionScaleAt } = await import('@/lib/reel/motion');
+    const down = { type: 'pan-down' as const, strength: 0.3, origin: [0.5, 0.5] as [number, number] };
+    expect(motionScaleAt(down, 0).ty).toBeCloseTo(-0.15, 5);
+    expect(motionScaleAt(down, 1).ty).toBeCloseTo(0.15, 5);
+  });
+
+  it('moves the ffmpeg crop window vertically, not horizontally', async () => {
+    const { motionFfmpeg } = await import('@/lib/reel/motion');
+    const f = motionFfmpeg(
+      { type: 'pan-up', strength: 0.3, origin: [0.5, 0.5] },
+      { fps: 30, frames: 90, width: 1080, height: 1920 }
+    );
+    const y = f.match(/y='([^']+)'/)![1];
+    const x = f.match(/x='([^']+)'/)![1];
+    const atY = (on: number) => Function('ih', 'zoom', 'on', `return ${y};`)(1000, 1.3, on) as number;
+    const atX = (on: number) => Function('iw', 'zoom', 'on', `return ${x};`)(1000, 1.3, on) as number;
+    expect(atY(0)).toBeGreaterThan(atY(89));
+    expect(atX(0)).toBeCloseTo(atX(89), 5);
+  });
+});

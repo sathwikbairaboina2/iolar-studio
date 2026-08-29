@@ -54,6 +54,8 @@ export function buildExportArgs(input: ExportInput): string[] {
     const isStill = /\.(png|jpe?g|webp)$/i.test(file);
     const needsXfade = i > 0 && clip.transition === 'crossfade';
     const dur = r3(clip.end - clip.start + (needsXfade ? XFADE_SEC : 0));
+    // A still has no timeline of its own, so it is looped for exactly as long as the
+    // clip needs and read from the start — its srcIn is meaningless.
     if (isStill) args.push('-loop', '1', '-t', String(dur));
     args.push('-i', file);
     clipInput.push(inputIndex++);
@@ -81,11 +83,16 @@ export function buildExportArgs(input: ExportInput): string[] {
           `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${pattern.letterbox.bg}`
         : `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
 
+    const file = assetPaths.get(clip.assetId)!;
+    const srcIn = /\.(png|jpe?g|webp)$/i.test(file) ? 0 : r3(clip.srcIn);
+
     filters.push(
       `[${clipInput[i]}:v]` +
-        `trim=start=${r3(clip.srcIn)}:duration=${dur},setpts=PTS-STARTPTS,` +
-        // Clone the last frame if the source runs out, so a short asset cannot shorten the reel.
-        `tpad=stop_mode=clone:stop_duration=${dur},trim=duration=${dur},setpts=PTS-STARTPTS,` +
+        // Pad BEFORE the cut, not after: a clip that starts partway into a short source
+        // would otherwise trim past the end and yield no frames at all, silently
+        // shortening the reel. Cloning the last frame first guarantees the cut lands.
+        `tpad=stop_mode=clone:stop_duration=${r3(srcIn + dur + 1)},` +
+        `trim=start=${srcIn}:duration=${dur},setpts=PTS-STARTPTS,` +
         `fps=${fps},${fit},${motionFfmpeg(clip.motion, { fps, frames, width, height })},` +
         `format=yuv420p,setsar=1[v${i}]`
     );

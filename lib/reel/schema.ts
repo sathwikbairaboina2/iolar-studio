@@ -8,7 +8,9 @@ export const REEL_RATIOS: Record<string, [number, number]> = {
 };
 
 export const SHOT_KINDS = ['title', 'talking-head', 'screen', 'broll'] as const;
-export const MOTION_TYPES = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'hold'] as const;
+export const MOTION_TYPES = [
+  'zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'hold',
+] as const;
 
 const ShotSchema = z.object({
   kind: z.enum(SHOT_KINDS),

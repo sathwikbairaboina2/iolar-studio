@@ -282,3 +282,64 @@ describe('loudness', () => {
     expect(Math.abs(measured - TARGET_LUFS)).toBeLessThan(2.5);
   }, 300_000);
 });
+
+describe('clips that start partway into their source', () => {
+  it('pads before the cut, so a split beat cannot shorten the reel', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture({
+      timeline: {
+        // the second clip reads from 1.5s into a source that is only 1.5s long
+        clips: [clip('c1', 0, 1.5), clip('c2', 1.5, 3, { srcIn: 1.5 })],
+        captions: [], overlays: [],
+      },
+    });
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(), voPath: null, musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    const graph = args[args.indexOf('-filter_complex') + 1];
+    // the pad has to come first; trimming an exhausted stream yields no frames at all
+    expect(graph).toMatch(/tpad=stop_mode=clone:stop_duration=[\d.]+,trim=start=1\.5/);
+  });
+
+  it('reads a still from its start, since a still has no source timeline', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture({
+      timeline: { clips: [clip('c1', 0, 1.5, { srcIn: 4 })], captions: [], overlays: [] },
+    });
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/frame.png']]),
+      overlayPaths: new Map(), voPath: null, musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    const graph = args[args.indexOf('-filter_complex') + 1];
+    expect(graph).toContain('trim=start=0:duration=1.5');
+  });
+
+  it('encodes a split beat to its full length', async () => {
+    if (!ffmpeg) return;
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { makeTestClip, ffprobeMedia } = await import('@/lib/reel/probe');
+    const { reelAssetsDir } = await import('@/lib/paths');
+    const { exportReel } = await import('@/lib/reel/ffmpeg');
+
+    await createReel('split', { title: 'Split' });
+    // a 2s source carrying two 2s clips: the second starts where the source ends
+    await makeTestClip(path.join(reelAssetsDir('split'), 'a1.mp4'), {
+      seconds: 2, width: 720, height: 1280, fps: 30, audio: false,
+    });
+    const reel = await loadReel('split');
+    await saveReel('split', {
+      ...reel, fps: 30,
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'user', status: 'ready', brief: '' }],
+      timeline: {
+        ...reel.timeline,
+        clips: [clip('c1', 0, 2), clip('c2', 2, 4, { srcIn: 2 })],
+        captions: [], overlays: [],
+      },
+    });
+    const out = await exportReel('split');
+    expect((await ffprobeMedia(out.path)).durationSec).toBeCloseTo(4, 0);
+  }, 300_000);
+});

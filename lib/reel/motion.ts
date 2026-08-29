@@ -20,6 +20,11 @@ export function motionScaleAt(m: Motion, progress: number): MotionFrame {
       return { scale: 1 + s, tx: s / 2 - s * p, ty: 0 };
     case 'pan-right':
       return { scale: 1 + s, tx: -s / 2 + s * p, ty: 0 };
+    // Vertical pans read as scrolling a page — the move a screen recording actually makes.
+    case 'pan-up':
+      return { scale: 1 + s, tx: 0, ty: s / 2 - s * p };
+    case 'pan-down':
+      return { scale: 1 + s, tx: 0, ty: -s / 2 + s * p };
     case 'hold':
     default:
       return { scale: 1, tx: 0, ty: 0 };
@@ -54,10 +59,13 @@ export function motionFfmpeg(
   const end = motionScaleAt(m, 1);
   const still = m.type === 'hold' || m.strength === 0;
   const z = still ? `'1'` : `'${round(start.scale)}+(${round(end.scale - start.scale)})*on/${n}'`;
-  const panPerFrame = round((end.tx - start.tx) / n);
+  const panXPerFrame = round((end.tx - start.tx) / n);
+  const panYPerFrame = round((end.ty - start.ty) / n);
   const x = still
     ? `'(iw-iw/zoom)*${round(m.origin[0])}'`
-    : `'(iw-iw/zoom)*${round(m.origin[0])}+(${round(start.tx)}+${panPerFrame}*on)*iw'`;
-  const y = `'(ih-ih/zoom)*${round(m.origin[1])}'`;
+    : `'(iw-iw/zoom)*${round(m.origin[0])}+(${round(start.tx)}+${panXPerFrame}*on)*iw'`;
+  const y = still
+    ? `'(ih-ih/zoom)*${round(m.origin[1])}'`
+    : `'(ih-ih/zoom)*${round(m.origin[1])}+(${round(start.ty)}+${panYPerFrame}*on)*ih'`;
   return `zoompan=z=${z}:x=${x}:y=${y}:d=1:s=${width}x${height}:fps=${fps}`;
 }

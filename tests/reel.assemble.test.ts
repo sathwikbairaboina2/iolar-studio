@@ -260,3 +260,22 @@ describe('captions read the script, not the transcript', () => {
     expect(scriptAlignedWords(reel).map((w) => w.w)).toEqual(['one', 'two', 'extra']);
   });
 });
+
+describe('screen beats scroll, footage beats drift', () => {
+  it('gives a screen beat a vertical pan, and a bigger one', async () => {
+    const { assemble, SCREEN_MOTION_GAIN } = await import('@/lib/reel/assemble');
+    const tl = assemble({ reel: await baseReel(), pattern: PATTERN });
+    const screen = tl.clips.find((c) => c.beatId === 'b2')!; // the screen beat
+    expect(['pan-up', 'pan-down']).toContain(screen.motion.type);
+    expect(screen.motion.strength).toBeGreaterThan(PATTERN.motion.strength * (SCREEN_MOTION_GAIN - 1));
+  });
+
+  it('leaves footage beats on the gentler drift', async () => {
+    const { assemble } = await import('@/lib/reel/assemble');
+    const tl = assemble({ reel: await baseReel(), pattern: PATTERN });
+    for (const c of tl.clips.filter((c) => c.beatId !== 'b2')) {
+      expect(['zoom-in', 'zoom-out', 'pan-left', 'pan-right']).toContain(c.motion.type);
+      expect(c.motion.strength).toBeLessThan(PATTERN.motion.strength * 1.5);
+    }
+  });
+});

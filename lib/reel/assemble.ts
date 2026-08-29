@@ -90,14 +90,29 @@ export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
   return out;
 }
 
-function pickMotion(rand: () => number, pattern: Pattern, prev?: Clip['motion']): Clip['motion'] {
-  const kinds: Clip['motion']['type'][] = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right'];
-  const choices = prev ? kinds.filter((k) => k !== prev.type) : kinds;
-  const type = choices[Math.floor(rand() * choices.length)];
+/**
+ * A screen shot is a frozen capture, so its move has to do the work a real recording
+ * would: scrolling. Vertical pans, and further than a b-roll drift, so a page visibly
+ * travels instead of merely breathing.
+ */
+const SCREEN_MOTIONS: Clip['motion']['type'][] = ['pan-up', 'pan-down'];
+const FOOTAGE_MOTIONS: Clip['motion']['type'][] = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right'];
+export const SCREEN_MOTION_GAIN = 2.2;
+
+function pickMotion(
+  rand: () => number,
+  pattern: Pattern,
+  isScreen: boolean,
+  prev?: Clip['motion']
+): Clip['motion'] {
+  const kinds = isScreen ? SCREEN_MOTIONS : FOOTAGE_MOTIONS;
+  const choices = kinds.length > 1 && prev ? kinds.filter((k) => k !== prev.type) : kinds;
+  const type = choices[Math.floor(rand() * choices.length)] ?? kinds[0];
   const jitter = (rand() - 0.5) * 0.12;
+  const gain = isScreen ? SCREEN_MOTION_GAIN : 1;
   return {
     type,
-    strength: Math.round(pattern.motion.strength * (0.8 + rand() * 0.4) * 1e5) / 1e5,
+    strength: Math.round(pattern.motion.strength * gain * (0.8 + rand() * 0.4) * 1e5) / 1e5,
     origin: [0.5, Math.round((0.45 + jitter) * 1e5) / 1e5],
   };
 }
@@ -135,8 +150,9 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     const total = Math.max(0.2, span.end - start);
     const pieces = Math.max(1, Math.ceil(total / maxShot));
     const each = total / pieces;
+    const isScreen = beat.shot.kind === 'screen';
     for (let p = 0; p < pieces; p++) {
-      const motion = pickMotion(rand, pattern, prevMotion);
+      const motion = pickMotion(rand, pattern, isScreen, prevMotion);
       prevMotion = motion;
       clips.push({
         id: `c${clips.length + 1}`,
@@ -145,7 +161,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
         start: r3(start + p * each),
         end: r3(start + (p + 1) * each),
         srcIn: r3(p * each),
-        fit: beat.shot.kind === 'screen' ? 'contain' : 'cover',
+        fit: 'cover',
         motion,
         transition: pattern.transitions[clips.length % pattern.transitions.length],
         locked: false,

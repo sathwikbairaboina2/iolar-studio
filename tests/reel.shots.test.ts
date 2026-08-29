@@ -58,7 +58,8 @@ describe('shot planning', () => {
     const reel = await seed();
     const { planShots } = await import('@/lib/reel/shots');
     const reqs = planShots(reel, [3, 6]);
-    expect(reqs.map((r) => r.beatId)).toEqual(['b2', 'b3']);
+    // b1 is a title (an overlay) and b2 is a screen beat (kept as a screenshot)
+    expect(reqs.map((r) => r.beatId)).toEqual(['b3']);
     for (const r of reqs) {
       expect(r.seconds).toBeGreaterThanOrEqual(3);
       expect(r.seconds).toBeLessThanOrEqual(6);
@@ -119,9 +120,11 @@ describe('shot generation', () => {
     await seed();
     mockComfy();
     mockHf();
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ heroProvider: 'comfy' });
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
-    const beat = reel.beats.find((b) => b.id === 'b2')!;
+    const beat = reel.beats.find((b) => b.id === 'b3')!;
     const asset = reel.assets.find((a) => a.id === beat.shot.assetId)!;
     expect(asset.status).toBe('awaiting-manual');
     expect(asset.error).toMatch(/screenshot/i);
@@ -131,9 +134,11 @@ describe('shot generation', () => {
     await seed();
     mockComfy({ i2vAvailable: vi.fn().mockResolvedValue(false) });
     mockHf();
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ heroProvider: 'comfy' });
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
-    const beat = reel.beats.find((b) => b.id === 'b2')!;
+    const beat = reel.beats.find((b) => b.id === 'b3')!;
     const asset = reel.assets.find((a) => a.id === beat.shot.assetId)!;
     expect(asset.status).toBe('awaiting-manual');
     expect(asset.error).toMatch(/ComfyUI/);
@@ -150,7 +155,6 @@ describe('shot generation', () => {
     const hero = reel.assets.find((a) => a.origin === 'higgsfield')!;
     expect(hero.status).toBe('failed');
     expect(hero.error).toMatch(/credits/);
-    expect(reel.assets).toHaveLength(2);
   });
 
   it('is idempotent: a second run queues nothing new', async () => {
@@ -171,11 +175,11 @@ describe('manual drops', () => {
       ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 0, width: 1080, height: 1920, fps: 0, hasAudio: false }),
     }));
     const { attachAsset, planShots } = await import('@/lib/reel/shots');
-    const reel = await attachAsset('grok', 'b2', { name: 'screenshot.png', bytes: Buffer.from('img') });
-    expect(reel.assets[0]).toMatchObject({ kind: 'image', brief: 'still:b2' });
-    expect(reel.beats.find((b) => b.id === 'b2')!.shot.assetId).toBeUndefined();
+    const reel = await attachAsset('grok', 'b3', { name: 'screenshot.png', bytes: Buffer.from('img') });
+    expect(reel.assets[0]).toMatchObject({ kind: 'image', brief: 'still:b3' });
+    expect(reel.beats.find((b) => b.id === 'b3')!.shot.assetId).toBeUndefined();
     // still queued, because the still is what ComfyUI will animate
-    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b2');
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b3');
   });
 
   it('uses a dropped image as the shot itself when asked', async () => {
@@ -184,9 +188,9 @@ describe('manual drops', () => {
       ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 0, width: 1080, height: 1920, fps: 0, hasAudio: false }),
     }));
     const { attachAsset, planShots } = await import('@/lib/reel/shots');
-    const reel = await attachAsset('grok', 'b2', { name: 'card.png', bytes: Buffer.from('img') }, 'shot');
-    expect(reel.beats.find((b) => b.id === 'b2')!.shot.assetId).toBe(reel.assets[0].id);
-    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).not.toContain('b2');
+    const reel = await attachAsset('grok', 'b3', { name: 'card.png', bytes: Buffer.from('img') }, 'shot');
+    expect(reel.beats.find((b) => b.id === 'b3')!.shot.assetId).toBe(reel.assets[0].id);
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).not.toContain('b3');
   });
 
   it('attaches a dropped clip to its beat and wins over generation', async () => {
@@ -195,13 +199,13 @@ describe('manual drops', () => {
       ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 4, width: 1080, height: 1920, fps: 30, hasAudio: false }),
     }));
     const { attachAsset } = await import('@/lib/reel/shots');
-    const reel = await attachAsset('grok', 'b2', { name: 'shot.mp4', bytes: Buffer.from('video') });
-    const beat = reel.beats.find((b) => b.id === 'b2')!;
+    const reel = await attachAsset('grok', 'b3', { name: 'shot.mp4', bytes: Buffer.from('video') });
+    const beat = reel.beats.find((b) => b.id === 'b3')!;
     const asset = reel.assets.find((a) => a.id === beat.shot.assetId)!;
     expect(asset).toMatchObject({ origin: 'user', status: 'ready', durationSec: 4 });
 
     const { planShots } = await import('@/lib/reel/shots');
-    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toEqual(['b3']);
+    expect(planShots(reel, [3, 6])).toEqual([]);
   });
 
   it('still attaches a file ffprobe cannot read', async () => {
@@ -210,7 +214,7 @@ describe('manual drops', () => {
       ffprobeMedia: vi.fn().mockRejectedValue(new Error('not media')),
     }));
     const { attachAsset } = await import('@/lib/reel/shots');
-    const reel = await attachAsset('grok', 'b2', { name: 'weird.mp4', bytes: Buffer.from('x') });
+    const reel = await attachAsset('grok', 'b3', { name: 'weird.mp4', bytes: Buffer.from('x') });
     expect(reel.assets[0].status).toBe('ready');
   });
 });
@@ -225,7 +229,7 @@ describe('shot refresh', () => {
       assets: [
         { id: 'a1', kind: 'video', path: '', origin: 'comfy', status: 'running', jobId: 'p-1', brief: '' },
       ],
-      beats: reel.beats.map((b) => (b.id === 'b2' ? { ...b, shot: { ...b.shot, assetId: 'a1' } } : b)),
+      beats: reel.beats.map((b) => (b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a1' } } : b)),
     });
     mockComfy({
       jobState: vi.fn().mockResolvedValue('ready'),
@@ -256,5 +260,35 @@ describe('shot refresh', () => {
     mockComfy({ jobState: vi.fn().mockResolvedValue('failed') });
     const { refreshShots } = await import('@/lib/reel/shots');
     expect((await refreshShots('grok')).assets[0].status).toBe('failed');
+  });
+});
+
+describe('diffusion never renders text', () => {
+  it('does not queue screen beats for generation', async () => {
+    const reel = await seed();
+    const { planShots } = await import('@/lib/reel/shots');
+    // b2 is the screen beat; a video model would redraw its UI text into nonsense
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).not.toContain('b2');
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b3');
+  });
+
+  it('gives a screen beat its own screenshot as the shot instead', async () => {
+    await seed();
+    vi.doMock('@/lib/reel/probe', () => ({
+      ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 0, width: 1080, height: 1920, fps: 0, hasAudio: false }),
+    }));
+    const { attachAsset, useStillsForScreens } = await import('@/lib/reel/shots');
+    await attachAsset('grok', 'b2', { name: 'ui.png', bytes: Buffer.from('img') });
+    const reel = await useStillsForScreens('grok');
+    const beat = reel.beats.find((b) => b.id === 'b2')!;
+    const asset = reel.assets.find((a) => a.id === beat.shot.assetId)!;
+    expect(asset).toMatchObject({ kind: 'image', status: 'ready' });
+  });
+
+  it('leaves a screen beat alone when it has no screenshot yet', async () => {
+    await seed();
+    const { useStillsForScreens } = await import('@/lib/reel/shots');
+    const reel = await useStillsForScreens('grok');
+    expect(reel.beats.find((b) => b.id === 'b2')!.shot.assetId).toBeUndefined();
   });
 });
