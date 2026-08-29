@@ -11,7 +11,7 @@ beforeEach(() => {
 describe('local text to speech', () => {
   it('defaults to the local engine, so a reel never reaches a paid service by itself', async () => {
     const { getSettings } = await import('@/lib/settings');
-    expect(getSettings().voiceProvider).toBe('piper');
+    expect(getSettings().voiceProvider).toBe('kokoro');
     expect(getSettings().heroProvider).toBe('comfy');
   });
 
@@ -48,13 +48,13 @@ describe('local text to speech', () => {
   });
 
   it('really speaks a line and leaves an mp3 behind', async () => {
-    const { piperAvailable, speak } = await import('@/lib/reel/tts');
-    if (!(await piperAvailable())) return;
+    const { kokoroAvailable, piperAvailable, speak } = await import('@/lib/reel/tts');
+    if (!(await kokoroAvailable()) && !(await piperAvailable())) return;
     const { ffprobeMedia } = await import('@/lib/reel/probe');
     const { existsSync } = await import('fs');
     const out = path.join(process.env.IOLAR_DATA_DIR!, 'vo.mp3');
     const { provider } = await speak('Grok Bot ships today.', out);
-    expect(provider).toBe('piper');
+    expect(['kokoro', 'piper']).toContain(provider);
     expect(existsSync(out)).toBe(true);
     const info = await ffprobeMedia(out);
     expect(info.durationSec).toBeGreaterThan(0.5);
@@ -62,4 +62,24 @@ describe('local text to speech', () => {
     // the intermediate wav is cleaned up
     expect(existsSync(out.replace('.mp3', '.wav'))).toBe(false);
   }, 180_000);
+});
+
+describe('voice engine order', () => {
+  it('falls back down the chain rather than failing outright', async () => {
+    const { saveSettings } = await import('@/lib/settings');
+    // point kokoro at nothing; the next engine down should still produce audio
+    saveSettings({ voiceProvider: 'kokoro', kokoroDir: path.join(tmpdir(), 'no-kokoro-here') });
+    const { kokoroAvailable, piperAvailable, speak } = await import('@/lib/reel/tts');
+    expect(await kokoroAvailable()).toBe(false);
+    if (!(await piperAvailable())) return;
+    const out = path.join(process.env.IOLAR_DATA_DIR!, 'vo.mp3');
+    expect((await speak('Fallback works.', out)).provider).toBe('piper');
+  }, 180_000);
+
+  it('resolves the model files next to the repo', async () => {
+    const { kokoroPaths } = await import('@/lib/reel/tts');
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ kokoroDir: 'models/kokoro' });
+    expect(kokoroPaths().model).toBe(path.join(process.cwd(), 'models', 'kokoro', 'kokoro-v1.0.onnx'));
+  });
 });

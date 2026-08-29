@@ -14,7 +14,10 @@ export type Settings = {
   whisperDevice: 'cuda' | 'cpu';
   i2vModel: string;
   i2vTurbo: boolean;
-  voiceProvider: 'piper' | 'sapi' | 'higgsfield' | 'manual';
+  voiceProvider: 'kokoro' | 'piper' | 'sapi' | 'higgsfield' | 'manual';
+  kokoroDir: string;
+  kokoroVoice: string;
+  kokoroSpeed: number;
   piperVoice: string;
   piperDataDir: string;
   heroProvider: 'comfy' | 'higgsfield';
@@ -38,7 +41,10 @@ const DEFAULTS: Settings = {
   i2vModel: '',
   i2vTurbo: false,
   // Local by default: no cloud generation happens unless it is turned on explicitly.
-  voiceProvider: 'piper',
+  voiceProvider: 'kokoro',
+  kokoroDir: 'models/kokoro',
+  kokoroVoice: 'am_michael',
+  kokoroSpeed: 1.0,
   piperVoice: 'en_US-ryan-high',
   piperDataDir: 'models/piper',
   heroProvider: 'comfy',

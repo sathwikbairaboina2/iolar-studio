@@ -10,7 +10,7 @@ export class TtsUnavailableError extends Error {
   }
 }
 
-export type TtsProvider = 'piper' | 'sapi' | 'manual';
+export type TtsProvider = 'kokoro' | 'piper' | 'sapi' | 'manual';
 
 /**
  * Local text-to-speech.
@@ -18,11 +18,58 @@ export type TtsProvider = 'piper' | 'sapi' | 'manual';
  * ComfyUI has no offline speech model on this machine — every TTS node it exposes is a
  * paid cloud API — so the voiceover is synthesised outside it and stays on this box:
  *
- * - `piper`: a small ONNX neural voice, offline, natural enough to carry a reel
- * - `sapi`: the voice built into Windows, no install at all, noticeably more robotic
+ * - `kokoro`: an 82M ONNX model, the most natural of the three and the one that reads at
+ *   a presenter's pace rather than rushing
+ * - `piper`: smaller and faster, noticeably flatter
+ * - `sapi`: the voice built into Windows, no install at all, plainly robotic
  *
- * Either way the output is a wav, which ffmpeg turns into the mp3 the reel stores.
+ * Each writes a wav, which ffmpeg turns into the mp3 the reel stores.
  */
+
+export function kokoroPaths() {
+  const s = getSettings();
+  const dir = path.isAbsolute(s.kokoroDir) ? s.kokoroDir : path.join(process.cwd(), s.kokoroDir);
+  return {
+    python: s.whisperPython,
+    model: path.join(dir, 'kokoro-v1.0.onnx'),
+    voices: path.join(dir, 'voices-v1.0.bin'),
+    voice: s.kokoroVoice,
+    speed: s.kokoroSpeed,
+  };
+}
+
+export async function kokoroAvailable(): Promise<boolean> {
+  const { python, model, voices } = kokoroPaths();
+  try {
+    await fs.access(model);
+    await fs.access(voices);
+    await fs.access(python);
+    const { code } = await run(python, ['-c', 'import kokoro_onnx'], { timeoutMs: 180_000 });
+    return code === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function synthKokoro(text: string, wavPath: string): Promise<void> {
+  const { python, model, voices, voice, speed } = kokoroPaths();
+  const script = path.join(process.cwd(), 'scripts', 'kokoro_tts.py');
+  const { spawn } = await import('child_process');
+  const child = spawn(python, [script, wavPath, model, voices, voice, String(speed)], {
+    windowsHide: true,
+  });
+  let stderr = '';
+  child.stderr.on('data', (d) => {
+    stderr += d.toString();
+  });
+  child.stdin.write(text);
+  child.stdin.end();
+  const code: number = await new Promise((res, rej) => {
+    child.on('error', rej);
+    child.on('close', (c) => res(c ?? -1));
+  });
+  if (code !== 0) throw new Error(`kokoro exited ${code}: ${stderr.slice(-300)}`);
+}
 
 export function piperPaths() {
   const s = getSettings();
@@ -109,12 +156,21 @@ export async function speak(text: string, mp3Path: string): Promise<{ provider: 
   await fs.mkdir(path.dirname(wav), { recursive: true });
 
   const order: TtsProvider[] =
-    configured === 'sapi' ? ['sapi'] : configured === 'manual' ? [] : ['piper', 'sapi'];
+    configured === 'manual' ? []
+    : configured === 'sapi' ? ['sapi']
+    : configured === 'piper' ? ['piper', 'sapi']
+    : ['kokoro', 'piper', 'sapi'];
 
   const problems: string[] = [];
   for (const provider of order) {
     try {
-      if (provider === 'piper') {
+      if (provider === 'kokoro') {
+        if (!(await kokoroAvailable())) {
+          problems.push('kokoro: model files missing (npm run setup:voice)');
+          continue;
+        }
+        await synthKokoro(text, wav);
+      } else if (provider === 'piper') {
         if (!(await piperAvailable())) {
           problems.push('piper: not installed (npm run setup:voice)');
           continue;
