@@ -13,6 +13,17 @@ export const BookSchema = z.object({
       z.object({
         title: z.string(),
         points: z.array(z.string()).min(1),
+        /** Which reference page this chapter was read from (1-based), when built from references. */
+        source_page: z.number().int().optional(),
+        /** The block sequence that reference page actually used, so our page mirrors its shape. */
+        layout: z
+          .array(
+            z.object({
+              type: z.enum(['heading', 'paragraph', 'bullets', 'sidebox', 'table', 'code', 'diagram', 'callout', 'qa']),
+              note: z.string(),
+            })
+          )
+          .optional(),
       })
     )
     .min(1),
@@ -49,8 +60,14 @@ const BOOK_SHAPE = `Return ONLY this JSON object, no prose and no markdown fence
 {
   "title": string,           // handbook title
   "summary": string,         // 1-2 sentences on what the handbook covers
-  "chapters": [              // ordered; each chapter becomes roughly one slide
-    { "title": string, "points": [string, ...] }   // points = every concept/fact/example that chapter must teach
+  "chapters": [              // ordered; each chapter becomes one slide
+    {
+      "title": string,
+      "points": [string, ...],          // every concept/fact/example that chapter must teach
+      "source_page": number,            // reference page it came from (omit when built from a topic)
+      "layout": [ { "type": "heading"|"paragraph"|"bullets"|"sidebox"|"table"|"code"|"diagram"|"callout"|"qa",
+                    "note": string } ]  // that page's block sequence, top to bottom (omit when built from a topic)
+    }
   ]
 }
 Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Aim for 6-12 points per chapter so a chapter fills a dense handwritten page.`;
@@ -73,8 +90,12 @@ export async function bookFromReferences(slug: string, files: string[]): Promise
     'You are building the syllabus for a tech handbook that will be published as an Instagram carousel of handwritten notes pages.',
     'Reference pages are saved at these paths — READ AND LOOK AT EVERY ONE with the Read tool before answering. Do not skip any:',
     files.map((f) => `- ${f}`).join('\n'),
-    'Extract the COMPLETE topic coverage of the references: every concept, table, comparison, code example, complexity fact, gotcha and tip they teach, in their order. Miss nothing — this syllabus is the contract for what the generated pages must cover.',
-    'Then organise it into chapters. Keep the references\' depth: they pack a dense page per topic.',
+    'Work page by page. ONE CHAPTER PER REFERENCE PAGE, in the same order, so our page N mirrors their page N.',
+    'For each page capture two things:',
+    '1. "points" — every concept, table row, comparison, code example, complexity fact, gotcha and tip that page teaches. Miss nothing; this is the contract for what must be rendered.',
+    '2. "layout" — the block sequence that page actually uses, read top to bottom, as {type, note} pairs. Types: heading, paragraph, bullets, sidebox, table, code, diagram, callout, qa. The note says what that block holds ("comparison table: structure/ordered/mutable/use case", "green box: why data structures", "interview tip callout"). Include EVERY block on the page, including its tables, boxes and code snippets.',
+    'Also set "source_page" to the reference page number (1-based).',
+    'Keep the references\' depth: they pack a dense page per topic.',
     BOOK_SHAPE,
   ].join('\n\n');
   return saveBook(slug, await generateBook(prompt, ['Read']));
