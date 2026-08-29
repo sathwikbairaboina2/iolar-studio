@@ -89,8 +89,12 @@ export function buildExportArgs(input: ExportInput): string[] {
     const clip = timeline.clips[i];
     const out = `[j${i}]`;
     if (clip.transition === 'crossfade') {
+      // concat leaves the accumulator on a 1/1000000 timebase while a fresh clip is on 1/fps,
+      // and xfade refuses inputs whose timebases differ. Normalise both sides first.
       filters.push(
-        `${acc}[v${i}]xfade=transition=fade:duration=${XFADE_SEC}:offset=${r3(accDur - XFADE_SEC)}${out}`
+        `${acc}settb=AVTB[xa${i}]`,
+        `[v${i}]settb=AVTB[xb${i}]`,
+        `[xa${i}][xb${i}]xfade=transition=fade:duration=${XFADE_SEC}:offset=${r3(accDur - XFADE_SEC)}${out}`
       );
     } else {
       filters.push(`${acc}[v${i}]concat=n=2:v=1:a=0${out}`);

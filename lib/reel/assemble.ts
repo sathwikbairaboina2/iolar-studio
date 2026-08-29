@@ -21,6 +21,10 @@ export function beatSpans(reel: Reel): Map<string, { start: number; end: number 
   return spans;
 }
 
+/** A caption still has to be readable, and the schema rejects a zero-length cue.
+ *  Whisper does emit words whose start equals their end, usually at the very end of a take. */
+export const MIN_CUE_SEC = 0.12;
+
 export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
   const [, maxW] = pattern.caption.wordsPerBeat;
   const [, maxSec] = pattern.pacing.captionBeatSec;
@@ -29,11 +33,13 @@ export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
 
   const flush = () => {
     if (!group.length) return;
+    const start = group[0].start;
+    const end = Math.max(group.at(-1)!.end, start + MIN_CUE_SEC);
     out.push({
       id: `k${out.length + 1}`,
       text: group.map((w) => w.w).join(' '),
-      start: r3(group[0].start),
-      end: r3(group.at(-1)!.end),
+      start: r3(start),
+      end: r3(end),
       hidden: false,
       locked: false,
     });

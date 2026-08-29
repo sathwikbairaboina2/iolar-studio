@@ -145,6 +145,40 @@ describe('export filter graph', () => {
 });
 
 describe('real encode', () => {
+  it('encodes a crossfade that follows a cut', async () => {
+    if (!ffmpeg) return;
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { makeTestClip, ffprobeMedia } = await import('@/lib/reel/probe');
+    const { reelAssetsDir } = await import('@/lib/paths');
+    const { exportReel } = await import('@/lib/reel/ffmpeg');
+
+    await createReel('xfade', { title: 'Xfade' });
+    await makeTestClip(path.join(reelAssetsDir('xfade'), 'a1.mp4'), {
+      seconds: 4, width: 720, height: 1280, fps: 30, audio: false,
+    });
+
+    const reel = await loadReel('xfade');
+    await saveReel('xfade', {
+      ...reel,
+      fps: 30,
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'user', status: 'ready', brief: '' }],
+      timeline: {
+        ...reel.timeline,
+        // The third clip is the one that matters: by then the accumulator has been
+        // through a concat, which changes its timebase out from under xfade.
+        clips: [clip('c1', 0, 1), clip('c2', 1, 2), clip('c3', 2, 3, { transition: 'crossfade' })],
+        captions: [],
+        overlays: [],
+      },
+    });
+
+    const out = await exportReel('xfade');
+    const info = await ffprobeMedia(out.path);
+    expect(info.durationSec).toBeCloseTo(3, 0);
+    expect(info.width).toBe(1080);
+  }, 300_000);
+
+
   it('produces a 1080x1920 mp4 of the timeline length with audio and burnt captions', async () => {
     if (!ffmpeg) return;
     const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');

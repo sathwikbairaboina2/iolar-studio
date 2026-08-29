@@ -166,3 +166,40 @@ describe('assemble', () => {
     expect(tl.captions).toEqual([]);
   });
 });
+
+describe('degenerate word timings', () => {
+  it('gives a readable length to a caption built from zero-length words', async () => {
+    const { groupCaptions, MIN_CUE_SEC } = await import('@/lib/reel/assemble');
+    // Whisper emits these at the end of a take: start === end.
+    const words = [
+      { w: 'the', start: 11.5, end: 11.9 },
+      { w: 'server', start: 11.98, end: 11.98 },
+      { w: 'is', start: 11.98, end: 11.98 },
+      { w: 'running.', start: 11.98, end: 11.98 },
+    ];
+    for (const cue of groupCaptions(words, PATTERN)) {
+      expect(cue.end - cue.start).toBeGreaterThanOrEqual(MIN_CUE_SEC - 1e-6);
+    }
+  });
+
+  it('assembles a reel whose tail words all share one timestamp', async () => {
+    const { assemble } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const words = [
+      ...WORDS,
+      { w: 'is', start: 6, end: 6 },
+      { w: 'running.', start: 6, end: 6 },
+    ];
+    const reel = await baseReel();
+    const tl = assemble({
+      reel: {
+        ...reel,
+        beats: [...reel.beats.slice(0, 2), { ...reel.beats[2], text: 'nine ten eleven twelve is running.' }],
+        vo: { ...reel.vo, words },
+      },
+      pattern: PATTERN,
+    });
+    // The schema is the real gate here: it rejects any cue or clip of zero length.
+    expect(() => validateReel({ ...reel, timeline: tl })).not.toThrow();
+  });
+});
