@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { loadPost } from './store';
 import { rendersDir, exportDir } from './paths';
+import { loadReview, reviewIsCurrent } from './verify/review';
 
 export async function packagePost(
   subject: string, chapter: string, part: number
@@ -31,6 +32,17 @@ export async function packagePost(
   } catch (err) {
     if (err instanceof Error && err.message.includes('overflow')) throw err;
     // Missing report: renders exist but no report — allow (legacy), overflow guard ran at render time.
+  }
+
+  // A blocker-severity review finding stops publication until it is cleared.
+  if (await reviewIsCurrent(subject, chapter, part)) {
+    const review = await loadReview(subject, chapter, part);
+    const blockers = review?.findings.filter((f) => f.severity === 'blocker') ?? [];
+    if (blockers.length) {
+      throw new Error(
+        `review has ${blockers.length} blocker(s) — first: ${blockers[0].summary} (page ${blockers[0].page})`
+      );
+    }
   }
 
   const usePolished = await fs.readdir(polishedDir).then((p) => p.length >= files.length).catch(() => false);

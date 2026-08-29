@@ -23,7 +23,7 @@ Block types (discriminated by "type"):
 - {"type":"bullets","items":[string,...]}
 - {"type":"sidebox","title":string,"items":[string,...],"ink"?:string}
 - {"type":"table","headers":[string,...],"rows":[[string,...],...]}
-- {"type":"code","lang":string,"lines":[string,...]}
+- {"type":"code","lang":string,"lines":[string,...],"runnable":boolean}
 - {"type":"diagram","kind":"flow","spec":{"nodes":[string,...]}}
 - {"type":"callout","style":"tip"|"takeaway"|"cloud","title":string,"text":string}
 - {"type":"qa","q":string,"a_bullets":[string,...],"example_code"?:[string,...]}
@@ -39,6 +39,11 @@ Per-block ceilings — treat these as hard:
 - paragraph: at most 2 short sentences. Prefer bullets; use paragraph sparingly.
 - table: 3-5 rows, 2-4 columns, cells of 1-3 words. Terse ("O(1) avg", not "on average constant time").
 - code: 3-5 lines, each under 45 characters, with a short trailing # comment where it teaches something.
+  Set "runnable": true when the snippet is a COMPLETE program that runs on its own — it will be
+  executed and any '# value' comment on a print will be checked against real output. Set
+  "runnable": false for an illustrative fragment (a bare decorator, a method without its class).
+  A fragment must still be structurally sound: never start a block indented, never declare a
+  def or class with no body, never leave an except/else without its opener.
 - sidebox / callout: title plus 2-4 one-line items.
 - heading: a 2-5 word section label; number them (1., 2., 3. ...).
 

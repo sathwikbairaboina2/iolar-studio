@@ -10,15 +10,18 @@ type Ctx = { params: Promise<{ subject: string; chapter: string; part: string }>
 
 async function writeReport(
   subject: string, chapter: string, part: number,
-  results: { slide: number; overflowPx: number; fillPct: number; file: string }[]
+  results: { slide: number; overflowPx: number; fillPct: number; file: string }[],
+  replace = false
 ) {
   const dir = rendersDir(subject, chapter, part);
   await fs.mkdir(dir, { recursive: true });
   const reportPath = path.join(dir, 'render-report.json');
   let existing: Record<string, { overflowPx: number; fillPct?: number }> = {};
-  try {
-    existing = JSON.parse(await fs.readFile(reportPath, 'utf8'));
-  } catch { /* fresh report */ }
+  if (!replace) {
+    try {
+      existing = JSON.parse(await fs.readFile(reportPath, 'utf8'));
+    } catch { /* fresh report */ }
+  }
   for (const r of results) existing[String(r.slide)] = { overflowPx: r.overflowPx, fillPct: r.fillPct };
   await fs.writeFile(reportPath, JSON.stringify(existing, null, 2));
   try {
@@ -74,7 +77,8 @@ export async function POST(req: Request, ctx: Ctx) {
       }
     }
 
-    await writeReport(subject, chapter, part, results);
+    // A full render is the authority on how many pages exist; a single-slide render is not.
+    await writeReport(subject, chapter, part, results, typeof body.slide !== 'number');
     return NextResponse.json({ results, slides: results.length, split, followUp });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });

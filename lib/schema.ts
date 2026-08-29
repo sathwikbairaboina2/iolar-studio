@@ -22,7 +22,14 @@ const BlockSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('bullets'), items: z.array(z.string().min(1)).min(1) }),
   z.object({ type: z.literal('sidebox'), title: z.string(), items: z.array(z.string()).min(1), ink: Ink.optional() }),
   z.object({ type: z.literal('table'), headers: z.array(z.string()).min(1), rows: z.array(z.array(z.string())).min(1) }),
-  z.object({ type: z.literal('code'), lang: z.string().default('python'), lines: z.array(z.string()).min(1) }),
+  z.object({
+    type: z.literal('code'),
+    lang: z.string().default('python'),
+    lines: z.array(z.string()).min(1),
+    /** True when the snippet is a complete program: it gets executed by the verification gate.
+     *  Illustrative fragments leave it unset and are only checked for broken structure. */
+    runnable: z.boolean().optional(),
+  }),
   z.object({ type: z.literal('diagram'), kind: z.enum(['flow', 'memory-cells', 'tree', 'compare']), spec: z.record(z.string(), z.any()) }),
   z.object({ type: z.literal('callout'), style: z.enum(['tip', 'takeaway', 'cloud']), title: z.string(), text: z.string() }),
   z.object({ type: z.literal('qa'), q: z.string(), a_bullets: z.array(z.string()).min(1), example_code: z.array(z.string()).optional() }),
