@@ -16,12 +16,13 @@ describe('parseUrls', () => {
 });
 
 describe('references api', () => {
-  const params = (slug: string) => ({ params: Promise.resolve({ slug }) });
+  const params = (chapter: string) => ({ params: Promise.resolve({ subject: 'python', chapter }) });
 
   it('put -> get roundtrip, filters bad urls', async () => {
-    const { createPost } = await import('@/lib/store');
-    await createPost('ref-demo');
-    const route = await import('@/app/api/paperbook/[slug]/references/route');
+    const { createSubject, createChapter } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'ref-demo');
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/references/route');
 
     const put = await route.PUT(
       new Request('http://t', {
@@ -38,7 +39,7 @@ describe('references api', () => {
   });
 
   it('empty for post without references', async () => {
-    const route = await import('@/app/api/paperbook/[slug]/references/route');
+    const route = await import('@/app/api/handbooks/[subject]/[chapter]/references/route');
     const get = await route.GET(new Request('http://t'), params('nope'));
     expect((await get.json()).urls).toEqual([]);
   });

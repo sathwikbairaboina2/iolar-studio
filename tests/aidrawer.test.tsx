@@ -39,7 +39,7 @@ describe('AiDrawer', () => {
     const AiDrawer = (await import('@/components/editor/AiDrawer')).default;
     render(
       <AiDrawer
-        slug="demo" post={base()} slideIndex={0} open={true} prefill=""
+        subject="python" chapter="demo" part={1} post={base()} slideIndex={0} open={true} prefill=""
         onOpen={() => {}} onClose={() => {}} onApplied={onApplied}
       />
     );

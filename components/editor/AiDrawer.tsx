@@ -10,9 +10,11 @@ type Msg = { role: string; text: string; ts: string };
 type Scope = 'slide' | 'post' | 'caption';
 
 export default function AiDrawer({
-  slug, post, slideIndex, open, prefill, onOpen, onClose, onApplied,
+  subject, chapter, part, post, slideIndex, open, prefill, onOpen, onClose, onApplied,
 }: {
-  slug: string;
+  subject: string;
+  chapter: string;
+  part: number;
   post: Post;
   slideIndex: number;
   open: boolean;
@@ -31,10 +33,10 @@ export default function AiDrawer({
 
   useEffect(() => {
     if (open) {
-      fetch(`/api/paperbook/${slug}/revise`).then((r) => r.json()).then((d) => setHistory(d.history ?? []));
+      fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/revise`).then((r) => r.json()).then((d) => setHistory(d.history ?? []));
       if (prefill) { setInput(prefill); setScope('post'); }
     }
-  }, [open, slug, prefill]);
+  }, [open, subject, chapter, part, prefill]);
 
   useEffect(() => {
     bodyRef.current?.scrollTo?.({ top: bodyRef.current.scrollHeight });
@@ -49,7 +51,7 @@ export default function AiDrawer({
     setDiff([]);
     setHistory((h) => [...h, { role: 'user', text: request, ts: new Date().toISOString() }]);
     try {
-      const r = await fetch(`/api/paperbook/${slug}/revise`, {
+      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/revise`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ request, scope, slideIndex: scope === 'slide' ? slideIndex : undefined }),

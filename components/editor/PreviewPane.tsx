@@ -4,9 +4,11 @@ import { Alert, Button, Modal, Space, Typography } from 'antd';
 import { ReloadOutlined, ExpandOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 export default function PreviewPane({
-  slug, slide, slideCount, version, overflowPx, fillPct, onRerender, onAiFix, onDensify, rendering, referenceUrl,
+  subject, chapter, part, slide, slideCount, version, overflowPx, fillPct, onRerender, onAiFix, onDensify, rendering, referenceUrl,
 }: {
-  slug: string;
+  subject: string;
+  chapter: string;
+  part: number;
   slide: number;
   slideCount: number;
   version: number;
@@ -20,7 +22,7 @@ export default function PreviewPane({
 }) {
   const [full, setFull] = useState(false);
   const [sheet, setSheet] = useState(false);
-  const src = `/api/paperbook/${slug}/render?slide=${slide}&t=${version}`;
+  const src = `/api/handbooks/${subject}/${chapter}/parts/${part}/render?slide=${slide}&t=${version}`;
 
   return (
     <div style={{ position: 'sticky', top: 16 }}>
@@ -103,7 +105,7 @@ export default function PreviewPane({
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
               key={i}
-              src={`/api/paperbook/${slug}/render?slide=${i + 1}&t=${version}`}
+              src={`/api/handbooks/${subject}/${chapter}/parts/${part}/render?slide=${i + 1}&t=${version}`}
               alt={`slide ${i + 1}`}
               style={{ width: '100%', borderRadius: 6, border: '1px solid rgba(128,128,128,.25)' }}
               onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.15'; }}

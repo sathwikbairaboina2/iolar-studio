@@ -11,9 +11,10 @@ export function parseUrls(text: string): string[] {
 }
 
 export default function ReferencePanel({
-  slug, compare, onCompareChange, onUrlsChange, onPlanned,
+  subject, chapter, compare, onCompareChange, onUrlsChange, onPlanned,
 }: {
-  slug: string;
+  subject: string;
+  chapter: string;
   compare: boolean;
   onCompareChange: (on: boolean) => void;
   onUrlsChange: (urls: string[]) => void;
@@ -28,7 +29,7 @@ export default function ReferencePanel({
     setPlanning(true);
     message.info('AI reading references and building the book… (a few minutes)');
     try {
-      const r = await fetch(`/api/paperbook/${slug}/book`, {
+      const r = await fetch(`/api/handbooks/${subject}/${chapter}/book`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'generate', mode: 'references' }),
@@ -46,7 +47,7 @@ export default function ReferencePanel({
   };
 
   useEffect(() => {
-    fetch(`/api/paperbook/${slug}/references`)
+    fetch(`/api/handbooks/${subject}/${chapter}/references`)
       .then((r) => r.json())
       .then((d) => {
         const u = d.urls ?? [];
@@ -55,11 +56,11 @@ export default function ReferencePanel({
         onUrlsChange(u);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
+  }, [subject, chapter]);
 
   const save = async () => {
     const parsed = parseUrls(text);
-    const r = await fetch(`/api/paperbook/${slug}/references`, {
+    const r = await fetch(`/api/handbooks/${subject}/${chapter}/references`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ urls: parsed }),

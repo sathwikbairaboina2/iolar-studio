@@ -1,6 +1,6 @@
 'use client';
 import { use, useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Col, Row, Select, Space, Tag, Typography, message } from 'antd';
+import { Button, Col, Row, Segmented, Select, Space, Tag, Typography, message } from 'antd';
 import {
   PictureOutlined, ThunderboltOutlined, StarOutlined, ExportOutlined, CheckCircleOutlined,
 } from '@ant-design/icons';
@@ -15,8 +15,10 @@ import ReviewPanel from '@/components/editor/ReviewPanel';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v, label: `Ratio ${v}` }));
 
-export default function EditorPage({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = use(params);
+export default function ChapterPage({ params }: { params: Promise<{ subject: string; chapter: string }> }) {
+  const { subject, chapter } = use(params);
+  const [part, setPart] = useState(1);
+  const [parts, setParts] = useState<number[]>([1]);
   const [post, setPost] = useState<Post | null>(null);
   const [templates, setTemplates] = useState<string[]>([]);
   const [slide, setSlide] = useState(0);
@@ -37,26 +39,29 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    fetch(`/api/paperbook/${slug}`).then((r) => r.json()).then((p) => {
+    fetch(`/api/handbooks/${subject}/${chapter}`).then((r) => r.json()).then((d) => {
+      if (Array.isArray(d.parts) && d.parts.length) setParts(d.parts);
+    });
+    fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((r) => r.json()).then((p) => {
       setPost(p);
       if (openReviewOnLoad.current) {
         openReviewOnLoad.current = false;
         setReviewOpen(true);
       }
     });
-    fetch('/api/paperbook').then((r) => r.json()).then((d) => setTemplates(d.templates ?? []));
+    fetch('/api/handbooks').then((r) => r.json()).then((d) => setTemplates(d.templates ?? []));
     fetch('/api/comfy/status').then((r) => r.json()).then((s) => setComfyUp(!!s.up));
-  }, [slug]);
+  }, [subject, chapter, part]);
 
   const save = useCallback(async (p: Post) => {
-    const r = await fetch(`/api/paperbook/${slug}`, {
+    const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(p),
     });
     if (r.ok) setDirty(false);
     else message.error('Save failed: ' + ((await r.json()).error ?? ''));
-  }, [slug]);
+  }, [subject, chapter, part]);
 
   const update = useCallback((p: Post) => {
     setPost(p);
@@ -70,7 +75,7 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
     setRendering(true);
     if (dirty) await save(post);
     try {
-      const r = await fetch(`/api/paperbook/${slug}/render`, {
+      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(which !== undefined ? { slide: which } : {}),
@@ -87,11 +92,11 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
       setFill(fl);
       setVersion(Date.now());
       if (body.split) {
-        const fresh = await fetch(`/api/paperbook/${slug}`).then((r) => r.json());
+        const fresh = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((r) => r.json());
         setPost(fresh);
         message.info(`Content reflowed onto ${body.slides} pages`);
 
-        const h = await fetch(`/api/paperbook/${slug}/plan`, {
+        const h = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode: 'headings' }),
@@ -113,7 +118,7 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
   };
 
   const reloadAndRender = async () => {
-    const p = await fetch(`/api/paperbook/${slug}`).then((r) => r.json());
+    const p = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((r) => r.json());
     setPost(p);
     setSlide(0);
     await render();
@@ -127,7 +132,7 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
     setRendering(true);
     message.info(`Asking AI to fill ${underfilled.length} slide(s) from the book…`);
     try {
-      const r = await fetch(`/api/paperbook/${slug}/plan`, {
+      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode: 'densify', underfilled }),
@@ -145,7 +150,7 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
   };
 
   const doPackage = async () => {
-    const r = await fetch(`/api/paperbook/${slug}/package`, { method: 'POST' });
+    const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/package`, { method: 'POST' });
     const body = await r.json();
     if (r.ok) message.success(`Packaged to ${body.dir}`);
     else message.error(body.error ?? 'package failed');
@@ -153,7 +158,7 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
 
   const doPolish = async () => {
     message.info('Polishing via ComfyUI — check the Desktop app queue');
-    const r = await fetch(`/api/paperbook/${slug}/polish`, { method: 'POST' });
+    const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/polish`, { method: 'POST' });
     const body = await r.json();
     if (r.ok) message.success(`Polished ${body.slides} slides`);
     else message.error(body.error ?? 'polish failed');
@@ -184,9 +189,10 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
         <Button icon={<PictureOutlined />} onClick={() => render(slide + 1)} loading={rendering}>Render slide</Button>
         <Button icon={<ThunderboltOutlined />} onClick={() => render()} loading={rendering}>Render all</Button>
         <Button icon={<StarOutlined />} disabled={!comfyUp} onClick={doPolish} title={comfyUp ? '' : 'ComfyUI offline'}>Polish</Button>
-        <BookPanel slug={slug} onSlidesPlanned={reloadAndRender} />
+        <BookPanel subject={subject} chapter={chapter} part={part} onSlidesPlanned={reloadAndRender} />
         <ReferencePanel
-          slug={slug}
+          subject={subject}
+          chapter={chapter}
           compare={compareRefs}
           onCompareChange={setCompareRefs}
           onUrlsChange={setRefUrls}
@@ -195,6 +201,17 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
         <Button icon={<ExportOutlined />} onClick={doPackage}>Package</Button>
         <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => setReviewOpen(true)}>Review &amp; accept</Button>
       </Space>
+
+      {parts.length > 1 && (
+        <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12, opacity: 0.65 }}>Parts</span>
+          <Segmented
+            value={part}
+            onChange={(v) => { setPart(Number(v)); setSlide(0); }}
+            options={parts.map((p) => ({ label: `part ${p}`, value: p }))}
+          />
+        </div>
+      )}
 
       <SlideChips
         count={post.slides.length}
@@ -221,7 +238,9 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
         </Col>
         <Col span={12}>
           <PreviewPane
-            slug={slug}
+            subject={subject}
+            chapter={chapter}
+            part={part}
             slide={slide + 1}
             slideCount={post.slides.length}
             version={version}
@@ -240,7 +259,9 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
       </Row>
 
       <ReviewPanel
-        slug={slug}
+        subject={subject}
+        chapter={chapter}
+        part={part}
         post={post}
         version={version}
         fill={fill}
@@ -250,7 +271,9 @@ export default function EditorPage({ params }: { params: Promise<{ slug: string 
       />
 
       <AiDrawer
-        slug={slug}
+        subject={subject}
+        chapter={chapter}
+        part={part}
         post={post}
         slideIndex={slide}
         open={aiOpen}

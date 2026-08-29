@@ -39,7 +39,7 @@ describe('ReviewPanel', () => {
     const ReviewPanel = (await import('@/components/editor/ReviewPanel')).default;
     render(
       <ReviewPanel
-        slug="demo" post={base()} version={1} fill={{ 1: 92, 2: 88, 3: 40 }}
+        subject="python" chapter="demo" part={1} post={base()} version={1} fill={{ 1: 92, 2: 88, 3: 40 }}
         open onClose={() => {}} onApplied={onApplied}
       />
     );
