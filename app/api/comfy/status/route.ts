@@ -13,7 +13,7 @@ export async function GET() {
     const dev = stats.devices?.[0];
     return NextResponse.json({
       up: true,
-      gpu: dev?.name?.split(':')[1]?.trim().split(' ').slice(0, 4).join(' ') ?? dev?.name ?? 'GPU',
+      gpu: dev?.name?.match(/(NVIDIA|AMD|Intel)[^:]*/)?.[0]?.trim() ?? dev?.name ?? 'GPU',
       vramFreeGb: dev ? +(dev.vram_free / 1e9).toFixed(1) : undefined,
       vramTotalGb: dev ? +(dev.vram_total / 1e9).toFixed(1) : undefined,
     });
