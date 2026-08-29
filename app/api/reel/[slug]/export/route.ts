@@ -40,17 +40,13 @@ export async function POST(_req: Request, ctx: Ctx) {
 }
 
 /** Serves the finished file back for playback or download. */
-export async function GET(_req: Request, ctx: Ctx) {
+export async function GET(req: Request, ctx: Ctx) {
   const { slug } = await ctx.params;
-  const { promises: fs } = await import('fs');
   const path = await import('path');
   const { reelExportDir } = await import('@/lib/paths');
+  const { serveMedia } = await import('@/lib/reel/serveMedia');
   try {
-    const file = path.join(reelExportDir(slug), 'reel.mp4');
-    const buf = await fs.readFile(file);
-    return new NextResponse(new Uint8Array(buf), {
-      headers: { 'content-type': 'video/mp4', 'cache-control': 'no-store' },
-    });
+    return await serveMedia(path.join(reelExportDir(slug), 'reel.mp4'), req);
   } catch {
     return NextResponse.json({ error: 'not exported' }, { status: 404 });
   }

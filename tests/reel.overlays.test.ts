@@ -97,3 +97,40 @@ describe('overlay rendering', () => {
     expect(map.size).toBe(0);
   });
 });
+
+describe('media range serving', () => {
+  it('answers a byte range with 206 and the right slice', async () => {
+    const { serveMedia } = await import('@/lib/reel/serveMedia');
+    const { writeFileSync } = await import('fs');
+    const file = path.join(process.env.IOLAR_DATA_DIR!, 'clip.mp4');
+    writeFileSync(file, Buffer.from('0123456789'));
+
+    const res = await serveMedia(file, new Request('http://x', { headers: { range: 'bytes=2-5' } }));
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe('bytes 2-5/10');
+    expect(res.headers.get('content-type')).toBe('video/mp4');
+    expect(await res.text()).toBe('2345');
+  });
+
+  it('serves the whole file, seekable, when no range is asked for', async () => {
+    const { serveMedia } = await import('@/lib/reel/serveMedia');
+    const { writeFileSync } = await import('fs');
+    const file = path.join(process.env.IOLAR_DATA_DIR!, 'clip.mp4');
+    writeFileSync(file, Buffer.from('0123456789'));
+
+    const res = await serveMedia(file, new Request('http://x'));
+    expect(res.status).toBe(200);
+    // Without this header the browser will not even try to seek.
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    expect(await res.text()).toBe('0123456789');
+  });
+
+  it('reads open-ended and suffix ranges the way a video element sends them', async () => {
+    const { parseRange } = await import('@/lib/reel/serveMedia');
+    expect(parseRange('bytes=0-', 100)).toEqual({ start: 0, end: 99 });
+    expect(parseRange('bytes=-20', 100)).toEqual({ start: 80, end: 99 });
+    expect(parseRange('bytes=90-999', 100)).toEqual({ start: 90, end: 99 });
+    expect(parseRange(null, 100)).toBeNull();
+    expect(parseRange('bytes=50-10', 100)).toBeNull();
+  });
+});

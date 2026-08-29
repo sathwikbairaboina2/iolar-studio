@@ -1,11 +1,11 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
-import type { Pattern } from '@/lib/reel/patterns';
+import type { Pattern } from '@/lib/reel/pattern-schema';
 import type { Reel } from '@/lib/reel/schema';
 import { REEL_RATIOS } from '@/lib/reel/schema';
 import { frameAt, timelineDuration } from '@/lib/reel/timeline';
 import { motionCss, motionOriginCss } from '@/lib/reel/motion';
-import { patternCssVars } from '@/lib/reel/patterns';
+import { patternCssVars } from '@/lib/reel/pattern-schema';
 
 export type PlayerProps = {
   reel: Reel;
@@ -108,6 +108,8 @@ export default function Player({
         margin: '0 auto',
         overflow: 'hidden',
         borderRadius: 12,
+        // Caption and title sizes are container-relative, so the stage must be the container.
+        containerType: 'size',
         background: frame.clip?.fit === 'contain' ? pattern.letterbox.bg : '#000',
         ...(Object.fromEntries(
           patternCssVars(pattern)

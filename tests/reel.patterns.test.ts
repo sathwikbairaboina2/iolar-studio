@@ -20,9 +20,9 @@ describe('patterns', () => {
     const { loadPattern, patternCssVars } = await import('@/lib/reel/patterns');
     const vars = patternCssVars(await loadPattern('armand'));
     expect(vars).toContain('--cap-y: 73%');
-    expect(vars).toContain('--cap-size: 3.2vh');
+    expect(vars).toContain('--cap-size: 3.2cqh');
     expect(vars).toContain('--cap-pill: rgba(0, 0, 0, 0.85)');
-    expect(vars).toContain('--hook-size: 6vh');
+    expect(vars).toContain('--hook-size: 6cqh');
   });
 
   it('rejects a pattern missing its caption block', async () => {

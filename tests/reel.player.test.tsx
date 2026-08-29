@@ -125,6 +125,6 @@ describe('reel player', () => {
     );
     const stage = screen.getByTestId('reel-stage');
     expect(stage.style.getPropertyValue('--cap-y')).toBe('73%');
-    expect(stage.style.getPropertyValue('--cap-size')).toBe('3.2vh');
+    expect(stage.style.getPropertyValue('--cap-size')).toBe('3.2cqh');
   });
 });

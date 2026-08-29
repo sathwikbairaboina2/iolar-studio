@@ -11,7 +11,7 @@ import {
 import Player from '@/components/reel/Player';
 import Timeline from '@/components/reel/Timeline';
 import type { Reel } from '@/lib/reel/schema';
-import type { Pattern } from '@/lib/reel/patterns';
+import type { Pattern } from '@/lib/reel/pattern-schema';
 import * as edits from '@/lib/reel/edits';
 import { timelineDuration } from '@/lib/reel/timeline';
 
@@ -245,7 +245,7 @@ export default function ReelStudio() {
               label: 'Clip',
               children: clip ? (
                 <Card size="small" title={`${clip.id}${clip.locked ? ' · locked' : ''}`}>
-                  <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                  <Space orientation="vertical" style={{ width: '100%' }} size="middle">
                     <Segmented
                       value={clip.motion.type}
                       options={MOTIONS as unknown as string[]}
@@ -304,7 +304,7 @@ export default function ReelStudio() {
               label: 'Caption',
               children: cue ? (
                 <Card size="small" title={`${cue.id}${cue.locked ? ' · locked' : ''}`}>
-                  <Space direction="vertical" style={{ width: '100%' }}>
+                  <Space orientation="vertical" style={{ width: '100%' }}>
                     <Input
                       value={cue.text}
                       onChange={(e) => save(edits.editCaption(reel, cue.id, e.target.value))}
@@ -328,7 +328,7 @@ export default function ReelStudio() {
               key: 'shots',
               label: `Shots (${reel.beats.length})`,
               children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
+                <Space orientation="vertical" style={{ width: '100%' }}>
                   {reel.beats.map((beat) => {
                     const asset = reel.assets.find((a) => a.id === beat.shot.assetId);
                     return (

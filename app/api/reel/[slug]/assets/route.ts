@@ -1,18 +1,12 @@
 import { NextResponse } from 'next/server';
-import { promises as fs } from 'fs';
 import path from 'path';
 import { attachAsset } from '@/lib/reel/shots';
 import { loadReel } from '@/lib/reel/store';
 import { reelDir } from '@/lib/paths';
+import { serveMedia } from '@/lib/reel/serveMedia';
 
 type Ctx = { params: Promise<{ slug: string }> };
 export const maxDuration = 300;
-
-const MIME: Record<string, string> = {
-  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska', '.mov': 'video/quicktime',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
-  '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
-};
 
 export async function POST(req: Request, ctx: Ctx) {
   const { slug } = await ctx.params;
@@ -33,7 +27,7 @@ export async function POST(req: Request, ctx: Ctx) {
   }
 }
 
-/** Streams one asset back to the studio player. */
+/** Streams one asset back to the studio player, with range support so it can seek. */
 export async function GET(req: Request, ctx: Ctx) {
   const { slug } = await ctx.params;
   const id = new URL(req.url).searchParams.get('id') ?? '';
@@ -41,14 +35,7 @@ export async function GET(req: Request, ctx: Ctx) {
     const reel = await loadReel(slug);
     const asset = reel.assets.find((a) => a.id === id);
     if (!asset?.path) return NextResponse.json({ error: 'not found' }, { status: 404 });
-    const file = path.join(reelDir(slug), asset.path);
-    const buf = await fs.readFile(file);
-    return new NextResponse(new Uint8Array(buf), {
-      headers: {
-        'content-type': MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
-        'cache-control': 'no-store',
-      },
-    });
+    return serveMedia(path.join(reelDir(slug), asset.path), req);
   } catch {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }

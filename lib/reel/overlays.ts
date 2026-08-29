@@ -42,7 +42,7 @@ export function overlayHtml(pattern: Pattern, cssHref: string, body: string): st
 <style>
   :root { ${patternCssVars(pattern)}; }
   html, body { margin: 0; padding: 0; background: transparent; }
-  .reel-stage { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+  .reel-stage { position: relative; width: 100vw; height: 100vh; overflow: hidden; container-type: size; }
 </style>
 </head>
 <body><div class="reel-stage">${body}</div></body>
