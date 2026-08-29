@@ -75,7 +75,24 @@ export async function renderSlide(post: Post, slideIndex: number, outPath: strin
   }
 }
 
-const MAX_AUTOFLOW_PAGES = 30; // guard against a single unsplittable block looping forever
+const MAX_AUTOFLOW_PAGES = 40; // guard against a single unsplittable block looping forever
+
+/**
+ * Collapses continuation pages back into the page they spilled from, so a re-render
+ * re-splits from the authored content instead of splitting an already-split page.
+ */
+export function mergeContinuations(input: Post['slides']): Post['slides'] {
+  const slides: Post['slides'] = [];
+  for (const s of input) {
+    const prev = slides[slides.length - 1];
+    if (prev && s.cont) {
+      prev.blocks.push(...s.blocks);
+      continue;
+    }
+    slides.push({ ...s, blocks: [...s.blocks] });
+  }
+  return slides;
+}
 
 export async function renderAll(
   post: Post,
@@ -84,38 +101,43 @@ export async function renderAll(
   results: { slide: number; overflowPx: number; fillPct: number; file: string }[];
   slides: Post['slides'];
 }> {
-  // Merge continuation pages back into their parent first: re-rendering must re-split from
-  // the authored content, otherwise each run splits an already-split page again and the
-  // page count creeps upward with ever thinner tails.
-  const slides: Post['slides'] = [];
-  for (const s of post.slides) {
-    const prev = slides[slides.length - 1];
-    if (prev && s.cont) {
-      prev.blocks.push(...s.blocks);
-      continue;
-    }
-    slides.push({ ...s, blocks: [...s.blocks] });
-  }
+  const authored = mergeContinuations(post.slides);
+
+  // Blocks flow as one stream across chapter boundaries: a chapter that ends halfway down
+  // a page is followed by the next chapter on the same page. Nothing is trimmed, and no
+  // page is left half empty just because a chapter ended there.
+  type Item = { block: Post['slides'][number]['blocks'][number]; from: number };
+  let queue: Item[] = authored.flatMap((s, i) => s.blocks.map((block) => ({ block, from: i })));
 
   const results: { slide: number; overflowPx: number; fillPct: number; file: string }[] = [];
+  const slides: Post['slides'] = [];
+  const started = new Set<number>();
 
-  for (let i = 0; i < slides.length && i < MAX_AUTOFLOW_PAGES; i++) {
-    const file = path.join(outDir, `slide-${String(i + 1).padStart(2, '0')}.png`);
-    const working: Post = { ...post, slides };
-    const r = await renderSlide(working, i, file);
+  for (let page = 0; queue.length && page < MAX_AUTOFLOW_PAGES; page++) {
+    const source = queue[0].from;
+    const base = authored[source].page_title.replace(/ \(cont\.\)$/, '');
+    const isCont = started.has(source);
+    started.add(source);
 
-    // A page whose every block spilled cannot be split further — keep it and move on.
-    if (r.spillIndexes.length && r.spillIndexes.length < slides[i].blocks.length) {
-      const spilled = new Set(r.spillIndexes);
-      const kept = slides[i].blocks.filter((_, j) => !spilled.has(j));
-      const moved = slides[i].blocks.filter((_, j) => spilled.has(j));
-      const title = slides[i].page_title.replace(/ \(cont\.\)$/, '');
-      slides[i] = { ...slides[i], blocks: kept };
-      slides.splice(i + 1, 0, { page_title: `${title} (cont.)`, blocks: moved, cont: true });
-      i--; // re-render this page now that it is trimmed
-      continue;
-    }
-    results.push({ slide: i + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file });
+    const candidate: Post['slides'][number] = {
+      page_title: isCont ? `${base} (cont.)` : base,
+      blocks: queue.map((q) => q.block),
+      ...(page > 0 ? { cont: true } : {}),
+    };
+
+    const file = path.join(outDir, `slide-${String(page + 1).padStart(2, '0')}.png`);
+    const working: Post = { ...post, slides: [...slides, candidate] };
+    const r = await renderSlide(working, page, file);
+
+    const spilled = new Set(r.spillIndexes);
+    // Everything spilled: one block is taller than a page. Keep it alone rather than loop.
+    const keepCount = spilled.size >= queue.length ? 1 : queue.length - spilled.size;
+    const kept = queue.filter((_, j) => !spilled.has(j)).slice(0, Math.max(keepCount, 1));
+    const keptSet = new Set(kept.map((k) => k.block));
+
+    slides.push({ ...candidate, blocks: kept.map((k) => k.block) });
+    results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file });
+    queue = queue.filter((q) => !keptSet.has(q.block));
   }
 
   return { results, slides };

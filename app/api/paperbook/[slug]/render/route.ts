@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import path from 'path';
 import { promises as fs } from 'fs';
 import { loadPost, postDir, savePost } from '@/lib/store';
+import { MAX_SLIDES } from '@/lib/schema';
 import { renderSlide, renderAll } from '@/lib/renderer/capture';
 
 type Ctx = { params: Promise<{ slug: string }> };
@@ -36,6 +37,7 @@ export async function POST(req: Request, ctx: Ctx) {
 
     let results;
     let split = false;
+    let followUp: { moved: number; childSlug: string } | null = null;
     if (typeof body.slide === 'number') {
       const i = body.slide - 1;
       if (i < 0 || i >= post.slides.length) {
@@ -51,9 +53,23 @@ export async function POST(req: Request, ctx: Ctx) {
         await savePost(slug, { ...post, slides: out.slides });
         split = true;
       }
+      // Content is never trimmed: pages past the carousel limit become a follow-up post.
+      if (body.spillToFollowUp !== false && out.slides.length > MAX_SLIDES) {
+        const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
+        followUp = await splitIntoFollowUp(slug);
+        if (followUp) {
+          const trimmed = await loadPost(slug);
+          const rerun = await renderAll(trimmed, outDir);
+          results = rerun.results;
+          for (const f of await fs.readdir(outDir)) {
+            const n = Number(f.match(/^slide-(\d+)\.png$/)?.[1] ?? 0);
+            if (n > results.length) await fs.unlink(path.join(outDir, f)).catch(() => {});
+          }
+        }
+      }
     }
     await writeReport(slug, results);
-    return NextResponse.json({ results, slides: results.length, split });
+    return NextResponse.json({ results, slides: results.length, split, followUp });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

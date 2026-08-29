@@ -62,9 +62,9 @@ describe('renderSlide', () => {
     const totalBlocks = slides.reduce((n, s) => n + s.blocks.length, 0);
     expect(totalBlocks).toBe(40);
 
-    // Balanced: no page carries a starved tail once the chain is spread evenly.
+    // Content is never trimmed or spread thin: every page but the last is filled to capacity.
     const fills = results.map((r) => r.fillPct);
-    expect(Math.max(...fills) - Math.min(...fills)).toBeLessThan(35);
+    for (const f of fills.slice(0, -1)) expect(f).toBeGreaterThan(85);
 
     // Idempotent: re-rendering the split result must not split it again.
     const again = await renderAll({ ...big, slides }, dir);

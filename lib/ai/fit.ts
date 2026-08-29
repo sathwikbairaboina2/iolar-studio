@@ -1,17 +1,60 @@
 import path from 'path';
 import { Post, validatePost } from '../schema';
 import { loadPost, postDir } from '../store';
-import { renderSlide } from '../renderer/capture';
-import { loadBook } from './book';
+import { renderSlide, mergeContinuations } from '../renderer/capture';
+import { Book, loadBook } from './book';
 import { runClaude } from './claude';
 import { extractJson } from './revise';
 
 export type SlideFit = { slide: number; neededPct: number };
 
-/**
- * Measures how much of one page each authored slide actually needs. Over 100% means the
- * slide will be split across pages; well under means wasted space.
- */
+const STOP = new Set(
+  'the a an and or of to in for with is are its it you your how what why when use using python vs on at be by as that this from can will not no'.split(' ')
+);
+
+function pointKeywords(point: string): string[] {
+  return (point.toLowerCase().match(/[a-z_][a-z0-9_().]{2,}/g) ?? [])
+    .filter((w) => !STOP.has(w))
+    .slice(0, 6);
+}
+
+function postText(post: Post): string {
+  const parts: string[] = [];
+  for (const s of post.slides) {
+    parts.push(s.page_title);
+    for (const b of s.blocks) {
+      if ('text' in b) parts.push(b.text);
+      if ('title' in b) parts.push(b.title);
+      if ('q' in b) parts.push(b.q);
+      if ('items' in b) parts.push(...b.items);
+      if ('lines' in b) parts.push(...b.lines);
+      if ('a_bullets' in b) parts.push(...b.a_bullets);
+      if ('example_code' in b && b.example_code) parts.push(...b.example_code);
+      if (b.type === 'table') {
+        parts.push(...b.headers);
+        for (const row of b.rows) parts.push(...row);
+      }
+    }
+  }
+  return parts.join(' ').toLowerCase();
+}
+
+/** Book points whose keywords no longer appear in the post — i.e. content that was dropped. */
+export function uncoveredPoints(book: Book, post: Post): string[] {
+  const body = postText(post);
+  const missing: string[] = [];
+  for (const ch of book.chapters) {
+    for (const p of ch.points) {
+      const kws = pointKeywords(p);
+      if (!kws.length) continue;
+      const hits = kws.filter((w) => body.includes(w.replace(/[().]/g, ''))).length;
+      if (hits / kws.length < 0.5) missing.push(p);
+    }
+  }
+  return missing;
+}
+
+/** How much of one page each authored slide needs. Over 100% spills onto the next page. */
 export async function measureSlides(post: Post): Promise<SlideFit[]> {
   const out: SlideFit[] = [];
   const dir = path.join(postDir('.measure'), 'tmp');
@@ -23,39 +66,30 @@ export async function measureSlides(post: Post): Promise<SlideFit[]> {
 }
 
 /**
- * One AI pass that resizes slides to the page: over-full slides lose words, thin slides
- * gain material from the book. Returns a proposal; the caller decides to save it.
+ * Fills thin pages toward ~95% by pulling MORE material from the book. It never trims:
+ * a proposal that drops any book point is rejected. Over-full pages are left alone —
+ * the renderer spills them onto the next page, and content that runs past the carousel
+ * belongs in a follow-up post, not in the bin.
  */
 export async function fitToPages(slug: string): Promise<{ proposal: Post; before: SlideFit[] }> {
-  const post = await loadPost(slug);
+  const post = { ...(await loadPost(slug)) };
+  post.slides = mergeContinuations(post.slides);
+
   const before = await measureSlides(post);
   const book = await loadBook(slug);
-
-  const over = before.filter((m) => m.neededPct > 104);
-  const under = before.filter((m) => m.neededPct < 85);
-
-  const lines = [
-    over.length
-      ? `These slides do not fit on one page and will be split, wasting space. Cut their content by the stated amount — shorten wording, merge bullets, drop table columns that repeat, trim code comments. Keep every concept, just say it in fewer words:\n${over
-          .map((m) => `- slide ${m.slide}: needs ${m.neededPct}% of a page, cut about ${m.neededPct - 96}%`)
-          .join('\n')}`
-      : '',
-    under.length
-      ? `These slides leave the page half empty. Add genuinely useful material — another numbered section, more table rows, an extra short example:\n${under
-          .map((m) => `- slide ${m.slide}: fills only ${m.neededPct}% of a page`)
-          .join('\n')}`
-      : '',
-  ].filter(Boolean);
-
-  if (!lines.length) return { proposal: post, before };
+  const under = before.filter((m) => m.neededPct < 92);
+  if (!under.length) return { proposal: post, before };
 
   const prompt = [
-    'You are fitting a handwritten-notes carousel so every page is nearly full but never overflows.',
-    'The pages were rendered and measured. Aim each slide at 92-100% of one page.',
-    ...lines,
+    'You are filling out a handwritten-notes carousel so every page is nearly full.',
+    'The pages were rendered and measured. Target 92-98% of one page each.',
+    `These pages leave space empty — add genuinely useful material until each reaches about 95%: another numbered section, more table rows, a worked example, a tip callout:\n${under
+      .map((m) => `- slide ${m.slide}: fills only ${m.neededPct}% of a page`)
+      .join('\n')}`,
+    'NEVER remove or shorten existing content. Every fact, bullet, table row and code line that is already there must survive verbatim. You may only ADD.',
     'Do not change the number of slides. Keep the numbered section structure and the study-notes voice.',
-    'Blocks stay short: bullets one line each, table cells 1-3 words, code lines under 45 characters.',
-    book ? `The book (syllabus) this post must cover:\n${JSON.stringify(book)}` : '',
+    'New blocks stay short: bullets one line each, table cells 1-3 words, code lines under 45 characters.',
+    book ? `Draw the added material from this book (syllabus), preferring points that are currently thin:\n${JSON.stringify(book)}` : '',
     'Current post JSON:',
     JSON.stringify(post),
     'Return ONLY the complete updated post JSON, no prose and no markdown fences.',
@@ -63,8 +97,20 @@ export async function fitToPages(slug: string): Promise<{ proposal: Post; before
 
   const out = await runClaude(prompt, { timeoutMs: 900_000 });
   const proposal = validatePost(extractJson(out));
+
   if (proposal.slides.length !== post.slides.length) {
     throw new Error('fit pass changed the slide count — rejected');
+  }
+  if (book) {
+    // Hard gate: the fit pass may only add. Anything the book covered must still be covered.
+    const lostNow = uncoveredPoints(book, proposal);
+    const lostBefore = uncoveredPoints(book, post);
+    const dropped = lostNow.filter((p) => !lostBefore.includes(p));
+    if (dropped.length) {
+      throw new Error(
+        `fit pass dropped ${dropped.length} book point(s) — rejected. First: ${dropped[0].slice(0, 80)}`
+      );
+    }
   }
   return { proposal, before };
 }

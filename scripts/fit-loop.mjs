@@ -20,7 +20,7 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   const worst = Math.max(...before.map((m) => m.neededPct));
   console.log(`round ${round}: needed% = [${before.map((m) => m.neededPct).join(', ')}] worst ${worst}`);
 
-  if (worst <= 104) {
+  if (worst <= 99) {
     console.log('converged — every page fits');
     break;
   }
