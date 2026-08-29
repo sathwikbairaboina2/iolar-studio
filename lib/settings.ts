@@ -9,6 +9,13 @@ export type Settings = {
   comfyCheckpoint: string;
   polishDenoise: number;
   desktopWorkflowsDir: string;
+  whisperPython: string;
+  whisperModel: string;
+  whisperDevice: 'cuda' | 'cpu';
+  i2vModel: string;
+  reelFps: number;
+  reelRatio: string;
+  reelPattern: string;
 };
 
 const DEFAULTS: Settings = {
@@ -20,6 +27,13 @@ const DEFAULTS: Settings = {
   polishDenoise: 0.12,
   desktopWorkflowsDir:
     'C:\\Users\\sathwik\\AppData\\Local\\Comfy-Desktop\\ComfyUI-Installs\\ComfyUI\\ComfyUI\\user\\default\\workflows',
+  whisperPython: path.join(process.cwd(), '.venv-whisper', 'Scripts', 'python.exe'),
+  whisperModel: 'small',
+  whisperDevice: 'cpu',
+  i2vModel: '',
+  reelFps: 30,
+  reelRatio: '9:16',
+  reelPattern: 'armand',
 };
 
 function file() {
