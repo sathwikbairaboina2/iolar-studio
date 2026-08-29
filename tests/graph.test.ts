@@ -72,3 +72,23 @@ describe('graph', () => {
     expect(row).toMatchObject({ subject: 'python', slug: 'lists' });
   });
 });
+
+describe('reel indexing', () => {
+  it('adds a reel node linked to the topics its beats cover', async () => {
+    const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
+    const { graph, reelId } = await import('@/lib/graph');
+    await createReel('grok-bot', { title: 'xAI drops Grok Bot' });
+    const reel = await loadReel('grok-bot');
+    await saveReel('grok-bot', {
+      ...reel,
+      beats: [
+        { id: 'b1', role: 'hook', text: 'Grok Bot ships today', shot: { kind: 'title', brief: '', hero: false } },
+        { id: 'b2', role: 'close', text: 'Agent workflows get cheaper', shot: { kind: 'broll', brief: '', hero: false } },
+      ],
+    });
+    const g = graph();
+    const node = g.nodes.find((n) => n.id === reelId('grok-bot'));
+    expect(node).toMatchObject({ type: 'reel', label: 'xAI drops Grok Bot' });
+    expect(g.edges.filter((e) => e.src === reelId('grok-bot') && e.rel === 'covers').length).toBeGreaterThan(0);
+  });
+});

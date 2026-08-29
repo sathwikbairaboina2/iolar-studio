@@ -2,6 +2,7 @@ import { getDb } from './db';
 import type { Post } from './schema';
 import type { Book } from './ai/book';
 import type { Subject } from './store';
+import type { Reel } from './reel/schema';
 
 /** Normalises a phrase to a topic key so the same concept from different chapters collides. */
 export function topicKey(text: string): string {
@@ -22,7 +23,7 @@ export function topicFromPoint(point: string): string {
 
 export type GraphNode = {
   id: string;
-  type: 'subject' | 'chapter' | 'topic';
+  type: 'subject' | 'chapter' | 'topic' | 'reel';
   label: string;
   subject: string | null;
   chapter: string | null;
@@ -32,6 +33,41 @@ export type GraphEdge = { src: string; dst: string; rel: string };
 
 export const subjectId = (s: string) => `subject:${s}`;
 export const chapterId = (s: string, c: string) => `chapter:${s}/${c}`;
+export const reelId = (slug: string) => `reel:${slug}`;
+
+/** Mirrors a reel into SQLite and links it to the topics its script covers. */
+export function syncReel(slug: string, reel: Reel, status: string) {
+  const db = getDb();
+  const duration = reel.timeline.clips.reduce((m, c) => Math.max(m, c.end), 0) || reel.vo.durationSec;
+  db.prepare(
+    `INSERT INTO reels (slug, title, pattern, beats, duration_ms, status, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(slug) DO UPDATE SET
+       title=excluded.title, pattern=excluded.pattern, beats=excluded.beats,
+       duration_ms=excluded.duration_ms, status=excluded.status, updated_at=excluded.updated_at`
+  ).run(slug, reel.title, reel.pattern, reel.beats.length, Math.round(duration * 1000), status);
+
+  db.prepare(
+    `INSERT INTO nodes (id, type, label, subject, chapter, weight) VALUES (?, 'reel', ?, NULL, NULL, 1)
+     ON CONFLICT(id) DO UPDATE SET label=excluded.label`
+  ).run(reelId(slug), reel.title);
+
+  db.prepare('DELETE FROM edges WHERE src = ? AND rel = ?').run(reelId(slug), 'covers');
+  const seen = new Set<string>();
+  for (const beat of reel.beats) {
+    const key = topicFromPoint(beat.text);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const id = `topic:${key}`;
+    db.prepare(
+      `INSERT INTO nodes (id, type, label, subject, chapter, weight) VALUES (?, 'topic', ?, NULL, NULL, 1)
+       ON CONFLICT(id) DO UPDATE SET weight = nodes.weight + 1`
+    ).run(id, key);
+    db.prepare(
+      `INSERT INTO edges (src, dst, rel) VALUES (?, ?, 'covers') ON CONFLICT DO NOTHING`
+    ).run(reelId(slug), id);
+  }
+}
 
 export function syncSubject(subject: Subject) {
   const db = getDb();
