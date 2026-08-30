@@ -31,7 +31,7 @@ export type AgentPanelProps = {
   onApplied?: (reel: unknown) => void;
 };
 
-export default function AgentPanel({ slug, onApplied }: AgentPanelProps) {
+function AgentPanel({ slug, onApplied }: AgentPanelProps) {
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState<'ask' | 'apply' | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
@@ -176,3 +176,7 @@ export default function AgentPanel({ slug, onApplied }: AgentPanelProps) {
     </Space>
   );
 }
+
+// Nothing here depends on the playhead; memoising keeps a playing reel from
+// re-rendering the panel on every frame.
+export default React.memo(AgentPanel);

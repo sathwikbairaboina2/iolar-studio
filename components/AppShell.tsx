@@ -100,7 +100,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             onClick={toggle}
           />
         </Layout.Header>
-        <Layout.Content style={{ padding: 22 }}>{children}</Layout.Content>
+        {/* overflowX hidden so a wide timeline scrolls in its own box, never the page. */}
+        <Layout.Content style={{ padding: '28px 32px 40px', overflowX: 'hidden' }}>{children}</Layout.Content>
       </Layout>
     </Layout>
   );

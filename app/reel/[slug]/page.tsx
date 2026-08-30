@@ -365,6 +365,7 @@ export default function ReelStudio() {
           onSeek={setTime}
           onSelectClip={setClipId}
           onSelectCue={setCueId}
+          onCommand={run}
         />
       </Card>
     </div>
