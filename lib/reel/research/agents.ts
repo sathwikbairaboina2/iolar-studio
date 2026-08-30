@@ -1,6 +1,7 @@
+import { z } from 'zod';
 import { runClaude } from '@/lib/ai/claude';
 import type { Brief } from './brief';
-import type { Candidate } from './candidate';
+import { CandidateSchema, type Candidate } from './candidate';
 import type { Evidence } from './gather';
 import type { ScriptLine } from './script';
 
@@ -127,11 +128,14 @@ that is SEO filler, is outside the recency window without being foundational, ca
 verified, or leans on the framing the brief said to avoid.
 
 Reply with ONLY:
+
 { "runId": "${brief.runId}", "generatedAt": "<ISO now>", "criticVersion": "1",
   "stats": { "perClass": {}, "totalFound": <n>, "totalKept": <n>, "dupesCollapsed": <n> },
-  "candidates": [ ... ] }
+  "candidates": [ <each one matching this schema exactly> ] }
 
-No prose, no fence.`;
+${JSON.stringify(z.toJSONSchema(CandidateSchema), null, 1)}
+
+Every field is required. No prose, no fence.`;
 
   return extractJson<{ candidates: Candidate[] }>(await run(prompt, { timeoutMs: STAGE_TIMEOUT_MS }));
 }
