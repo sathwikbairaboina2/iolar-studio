@@ -46,6 +46,13 @@ export function reelDir(slug: string) { return path.join(reelsRoot(), slug); }
 export function reelFile(slug: string) { return path.join(reelDir(slug), 'reel.json'); }
 export function reelAssetsDir(slug: string) { return path.join(reelDir(slug), 'assets'); }
 export function reelRefsDir(slug: string) { return path.join(reelDir(slug), 'refs'); }
+/** Research sits beside the reel it produced, so one slug owns the whole life. */
+export function reelResearchDir(slug: string) { return path.join(reelDir(slug), 'research'); }
+export function reelBriefFile(slug: string) { return path.join(reelResearchDir(slug), 'brief.json'); }
+export function reelCandidatesFile(slug: string) { return path.join(reelResearchDir(slug), 'candidates.json'); }
+export function reelSelectionFile(slug: string) { return path.join(reelResearchDir(slug), 'selection.json'); }
+export function reelScriptFile(slug: string) { return path.join(reelResearchDir(slug), 'script.json'); }
+export function reelEvidenceDir(slug: string) { return path.join(reelResearchDir(slug), 'evidence'); }
 export function reelHistoryDir(slug: string) { return path.join(reelDir(slug), 'history'); }
 export function reelHistoryIndex(slug: string) { return path.join(reelHistoryDir(slug), 'index.json'); }
 export function reelHistorySnap(slug: string, seq: number) { return path.join(reelHistoryDir(slug), `${seq}.json`); }
