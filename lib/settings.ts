@@ -24,6 +24,12 @@ export type Settings = {
   reelFps: number;
   reelRatio: string;
   reelPattern: string;
+  agentProvider: 'local' | 'claude';
+  agentUrl: string;
+  agentOllamaUrl: string;
+  agentModel: string;
+  agentNumPredict: number;
+  agentMaxRevisions: number;
 };
 
 const DEFAULTS: Settings = {
@@ -53,6 +59,15 @@ const DEFAULTS: Settings = {
   reelFps: 30,
   reelRatio: '9:16',
   reelPattern: 'armand',
+  agentProvider: 'local',
+  agentUrl: 'http://127.0.0.1:3121',
+  // The model lives in the invisible-ollama container, which already holds it.
+  agentOllamaUrl: 'http://127.0.0.1:11436',
+  agentModel: 'lfm2.5',
+  // lfm2.5 thinks before it calls. At 200 it never reaches the tool call and
+  // looks like a model that cannot tool-call at all; 1200 answers in 1-2s.
+  agentNumPredict: 1200,
+  agentMaxRevisions: 3,
 };
 
 function file() {

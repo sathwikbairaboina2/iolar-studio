@@ -176,10 +176,17 @@ function idsInLane(reel: Reel, lane: Lane): string[] {
   return reel.assets.map((a) => a.id);
 }
 
-export async function applyCommand(
-  slug: string,
+/**
+ * Runs one command against a reel held in memory and returns the result.
+ *
+ * Everything that decides whether a command is legal lives here, so the dry run
+ * and the real write path cannot disagree about what would happen. It touches
+ * no disk and no bus; persistence is the caller's business.
+ */
+export function applyOne(
+  reel: Reel,
   input: CommandInput
-): Promise<{ reel: Reel; entry: history.Entry }> {
+): { reel: Reel; op: string; summary: string; args: unknown } {
   const spec = (COMMANDS as Record<string, Command>)[input.op];
   if (!spec) {
     throw new CommandError(`unknown op "${input.op}"`, 400, { validOps: Object.keys(COMMANDS) });
@@ -194,13 +201,6 @@ export async function applyCommand(
   }
   const args = parsed.data as Record<string, string>;
 
-  let reel: Reel;
-  try {
-    reel = await loadReel(slug);
-  } catch {
-    throw new CommandError(`no reel "${slug}"`, 404, {});
-  }
-
   for (const ref of spec.refs ?? []) {
     const ids = idsInLane(reel, ref.lane);
     if (!ids.includes(args[ref.arg])) {
@@ -214,20 +214,32 @@ export async function applyCommand(
   try {
     valid = validateReel(next);
   } catch (err) {
-    // Nothing has been written yet, so the reel on disk is still the good one.
     throw new CommandError(`"${input.op}" would leave the reel invalid: ${String(err)}`, 409, {});
   }
+
+  return { reel: valid, op: input.op, summary: spec.summary(parsed.data as never), args: parsed.data };
+}
+
+export async function loadReelOr404(slug: string): Promise<Reel> {
+  try {
+    return await loadReel(slug);
+  } catch {
+    throw new CommandError(`no reel "${slug}"`, 404, {});
+  }
+}
+
+export async function applyCommand(
+  slug: string,
+  input: CommandInput
+): Promise<{ reel: Reel; entry: history.Entry }> {
+  const reel = await loadReelOr404(slug);
+  const { reel: valid, summary, args: parsedArgs } = applyOne(reel, input);
 
   await saveReel(slug, valid);
 
   // Deliberately after the save. A failed log entry must not cost the user their
   // edit, so it is reported and swallowed rather than thrown.
-  const meta = {
-    op: input.op,
-    args: parsed.data,
-    actor: input.actor,
-    summary: spec.summary(parsed.data as never),
-  };
+  const meta = { op: input.op, args: parsedArgs, actor: input.actor, summary };
   let entry: history.Entry = { seq: -1, at: new Date().toISOString(), ...meta };
   try {
     const log = await history.push(slug, reel, valid, meta);
