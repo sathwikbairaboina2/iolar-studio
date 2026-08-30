@@ -6,7 +6,7 @@ import {
 } from 'antd';
 import {
   AudioOutlined, DeleteOutlined, ExportOutlined, PlayCircleOutlined, PauseCircleOutlined,
-  ReloadOutlined, ScissorOutlined, ThunderboltOutlined, UploadOutlined,
+  ReloadOutlined, ScissorOutlined, ThunderboltOutlined, UploadOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import Player from '@/components/reel/Player';
 import AgentPanel from '@/components/reel/AgentPanel';
@@ -223,7 +223,20 @@ export default function ReelStudio() {
             },
             {
               key: 'agent',
-              label: 'Agent',
+              // Off until the agent is trusted to edit unattended. The panel itself
+              // works; what is not ready is handing it the timeline.
+              disabled: true,
+              label: (
+                <Tooltip
+                  color="var(--ant-color-warning, #faad14)"
+                  title="Lets an agent take over editing — propose changes to clips and captions, and apply them for you. Not ready yet."
+                >
+                  <span>
+                    <WarningOutlined style={{ marginInlineEnd: 6, color: 'var(--ant-color-warning, #faad14)' }} />
+                    Agent
+                  </span>
+                </Tooltip>
+              ),
               children: (
                 <Card size="small">
                   <AgentPanel slug={slug} onApplied={(next) => setReel(next as Reel)} />
