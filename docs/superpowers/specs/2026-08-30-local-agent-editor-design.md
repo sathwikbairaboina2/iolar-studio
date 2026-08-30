@@ -101,6 +101,16 @@ resolution and the same `validateReel`. It does not save, does not publish, does
 Rejected commands are reported, never silently dropped — a proposal that half-failed must look
 different from one that succeeded.
 
+**Preview continues past a rejection; apply stops at one.** The asymmetry is deliberate. Preview is
+diagnostic: an agent with a 3-revision budget should learn everything wrong with its plan in one round
+trip, not one mistake per iteration. Apply is not diagnostic, and a later command usually depends on an
+earlier one, so it stops rather than applying step 5 of a plan whose step 2 failed.
+
+What keeps the two consistent is that **a proposal with any rejection is never applied**: the studio
+offers Apply only when `rejected` is empty, and the agent loop treats any rejection as a revision
+trigger. So the projected reel is only ever acted on when it was produced by a clean run, and preview
+predicts apply exactly in the only case that reaches apply.
+
 `POST /api/reel/[slug]/preview` exposes it to both the studio and the agent container.
 
 `POST /api/reel/[slug]/agent` runs the chosen backend and then previews whatever it proposed before
@@ -179,7 +189,7 @@ Every message names the fix, because the first audience is someone deciding what
 | model not present | the model name and the `ollama pull` line |
 | model returned nothing parseable | the raw text, and no proposal |
 | model proposed invalid commands | the valid ones as applicable, the rest listed as rejected with reasons |
-| every command rejected | the rejections, and no Apply button |
+| any command rejected | the rejections, and no Apply button — a partially valid proposal is never half-applied |
 | apply fails partway | which commands landed and which did not; everything that landed is in history and individually undoable |
 | the reel moved between preview and apply | the rejection from the re-validation, with the proposal still on screen to re-run |
 
@@ -189,7 +199,7 @@ A failed proposal changes nothing: preview persists nothing, so there is no stat
 
 | File | Covers |
 |---|---|
-| `tests/reel.preview.test.ts` | dry run leaves reel, history and bus untouched; rejected commands reported not dropped; a mid-list rejection does not abort the rest |
+| `tests/reel.preview.test.ts` | dry run leaves reel, history and bus untouched; rejected commands reported not dropped; a mid-list rejection does not abort the rest, and the projected reel reflects only the commands that applied |
 | `tests/agent.tools.test.ts` | one tool schema per command; dot-to-underscore mapping; schemas match the zod shapes |
 | `tests/agent.normalize.test.ts` | `tool_calls` and JSON-in-content fixtures both parse; garbage yields no proposal, not a crash |
 | `tests/agent.backend.test.ts` | provider switch honours settings; unreachable, timeout and garbage each produce the §6 message |
