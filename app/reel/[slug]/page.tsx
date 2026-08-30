@@ -10,6 +10,7 @@ import {
 } from '@ant-design/icons';
 import Player from '@/components/reel/Player';
 import AgentPanel from '@/components/reel/AgentPanel';
+import ResearchPanel from '@/components/reel/ResearchPanel';
 import { useReelEditor } from './useReelEditor';
 import Timeline from '@/components/reel/Timeline';
 import type { Pattern } from '@/lib/reel/pattern-schema';
@@ -211,6 +212,15 @@ export default function ReelStudio() {
 
         <Tabs
           items={[
+            {
+              key: 'research',
+              label: 'Research',
+              children: (
+                <Card size="small">
+                  <ResearchPanel slug={slug} />
+                </Card>
+              ),
+            },
             {
               key: 'agent',
               label: 'Agent',
