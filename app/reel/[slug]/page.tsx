@@ -9,9 +9,11 @@ import {
   ReloadOutlined, ScissorOutlined, ThunderboltOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import Player from '@/components/reel/Player';
+import AgentPanel from '@/components/reel/AgentPanel';
 import { useReelEditor } from './useReelEditor';
 import Timeline from '@/components/reel/Timeline';
 import type { Pattern } from '@/lib/reel/pattern-schema';
+import type { Reel } from '@/lib/reel/schema';
 import { timelineDuration } from '@/lib/reel/timeline';
 
 const MOTIONS = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'hold'] as const;
@@ -209,6 +211,15 @@ export default function ReelStudio() {
 
         <Tabs
           items={[
+            {
+              key: 'agent',
+              label: 'Agent',
+              children: (
+                <Card size="small">
+                  <AgentPanel slug={slug} onApplied={(next) => setReel(next as Reel)} />
+                </Card>
+              ),
+            },
             {
               key: 'clip',
               label: 'Clip',
