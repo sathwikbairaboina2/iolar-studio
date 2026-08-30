@@ -117,6 +117,44 @@ describe('reel player', () => {
     expect(screen.getByTestId('reel-pending').textContent).toMatch(/not reachable/i);
   });
 
+  it('does not restart the playback run when the studio re-renders with fresh callbacks', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { reel, pattern } = await build();
+    const { rerender } = render(
+      <Player
+        reel={reel}
+        pattern={pattern}
+        slug="grok"
+        currentTime={0}
+        playing
+        onTimeChange={() => {}}
+        onEnded={() => {}}
+      />
+    );
+    // An own property on this element only: the prototype's play() is shared with the <video>,
+    // whose own effect legitimately re-runs on every render.
+    const audio = screen.getByTestId('reel-audio') as HTMLAudioElement;
+    const audioPlay = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(audio, 'play', { configurable: true, value: audioPlay });
+
+    // The studio hands Player a new arrow function on every render. That identity change must
+    // not tear the clock down: re-seeding it each frame drags the voiceover back to a stale
+    // timestamp, so audio crawls and the video stutters against it.
+    rerender(
+      <Player
+        reel={reel}
+        pattern={pattern}
+        slug="grok"
+        currentTime={0}
+        playing
+        onTimeChange={() => {}}
+        onEnded={() => {}}
+      />
+    );
+
+    expect(audioPlay).not.toHaveBeenCalled();
+  });
+
   it('exposes the pattern custom properties on the stage', async () => {
     const Player = (await import('@/components/reel/Player')).default;
     const { reel, pattern } = await build();

@@ -39,6 +39,15 @@ export default function Player({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const clockRef = useRef<{ start: number; at: number }>({ start: 0, at: 0 });
+  // The studio re-creates these arrows on every render, and the loop calls onTimeChange every
+  // frame. Reading them through a ref keeps a playback run alive across those renders: as deps
+  // they tore the clock down each frame, re-seeking the voiceover back to a stale timestamp.
+  const onTimeChangeRef = useRef(onTimeChange);
+  const onEndedRef = useRef(onEnded);
+  useEffect(() => {
+    onTimeChangeRef.current = onTimeChange;
+    onEndedRef.current = onEnded;
+  });
   const [width, height] = REEL_RATIOS[reel.ratio];
   const duration = timelineDuration(reel.timeline) || reel.vo.durationSec;
   const frame = frameAt(reel.timeline, currentTime);
@@ -67,11 +76,11 @@ export default function Player({
           ? audio.currentTime
           : clockRef.current.at + (performance.now() - clockRef.current.start) / 1000;
       if (now >= duration) {
-        onTimeChange(duration);
-        onEnded?.();
+        onTimeChangeRef.current(duration);
+        onEndedRef.current?.();
         return;
       }
-      onTimeChange(now);
+      onTimeChangeRef.current(now);
       rafRef.current = requestAnimationFrame(step);
     };
     rafRef.current = requestAnimationFrame(step);
@@ -81,7 +90,7 @@ export default function Player({
     };
     // currentTime seeds the clock but must not restart the loop: the loop owns it while playing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, duration, voFailed, onTimeChange, onEnded]);
+  }, [playing, duration, voFailed]);
 
   // Keep the clip's own playhead matched to the timeline, tolerating small drift.
   useEffect(() => {
