@@ -46,6 +46,9 @@ export function reelDir(slug: string) { return path.join(reelsRoot(), slug); }
 export function reelFile(slug: string) { return path.join(reelDir(slug), 'reel.json'); }
 export function reelAssetsDir(slug: string) { return path.join(reelDir(slug), 'assets'); }
 export function reelRefsDir(slug: string) { return path.join(reelDir(slug), 'refs'); }
+export function reelHistoryDir(slug: string) { return path.join(reelDir(slug), 'history'); }
+export function reelHistoryIndex(slug: string) { return path.join(reelHistoryDir(slug), 'index.json'); }
+export function reelHistorySnap(slug: string, seq: number) { return path.join(reelHistoryDir(slug), `${seq}.json`); }
 export function reelVoFile(slug: string) { return path.join(reelDir(slug), 'vo.mp3'); }
 export function reelWordsFile(slug: string) { return path.join(reelDir(slug), 'vo.words.json'); }
 export function reelRendersDir(slug: string) { return path.join(reelDir(slug), 'renders'); }

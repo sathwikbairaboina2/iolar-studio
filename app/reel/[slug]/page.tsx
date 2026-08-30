@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
   Button, Card, Empty, Input, Progress, Segmented, Slider, Space, Spin, Tabs, Tag, Tooltip, Typography, Upload, message,
@@ -9,17 +9,16 @@ import {
   ReloadOutlined, ScissorOutlined, ThunderboltOutlined, UploadOutlined,
 } from '@ant-design/icons';
 import Player from '@/components/reel/Player';
+import { useReelEditor } from './useReelEditor';
 import Timeline from '@/components/reel/Timeline';
-import type { Reel } from '@/lib/reel/schema';
 import type { Pattern } from '@/lib/reel/pattern-schema';
-import * as edits from '@/lib/reel/edits';
 import { timelineDuration } from '@/lib/reel/timeline';
 
 const MOTIONS = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'hold'] as const;
 
 export default function ReelStudio() {
   const slug = String(useParams().slug ?? '');
-  const [reel, setReel] = useState<Reel | null>(null);
+  const { reel, setReel, error, setError, run, undo, redo } = useReelEditor(slug);
   const [pattern, setPattern] = useState<Pattern | null>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -27,19 +26,14 @@ export default function ReelStudio() {
   const [cueId, setCueId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
-  const undoRef = useRef<Reel[]>([]);
 
+  // A rejected command names both what was wrong and what would have been valid;
+  // surface it rather than letting the edit look like it silently did nothing.
   useEffect(() => {
-    let alive = true;
-    fetch(`/api/reel/${slug}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (alive && d.reel) setReel(d.reel);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [slug]);
+    if (!error) return;
+    message.error(error);
+    setError(null);
+  }, [error, setError]);
 
   // The pattern drives both the player's styling and the export's, so load the whole preset.
   const patternName = reel?.pattern;
@@ -80,39 +74,14 @@ export default function ReelStudio() {
       if (r.reel) setReel(r.reel);
     }, 4000);
     return () => clearInterval(t);
-  }, [pending, slug]);
-
-  const save = useCallback(
-    async (next: Reel) => {
-      if (reel) undoRef.current = [reel, ...undoRef.current].slice(0, 30);
-      setReel(next);
-      const r = await fetch(`/api/reel/${slug}`, {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ reel: next }),
-      });
-      if (!r.ok) message.error('save failed');
-    },
-    [reel, slug]
-  );
-
-  const undo = useCallback(() => {
-    const [prev, ...rest] = undoRef.current;
-    if (!prev) return;
-    undoRef.current = rest;
-    setReel(prev);
-    fetch(`/api/reel/${slug}`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ reel: prev }),
-    });
-  }, [slug]);
+  }, [pending, slug, setReel]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
         e.preventDefault();
-        undo();
+        if (e.shiftKey) redo();
+        else undo();
       }
       if (e.key === ' ' && (e.target as HTMLElement)?.tagName !== 'INPUT') {
         e.preventDefault();
@@ -121,7 +90,7 @@ export default function ReelStudio() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo]);
+  }, [undo, redo]);
 
   const stage = async (name: string, path: string, body?: unknown) => {
     setBusy(name);
@@ -249,7 +218,7 @@ export default function ReelStudio() {
                     <Segmented
                       value={clip.motion.type}
                       options={MOTIONS as unknown as string[]}
-                      onChange={(v) => save(edits.setClipMotion(reel, clip.id, { type: v as typeof MOTIONS[number] }))}
+                      onChange={(v) => run('clip.motion', { clipId: clip.id, motion: { type: v as (typeof MOTIONS)[number] } })}
                     />
                     <div>
                       <Typography.Text type="secondary">Motion strength</Typography.Text>
@@ -258,37 +227,37 @@ export default function ReelStudio() {
                         max={0.4}
                         step={0.01}
                         value={clip.motion.strength}
-                        onChangeComplete={(v) => save(edits.setClipMotion(reel, clip.id, { strength: v as number }))}
+                        onChangeComplete={(v) => run('clip.motion', { clipId: clip.id, motion: { strength: v as number } })}
                       />
                     </div>
                     <Segmented
                       value={clip.fit}
                       options={['cover', 'contain']}
-                      onChange={(v) => save(edits.setClipFit(reel, clip.id, v as 'cover' | 'contain'))}
+                      onChange={(v) => run('clip.fit', { clipId: clip.id, fit: v as 'cover' | 'contain' })}
                     />
                     <Segmented
                       value={clip.transition}
                       options={['cut', 'crossfade']}
-                      onChange={(v) => save(edits.setClipTransition(reel, clip.id, v as 'cut' | 'crossfade'))}
+                      onChange={(v) => run('clip.transition', { clipId: clip.id, transition: v as 'cut' | 'crossfade' })}
                     />
                     <Space wrap>
-                      <Button onClick={() => save(edits.trimClip(reel, clip.id, 'in', 0.1))}>Trim in +0.1</Button>
-                      <Button onClick={() => save(edits.trimClip(reel, clip.id, 'out', -0.1))}>Trim out −0.1</Button>
-                      <Button icon={<ScissorOutlined />} onClick={() => save(edits.splitClip(reel, clip.id, time))}>
+                      <Button onClick={() => run('clip.trim', { clipId: clip.id, edge: 'in', deltaSec: 0.1 })}>Trim in +0.1</Button>
+                      <Button onClick={() => run('clip.trim', { clipId: clip.id, edge: 'out', deltaSec: -0.1 })}>Trim out −0.1</Button>
+                      <Button icon={<ScissorOutlined />} onClick={() => run('clip.split', { clipId: clip.id, atSec: time })}>
                         Split here
                       </Button>
-                      <Button danger icon={<DeleteOutlined />} onClick={() => save(edits.deleteClip(reel, clip.id))}>
+                      <Button danger icon={<DeleteOutlined />} onClick={() => run('clip.delete', { clipId: clip.id })}>
                         Delete
                       </Button>
                     </Space>
                     <Space wrap>
                       <Button
-                        onClick={() => save(edits.moveClip(reel, clip.id, Math.max(0, reel.timeline.clips.findIndex((c) => c.id === clip.id) - 1)))}
+                        onClick={() => run('clip.move', { clipId: clip.id, toIndex: Math.max(0, reel.timeline.clips.findIndex((c) => c.id === clip.id) - 1) })}
                       >
                         Move earlier
                       </Button>
                       <Button
-                        onClick={() => save(edits.moveClip(reel, clip.id, Math.min(reel.timeline.clips.length - 1, reel.timeline.clips.findIndex((c) => c.id === clip.id) + 1)))}
+                        onClick={() => run('clip.move', { clipId: clip.id, toIndex: Math.min(reel.timeline.clips.length - 1, reel.timeline.clips.findIndex((c) => c.id === clip.id) + 1) })}
                       >
                         Move later
                       </Button>
@@ -307,14 +276,14 @@ export default function ReelStudio() {
                   <Space orientation="vertical" style={{ width: '100%' }}>
                     <Input
                       value={cue.text}
-                      onChange={(e) => save(edits.editCaption(reel, cue.id, e.target.value))}
+                      onChange={(e) => run('caption.edit', { cueId: cue.id, text: e.target.value })}
                     />
                     <Space wrap>
-                      <Button onClick={() => save(edits.nudgeCaption(reel, cue.id, -0.05))}>−0.05s</Button>
-                      <Button onClick={() => save(edits.nudgeCaption(reel, cue.id, 0.05))}>+0.05s</Button>
-                      <Button onClick={() => save(edits.mergeCaption(reel, cue.id))}>Merge next</Button>
-                      <Button onClick={() => save(edits.splitCaption(reel, cue.id))}>Split</Button>
-                      <Button onClick={() => save(edits.toggleCaption(reel, cue.id))}>
+                      <Button onClick={() => run('caption.nudge', { cueId: cue.id, deltaSec: -0.05 })}>−0.05s</Button>
+                      <Button onClick={() => run('caption.nudge', { cueId: cue.id, deltaSec: 0.05 })}>+0.05s</Button>
+                      <Button onClick={() => run('caption.merge', { cueId: cue.id })}>Merge next</Button>
+                      <Button onClick={() => run('caption.split', { cueId: cue.id })}>Split</Button>
+                      <Button onClick={() => run('caption.toggle', { cueId: cue.id })}>
                         {cue.hidden ? 'Show' : 'Hide'}
                       </Button>
                     </Space>

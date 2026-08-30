@@ -8,6 +8,8 @@ export const REEL_RATIOS: Record<string, [number, number]> = {
 };
 
 export const SHOT_KINDS = ['title', 'talking-head', 'screen', 'broll'] as const;
+export const CLIP_FITS = ['cover', 'contain'] as const;
+export const CLIP_TRANSITIONS = ['cut', 'crossfade'] as const;
 export const MOTION_TYPES = [
   'zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'pan-up', 'pan-down', 'hold',
 ] as const;
@@ -65,9 +67,9 @@ const ClipSchema = z
     start: z.number().min(0),
     end: z.number().min(0),
     srcIn: z.number().min(0).default(0),
-    fit: z.enum(['cover', 'contain']).default('cover'),
+    fit: z.enum(CLIP_FITS).default('cover'),
     motion: MotionSchema.prefault({}),
-    transition: z.enum(['cut', 'crossfade']).default('cut'),
+    transition: z.enum(CLIP_TRANSITIONS).default('cut'),
     locked: z.boolean().default(false),
   })
   .refine((c) => c.end > c.start, { message: 'clip end must be after start' });
