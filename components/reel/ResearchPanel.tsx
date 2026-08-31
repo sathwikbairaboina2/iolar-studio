@@ -114,6 +114,11 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
         return null;
       }
       return data;
+    } catch {
+      // The stage may well have finished on the server; the caller reloads and
+      // the panel draws whatever actually happened rather than freezing here.
+      setError(`${label} did not come back — reloading where the run got to`);
+      return null;
     } finally {
       setBusy(null);
     }
@@ -140,11 +145,16 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
       referenceReel: null,
       status: 'briefed',
     };
-    if (await call('/run', { method: 'POST', body: JSON.stringify({ brief: payload }) }, 'brief')) await load();
+    await call('/run', { method: 'POST', body: JSON.stringify({ brief: payload }) }, 'brief');
+    await load();
   };
 
   const advance = async () => {
-    if (await call('/run', { method: 'POST', body: JSON.stringify({}) }, 'run')) await load();
+    const data = await call('/run', { method: 'POST', body: JSON.stringify({}) }, 'run');
+    // 'hunted' is where the hunt lands on disk so the critic can be retried
+    // without searching again — not a step anyone asked for. Run straight on.
+    if (data?.status === 'hunted') await call('/run', { method: 'POST', body: JSON.stringify({}) }, 'run');
+    await load();
   };
 
   const saveReview = async () => {
@@ -169,7 +179,9 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
     }
   };
 
-  const stepIndex = status ? STAGES.indexOf(status as (typeof STAGES)[number]) + 1 : 0;
+  // 'hunted' is a resting point inside Research, not a step of its own.
+  const railStatus = status === 'hunted' ? 'briefed' : status;
+  const stepIndex = railStatus ? STAGES.indexOf(railStatus as (typeof STAGES)[number]) + 1 : 0;
   const uncited = useMemo(() => new Set(uncitedLines(lines)), [lines]);
   const keptCount = Object.values(keeps).filter(Boolean).length;
 
@@ -231,6 +243,17 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
         </Card>
       )}
 
+      {status === 'hunted' && (
+        <Card size="small" title="Sources found — judging them">
+          <Typography.Paragraph type="secondary">
+            The hunt is saved. Carrying on runs the critic over what it found; it does not search again.
+          </Typography.Paragraph>
+          <Button data-testid="research-judge" type="primary" loading={busy === 'run'} onClick={advance}>
+            Judge what was found
+          </Button>
+        </Card>
+      )}
+
       {status === 'briefed' && (
         <Card size="small" title="Ready to research">
           <Typography.Paragraph type="secondary">
@@ -244,7 +267,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
       )}
 
       {/* Gate — nothing is gathered or written until you have kept something. */}
-      {(status === 'critiqued' || status === 'hunted') && (
+      {status === 'critiqued' && (
         <Card size="small" title={`Review · keeping ${keptCount} of ${candidates.length}`}>
           <Space orientation="vertical" style={{ width: '100%' }} size="small">
             {candidates.map((c) => (

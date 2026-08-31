@@ -50,6 +50,7 @@ export function reelRefsDir(slug: string) { return path.join(reelDir(slug), 'ref
 export function reelResearchDir(slug: string) { return path.join(reelDir(slug), 'research'); }
 export function reelBriefFile(slug: string) { return path.join(reelResearchDir(slug), 'brief.json'); }
 export function reelCandidatesFile(slug: string) { return path.join(reelResearchDir(slug), 'candidates.json'); }
+export function reelHuntFile(slug: string) { return path.join(reelResearchDir(slug), 'hunted.json'); }
 export function reelSelectionFile(slug: string) { return path.join(reelResearchDir(slug), 'selection.json'); }
 export function reelScriptFile(slug: string) { return path.join(reelResearchDir(slug), 'script.json'); }
 export function reelEvidenceDir(slug: string) { return path.join(reelResearchDir(slug), 'evidence'); }

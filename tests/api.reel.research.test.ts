@@ -121,7 +121,9 @@ describe('POST /api/reel/[slug]/research/run', () => {
   // computed — a perClass of plain numbers where the schema wants objects,
   // which threw away eleven minutes of searching at the write.
   it('keeps its own stats when the critic volunteers a set of its own', async () => {
-    await seedBrief();
+    await seedBrief({ status: 'hunted' });
+    const seeded = await import('@/lib/reel/research/store');
+    await seeded.writeHunt('grok', [{ url: 'https://github.com/x' }]);
     vi.doMock('@/lib/reel/research/agents', () => ({
       huntSources: async () => [{ url: 'https://github.com/x' }],
       critique: async () => ({
@@ -138,6 +140,44 @@ describe('POST /api/reel/[slug]/research/run', () => {
     expect(body.status).toBe('critiqued');
     const store = await import('@/lib/reel/research/store');
     expect((await store.readCandidates('grok')).stats.perClass).toEqual({});
+  });
+
+  // The hunt is ten minutes of searching. It used to live only in memory until
+  // the critic had finished and the pack validated, so any failure in between
+  // threw all of it away.
+  it('lands the hunt on disk before the critic runs, and stops there', async () => {
+    await seedBrief();
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      huntSources: async () => [{ url: 'https://github.com/x' }],
+      critique: async () => {
+        throw new Error('the critic should not have run yet');
+      },
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const body = await (await POST(post(), ctx('grok'))).json();
+
+    expect(body.status).toBe('hunted');
+    const store = await import('@/lib/reel/research/store');
+    expect(await store.readHunt('grok')).toHaveLength(1);
+  });
+
+  it('judges what is already on disk rather than searching again', async () => {
+    await seedBrief({ status: 'hunted' });
+    const store = await import('@/lib/reel/research/store');
+    await store.writeHunt('grok', [{ url: 'https://github.com/Lightricks/LTX-Video' }]);
+
+    const hunt = vi.fn();
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      huntSources: hunt,
+      critique: async () => ({ candidates: [CANDIDATE] }),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const body = await (await POST(post(), ctx('grok'))).json();
+
+    expect(body.status).toBe('critiqued');
+    expect(hunt).not.toHaveBeenCalled();
   });
 
   // The gate: the user reviews before anything is gathered or written.
@@ -201,5 +241,89 @@ describe('PUT /api/reel/[slug]/research/selection', () => {
     );
 
     expect(res.status).toBe(409);
+  });
+});
+
+describe('PUT /api/reel/[slug]/research/script', () => {
+  let order = 0;
+  const LINE = (id: string, text: string, over: Record<string, unknown> = {}) => ({
+    id,
+    order: order++,
+    role: 'body',
+    text,
+    citations: ['a1b2c3d4e5f6'],
+    assetIds: [],
+    note: null,
+    commentary: false,
+    ...over,
+  });
+  const CLAIM = 'the weights are open';
+
+  async function seedScript() {
+    await seedBrief({ status: 'drafted' });
+    const store = await import('@/lib/reel/research/store');
+    await store.writeScript('grok', {
+      runId: 'grok',
+      createdAt: '2026-08-30T21:40:00.000Z',
+      updatedAt: '2026-08-30T21:40:00.000Z',
+      status: 'draft',
+      lines: [LINE('l1', 'Apache 2.0, and the weights are on Hugging Face.'), LINE('l2', 'Second line.')],
+      unsupported: [],
+      coverage: [{ claim: CLAIM, lineIds: ['l1'], why: 'names the licence' }],
+    } as never);
+    return store;
+  }
+
+  // Dropping a line is answerable from the stored judgement, so it costs nothing.
+  it('surfaces a claim as unsupported when its only line is dropped, without asking the model', async () => {
+    await seedScript();
+    const judge = vi.fn();
+    vi.doMock('@/lib/reel/research/agents', () => ({ judgeCoverage: judge }));
+
+    const { PUT } = await import('@/app/api/reel/[slug]/research/script/route');
+    const res = await PUT(put({ lines: [LINE('l2', 'Second line.')] }), ctx('grok'));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.unsupported).toContain(CLAIM);
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it('leaves the claim alone while its line is untouched', async () => {
+    await seedScript();
+    vi.doMock('@/lib/reel/research/agents', () => ({ judgeCoverage: vi.fn() }));
+
+    const { PUT } = await import('@/app/api/reel/[slug]/research/script/route');
+    const body = await (
+      await PUT(put({ lines: [LINE('l1', 'Apache 2.0, and the weights are on Hugging Face.')] }), ctx('grok'))
+    ).json();
+
+    expect(body.unsupported).not.toContain(CLAIM);
+  });
+
+  // Rewriting a line destroys the text the judge read, so its answer no longer applies.
+  it('re-judges when a line’s text is rewritten', async () => {
+    await seedScript();
+    const judge = vi.fn().mockResolvedValue([{ claim: CLAIM, lineIds: [], why: 'no longer said' }]);
+    vi.doMock('@/lib/reel/research/agents', () => ({ judgeCoverage: judge }));
+
+    const { PUT } = await import('@/app/api/reel/[slug]/research/script/route');
+    const body = await (await PUT(put({ lines: [LINE('l1', 'Something else entirely.')] }), ctx('grok'))).json();
+
+    expect(judge).toHaveBeenCalled();
+    expect(body.unsupported).toContain(CLAIM);
+  });
+
+  it('keeps the judgement it has when a re-judge fails', async () => {
+    await seedScript();
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      judgeCoverage: vi.fn().mockRejectedValue(new Error('claude down')),
+    }));
+
+    const { PUT } = await import('@/app/api/reel/[slug]/research/script/route');
+    const res = await PUT(put({ lines: [LINE('l1', 'Reworded, but still about the licence.')] }), ctx('grok'));
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).unsupported).not.toContain(CLAIM);
   });
 });

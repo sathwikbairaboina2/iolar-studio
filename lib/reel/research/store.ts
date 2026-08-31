@@ -1,13 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import {
-  reelBriefFile,
-  reelCandidatesFile,
-  reelEvidenceDir,
-  reelResearchDir,
-  reelScriptFile,
-  reelSelectionFile,
-} from '@/lib/paths';
+import { reelBriefFile, reelCandidatesFile, reelEvidenceDir, reelHuntFile, reelResearchDir, reelScriptFile, reelSelectionFile } from '@/lib/paths';
 import { parseBrief, type Brief } from './brief';
 import { parseCandidates, type CandidatesFile } from './candidate';
 import { emptySelection, parseSelection, type Selection } from './selection';
@@ -69,6 +62,24 @@ export async function setResearchStatus(slug: string, status: Brief['status']): 
   const next = { ...(await readBrief(slug)), status };
   await writeBrief(slug, next);
   return next;
+}
+
+/**
+ * The hunt's raw findings, before the critic has judged them.
+ *
+ * Written the moment the hunters return. Ten minutes of searching used to live
+ * only in memory until the critic had finished and the pack validated, so any
+ * failure in between threw all of it away; on disk, the critic can be retried
+ * against what was already found.
+ */
+export async function writeHunt(slug: string, found: Record<string, unknown>[]): Promise<void> {
+  await writeJson(reelHuntFile(slug), found);
+}
+
+export async function readHunt(slug: string): Promise<Record<string, unknown>[]> {
+  const raw = await readJson(reelHuntFile(slug)).catch(() => null);
+  if (!Array.isArray(raw)) throw new NoResearchError(`no hunt on disk for ${slug}`);
+  return raw as Record<string, unknown>[];
 }
 
 export async function readCandidates(slug: string): Promise<CandidatesFile> {

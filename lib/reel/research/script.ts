@@ -41,6 +41,16 @@ export const ScriptSchema = z
     lines: z.array(ScriptLineSchema),
     /** brief.mustProve claims that no line covers. Reported, never silently dropped. */
     unsupported: z.array(z.string()),
+    /**
+     * What the coverage judge decided, per claim, and which lines carry it.
+     *
+     * Kept so an edit can be re-checked without asking the model again: drop the
+     * only line proving a claim and it goes unsupported immediately. Defaulted,
+     * because scripts written before the judge existed have none.
+     */
+    coverage: z
+      .array(z.object({ claim: z.string(), lineIds: z.array(z.string()), why: z.string() }).strict())
+      .default([]),
   })
   .strict()
   .superRefine((script, ctx) => {
@@ -102,6 +112,15 @@ function keywords(text: string): Set<string> {
  * but a commentary line proves nothing, because it is an opinion the research
  * never backed.
  */
+/**
+ * The fallback when the coverage judge cannot be reached.
+ *
+ * Keyword overlap against a per-line threshold, which is wrong whenever the
+ * script proves a claim in its own words or across two lines — see
+ * `judgeCoverage`, which is what normally decides this. Kept because a script
+ * must still be written when Claude is unavailable, and a crude warning beats
+ * silently claiming everything is proved.
+ */
 export function unsupportedClaims(mustProve: string[], lines: ScriptLine[]): string[] {
   const factual = lines.filter((l) => !l.commentary && l.citations.length > 0);
   return mustProve.filter((claim) => {
@@ -137,4 +156,27 @@ export function mergeLineEdits(
       const mine = byId.get(line.id);
       return mine ? { ...line, text: mine.text, note: mine.note ?? line.note } : line;
     });
+}
+
+/**
+ * Re-derives which claims are unsupported from a judgement already made.
+ *
+ * The lines can change after the judge has run — the studio's edit path drops
+ * them and marks them commentary — and the point of storing which lines carry a
+ * claim is that those edits are answerable without another model call. A claim
+ * survives while at least one line that stated it is still a cited factual line.
+ */
+export function unsupportedFromCoverage(
+  mustProve: string[],
+  coverage: { claim: string; lineIds: string[] }[],
+  lines: ScriptLine[]
+): string[] {
+  const alive = new Set(lines.filter((l) => !l.commentary && l.citations.length > 0).map((l) => l.id));
+  const byClaim = new Map(coverage.map((c) => [c.claim.trim(), c.lineIds]));
+  return mustProve.filter((claim) => {
+    const ids = byClaim.get(claim.trim());
+    // No judgement for this claim at all — it was never shown to be covered.
+    if (!ids) return true;
+    return !ids.some((id) => alive.has(id));
+  });
 }

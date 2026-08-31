@@ -20,7 +20,7 @@ import type { ScriptLine } from './script';
 
 export type Runner = (prompt: string, opts?: { timeoutMs?: number; allowedTools?: string[] }) => Promise<string>;
 
-const HUNT_TIMEOUT_MS = 600_000;
+const HUNT_TIMEOUT_MS = 900_000;
 const STAGE_TIMEOUT_MS = 300_000;
 
 /**
@@ -188,4 +188,74 @@ No prose, no fence.`;
 
   const out = await run(prompt, { timeoutMs: STAGE_TIMEOUT_MS });
   return extractJson<{ lines: ScriptLine[] }>(out).lines ?? [];
+}
+
+export type Coverage = { claim: string; lineIds: string[]; why: string };
+
+/**
+ * Which of the brief's must-prove claims the script actually makes.
+ *
+ * This was keyword overlap, and it was wrong far more often than it was right:
+ * three consecutive live runs flagged every claim while the script stated each
+ * one outright. The words a brief uses to *ask* for evidence are not the words
+ * a script uses to *give* it — "the maximum fine as a figure and a percentage
+ * of turnover" against "Article 99 sets the ceiling: thirty-five million euros,
+ * or seven percent of total worldwide annual turnover" shares almost nothing,
+ * and a claim proved across two lines could never match a per-line threshold.
+ *
+ * So the reading is done by the model that can read. It answers only about what
+ * the lines say — not what the sources behind them say — because the question
+ * is whether this script makes the claim, and a line that contradicts a claim
+ * must not be counted as proving it.
+ */
+export async function judgeCoverage(
+  mustProve: string[],
+  lines: ScriptLine[],
+  run: Runner = runClaude
+): Promise<Coverage[]> {
+  const factual = lines.filter((l) => !l.commentary && l.citations.length > 0);
+  if (mustProve.length === 0) return [];
+  if (factual.length === 0) {
+    return mustProve.map((claim) => ({ claim, lineIds: [], why: 'the script has no cited factual lines' }));
+  }
+
+  const prompt = `You are checking whether a short video script makes the claims its brief required.
+
+The brief said the sources must prove:
+${mustProve.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+
+These are the script's factual lines:
+${factual.map((l) => `[${l.id}] ${l.text}`).join('\n')}
+
+For each required claim, decide whether these lines state it. Judge only what the lines
+say — not what their sources might say elsewhere. Rules:
+
+- Different wording still counts. "Article 99 sets the ceiling: thirty-five million euros,
+  or seven percent of turnover" states "the maximum fine, as a figure and a percentage".
+- Several lines together count. List every line that carries part of it.
+- A line that contradicts the claim does NOT cover it. If the script says a thing did not
+  happen, a claim that it happened is uncovered, however much vocabulary they share.
+- A claim asking for a specific artefact — a name, a date, a version, a number, a quote —
+  is only covered if that specific thing is actually in the lines.
+
+Reply with ONLY:
+
+{ "coverage": [ { "claim": "<the claim, copied exactly>",
+                  "lineIds": [ "<ids of the lines that state it, empty if none>" ],
+                  "why": "<one short sentence>" } ] }
+
+One entry per claim, in the order given. No prose, no fence.`;
+
+  const raw = await run(prompt, { timeoutMs: STAGE_TIMEOUT_MS });
+  const parsed = extractJson<{ coverage?: Coverage[] }>(raw);
+  const byClaim = new Map((parsed.coverage ?? []).map((c) => [String(c.claim).trim(), c]));
+  const known = new Set(factual.map((l) => l.id));
+
+  // The brief's claims are the answer's shape, not the model's: a claim it
+  // forgot to mention is uncovered, and an id it invented is not a citation.
+  return mustProve.map((claim) => {
+    const got = byClaim.get(claim.trim());
+    const lineIds = (got?.lineIds ?? []).map(String).filter((id) => known.has(id));
+    return { claim, lineIds, why: got?.why ? String(got.why) : 'the judge did not answer for this claim' };
+  });
 }

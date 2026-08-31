@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import * as store from '@/lib/reel/research/store';
 import { withStableIds } from '@/lib/reel/research/candidate';
-import { critique, draftScript, huntSources } from '@/lib/reel/research/agents';
+import { critique, draftScript, huntSources, judgeCoverage } from '@/lib/reel/research/agents';
 import { gatherEvidence } from '@/lib/reel/research/gatherRun';
 import { parseBrief } from '@/lib/reel/research/brief';
 import { unsupportedClaims } from '@/lib/reel/research/script';
@@ -9,8 +9,14 @@ import { effectiveState } from '@/lib/reel/research/selection';
 
 type Ctx = { params: Promise<{ slug: string }> };
 
-/** Research runs long: six subagents searching the web is minutes, not seconds. */
-export const maxDuration = 800;
+/**
+ * Research runs long: subagents searching the web is minutes, not seconds.
+ *
+ * One call advances one stage, so this has to clear the slowest single stage —
+ * the hunt at 900s — rather than the sum of them. It used to be 800 against a
+ * hunt-plus-critic pair that could ask for 900.
+ */
+export const maxDuration = 960;
 
 /**
  * Advances the research one stage.
@@ -42,8 +48,18 @@ export async function POST(req: Request, ctx: Ctx) {
 
     const brief = await store.readBrief(slug);
 
+    // The hunt is the expensive half and lands on disk on its own, so a critic
+    // that fails is retried against what was already found rather than sending
+    // every hunter out again.
     if (status === 'briefed') {
-      const raw = await huntSources(brief);
+      const found = await huntSources(brief);
+      await store.writeHunt(slug, found);
+      await store.setResearchStatus(slug, 'hunted');
+      return NextResponse.json({ status: 'hunted', waitingOn: null, done: false, found: found.length });
+    }
+
+    if (status === 'hunted') {
+      const raw = await store.readHunt(slug);
       const judged = await critique(brief, raw);
       // Ids come from the URL, not from the model that invented the rest.
       const candidates = withStableIds(judged.candidates);
@@ -68,7 +84,7 @@ export async function POST(req: Request, ctx: Ctx) {
     }
 
     // Gate: nothing is gathered or written until the user has kept something.
-    if (status === 'critiqued' || status === 'hunted') {
+    if (status === 'critiqued') {
       return NextResponse.json({ status, waitingOn: 'review', done: false });
     }
 
@@ -93,13 +109,26 @@ export async function POST(req: Request, ctx: Ctx) {
       const lines = await draftScript(brief, kept, evidence);
       const now = new Date().toISOString();
 
+      // Whether the script makes the brief's claims is a reading question, so the
+      // model reads it. Keyword overlap is the fallback for when it cannot.
+      let coverage: Awaited<ReturnType<typeof judgeCoverage>> = [];
+      let unsupported: string[];
+      try {
+        coverage = await judgeCoverage(brief.mustProve, lines);
+        unsupported = coverage.filter((c) => c.lineIds.length === 0).map((c) => c.claim);
+      } catch {
+        coverage = [];
+        unsupported = unsupportedClaims(brief.mustProve, lines);
+      }
+
       await store.writeScript(slug, {
         runId: slug,
         createdAt: now,
         updatedAt: now,
         status: 'draft',
         lines,
-        unsupported: unsupportedClaims(brief.mustProve, lines),
+        unsupported,
+        coverage,
       } as never);
       await store.setResearchStatus(slug, 'drafted');
       return NextResponse.json({ status: 'drafted', waitingOn: 'approval', done: false });
