@@ -5,22 +5,16 @@ export type Settings = {
   brand: string;
   defaultTemplate: string;
   defaultRatio: string;
-  comfyUrl: string;
-  comfyCheckpoint: string;
-  polishDenoise: number;
-  desktopWorkflowsDir: string;
   whisperPython: string;
   whisperModel: string;
   whisperDevice: 'cuda' | 'cpu';
-  i2vModel: string;
-  i2vTurbo: boolean;
   voiceProvider: 'kokoro' | 'piper' | 'sapi' | 'higgsfield' | 'manual';
   kokoroDir: string;
   kokoroVoice: string;
   kokoroSpeed: number;
   piperVoice: string;
   piperDataDir: string;
-  heroProvider: 'comfy' | 'higgsfield';
+  heroProvider: 'plugin' | 'higgsfield';
   reelFps: number;
   reelRatio: string;
   reelPattern: string;
@@ -36,16 +30,9 @@ const DEFAULTS: Settings = {
   brand: 'iolar',
   defaultTemplate: 'spiral-notes',
   defaultRatio: '3:4',
-  comfyUrl: 'http://127.0.0.1:8188',
-  comfyCheckpoint: '',
-  polishDenoise: 0.12,
-  desktopWorkflowsDir:
-    'C:\\Users\\sathwik\\AppData\\Local\\Comfy-Desktop\\ComfyUI-Installs\\ComfyUI\\ComfyUI\\user\\default\\workflows',
   whisperPython: path.join(process.cwd(), '.venv-whisper', 'Scripts', 'python.exe'),
   whisperModel: 'small',
   whisperDevice: 'cpu',
-  i2vModel: '',
-  i2vTurbo: false,
   // Local by default: no cloud generation happens unless it is turned on explicitly.
   voiceProvider: 'kokoro',
   kokoroDir: 'models/kokoro',
@@ -55,7 +42,7 @@ const DEFAULTS: Settings = {
   kokoroSpeed: 1.35,
   piperVoice: 'en_US-ryan-high',
   piperDataDir: 'models/piper',
-  heroProvider: 'comfy',
+  heroProvider: 'plugin',
   reelFps: 30,
   reelRatio: '9:16',
   reelPattern: 'armand',

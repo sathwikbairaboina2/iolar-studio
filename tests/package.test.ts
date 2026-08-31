@@ -49,19 +49,3 @@ describe('packagePost', () => {
     await expect(packagePost('python', 'pkg-ovf', 1)).rejects.toThrow(/overflow/);
   });
 });
-
-describe('polish route', () => {
-  it('503 when comfy down', async () => {
-    const orig = global.fetch;
-    global.fetch = (() => Promise.reject(new Error('down'))) as unknown as typeof fetch;
-    try {
-      const route = await import('@/app/api/handbooks/[subject]/[chapter]/parts/[part]/polish/route');
-      const res = await route.POST(new Request('http://t', { method: 'POST' }), {
-        params: Promise.resolve({ subject: 'python', chapter: 'x', part: '1' }),
-      });
-      expect(res.status).toBe(503);
-    } finally {
-      global.fetch = orig;
-    }
-  });
-});

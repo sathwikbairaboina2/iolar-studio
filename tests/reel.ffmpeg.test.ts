@@ -40,7 +40,7 @@ async function fixture(over: Record<string, unknown> = {}) {
     title: 'Fixture',
     fps: 30,
     beats: [{ id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'broll', brief: '' } }],
-    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' }],
+    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' }],
     timeline: {
       clips: [clip('c1', 0, 1.5), clip('c2', 1.5, 3)],
       captions: [{ id: 'k1', text: 'just launched', start: 0.2, end: 1.2 }],

@@ -7,7 +7,6 @@ import {
 } from '@ant-design/icons';
 import { usePathname, useRouter } from 'next/navigation';
 import { SWEEP, useTheme } from './ThemeProvider';
-import ComfyPill from './ComfyPill';
 
 const soon = (label: string) => (
   <span>
@@ -79,7 +78,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           onClick={({ key }) => router.push(key)}
           style={{ flex: 1, background: 'transparent', borderInlineEnd: 'none' }}
         />
-        <ComfyPill />
       </Layout.Sider>
 
       <Layout>

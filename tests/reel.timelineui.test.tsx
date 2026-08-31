@@ -28,7 +28,7 @@ async function build(over: Record<string, unknown> = {}) {
     ...emptyReel('grok'),
     title: 'Grok',
     vo: { durationSec: 8 },
-    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' }],
+    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' }],
     timeline: {
       clips: [clip('c1', 0, 2), clip('c2', 2, 4), clip('c3', 4, 6)],
       captions: [

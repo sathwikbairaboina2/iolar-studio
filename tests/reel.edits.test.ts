@@ -19,7 +19,7 @@ async function base() {
     pattern: 'armand',
     title: 'Grok',
     beats: [{ id: 'b1', role: 'hook', text: 'x', shot: { kind: 'broll', brief: '' } }],
-    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' }],
+    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' }],
     timeline: {
       clips: [clip('c1', 0, 3), clip('c2', 3, 6), clip('c3', 6, 9)],
       captions: [

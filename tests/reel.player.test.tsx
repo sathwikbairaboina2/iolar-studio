@@ -35,9 +35,9 @@ async function build(over: Record<string, unknown> = {}) {
     beats: [{ id: 'b1', role: 'hook', text: 'x', shot: { kind: 'broll', brief: '' } }],
     vo: { durationSec: 6 },
     assets: [
-      { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' },
-      { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'comfy', status: 'ready' },
-      { id: 'a3', kind: 'video', path: '', origin: 'comfy', status: 'queued' },
+      { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' },
+      { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'plugin', status: 'ready' },
+      { id: 'a3', kind: 'video', path: '', origin: 'plugin', status: 'queued' },
     ],
     timeline: {
       clips: [clip('c1', 'a1', 0, 4), clip('c2', 'a2', 4, 9)],
@@ -108,13 +108,13 @@ describe('reel player', () => {
     const { reel, pattern } = await build();
     const stuck = validateReel({
       ...reel,
-      assets: [{ id: 'a3', kind: 'video', path: '', origin: 'comfy', status: 'awaiting-manual', error: 'ComfyUI is not reachable' }],
+      assets: [{ id: 'a3', kind: 'video', path: '', origin: 'plugin', status: 'awaiting-manual', error: 'No video provider is wired' }],
       timeline: { ...reel.timeline, clips: [clip('c1', 'a3', 0, 4)], captions: [], overlays: [] },
     });
     render(
       <Player reel={stuck} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
-    expect(screen.getByTestId('reel-pending').textContent).toMatch(/not reachable/i);
+    expect(screen.getByTestId('reel-pending').textContent).toMatch(/no video provider/i);
   });
 
   it('does not restart the playback run when the studio re-renders with fresh callbacks', async () => {

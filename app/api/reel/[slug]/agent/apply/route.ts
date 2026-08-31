@@ -9,7 +9,7 @@ export const maxDuration = 300;
  * Commits an approved proposal.
  *
  * Every command runs through the full write path again rather than trusting the
- * preview: ComfyUI assets land while a proposal sits on screen, so the reel can
+ * preview: generated assets land while a proposal sits on screen, so the reel can
  * have moved underneath it.
  *
  * A rejection stops the run instead of skipping past it, because step 5 of a

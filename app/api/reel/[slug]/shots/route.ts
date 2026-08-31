@@ -17,7 +17,7 @@ export async function POST(req: Request, ctx: Ctx) {
   }
 }
 
-/** Polled by the studio: advances running ComfyUI jobs and returns the reel. */
+/** Polled by the studio: advances running provider jobs and returns the reel. */
 export async function GET(_req: Request, ctx: Ctx) {
   const { slug } = await ctx.params;
   try {

@@ -27,7 +27,7 @@ describe('reel store', () => {
   it('appends assets with generated ids and patches their status', async () => {
     const { createReel, addAsset, updateAsset, loadReel } = await import('@/lib/reel/store');
     await createReel('grok-bot');
-    const a = await addAsset('grok-bot', { kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', brief: 'chat UI' });
+    const a = await addAsset('grok-bot', { kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', brief: 'chat UI' });
     expect(a.id).toMatch(/^a\d+$/);
     await updateAsset('grok-bot', a.id, { status: 'ready', durationSec: 5 });
     const reel = await loadReel('grok-bot');

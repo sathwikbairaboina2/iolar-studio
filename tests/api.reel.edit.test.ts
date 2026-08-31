@@ -38,7 +38,7 @@ async function seed() {
     ...emptyReel('grok'),
     title: 'Grok',
     vo: { durationSec: 12 },
-    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' }],
+    assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' }],
     timeline: {
       clips: [clip('c1', 'a1', 0, 4), clip('c2', 'a1', 4, 9)],
       captions: [{ id: 'k1', text: 'hello there', start: 0.5, end: 1.4 }],

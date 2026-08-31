@@ -79,8 +79,8 @@ describe('assemble route', () => {
       ],
       vo: { ...reel.vo, durationSec: 4, words: ['one', 'two', 'three', 'four'].map((w, i) => ({ w, start: i, end: i + 0.8 })) },
       assets: [
-        { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready', brief: '' },
-        { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'comfy', status: 'ready', brief: '' },
+        { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', brief: '' },
+        { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'plugin', status: 'ready', brief: '' },
       ],
     });
   };

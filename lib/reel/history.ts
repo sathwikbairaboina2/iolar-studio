@@ -10,7 +10,7 @@ import { saveReel } from './store';
  * computed for it. Reels are small JSON, so the cost is nothing and undo cannot
  * be subtly wrong the way a hand-written inverse can.
  *
- * Note what is NOT here: assets landing from ComfyUI go through addAsset and
+ * Note what is NOT here: assets landing from a provider go through addAsset and
  * updateAsset, never through a command. They are not user intent, so they never
  * enter the log and can never be undone out from under a running job.
  */

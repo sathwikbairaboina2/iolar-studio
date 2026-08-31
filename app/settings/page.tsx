@@ -28,10 +28,6 @@ export default function SettingsPage() {
         <Form.Item name="brand" label="Brand handle"><Input /></Form.Item>
         <Form.Item name="defaultTemplate" label="Default template"><Input /></Form.Item>
         <Form.Item name="defaultRatio" label="Default ratio"><Select options={RATIO_OPTS} /></Form.Item>
-        <Form.Item name="comfyUrl" label="ComfyUI URL"><Input /></Form.Item>
-        <Form.Item name="comfyCheckpoint" label="ComfyUI checkpoint (blank = auto)"><Input /></Form.Item>
-        <Form.Item name="polishDenoise" label="Polish denoise"><InputNumber min={0} max={0.5} step={0.01} /></Form.Item>
-        <Form.Item name="desktopWorkflowsDir" label="ComfyUI Desktop workflows dir"><Input /></Form.Item>
         <Button type="primary" htmlType="submit">Save</Button>
       </Form>
     </div>

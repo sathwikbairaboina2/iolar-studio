@@ -7,7 +7,7 @@ import { loadPattern } from './patterns';
 import { reelAssetsDir } from '../paths';
 import { getSettings } from '../settings';
 import { ffprobeMedia } from './probe';
-import { animateImage, collectVideo, i2vAvailable, jobState } from '../comfy/i2v';
+import { NO_PROVIDER, videoProvider } from './videoProvider';
 import { HiggsfieldUnavailableError, downloadTo, hfGenerateVideo } from '../higgsfield/client';
 
 export type ShotRequest = {
@@ -73,8 +73,8 @@ export type DropRole = 'shot' | 'still';
 /**
  * A dropped file always wins over generation for its beat.
  *
- * A video is the shot. An image is ambiguous — it can be the seed ComfyUI animates, or
- * the shot itself with a Ken Burns move over it, which is how half of a real reel is
+ * A video is the shot. An image is ambiguous — it can be the seed a provider animates,
+ * or the shot itself with a Ken Burns move over it, which is how half of a real reel is
  * built. `role` says which; images default to seeding.
  */
 export async function attachAsset(
@@ -116,12 +116,12 @@ export async function attachAsset(
 async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<void> {
   const [width, height] = REEL_RATIOS[reel.ratio];
   // A hero shot only leaves this machine when heroProvider says so; the default keeps
-  // every generation on the local ComfyUI.
+  // every generation on whatever plugin is wired locally.
   const useHiggsfield = req.hero && getSettings().heroProvider === 'higgsfield';
   const asset = await addAsset(slug, {
     kind: 'video',
     path: '',
-    origin: useHiggsfield ? 'higgsfield' : 'comfy',
+    origin: useHiggsfield ? 'higgsfield' : 'plugin',
     status: 'queued',
     brief: req.brief,
     width,
@@ -138,15 +138,13 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<
       return;
     }
 
-    if (!(await i2vAvailable())) {
-      await updateAsset(slug, asset.id, {
-        status: 'awaiting-manual',
-        error: 'ComfyUI is not reachable — generate this shot yourself and drop the file in.',
-      });
+    const provider = videoProvider();
+    if (!provider || !(await provider.available())) {
+      await updateAsset(slug, asset.id, { status: 'awaiting-manual', error: NO_PROVIDER });
       return;
     }
 
-    // ComfyUI animates a still. Prefer the one dropped for this beat, then any spare.
+    // A provider animates a still. Prefer the one dropped for this beat, then any spare.
     const still =
       reel.assets.find(
         (a) => a.kind === 'image' && a.status === 'ready' && a.brief === `still:${req.beatId}`
@@ -159,14 +157,14 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<
       return;
     }
 
-    const { promptId } = await animateImage({
+    const { jobId } = await provider.animate({
       imagePath: path.join(reelAssetsDir(slug), path.basename(still.path)),
       brief: req.brief,
       seconds: req.seconds,
       seed: reel.seed,
       ratio: reel.ratio,
     });
-    await updateAsset(slug, asset.id, { status: 'running', jobId: promptId });
+    await updateAsset(slug, asset.id, { status: 'running', jobId });
   } catch (err) {
     const manual = err instanceof HiggsfieldUnavailableError;
     await updateAsset(slug, asset.id, {
@@ -205,16 +203,19 @@ export async function runShots(slug: string): Promise<Reel> {
   return loadReel(slug);
 }
 
-/** Moves running ComfyUI jobs forward; called by the studio while it polls. */
+/** Moves running provider jobs forward; called by the studio while it polls. */
 export async function refreshShots(slug: string): Promise<Reel> {
   const reel = await loadReel(slug);
+  const provider = videoProvider();
+  // Without a provider nothing can be running, and polling one would be a lie.
+  if (!provider) return reel;
   for (const asset of reel.assets) {
     if (asset.status !== 'running' || !asset.jobId) continue;
-    const state = await jobState(asset.jobId);
+    const state = await provider.jobState(asset.jobId);
     if (state === 'ready') {
       const rel = path.join('assets', `${asset.id}.mp4`);
       try {
-        await collectVideo(asset.jobId, path.join(reelAssetsDir(slug), `${asset.id}.mp4`));
+        await provider.collect(asset.jobId, path.join(reelAssetsDir(slug), `${asset.id}.mp4`));
         const info = await ffprobeMedia(path.join(reelAssetsDir(slug), `${asset.id}.mp4`)).catch(() => null);
         await updateAsset(slug, asset.id, {
           path: rel,
@@ -227,7 +228,7 @@ export async function refreshShots(slug: string): Promise<Reel> {
         await updateAsset(slug, asset.id, { status: 'failed', error: String(err).slice(0, 300) });
       }
     } else if (state === 'failed') {
-      await updateAsset(slug, asset.id, { status: 'failed', error: 'ComfyUI reported an error' });
+      await updateAsset(slug, asset.id, { status: 'failed', error: `${provider.name} reported an error` });
     }
   }
   return loadReel(slug);

@@ -43,7 +43,7 @@ const AssetSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(['video', 'image', 'audio']),
   path: z.string(),
-  origin: z.enum(['user', 'comfy', 'higgsfield']),
+  origin: z.enum(['user', 'plugin', 'higgsfield']),
   status: z.enum(['queued', 'running', 'ready', 'failed', 'awaiting-manual']).default('queued'),
   jobId: z.string().optional(),
   brief: z.string().default(''),

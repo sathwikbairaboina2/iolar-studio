@@ -37,8 +37,8 @@ async function baseReel() {
     ],
     vo: { words: WORDS, durationSec: 6 },
     assets: [
-      { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready', durationSec: 5 },
-      { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'comfy', status: 'ready', durationSec: 5 },
+      { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', durationSec: 5 },
+      { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'plugin', status: 'ready', durationSec: 5 },
       { id: 'a3', kind: 'video', path: 'assets/a3.mp4', origin: 'user', status: 'ready', durationSec: 5 },
     ],
   });
@@ -159,7 +159,7 @@ describe('assemble', () => {
       seed: 1,
       beats: [{ id: 'b1', role: 'body', text: long.map((w) => w.w).join(' '), shot: { kind: 'broll', brief: '', assetId: 'a1' } }],
       vo: { words: long, durationSec: 9.6 },
-      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready', durationSec: 10 }],
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', durationSec: 10 }],
     });
     const tl = assemble({ reel, pattern: PATTERN });
     expect(tl.clips.length).toBe(2);
@@ -339,7 +339,7 @@ describe('a line can cut between several shots', () => {
       }],
       vo: { words, durationSec: 10 },
       assets: ['a1', 'a2', 'a3'].map((id) => ({
-        id, kind: 'video', path: `assets/${id}.mp4`, origin: 'comfy', status: 'ready',
+        id, kind: 'video', path: `assets/${id}.mp4`, origin: 'plugin', status: 'ready',
       })),
     });
     const tl = assemble({ reel, pattern: PATTERN });
@@ -361,8 +361,8 @@ describe('a line can cut between several shots', () => {
       }],
       vo: { words, durationSec: 10 },
       assets: [
-        { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' },
-        { id: 'a2', kind: 'video', path: '', origin: 'comfy', status: 'queued' },
+        { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' },
+        { id: 'a2', kind: 'video', path: '', origin: 'plugin', status: 'queued' },
       ],
     });
     for (const c of assemble({ reel, pattern: PATTERN }).clips) expect(c.assetId).toBe('a1');

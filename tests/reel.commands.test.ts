@@ -35,8 +35,8 @@ async function seed() {
     pattern: 'armand',
     vo: { durationSec: 12 },
     assets: [
-      { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'comfy', status: 'ready' },
-      { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'comfy', status: 'ready' },
+      { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' },
+      { id: 'a2', kind: 'video', path: 'assets/a2.mp4', origin: 'plugin', status: 'ready' },
     ],
     timeline: {
       clips: [clip('c1', 'a1', 0, 4), clip('c2', 'a2', 4, 9)],

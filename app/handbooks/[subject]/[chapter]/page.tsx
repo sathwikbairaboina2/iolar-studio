@@ -1,9 +1,7 @@
 'use client';
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Col, Row, Segmented, Select, Space, Tag, Typography, message } from 'antd';
-import {
-  PictureOutlined, ThunderboltOutlined, StarOutlined, ExportOutlined, CheckCircleOutlined,
-} from '@ant-design/icons';
+import { PictureOutlined, ThunderboltOutlined, ExportOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { MAX_SLIDES, type Post, type Slide } from '@/lib/schema';
 import SlideChips from '@/components/editor/SlideChips';
 import BlockEditor from '@/components/editor/BlockEditor';
@@ -27,7 +25,6 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
   const [rendering, setRendering] = useState(false);
   const [overflow, setOverflow] = useState<Record<number, number>>({});
   const [fill, setFill] = useState<Record<number, number>>({});
-  const [comfyUp, setComfyUp] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrefill, setAiPrefill] = useState('');
   const [refUrls, setRefUrls] = useState<string[]>([]);
@@ -50,7 +47,6 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       }
     });
     fetch('/api/handbooks').then((r) => r.json()).then((d) => setTemplates(d.templates ?? []));
-    fetch('/api/comfy/status').then((r) => r.json()).then((s) => setComfyUp(!!s.up));
   }, [subject, chapter, part]);
 
   const save = useCallback(async (p: Post) => {
@@ -156,14 +152,6 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     else message.error(body.error ?? 'package failed');
   };
 
-  const doPolish = async () => {
-    message.info('Polishing via ComfyUI — check the Desktop app queue');
-    const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/polish`, { method: 'POST' });
-    const body = await r.json();
-    if (r.ok) message.success(`Polished ${body.slides} slides`);
-    else message.error(body.error ?? 'polish failed');
-  };
-
   if (!post) return <Typography.Text>Loading…</Typography.Text>;
   const currentOverflow = overflow[slide + 1] ?? null;
 
@@ -188,7 +176,6 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
         )}
         <Button icon={<PictureOutlined />} onClick={() => render(slide + 1)} loading={rendering}>Render slide</Button>
         <Button icon={<ThunderboltOutlined />} onClick={() => render()} loading={rendering}>Render all</Button>
-        <Button icon={<StarOutlined />} disabled={!comfyUp} onClick={doPolish} title={comfyUp ? '' : 'ComfyUI offline'}>Polish</Button>
         <BookPanel subject={subject} chapter={chapter} part={part} onSlidesPlanned={reloadAndRender} />
         <ReferencePanel
           subject={subject}

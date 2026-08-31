@@ -30,13 +30,28 @@ async function seed(slug = 'grok') {
   return loadReel(slug);
 }
 
-function mockComfy(over: Record<string, unknown> = {}) {
-  vi.doMock('@/lib/comfy/i2v', () => ({
-    i2vAvailable: vi.fn().mockResolvedValue(true),
-    animateImage: vi.fn().mockResolvedValue({ promptId: 'p-1', workflow: 'w.json' }),
-    collectVideo: vi.fn().mockResolvedValue({ path: 'x.mp4' }),
+/** Registers a stand-in for whatever plugin drives generation. */
+function mockProvider(over: Record<string, unknown> = {}) {
+  const provider = {
+    name: 'test-provider',
+    available: vi.fn().mockResolvedValue(true),
+    animate: vi.fn().mockResolvedValue({ jobId: 'p-1' }),
     jobState: vi.fn().mockResolvedValue('running'),
+    collect: vi.fn().mockResolvedValue(undefined),
     ...over,
+  };
+  vi.doMock('@/lib/reel/videoProvider', async (orig) => ({
+    ...(await (orig() as Promise<Record<string, unknown>>)),
+    videoProvider: () => provider,
+  }));
+  return provider;
+}
+
+/** No plugin wired at all — the state the studio ships in. */
+function mockNoProvider() {
+  vi.doMock('@/lib/reel/videoProvider', async (orig) => ({
+    ...(await (orig() as Promise<Record<string, unknown>>)),
+    videoProvider: () => null,
   }));
 }
 
@@ -74,8 +89,8 @@ describe('shot planning', () => {
     const withAssets = {
       ...reel,
       assets: [
-        { id: 'a1', kind: 'video' as const, path: 'assets/a1.mp4', origin: 'comfy' as const, status: 'ready' as const, brief: '' },
-        { id: 'a2', kind: 'video' as const, path: '', origin: 'comfy' as const, status: 'running' as const, brief: '' },
+        { id: 'a1', kind: 'video' as const, path: 'assets/a1.mp4', origin: 'plugin' as const, status: 'ready' as const, brief: '' },
+        { id: 'a2', kind: 'video' as const, path: '', origin: 'plugin' as const, status: 'running' as const, brief: '' },
       ],
       beats: reel.beats.map((b) =>
         b.id === 'b2' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [] } }
@@ -90,22 +105,22 @@ describe('shot planning', () => {
 });
 
 describe('shot generation', () => {
-  it('keeps hero beats on comfyui by default, so nothing leaves the machine', async () => {
+  it('keeps hero beats on the local plugin by default, so nothing leaves the machine', async () => {
     await seed();
-    mockComfy();
+    mockProvider();
     mockHf();
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const heroBeat = reel.beats.find((b) => b.id === 'b3')!;
     const hero = reel.assets.find((a) => a.id === heroBeat.shot.assetId)!;
-    expect(hero.origin).toBe('comfy');
+    expect(hero.origin).toBe('plugin');
   });
 
   it('sends hero beats to higgsfield only when heroProvider asks for it', async () => {
     await seed();
     const { saveSettings } = await import('@/lib/settings');
     saveSettings({ heroProvider: 'higgsfield' });
-    mockComfy();
+    mockProvider();
     mockHf();
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
@@ -116,12 +131,12 @@ describe('shot generation', () => {
     expect(hero.path).toMatch(/assets[\\/]a\d+\.mp4/);
   });
 
-  it('marks a comfy shot awaiting-manual when there is no source still', async () => {
+  it('marks a generated shot awaiting-manual when there is no source still', async () => {
     await seed();
-    mockComfy();
+    mockProvider();
     mockHf();
     const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ heroProvider: 'comfy' });
+    saveSettings({ heroProvider: 'plugin' });
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const beat = reel.beats.find((b) => b.id === 'b3')!;
@@ -130,25 +145,41 @@ describe('shot generation', () => {
     expect(asset.error).toMatch(/screenshot/i);
   });
 
-  it('marks shots awaiting-manual when ComfyUI is down rather than failing the run', async () => {
+  // The state the studio ships in: generation belongs to the user's plugins, and
+  // until one is registered a beat waits for a file rather than failing the run.
+  it('marks shots awaiting-manual when no provider is wired at all', async () => {
+    await seed('grok');
+    mockNoProvider();
+    mockHf();
+    const { runShots } = await import('@/lib/reel/shots');
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ heroProvider: 'plugin' });
+    const reel = await runShots('grok');
+
+    const asset = reel.assets.find((a) => a.status === 'awaiting-manual');
+    expect(asset).toBeTruthy();
+    expect(asset!.error).toMatch(/no video provider is wired/i);
+  });
+
+  it('marks shots awaiting-manual when the provider is down rather than failing the run', async () => {
     await seed();
-    mockComfy({ i2vAvailable: vi.fn().mockResolvedValue(false) });
+    mockProvider({ available: vi.fn().mockResolvedValue(false) });
     mockHf();
     const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ heroProvider: 'comfy' });
+    saveSettings({ heroProvider: 'plugin' });
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const beat = reel.beats.find((b) => b.id === 'b3')!;
     const asset = reel.assets.find((a) => a.id === beat.shot.assetId)!;
     expect(asset.status).toBe('awaiting-manual');
-    expect(asset.error).toMatch(/ComfyUI/);
+    expect(asset.error).toMatch(/provider/i);
   });
 
   it('records a failed hero generation without stopping the rest', async () => {
     await seed();
     const { saveSettings } = await import('@/lib/settings');
     saveSettings({ heroProvider: 'higgsfield' });
-    mockComfy();
+    mockProvider();
     mockHf({ hfGenerateVideo: vi.fn().mockRejectedValue(new Error('credits exhausted')) });
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
@@ -159,7 +190,7 @@ describe('shot generation', () => {
 
   it('is idempotent: a second run queues nothing new', async () => {
     await seed();
-    mockComfy();
+    mockProvider();
     mockHf();
     const { runShots } = await import('@/lib/reel/shots');
     const first = await runShots('grok');
@@ -178,7 +209,7 @@ describe('manual drops', () => {
     const reel = await attachAsset('grok', 'b3', { name: 'screenshot.png', bytes: Buffer.from('img') });
     expect(reel.assets[0]).toMatchObject({ kind: 'image', brief: 'still:b3' });
     expect(reel.beats.find((b) => b.id === 'b3')!.shot.assetId).toBeUndefined();
-    // still queued, because the still is what ComfyUI will animate
+    // still queued, because the still is what the provider will animate
     expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b3');
   });
 
@@ -220,20 +251,20 @@ describe('manual drops', () => {
 });
 
 describe('shot refresh', () => {
-  it('collects a finished comfy job into the assets folder', async () => {
+  it('collects a finished provider job into the assets folder', async () => {
     await seed();
     const { loadReel, saveReel } = await import('@/lib/reel/store');
     const reel = await loadReel('grok');
     await saveReel('grok', {
       ...reel,
       assets: [
-        { id: 'a1', kind: 'video', path: '', origin: 'comfy', status: 'running', jobId: 'p-1', brief: '' },
+        { id: 'a1', kind: 'video', path: '', origin: 'plugin', status: 'running', jobId: 'p-1', brief: '' },
       ],
       beats: reel.beats.map((b) => (b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [] } } : b)),
     });
-    mockComfy({
+    mockProvider({
       jobState: vi.fn().mockResolvedValue('ready'),
-      collectVideo: vi.fn(async (_id: string, dest: string) => {
+      collect: vi.fn(async (_id: string, dest: string) => {
         const { writeFileSync, mkdirSync } = await import('fs');
         mkdirSync(path.dirname(dest), { recursive: true });
         writeFileSync(dest, 'video');
@@ -249,15 +280,15 @@ describe('shot refresh', () => {
     expect(out.assets[0].path).toMatch(/assets[\\/]a1\.mp4/);
   });
 
-  it('marks a failed comfy job failed', async () => {
+  it('marks a failed provider job failed', async () => {
     await seed();
     const { loadReel, saveReel } = await import('@/lib/reel/store');
     const reel = await loadReel('grok');
     await saveReel('grok', {
       ...reel,
-      assets: [{ id: 'a1', kind: 'video', path: '', origin: 'comfy', status: 'running', jobId: 'p-1', brief: '' }],
+      assets: [{ id: 'a1', kind: 'video', path: '', origin: 'plugin', status: 'running', jobId: 'p-1', brief: '' }],
     });
-    mockComfy({ jobState: vi.fn().mockResolvedValue('failed') });
+    mockProvider({ jobState: vi.fn().mockResolvedValue('failed') });
     const { refreshShots } = await import('@/lib/reel/shots');
     expect((await refreshShots('grok')).assets[0].status).toBe('failed');
   });

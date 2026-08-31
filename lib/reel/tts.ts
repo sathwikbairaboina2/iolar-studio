@@ -15,8 +15,9 @@ export type TtsProvider = 'kokoro' | 'piper' | 'sapi' | 'manual';
 /**
  * Local text-to-speech.
  *
- * ComfyUI has no offline speech model on this machine — every TTS node it exposes is a
- * paid cloud API — so the voiceover is synthesised outside it and stays on this box:
+ * No image-generation backend on this machine offers an offline speech model — the TTS
+ * nodes they expose are paid cloud APIs — so the voiceover is synthesised here instead,
+ * by one of three local engines, and never leaves this box:
  *
  * - `kokoro`: an 82M ONNX model, the most natural of the three and the one that reads at
  *   a presenter's pace rather than rushing
