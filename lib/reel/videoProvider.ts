@@ -37,7 +37,12 @@ export type AnimateRequest = {
   imagePath?: string;
 };
 
-export type JobState = 'running' | 'ready' | 'failed';
+/**
+ * `gone` is not a failure of the render — it is the renderer saying it has never
+ * heard of this job, or no longer has it. Treating that as "try again later"
+ * leaves the asset running for ever and the reel never reports itself stuck.
+ */
+export type JobState = 'running' | 'ready' | 'failed' | 'gone';
 
 export interface VideoProvider {
   /** Recorded on the asset, so a reel says which machine made each clip. */

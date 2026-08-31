@@ -73,7 +73,10 @@ export function createWebpageProvider(opts: WebpageOpts = {}): VideoProvider {
     },
 
     async jobState(jobId: string): Promise<JobState> {
-      const j = await job(jobId);
+      const probe = await http(`${base}/v1/jobs/${jobId}`, { cache: 'no-store' });
+      if (probe.status === 404) return 'gone';
+      if (!probe.ok) throw new Error(`webpage-mp4 job ${jobId} -> ${probe.status}`);
+      const j = (await probe.json()) as Job;
       if (j.status === 'succeeded') return 'ready';
       if (j.status === 'failed' || j.status === 'canceled') return 'failed';
       return 'running';

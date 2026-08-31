@@ -77,6 +77,7 @@ export function createLipsyncProvider(opts: LipsyncOpts = {}): VideoProvider {
 
     async jobState(jobId: string): Promise<JobState> {
       const r = await http(`${base}/jobs/${jobId}`, { cache: 'no-store' });
+      if (r.status === 404) return 'gone';
       if (!r.ok) throw new Error(`lipsync job ${jobId} -> ${r.status}`);
       const j = (await r.json()) as Job;
       if (j.status === 'succeeded') return 'ready';

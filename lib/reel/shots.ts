@@ -253,6 +253,17 @@ export async function refreshShots(slug: string): Promise<Reel> {
     } catch {
       continue;
     }
+
+    // The renderer answered, and does not have this job. Asking again for ever
+    // leaves the asset running, so the reel could never report itself stuck and
+    // nothing would re-queue the beat.
+    if (state === 'gone') {
+      await updateAsset(slug, asset.id, {
+        status: 'failed',
+        error: `${provider.name} no longer knows job ${asset.jobId}`,
+      });
+      continue;
+    }
     if (state === 'ready') {
       const rel = path.join('assets', `${asset.id}.mp4`);
       try {

@@ -118,3 +118,17 @@ describe('a job id that never arrived', () => {
     ).rejects.toThrow(/no id/);
   });
 });
+
+describe('a job the plugin has forgotten', () => {
+  it('reads a 404 as gone rather than as an error to retry', async () => {
+    const missing = vi.fn(async () => reply({}, false, 404)) as unknown as typeof fetch;
+    expect(await createWebpageProvider({ fetchImpl: missing }).jobState('j')).toBe('gone');
+    expect(await createLipsyncProvider({ fetchImpl: missing }).jobState('j')).toBe('gone');
+  });
+
+  it('still throws on a server error, which is worth retrying', async () => {
+    const broken = vi.fn(async () => reply({}, false, 503)) as unknown as typeof fetch;
+    await expect(createWebpageProvider({ fetchImpl: broken }).jobState('j')).rejects.toThrow();
+    await expect(createLipsyncProvider({ fetchImpl: broken }).jobState('j')).rejects.toThrow();
+  });
+});
