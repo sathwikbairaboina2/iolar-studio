@@ -100,3 +100,21 @@ describe('lipsync provider', () => {
     expect(await createLipsyncProvider({ fetchImpl: down }).available()).toBe(false);
   });
 });
+
+describe('a job id that never arrived', () => {
+  // A 2xx with no id became the string "undefined", and every poll after it threw
+  // a 404 for a job that was never submitted.
+  it('refuses a webpage submit that came back without one', async () => {
+    const fetchImpl = vi.fn(async () => reply({ accepted: true })) as unknown as typeof fetch;
+    await expect(
+      createWebpageProvider({ fetchImpl }).animate({ ...req, url: 'https://example.com/a' })
+    ).rejects.toThrow(/no id/);
+  });
+
+  it('refuses a lipsync submit that came back without one', async () => {
+    const fetchImpl = vi.fn(async () => reply({ accepted: true })) as unknown as typeof fetch;
+    await expect(
+      createLipsyncProvider({ fetchImpl }).animate({ ...req, imagePath: 'C:/p/x.png' })
+    ).rejects.toThrow(/no id/);
+  });
+});

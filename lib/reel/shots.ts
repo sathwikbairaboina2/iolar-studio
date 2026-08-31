@@ -134,14 +134,13 @@ type BuildContext = {
 
 async function buildContext(slug: string): Promise<BuildContext> {
   const presenterImage = getSettings().presenterImage;
-  try {
-    const [script, pack] = await Promise.all([research.readScript(slug), research.readCandidates(slug)]);
-    return { script, candidates: pack.candidates, presenterImage, up: new Map() };
-  } catch {
-    // A reel planned from a topic has no research behind it. Its talking-head
-    // beats still render; its screen beats have no citation to visit.
-    return { script: null, candidates: [], presenterImage, up: new Map() };
-  }
+  // A reel planned from a topic has no research behind it, and a pack that fails
+  // to load is not the same failure as a script that does — reporting "its line
+  // cites nothing" for a corrupt candidates file sends you looking in the wrong
+  // place.
+  const script = await research.readScript(slug).catch(() => null);
+  const pack = await research.readCandidates(slug).catch(() => null);
+  return { script, candidates: pack?.candidates ?? [], presenterImage, up: new Map() };
 }
 
 async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: BuildContext): Promise<void> {
@@ -180,7 +179,7 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: Buil
 
     const shared = { audioPath, brief: req.brief, seconds: req.seconds, seed: reel.seed, ratio: reel.ratio };
 
-    if (provider.name === 'webpage') {
+    if (providerName === 'webpage') {
       const link = ctx.script ? resolveLink(ctx.script, ctx.candidates, req.sourceLineId) : null;
       if (!link) {
         await stall('No source to show for this beat — its line cites nothing, so there is no page to visit.');
@@ -210,6 +209,9 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: Buil
  */
 export async function useStillsForScreens(slug: string): Promise<Reel> {
   const reel = await loadReel(slug);
+  // Only when nothing can render the beat. A page shot is generated now, and
+  // promoting a leftover screenshot here silently undid every retry.
+  if (videoProvider(providerNameFor('screen') ?? '')) return reel;
   for (const beat of reel.beats) {
     if (beat.shot.kind !== 'screen' || beat.shot.assetId) continue;
     const still = reel.assets.find(
@@ -241,7 +243,16 @@ export async function refreshShots(slug: string): Promise<Reel> {
     // shot polls two machines without either knowing about the other.
     const provider = asset.provider ? videoProvider(asset.provider) : null;
     if (!provider) continue;
-    const state = await provider.jobState(asset.jobId);
+
+    // A reel polls two machines. One of them being unreachable must not cost the
+    // finished clips of the other, so a provider that throws is skipped and
+    // asked again on the next poll rather than failing the sweep.
+    let state: Awaited<ReturnType<typeof provider.jobState>>;
+    try {
+      state = await provider.jobState(asset.jobId);
+    } catch {
+      continue;
+    }
     if (state === 'ready') {
       const rel = path.join('assets', `${asset.id}.mp4`);
       try {

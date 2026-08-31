@@ -70,7 +70,9 @@ export function createLipsyncProvider(opts: LipsyncOpts = {}): VideoProvider {
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(`lipsync submit -> ${r.status} ${JSON.stringify(body).slice(0, 200)}`);
-      return { jobId: String((body as Job).id) };
+      const id = (body as Job).id;
+      if (!id) throw new Error('lipsync accepted the job but returned no id');
+      return { jobId: String(id) };
     },
 
     async jobState(jobId: string): Promise<JobState> {

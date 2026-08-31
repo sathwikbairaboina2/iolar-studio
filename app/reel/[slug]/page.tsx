@@ -228,7 +228,11 @@ export default function ReelStudio() {
               label: 'Build',
               children: (
                 <Card size="small">
-                  <BuildBoard slug={slug} beats={(reel?.beats ?? []) as never} />
+                  <BuildBoard slug={slug} beats={(reel?.beats ?? []) as never} onBuilt={async () => {
+                      // Bridging rewrites the beats; pull the reel back so the table is not stale.
+                      const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                      if (r?.reel) setReel(r.reel as Reel);
+                    }} />
                 </Card>
               ),
             },

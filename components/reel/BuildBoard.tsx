@@ -16,7 +16,7 @@ import { InboxOutlined } from '@ant-design/icons';
  * is why everything after that stage is identical.
  */
 
-const STAGES = ['unbuilt', 'bridged', 'voiced', 'aligned', 'sliced', 'rendering', 'done'] as const;
+const STAGES = ['unbuilt', 'bridged', 'voiced', 'aligned', 'sliced', 'rendering', 'stalled', 'done'] as const;
 const LABELS = ['Beats', 'Voice', 'Align', 'Cut', 'Render', 'Done'];
 
 type State = {
@@ -39,7 +39,7 @@ const NEXT: Record<string, string> = {
   sliced: 'Queue the renders',
 };
 
-export default function BuildBoard({ slug, beats }: { slug: string; beats: Beat[] }) {
+export default function BuildBoard({ slug, beats, onBuilt }: { slug: string; beats: Beat[]; onBuilt?: () => void }) {
   const [state, setState] = useState<State | null>(null);
   const [voice, setVoice] = useState<'supplied' | 'tts'>('tts');
   const [busy, setBusy] = useState(false);
@@ -84,6 +84,9 @@ export default function BuildBoard({ slug, beats }: { slug: string; beats: Beat[
     } finally {
       setBusy(false);
       await load();
+      // The beats come from the parent's reel, and bridging rewrites them. Without
+      // this the table stays empty until someone reloads the page by hand.
+      onBuilt?.();
     }
   };
 
@@ -198,6 +201,15 @@ export default function BuildBoard({ slug, beats }: { slug: string; beats: Beat[
             ]}
           />
         </Card>
+      )}
+
+      {state?.stage === 'stalled' && (
+        <Alert
+          type="warning"
+          showIcon
+          message="Nothing is running, and not every shot arrived"
+          description="The Pages and Presenter boards say which ones, and why. Retry them there."
+        />
       )}
 
       {state?.stage === 'done' && state.failed === 0 && state.awaitingManual === 0 && (

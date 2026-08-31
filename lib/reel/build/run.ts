@@ -23,7 +23,7 @@ import '../providers';
  * of step with the files it describes.
  */
 
-export type BuildStage = 'unbuilt' | 'bridged' | 'voiced' | 'aligned' | 'sliced' | 'rendering' | 'done';
+export type BuildStage = 'unbuilt' | 'bridged' | 'voiced' | 'aligned' | 'sliced' | 'rendering' | 'stalled' | 'done';
 
 export type BuildState = {
   stage: BuildStage;
@@ -64,6 +64,9 @@ export async function buildState(slug: string): Promise<BuildState> {
   if (cut.length === 0) return { stage: 'aligned', ...base };
   if (assets.length === 0) return { stage: 'sliced', ...base };
   if (counts.queued > 0) return { stage: 'rendering', ...base };
+  // Nothing running is not the same as everything working: a run where every
+  // shot failed used to report done, and stop.
+  if (counts.ready < generatable.length) return { stage: 'stalled', ...base };
   return { stage: 'done', ...base };
 }
 
@@ -115,6 +118,7 @@ export async function advanceBuild(slug: string, voice: VoiceSource = 'supplied'
     }
 
     case 'rendering':
+    case 'stalled':
     case 'done':
       break;
   }
@@ -131,7 +135,8 @@ export async function advanceBuild(slug: string, voice: VoiceSource = 'supplied'
  */
 export async function buildAll(slug: string, voice: VoiceSource = 'supplied'): Promise<BuildState> {
   let state = await buildState(slug);
-  for (let i = 0; i < 8 && state.stage !== 'rendering' && state.stage !== 'done'; i += 1) {
+  const resting = new Set<BuildStage>(['rendering', 'stalled', 'done']);
+  for (let i = 0; i < 8 && !resting.has(state.stage); i += 1) {
     const before = state.stage;
     state = await advanceBuild(slug, voice);
     if (state.stage === before) break;

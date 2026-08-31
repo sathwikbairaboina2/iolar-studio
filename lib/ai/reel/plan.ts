@@ -55,7 +55,11 @@ export function beatsPrompt(pattern: Pattern, mode: PlanMode, source: string, op
         ? `Below is the transcript of someone else's reel. Write a COMPLETELY FRESH original script on the same story with a similar arc. Never copy their phrasing.\n\nTRANSCRIPT:\n${source}`
         : `Write a short-form vertical video script about this.\n\nTOPIC:\n${source}`;
 
-  return [task, voice, pacing, mix, SHAPE].join('\n\n');
+  const palette = opts.kinds?.length
+    ? `Use ONLY these shot kinds: ${opts.kinds.join(', ')}. Any other kind is invalid, b-roll included.`
+    : '';
+
+  return [task, voice, pacing, mix, palette, SHAPE].filter(Boolean).join('\n\n');
 }
 
 /** Whitespace-insensitive comparison; everything else must match exactly. */

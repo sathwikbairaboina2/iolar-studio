@@ -29,9 +29,22 @@ import type { Script, ScriptLine } from '../research/script';
  */
 export const RESEARCHED_KINDS: readonly ShotKind[] = ['title', 'talking-head', 'screen'];
 
+/**
+ * The lines in the order they are spoken.
+ *
+ * `order` is the authority, not array position: it comes from the model and is
+ * only re-derived from the array when a line is dropped or moved. If the two
+ * disagree, sorting by array position builds the script in the wrong sequence
+ * and hands every beat the wrong line — so each page shot would visit a source
+ * that proves a different sentence.
+ */
+export function orderedLines<T extends { order?: number }>(lines: T[]): T[] {
+  return [...lines].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
 /** The spoken script, exactly as approved: every line, in order, nothing else. */
 export function scriptText(script: Pick<Script, 'lines'>): string {
-  return script.lines.map((l) => l.text.trim()).join(' ');
+  return orderedLines(script.lines).map((l) => l.text.trim()).join(' ');
 }
 
 /**
@@ -81,9 +94,15 @@ export function attachSourceLines<T extends { id: string; shot: { sourceLineId: 
  */
 export function coerceKinds<T extends { shot: { kind: string; sourceLineId: string | null } & Record<string, unknown> }>(
   lines: Pick<ScriptLine, 'id' | 'citations'>[],
-  beats: T[]
+  beats: T[],
+  /** Ids still in the pack. A citation can point at a source dropped in review. */
+  known?: Set<string>
 ): T[] {
-  const cited = new Set(lines.filter((l) => l.citations.length > 0).map((l) => l.id));
+  const cited = new Set(
+    lines
+      .filter((l) => l.citations.some((id) => !known || known.has(id)))
+      .map((l) => l.id)
+  );
   return beats.map((beat) => {
     if (RESEARCHED_KINDS.includes(beat.shot.kind as ShotKind)) return beat;
     const kind = beat.shot.sourceLineId && cited.has(beat.shot.sourceLineId) ? 'screen' : 'talking-head';
@@ -105,7 +124,8 @@ export async function buildBeatsFromScript(slug: string, script: Pick<Script, 'l
   await planFromScript(slug, source, { kinds: RESEARCHED_KINDS });
 
   const reel = await loadReel(slug);
-  const beats = coerceKinds(script.lines, attachSourceLines(script.lines, reel.beats));
+  const ordered = orderedLines(script.lines);
+  const beats = coerceKinds(ordered, attachSourceLines(ordered, reel.beats));
   await saveReel(slug, { ...reel, beats });
   return loadReel(slug);
 }

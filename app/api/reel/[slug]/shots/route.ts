@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 import { refreshShots, retryShot, runShots } from '@/lib/reel/shots';
+// Registers the renderers. Without it the registry is empty in whichever
+// process reaches this route first, and every job stays running forever.
+import '@/lib/reel/providers';
 
 type Ctx = { params: Promise<{ slug: string }> };
 export const maxDuration = 900;

@@ -288,8 +288,11 @@ describe('a real browser renders text a diffusion model would melt', () => {
     expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b3');
   });
 
-  it('gives a screen beat its own screenshot as the shot instead', async () => {
+  // Only when nothing can render the page: with a renderer wired, promoting a
+  // leftover screenshot here would silently undo every retry.
+  it('gives a screen beat its own screenshot when no renderer is wired', async () => {
     await seed();
+    mockNoProvider();
     vi.doMock('@/lib/reel/probe', () => ({
       ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 0, width: 1080, height: 1920, fps: 0, hasAudio: false }),
     }));
@@ -303,7 +306,25 @@ describe('a real browser renders text a diffusion model would melt', () => {
 
   it('leaves a screen beat alone when it has no screenshot yet', async () => {
     await seed();
+    mockNoProvider();
     const { useStillsForScreens } = await import('@/lib/reel/shots');
+    const reel = await useStillsForScreens('grok');
+    expect(reel.beats.find((b) => b.id === 'b2')!.shot.assetId).toBeUndefined();
+  });
+});
+
+describe('a wired renderer owns its screen beats', () => {
+  // retryShot clears the assetId and re-runs; useStillsForScreens used to grab the
+  // beat straight back with a stale screenshot, so Retry looked like it did nothing.
+  it('does not hand a screen beat back to an old screenshot', async () => {
+    await seed();
+    mockProvider();
+    vi.doMock('@/lib/reel/probe', () => ({
+      ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 0, width: 1080, height: 1920, fps: 0, hasAudio: false }),
+    }));
+    const { attachAsset, useStillsForScreens } = await import('@/lib/reel/shots');
+    await attachAsset('grok', 'b2', { name: 'ui.png', bytes: Buffer.from('img') });
+
     const reel = await useStillsForScreens('grok');
     expect(reel.beats.find((b) => b.id === 'b2')!.shot.assetId).toBeUndefined();
   });

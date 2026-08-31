@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { attachSourceLines, coerceKinds, scriptText, RESEARCHED_KINDS } from '@/lib/reel/build/bridge';
+import { attachSourceLines, coerceKinds, orderedLines, scriptText, RESEARCHED_KINDS } from '@/lib/reel/build/bridge';
 
 /**
  * The bridge's whole job is provenance: a beat has to know which line it came
@@ -89,5 +89,48 @@ describe('coerceKinds', () => {
   it('leaves the kinds a renderer already owns alone', () => {
     const out = coerceKinds(cited as never, [b('b1', 'screen', 'l1'), b('b2', 'title', null), b('b3', 'talking-head', 'l2')] as never);
     expect(out.map((o) => o.shot.kind)).toEqual(['screen', 'title', 'talking-head']);
+  });
+});
+
+describe('line order', () => {
+  // order comes from the model and is only re-derived from array position on a
+  // drop or reorder. If the two disagree, sorting by position builds the script
+  // backwards and every beat cites the wrong line.
+  it('builds the script from line.order, not array position', () => {
+    const lines = [
+      { id: 'l2', order: 2, text: 'Second.' },
+      { id: 'l1', order: 1, text: 'First.' },
+    ];
+    expect(scriptText({ lines } as never)).toBe('First. Second.');
+  });
+
+  it('attaches sources in spoken order too', () => {
+    const lines = orderedLines([
+      { id: 'l2', order: 2, text: 'Second.', citations: [] },
+      { id: 'l1', order: 1, text: 'First.', citations: [] },
+    ] as never);
+    const beats = [
+      { id: 'b1', text: 'First.', shot: { kind: 'screen', brief: '', hero: false, alsoAssetIds: [], sourceLineId: null } },
+      { id: 'b2', text: 'Second.', shot: { kind: 'screen', brief: '', hero: false, alsoAssetIds: [], sourceLineId: null } },
+    ];
+    expect(attachSourceLines(lines as never, beats as never).map((b) => b.shot.sourceLineId)).toEqual(['l1', 'l2']);
+  });
+});
+
+describe('coerceKinds with a pack', () => {
+  // A citation can point at a candidate dropped in review. Promoting that beat to
+  // a page visit strands it; the presenter can always say the line.
+  it('does not send a beat to a page whose source was dropped in review', () => {
+    const lines = [{ id: 'l1', citations: ['gone'] }];
+    const beats = [{ id: 'b1', shot: { kind: 'broll', brief: '', hero: false, alsoAssetIds: [], sourceLineId: 'l1' } }];
+    const [out] = coerceKinds(lines as never, beats as never, new Set(['still-here']));
+    expect(out.shot.kind).toBe('talking-head');
+  });
+
+  it('still sends it to the page when the source survived', () => {
+    const lines = [{ id: 'l1', citations: ['c1'] }];
+    const beats = [{ id: 'b1', shot: { kind: 'broll', brief: '', hero: false, alsoAssetIds: [], sourceLineId: 'l1' } }];
+    const [out] = coerceKinds(lines as never, beats as never, new Set(['c1']));
+    expect(out.shot.kind).toBe('screen');
   });
 });

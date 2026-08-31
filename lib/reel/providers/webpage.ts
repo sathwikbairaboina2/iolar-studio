@@ -65,7 +65,11 @@ export function createWebpageProvider(opts: WebpageOpts = {}): VideoProvider {
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(`webpage-mp4 submit -> ${r.status} ${JSON.stringify(body).slice(0, 200)}`);
-      return { jobId: String((body as Job).id) };
+      const id = (body as Job).id;
+      // A 2xx with no id used to become the string "undefined", and every poll
+      // after it threw a 404 for a job that was never submitted.
+      if (!id) throw new Error('webpage-mp4 accepted the job but returned no id');
+      return { jobId: String(id) };
     },
 
     async jobState(jobId: string): Promise<JobState> {
