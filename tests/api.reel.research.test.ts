@@ -116,6 +116,30 @@ describe('POST /api/reel/[slug]/research/run', () => {
     expect(res.status).toBe(400);
   });
 
+  // The critic is asked for candidates and nothing else. It used to be asked
+  // for stats as well, and its answer overwrote the counts the route had just
+  // computed — a perClass of plain numbers where the schema wants objects,
+  // which threw away eleven minutes of searching at the write.
+  it('keeps its own stats when the critic volunteers a set of its own', async () => {
+    await seedBrief();
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      huntSources: async () => [{ url: 'https://github.com/x' }],
+      critique: async () => ({
+        stats: { perClass: { github: 1 }, totalFound: 1, totalKept: 1, dupesCollapsed: 0 },
+        candidates: [CANDIDATE],
+      }),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const res = await POST(post(), ctx('grok'));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.status).toBe('critiqued');
+    const store = await import('@/lib/reel/research/store');
+    expect((await store.readCandidates('grok')).stats.perClass).toEqual({});
+  });
+
   // The gate: the user reviews before anything is gathered or written.
   it('stops after the critic and waits to be reviewed', async () => {
     await seedBrief({ status: 'critiqued' });

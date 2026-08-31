@@ -54,7 +54,11 @@ export async function POST(req: Request, ctx: Ctx) {
           totalKept: judged.candidates.filter((c) => c.verdict === 'keep').length,
           dupesCollapsed: judged.candidates.filter((c) => c.dupeOf).length,
         },
-        ...judged,
+        // Only the candidates are the model's to give. The critic's prompt used
+        // to ask it for stats too, and spreading them here overwrote the counts
+        // computed above with whatever shape it invented — a perClass of plain
+        // numbers, which failed validation after eleven minutes of searching.
+        candidates: judged.candidates,
       } as never);
       await store.setResearchStatus(slug, 'critiqued');
       return NextResponse.json({ status: 'critiqued', waitingOn: 'review', done: false });

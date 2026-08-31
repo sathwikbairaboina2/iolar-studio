@@ -129,9 +129,7 @@ verified, or leans on the framing the brief said to avoid.
 
 Reply with ONLY:
 
-{ "runId": "${brief.runId}", "generatedAt": "<ISO now>", "criticVersion": "1",
-  "stats": { "perClass": {}, "totalFound": <n>, "totalKept": <n>, "dupesCollapsed": <n> },
-  "candidates": [ <each one matching this schema exactly> ] }
+{ "candidates": [ <each one matching this schema exactly> ] }
 
 ${JSON.stringify(z.toJSONSchema(CandidateSchema), null, 1)}
 
