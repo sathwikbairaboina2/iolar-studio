@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { withStableIds } from '@/lib/reel/research/candidate';
+import { siftCandidates, withStableIds } from '@/lib/reel/research/candidate';
 import { candidateId, canonicalizeUrl } from '@/lib/reel/research/url';
 
 /**
@@ -69,5 +69,38 @@ describe('withStableIds', () => {
   it('falls back to hashing the raw url when it will not parse', () => {
     const [c] = withStableIds([base({ canonicalUrl: 'not a url', url: 'not a url' })] as never);
     expect(c.id).toMatch(/^[0-9a-f]{12}$/);
+  });
+});
+
+describe('siftCandidates', () => {
+  // base() carries a deliberately malformed id, which is the point of the tests
+  // above and would fail validation here for the wrong reason.
+  const valid = (over: Record<string, unknown> = {}) => base({ id: 'a1b2c3d4e5f6', ...over });
+
+  it('keeps the rows that validate', () => {
+    const { kept, dropped } = siftCandidates([valid(), valid({ url: 'https://lwn.net/a/', canonicalUrl: 'https://lwn.net/a/' })]);
+    expect(kept).toHaveLength(2);
+    expect(dropped).toEqual([]);
+  });
+
+  // The shape the model got wrong on a live run: clipWindow as an array.
+  it('drops a malformed row and names what was wrong with it', () => {
+    const { kept, dropped } = siftCandidates([valid(), valid({ clipWindow: [] })]);
+
+    expect(kept).toHaveLength(1);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].index).toBe(1);
+    expect(dropped[0].issue).toMatch(/clipWindow/);
+  });
+
+  it('does not let one bad row cost the rest of the pack', () => {
+    const rows = [valid(), valid({ id: 'nope', scoreTotal: 'high' }), valid(), valid()];
+    expect(siftCandidates(rows).kept).toHaveLength(3);
+  });
+
+  it('keeps nothing when the reply is not candidates at all', () => {
+    const { kept, dropped } = siftCandidates([{ hello: 'world' }]);
+    expect(kept).toEqual([]);
+    expect(dropped).toHaveLength(1);
   });
 });

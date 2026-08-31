@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as store from '@/lib/reel/research/store';
-import { withStableIds } from '@/lib/reel/research/candidate';
+import { siftCandidates, withStableIds } from '@/lib/reel/research/candidate';
 import { critique, draftScript, huntSources, judgeCoverage } from '@/lib/reel/research/agents';
 import { gatherEvidence } from '@/lib/reel/research/gatherRun';
 import { parseBrief } from '@/lib/reel/research/brief';
@@ -61,8 +61,21 @@ export async function POST(req: Request, ctx: Ctx) {
     if (status === 'hunted') {
       const raw = await store.readHunt(slug);
       const judged = await critique(brief, raw);
+      // One row the critic shaped wrong used to cost the whole pack, and every
+      // minute spent finding it. Drop it, count it, keep the rest.
+      const { kept, dropped } = siftCandidates(judged.candidates ?? []);
+      if (kept.length === 0) {
+        return NextResponse.json(
+          {
+            error: dropped.length
+              ? `the critic returned ${dropped.length} source(s), none usable — first: ${dropped[0].issue}`
+              : 'the critic returned no sources',
+          },
+          { status: 400 }
+        );
+      }
       // Ids come from the URL, not from the model that invented the rest.
-      const candidates = withStableIds(judged.candidates);
+      const candidates = withStableIds(kept);
       await store.writeCandidates(slug, {
         runId: slug,
         generatedAt: new Date().toISOString(),
@@ -80,7 +93,13 @@ export async function POST(req: Request, ctx: Ctx) {
         candidates,
       } as never);
       await store.setResearchStatus(slug, 'critiqued');
-      return NextResponse.json({ status: 'critiqued', waitingOn: 'review', done: false });
+      return NextResponse.json({
+        status: 'critiqued',
+        waitingOn: 'review',
+        done: false,
+        kept: candidates.length,
+        dropped: dropped.length,
+      });
     }
 
     // Gate: nothing is gathered or written until the user has kept something.

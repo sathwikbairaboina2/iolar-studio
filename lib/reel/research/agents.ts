@@ -21,6 +21,12 @@ import type { ScriptLine } from './script';
 export type Runner = (prompt: string, opts?: { timeoutMs?: number; allowedTools?: string[] }) => Promise<string>;
 
 const HUNT_TIMEOUT_MS = 900_000;
+/**
+ * Judging is its own long stage: the critic reads every source the hunt found,
+ * and a wide brief finds thirty. At 300s a pack of twenty-seven timed out with
+ * the hunt already paid for.
+ */
+const CRITIC_TIMEOUT_MS = 600_000;
 const STAGE_TIMEOUT_MS = 300_000;
 
 /**
@@ -136,7 +142,7 @@ ${JSON.stringify(z.toJSONSchema(CandidateSchema), null, 1)}
 
 Every field is required. No prose, no fence.`;
 
-  return extractJson<{ candidates: Candidate[] }>(await run(prompt, { timeoutMs: STAGE_TIMEOUT_MS }));
+  return extractJson<{ candidates: Candidate[] }>(await run(prompt, { timeoutMs: CRITIC_TIMEOUT_MS }));
 }
 
 /** Stage 6 — narration, cited line by line, from the pack the user kept. */

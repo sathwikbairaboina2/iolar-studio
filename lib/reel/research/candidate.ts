@@ -160,3 +160,36 @@ export function withStableIds(candidates: Candidate[]): Candidate[] {
     dupeOf: c.dupeOf ? remap.get(c.dupeOf) ?? null : null,
   }));
 }
+
+export type SiftedCandidates = { kept: Candidate[]; dropped: { index: number; issue: string }[] };
+
+/**
+ * Keeps the candidates that validate and reports the ones that do not.
+ *
+ * Three live runs died at the write because one row in thirty had a field the
+ * model shaped wrong — `stats.perClass` as numbers, an id that was not twelve
+ * hex, a `clipWindow` as an array. Each time the whole pack went, along with
+ * every minute spent finding it.
+ *
+ * A critic that misjudges one source has not invalidated the other twenty-nine.
+ * So a bad row is dropped and counted rather than fatal; the caller surfaces the
+ * count, because sources silently vanishing is its own kind of wrong. Only a
+ * reply where nothing validates is an error — that is a model that misunderstood
+ * the question, not a model that fumbled a field.
+ */
+export function siftCandidates(raw: unknown[]): SiftedCandidates {
+  const kept: Candidate[] = [];
+  const dropped: { index: number; issue: string }[] = [];
+
+  raw.forEach((row, index) => {
+    const parsed = CandidateSchema.safeParse(row);
+    if (parsed.success) {
+      kept.push(parsed.data);
+      return;
+    }
+    const issue = parsed.error.issues[0];
+    dropped.push({ index, issue: `${issue.path.join('.') || 'root'} — ${issue.message}` });
+  });
+
+  return { kept, dropped };
+}

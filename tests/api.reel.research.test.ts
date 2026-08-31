@@ -180,6 +180,42 @@ describe('POST /api/reel/[slug]/research/run', () => {
     expect(hunt).not.toHaveBeenCalled();
   });
 
+  // Three runs died at the write because one row in thirty was shaped wrong.
+  it('drops a malformed source and keeps the rest of the pack', async () => {
+    await seedBrief({ status: 'hunted' });
+    const seeded = await import('@/lib/reel/research/store');
+    await seeded.writeHunt('grok', [{ url: 'https://github.com/x' }]);
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      huntSources: vi.fn(),
+      critique: async () => ({
+        candidates: [CANDIDATE, { ...CANDIDATE, url: 'https://lwn.net/a/', clipWindow: [] }],
+      }),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const body = await (await POST(post(), ctx('grok'))).json();
+
+    expect(body.status).toBe('critiqued');
+    expect(body.kept).toBe(1);
+    expect(body.dropped).toBe(1);
+  });
+
+  it('refuses when nothing the critic returned validates', async () => {
+    await seedBrief({ status: 'hunted' });
+    const seeded = await import('@/lib/reel/research/store');
+    await seeded.writeHunt('grok', [{ url: 'https://github.com/x' }]);
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      huntSources: vi.fn(),
+      critique: async () => ({ candidates: [{ nonsense: true }] }),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const res = await POST(post(), ctx('grok'));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/none usable/);
+  });
+
   // The gate: the user reviews before anything is gathered or written.
   it('stops after the critic and waits to be reviewed', async () => {
     await seedBrief({ status: 'critiqued' });
