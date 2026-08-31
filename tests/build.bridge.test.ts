@@ -134,3 +134,25 @@ describe('coerceKinds with a pack', () => {
     expect(out.shot.kind).toBe('screen');
   });
 });
+
+describe('a page shot with no page', () => {
+  // These stranded three reels in a retry loop: the beat waited for a human for
+  // ever, so the reel never finished and nothing could rescue it.
+  it('becomes the presenter when its line cites nothing', () => {
+    const lines = [{ id: 'l1', citations: [] }];
+    const beats = [{ id: 'b1', shot: { kind: 'screen', brief: '', hero: false, alsoAssetIds: [], sourceLineId: 'l1' } }];
+    expect(coerceKinds(lines as never, beats as never)[0].shot.kind).toBe('talking-head');
+  });
+
+  it('becomes the presenter when its only source was dropped in review', () => {
+    const lines = [{ id: 'l1', citations: ['gone'] }];
+    const beats = [{ id: 'b1', shot: { kind: 'screen', brief: '', hero: false, alsoAssetIds: [], sourceLineId: 'l1' } }];
+    expect(coerceKinds(lines as never, beats as never, new Set(['kept']))[0].shot.kind).toBe('talking-head');
+  });
+
+  it('stays a page shot when there is something to show', () => {
+    const lines = [{ id: 'l1', citations: ['c1'] }];
+    const beats = [{ id: 'b1', shot: { kind: 'screen', brief: '', hero: false, alsoAssetIds: [], sourceLineId: 'l1' } }];
+    expect(coerceKinds(lines as never, beats as never, new Set(['c1']))[0].shot.kind).toBe('screen');
+  });
+});

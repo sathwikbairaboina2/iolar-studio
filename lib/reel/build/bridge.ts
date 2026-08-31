@@ -3,6 +3,7 @@ import { loadReel, saveReel } from '../store';
 import { normaliseScript } from '@/lib/ai/reel/plan';
 import type { Reel, ShotKind } from '../schema';
 import type { Script, ScriptLine } from '../research/script';
+import { readCandidates } from '../research/store';
 
 /**
  * The crossing from an approved script to a reel that can be built.
@@ -104,9 +105,17 @@ export function coerceKinds<T extends { shot: { kind: string; sourceLineId: stri
       .map((l) => l.id)
   );
   return beats.map((beat) => {
+    const showable = Boolean(beat.shot.sourceLineId && cited.has(beat.shot.sourceLineId));
+
+    // A page shot needs a page. A screen beat whose line cites nothing — or whose
+    // only citation was dropped in review — can never be rendered and would wait
+    // for a human for ever. The presenter can always say the line.
+    if (beat.shot.kind === 'screen' && !showable) {
+      return { ...beat, shot: { ...beat.shot, kind: 'talking-head' } };
+    }
     if (RESEARCHED_KINDS.includes(beat.shot.kind as ShotKind)) return beat;
-    const kind = beat.shot.sourceLineId && cited.has(beat.shot.sourceLineId) ? 'screen' : 'talking-head';
-    return { ...beat, shot: { ...beat.shot, kind } };
+
+    return { ...beat, shot: { ...beat.shot, kind: showable ? 'screen' : 'talking-head' } };
   });
 }
 
@@ -125,7 +134,9 @@ export async function buildBeatsFromScript(slug: string, script: Pick<Script, 'l
 
   const reel = await loadReel(slug);
   const ordered = orderedLines(script.lines);
-  const beats = coerceKinds(ordered, attachSourceLines(ordered, reel.beats));
+  // Which sources survived review: a citation can point at one that did not.
+  const known = new Set((await readCandidates(slug).catch(() => null))?.candidates.map((c) => c.id) ?? []);
+  const beats = coerceKinds(ordered, attachSourceLines(ordered, reel.beats), known.size ? known : undefined);
   await saveReel(slug, { ...reel, beats });
   return loadReel(slug);
 }
