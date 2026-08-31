@@ -302,7 +302,7 @@ export async function clonePattern(
     shotMix: { talkingHead: 0.35, screen: 0.45, broll: 0.2, anchorEverySec: 10 },
     motion: { default: 'zoom-in', strength: 0.12 },
     transitions: ['cut', 'cut', 'crossfade'],
-    voice: { higgsfieldVoiceId: '', rate: 1 },
+    voice: { rate: 1 },
     letterbox: { bg: '#ffffff' },
   });
 

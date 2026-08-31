@@ -44,9 +44,7 @@ const PatternSchema = z.object({
   }),
   motion: z.object({ default: z.string(), strength: z.number() }),
   transitions: z.array(z.enum(['cut', 'crossfade'])).min(1),
-  voice: z
-    .object({ higgsfieldVoiceId: z.string().default(''), rate: z.number().default(1) })
-    .prefault({}),
+  voice: z.object({ rate: z.number().default(1) }).prefault({}),
   letterbox: z.object({ bg: z.string().default('#ffffff') }).prefault({}),
 });
 

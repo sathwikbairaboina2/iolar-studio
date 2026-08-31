@@ -5,10 +5,8 @@ import { addAsset, loadReel, saveReel, updateAsset } from './store';
 import { beatSpans } from './assemble';
 import { loadPattern } from './patterns';
 import { reelAssetsDir } from '../paths';
-import { getSettings } from '../settings';
 import { ffprobeMedia } from './probe';
 import { NO_PROVIDER, videoProvider } from './videoProvider';
-import { HiggsfieldUnavailableError, downloadTo, hfGenerateVideo } from '../higgsfield/client';
 
 export type ShotRequest = {
   beatId: string;
@@ -115,13 +113,10 @@ export async function attachAsset(
 
 async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<void> {
   const [width, height] = REEL_RATIOS[reel.ratio];
-  // A hero shot only leaves this machine when heroProvider says so; the default keeps
-  // every generation on whatever plugin is wired locally.
-  const useHiggsfield = req.hero && getSettings().heroProvider === 'higgsfield';
   const asset = await addAsset(slug, {
     kind: 'video',
     path: '',
-    origin: useHiggsfield ? 'higgsfield' : 'plugin',
+    origin: 'plugin',
     status: 'queued',
     brief: req.brief,
     width,
@@ -130,14 +125,6 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<
   await pointBeatAt(slug, req.beatId, asset.id);
 
   try {
-    if (useHiggsfield) {
-      const { url } = await hfGenerateVideo({ prompt: req.brief, seconds: req.seconds });
-      const rel = path.join('assets', `${asset.id}.mp4`);
-      await downloadTo(url, path.join(reelAssetsDir(slug), `${asset.id}.mp4`));
-      await updateAsset(slug, asset.id, { path: rel, status: 'ready' });
-      return;
-    }
-
     const provider = videoProvider();
     if (!provider || !(await provider.available())) {
       await updateAsset(slug, asset.id, { status: 'awaiting-manual', error: NO_PROVIDER });
@@ -166,11 +153,7 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<
     });
     await updateAsset(slug, asset.id, { status: 'running', jobId });
   } catch (err) {
-    const manual = err instanceof HiggsfieldUnavailableError;
-    await updateAsset(slug, asset.id, {
-      status: manual ? 'awaiting-manual' : 'failed',
-      error: String(err).slice(0, 300),
-    });
+    await updateAsset(slug, asset.id, { status: 'failed', error: String(err).slice(0, 300) });
   }
 }
 

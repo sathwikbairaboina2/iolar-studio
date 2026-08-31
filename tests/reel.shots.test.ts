@@ -55,18 +55,6 @@ function mockNoProvider() {
   }));
 }
 
-function mockHf(over: Record<string, unknown> = {}) {
-  vi.doMock('@/lib/higgsfield/client', () => ({
-    hfGenerateVideo: vi.fn().mockResolvedValue({ url: 'https://cdn/hero.mp4' }),
-    downloadTo: vi.fn(async (_u: string, dest: string) => {
-      const { writeFileSync, mkdirSync } = await import('fs');
-      mkdirSync(path.dirname(dest), { recursive: true });
-      writeFileSync(dest, 'video');
-    }),
-    HiggsfieldUnavailableError: class extends Error {},
-    ...over,
-  }));
-}
 
 describe('shot planning', () => {
   it('skips title beats and clamps shot length into the pattern range', async () => {
@@ -108,7 +96,6 @@ describe('shot generation', () => {
   it('keeps hero beats on the local plugin by default, so nothing leaves the machine', async () => {
     await seed();
     mockProvider();
-    mockHf();
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const heroBeat = reel.beats.find((b) => b.id === 'b3')!;
@@ -116,27 +103,10 @@ describe('shot generation', () => {
     expect(hero.origin).toBe('plugin');
   });
 
-  it('sends hero beats to higgsfield only when heroProvider asks for it', async () => {
-    await seed();
-    const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ heroProvider: 'higgsfield' });
-    mockProvider();
-    mockHf();
-    const { runShots } = await import('@/lib/reel/shots');
-    const reel = await runShots('grok');
-    const heroBeat = reel.beats.find((b) => b.id === 'b3')!;
-    const hero = reel.assets.find((a) => a.id === heroBeat.shot.assetId)!;
-    expect(hero.origin).toBe('higgsfield');
-    expect(hero.status).toBe('ready');
-    expect(hero.path).toMatch(/assets[\\/]a\d+\.mp4/);
-  });
 
   it('marks a generated shot awaiting-manual when there is no source still', async () => {
     await seed();
     mockProvider();
-    mockHf();
-    const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ heroProvider: 'plugin' });
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const beat = reel.beats.find((b) => b.id === 'b3')!;
@@ -150,10 +120,7 @@ describe('shot generation', () => {
   it('marks shots awaiting-manual when no provider is wired at all', async () => {
     await seed('grok');
     mockNoProvider();
-    mockHf();
     const { runShots } = await import('@/lib/reel/shots');
-    const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ heroProvider: 'plugin' });
     const reel = await runShots('grok');
 
     const asset = reel.assets.find((a) => a.status === 'awaiting-manual');
@@ -164,9 +131,6 @@ describe('shot generation', () => {
   it('marks shots awaiting-manual when the provider is down rather than failing the run', async () => {
     await seed();
     mockProvider({ available: vi.fn().mockResolvedValue(false) });
-    mockHf();
-    const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ heroProvider: 'plugin' });
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const beat = reel.beats.find((b) => b.id === 'b3')!;
@@ -175,23 +139,10 @@ describe('shot generation', () => {
     expect(asset.error).toMatch(/provider/i);
   });
 
-  it('records a failed hero generation without stopping the rest', async () => {
-    await seed();
-    const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ heroProvider: 'higgsfield' });
-    mockProvider();
-    mockHf({ hfGenerateVideo: vi.fn().mockRejectedValue(new Error('credits exhausted')) });
-    const { runShots } = await import('@/lib/reel/shots');
-    const reel = await runShots('grok');
-    const hero = reel.assets.find((a) => a.origin === 'higgsfield')!;
-    expect(hero.status).toBe('failed');
-    expect(hero.error).toMatch(/credits/);
-  });
 
   it('is idempotent: a second run queues nothing new', async () => {
     await seed();
     mockProvider();
-    mockHf();
     const { runShots } = await import('@/lib/reel/shots');
     const first = await runShots('grok');
     const second = await runShots('grok');

@@ -12,7 +12,6 @@ describe('local text to speech', () => {
   it('defaults to the local engine, so a reel never reaches a paid service by itself', async () => {
     const { getSettings } = await import('@/lib/settings');
     expect(getSettings().voiceProvider).toBe('kokoro');
-    expect(getSettings().heroProvider).toBe('plugin');
   });
 
   it('resolves the voice model next to the repo', async () => {

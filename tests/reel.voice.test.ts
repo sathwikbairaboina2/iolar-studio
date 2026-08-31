@@ -67,32 +67,6 @@ describe('voice stage', () => {
     expect(existsSync(reelWordsFile('grok'))).toBe(true);
   });
 
-  it('only calls higgsfield when the setting names it', async () => {
-    await seed();
-    const hfGenerateAudio = vi.fn().mockResolvedValue({ url: 'https://cdn/vo.mp3' });
-    vi.doMock('@/lib/higgsfield/client', () => ({
-      hfGenerateAudio,
-      downloadTo: vi.fn(async (_u: string, dest: string) => {
-        writeFileSync(dest, 'audio');
-      }),
-      HiggsfieldUnavailableError: class extends Error {},
-    }));
-    vi.doMock('@/lib/reel/probe', () => ({
-      ffprobeMedia: vi.fn().mockResolvedValue({ durationSec: 1.5, width: 0, height: 0, fps: 0, hasAudio: true }),
-    }));
-    vi.doMock('@/lib/reel/align', () => ({
-      alignVoice: vi.fn().mockResolvedValue(WORDS),
-      WhisperUnavailableError: class extends Error {},
-    }));
-
-    const { saveSettings } = await import('@/lib/settings');
-    saveSettings({ voiceProvider: 'higgsfield' });
-    const { synthesizeVoice } = await import('@/lib/reel/voice');
-    const reel = await synthesizeVoice('grok');
-    expect(hfGenerateAudio).toHaveBeenCalled();
-    expect(reel.vo.provider).toBe('higgsfield');
-  });
-
   it('passes the script to alignment as the decoder context', async () => {
     await seed();
     mockTts();
@@ -117,12 +91,13 @@ describe('voice stage', () => {
     expect(existsSync(reelVoFile('grok'))).toBe(true);
   });
 
-  it('returns 503 from the route when higgsfield is unreachable', async () => {
+  // 503 rather than 500: the engine is missing, not broken, and the studio says so.
+  it('returns 503 from the route when whisper is unavailable', async () => {
     await seed();
-    class HiggsfieldUnavailableError extends Error {}
-    vi.doMock('@/lib/higgsfield/client', () => ({ HiggsfieldUnavailableError }));
+    class WhisperUnavailableError extends Error {}
+    vi.doMock('@/lib/reel/align', () => ({ WhisperUnavailableError, alignVoice: vi.fn() }));
     vi.doMock('@/lib/reel/voice', () => ({
-      synthesizeVoice: vi.fn().mockRejectedValue(new HiggsfieldUnavailableError()),
+      synthesizeVoice: vi.fn().mockRejectedValue(new WhisperUnavailableError()),
       alignExistingVoice: vi.fn(),
     }));
     const { POST } = await import('@/app/api/reel/[slug]/voice/route');

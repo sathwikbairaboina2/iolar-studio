@@ -43,7 +43,7 @@ const AssetSchema = z.object({
   id: z.string().min(1),
   kind: z.enum(['video', 'image', 'audio']),
   path: z.string(),
-  origin: z.enum(['user', 'plugin', 'higgsfield']),
+  origin: z.enum(['user', 'plugin']),
   status: z.enum(['queued', 'running', 'ready', 'failed', 'awaiting-manual']).default('queued'),
   jobId: z.string().optional(),
   brief: z.string().default(''),
@@ -117,7 +117,7 @@ export const ReelSchema = z.object({
   beats: z.array(BeatSchema).min(1),
   vo: z
     .object({
-      provider: z.enum(['local', 'higgsfield', 'manual']).default('local'),
+      provider: z.enum(['local', 'manual']).default('local'),
       voiceId: z.string().default(''),
       file: z.string().default('vo.mp3'),
       durationSec: z.number().default(0),

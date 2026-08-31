@@ -8,13 +8,12 @@ export type Settings = {
   whisperPython: string;
   whisperModel: string;
   whisperDevice: 'cuda' | 'cpu';
-  voiceProvider: 'kokoro' | 'piper' | 'sapi' | 'higgsfield' | 'manual';
+  voiceProvider: 'kokoro' | 'piper' | 'sapi' | 'manual';
   kokoroDir: string;
   kokoroVoice: string;
   kokoroSpeed: number;
   piperVoice: string;
   piperDataDir: string;
-  heroProvider: 'plugin' | 'higgsfield';
   reelFps: number;
   reelRatio: string;
   reelPattern: string;
@@ -42,7 +41,6 @@ const DEFAULTS: Settings = {
   kokoroSpeed: 1.35,
   piperVoice: 'en_US-ryan-high',
   piperDataDir: 'models/piper',
-  heroProvider: 'plugin',
   reelFps: 30,
   reelRatio: '9:16',
   reelPattern: 'armand',
