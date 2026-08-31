@@ -8,6 +8,7 @@ export const REEL_RATIOS: Record<string, [number, number]> = {
 };
 
 export const SHOT_KINDS = ['title', 'talking-head', 'screen', 'broll'] as const;
+export type ShotKind = (typeof SHOT_KINDS)[number];
 export const CLIP_FITS = ['cover', 'contain'] as const;
 export const CLIP_TRANSITIONS = ['cut', 'crossfade'] as const;
 export const MOTION_TYPES = [
@@ -28,6 +29,15 @@ const ShotSchema = z.object({
    * a cut rather than a seam.
    */
   alsoAssetIds: z.array(z.string()).default([]),
+  /**
+   * The approved script line this beat came from, when it came from one.
+   *
+   * A `screen` beat is rendered by visiting a page, and the page is whichever
+   * source proves the line. That link lives on the line's citations, so without
+   * this the beat cannot find its own evidence. Null for beats planned from a
+   * topic, which have no line behind them.
+   */
+  sourceLineId: z.string().nullable().default(null),
 });
 
 const BeatSchema = z.object({
@@ -46,6 +56,8 @@ const AssetSchema = z.object({
   origin: z.enum(['user', 'plugin']),
   status: z.enum(['queued', 'running', 'ready', 'failed', 'awaiting-manual']).default('queued'),
   jobId: z.string().optional(),
+  /** Which renderer made it, so a reel records the machine behind each clip. */
+  provider: z.string().optional(),
   brief: z.string().default(''),
   error: z.string().optional(),
   durationSec: z.number().optional(),

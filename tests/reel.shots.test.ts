@@ -22,18 +22,24 @@ async function seed(slug = 'grok') {
     ...reel,
     vo: { ...reel.vo, words: WORDS, durationSec: 5 },
     beats: [
-      { id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'title', brief: 'title card', hero: false , alsoAssetIds: [] } },
-      { id: 'b2', role: 'body', text: 'three four', shot: { kind: 'screen', brief: 'chat ui', hero: false , alsoAssetIds: [] } },
-      { id: 'b3', role: 'close', text: 'five six', shot: { kind: 'broll', brief: 'city', hero: true , alsoAssetIds: [] } },
+      { id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'title', brief: 'title card', hero: false , alsoAssetIds: [], sourceLineId: null } },
+      { id: 'b2', role: 'body', text: 'three four', shot: { kind: 'screen', brief: 'chat ui', hero: false , alsoAssetIds: [], sourceLineId: null } },
+      { id: 'b3', role: 'close', text: 'five six', shot: { kind: 'talking-head', brief: 'to camera', hero: true , alsoAssetIds: [], sourceLineId: null } },
     ],
   });
   return loadReel(slug);
 }
 
-/** Registers a stand-in for whatever plugin drives generation. */
+/**
+ * Registers a stand-in for both renderers.
+ *
+ * A researched reel has two kinds of generated shot and they are made by
+ * different machines, so the seam is keyed by name; the same double answers for
+ * either lookup here.
+ */
 function mockProvider(over: Record<string, unknown> = {}) {
   const provider = {
-    name: 'test-provider',
+    name: 'webpage',
     available: vi.fn().mockResolvedValue(true),
     animate: vi.fn().mockResolvedValue({ jobId: 'p-1' }),
     jobState: vi.fn().mockResolvedValue('running'),
@@ -42,7 +48,7 @@ function mockProvider(over: Record<string, unknown> = {}) {
   };
   vi.doMock('@/lib/reel/videoProvider', async (orig) => ({
     ...(await (orig() as Promise<Record<string, unknown>>)),
-    videoProvider: () => provider,
+    videoProvider: (name: string) => ({ ...provider, name: name || provider.name }),
   }));
   return provider;
 }
@@ -55,14 +61,31 @@ function mockNoProvider() {
   }));
 }
 
+/**
+ * Both renderers speak this beat's slice of the voiceover, so a beat with no
+ * audio waits for a human. These tests are about routing, not about cutting.
+ */
+function mockBeatAudio() {
+  vi.doMock('@/lib/reel/build/audio', async (orig) => ({
+    ...(await (orig() as Promise<Record<string, unknown>>)),
+    beatAudioFile: () => __filename,
+  }));
+}
+
+/** A page visit needs a page; these tests supply one without any research on disk. */
+function mockLink(link: unknown = { url: 'https://example.com/a', highlight: 'phrase', candidateId: 'c1' }) {
+  vi.doMock('@/lib/reel/build/links', () => ({ resolveLink: () => link }));
+}
+
 
 describe('shot planning', () => {
   it('skips title beats and clamps shot length into the pattern range', async () => {
     const reel = await seed();
     const { planShots } = await import('@/lib/reel/shots');
     const reqs = planShots(reel, [3, 6]);
-    // b1 is a title (an overlay) and b2 is a screen beat (kept as a screenshot)
-    expect(reqs.map((r) => r.beatId)).toEqual(['b3']);
+    // b1 is a title, which is an overlay and never generated. Both of the others
+    // have a renderer now: the page for b2, the presenter for b3.
+    expect(reqs.map((r) => r.beatId)).toEqual(['b2', 'b3']);
     for (const r of reqs) {
       expect(r.seconds).toBeGreaterThanOrEqual(3);
       expect(r.seconds).toBeLessThanOrEqual(6);
@@ -81,8 +104,8 @@ describe('shot planning', () => {
         { id: 'a2', kind: 'video' as const, path: '', origin: 'plugin' as const, status: 'running' as const, brief: '' },
       ],
       beats: reel.beats.map((b) =>
-        b.id === 'b2' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [] } }
-        : b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a2' , alsoAssetIds: [] } }
+        b.id === 'b2' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [], sourceLineId: null } }
+        : b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a2' , alsoAssetIds: [], sourceLineId: null } }
         : b
       ),
     };
@@ -96,6 +119,8 @@ describe('shot generation', () => {
   it('keeps hero beats on the local plugin by default, so nothing leaves the machine', async () => {
     await seed();
     mockProvider();
+    mockBeatAudio();
+    mockLink();
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const heroBeat = reel.beats.find((b) => b.id === 'b3')!;
@@ -104,15 +129,17 @@ describe('shot generation', () => {
   });
 
 
-  it('marks a generated shot awaiting-manual when there is no source still', async () => {
+  it('marks a talking head awaiting-manual when no presenter image is set', async () => {
     await seed();
     mockProvider();
+    mockBeatAudio();
+    mockLink();
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const beat = reel.beats.find((b) => b.id === 'b3')!;
     const asset = reel.assets.find((a) => a.id === beat.shot.assetId)!;
     expect(asset.status).toBe('awaiting-manual');
-    expect(asset.error).toMatch(/screenshot/i);
+    expect(asset.error).toMatch(/presenter image/i);
   });
 
   // The state the studio ships in: generation belongs to the user's plugins, and
@@ -120,6 +147,8 @@ describe('shot generation', () => {
   it('marks shots awaiting-manual when no provider is wired at all', async () => {
     await seed('grok');
     mockNoProvider();
+    mockBeatAudio();
+    mockLink();
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
 
@@ -131,6 +160,8 @@ describe('shot generation', () => {
   it('marks shots awaiting-manual when the provider is down rather than failing the run', async () => {
     await seed();
     mockProvider({ available: vi.fn().mockResolvedValue(false) });
+    mockBeatAudio();
+    mockLink();
     const { runShots } = await import('@/lib/reel/shots');
     const reel = await runShots('grok');
     const beat = reel.beats.find((b) => b.id === 'b3')!;
@@ -143,6 +174,8 @@ describe('shot generation', () => {
   it('is idempotent: a second run queues nothing new', async () => {
     await seed();
     mockProvider();
+    mockBeatAudio();
+    mockLink();
     const { runShots } = await import('@/lib/reel/shots');
     const first = await runShots('grok');
     const second = await runShots('grok');
@@ -186,8 +219,9 @@ describe('manual drops', () => {
     const asset = reel.assets.find((a) => a.id === beat.shot.assetId)!;
     expect(asset).toMatchObject({ origin: 'user', status: 'ready', durationSec: 4 });
 
+    // b3 is covered by the drop; b2 still wants its page rendered.
     const { planShots } = await import('@/lib/reel/shots');
-    expect(planShots(reel, [3, 6])).toEqual([]);
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).not.toContain('b3');
   });
 
   it('still attaches a file ffprobe cannot read', async () => {
@@ -209,9 +243,9 @@ describe('shot refresh', () => {
     await saveReel('grok', {
       ...reel,
       assets: [
-        { id: 'a1', kind: 'video', path: '', origin: 'plugin', status: 'running', jobId: 'p-1', brief: '' },
+        { id: 'a1', kind: 'video', path: '', origin: 'plugin', provider: 'webpage', status: 'running', jobId: 'p-1', provider: 'webpage', brief: '' },
       ],
-      beats: reel.beats.map((b) => (b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [] } } : b)),
+      beats: reel.beats.map((b) => (b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [], sourceLineId: null } } : b)),
     });
     mockProvider({
       jobState: vi.fn().mockResolvedValue('ready'),
@@ -237,7 +271,7 @@ describe('shot refresh', () => {
     const reel = await loadReel('grok');
     await saveReel('grok', {
       ...reel,
-      assets: [{ id: 'a1', kind: 'video', path: '', origin: 'plugin', status: 'running', jobId: 'p-1', brief: '' }],
+      assets: [{ id: 'a1', kind: 'video', path: '', origin: 'plugin', provider: 'webpage', status: 'running', jobId: 'p-1', provider: 'webpage', brief: '' }],
     });
     mockProvider({ jobState: vi.fn().mockResolvedValue('failed') });
     const { refreshShots } = await import('@/lib/reel/shots');
@@ -245,12 +279,12 @@ describe('shot refresh', () => {
   });
 });
 
-describe('diffusion never renders text', () => {
-  it('does not queue screen beats for generation', async () => {
+describe('a real browser renders text a diffusion model would melt', () => {
+  it('queues screen beats now that a browser renders them', async () => {
     const reel = await seed();
     const { planShots } = await import('@/lib/reel/shots');
     // b2 is the screen beat; a video model would redraw its UI text into nonsense
-    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).not.toContain('b2');
+    expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b2');
     expect(planShots(reel, [3, 6]).map((r) => r.beatId)).toContain('b3');
   });
 

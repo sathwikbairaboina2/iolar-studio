@@ -3,49 +3,78 @@
  *
  * The studio used to drive a local ComfyUI here through a bundled
  * image-to-video template. That code is gone: generation belongs to the user,
- * who has their own plugins to hand over. What is left is the seam it hung on.
+ * who built the renderers this now routes to. What survived is the seam it hung
+ * on, widened from one provider to a registry — because a researched reel has
+ * two kinds of shot and they are made by different machines.
  *
- * Nothing is registered by default, so `videoProvider()` returns null and every
- * beat that would have been generated is marked `awaiting-manual` instead. That
- * is the same state an unreachable backend produced before, which is why the
- * rest of the pipeline — assemble, preview, export — needs no cases for it: a
- * dropped file finishes the reel exactly as it always did.
+ * A `screen` beat is a page visit: a real browser scrolling the source that
+ * proves the line, which is why text stays readable where a diffusion model
+ * would melt it. A `talking-head` beat is a lipsync render from one reference
+ * image and that beat's slice of the voiceover. A `title` beat is an overlay and
+ * is never queued.
  *
- * To wire a plugin, call `registerVideoProvider` once at startup.
+ * Nothing is registered by default, so a studio with no plugins running marks
+ * beats `awaiting-manual` and a dropped file still finishes the reel — the same
+ * behaviour as before, for the same reason.
  */
 
+import type { ShotKind } from './schema';
+
 export type AnimateRequest = {
-  /** Absolute path to the still the shot animates from. */
-  imagePath: string;
-  /** What the shot should show, in the beat's own words. */
-  brief: string;
+  /** Where the finished audio for this beat lives. Both renderers need it. */
+  audioPath: string;
   seconds: number;
   seed: number;
   ratio: string;
+  /** What the shot should show, in the beat's own words. */
+  brief: string;
+
+  /** Page visits: the source that proves the line, and the phrase to sweep. */
+  url?: string;
+  highlight?: string;
+
+  /** Lipsync: the presenter to animate. */
+  imagePath?: string;
 };
 
 export type JobState = 'running' | 'ready' | 'failed';
 
 export interface VideoProvider {
-  /** Shown in errors and on the asset, so a reel records what made each clip. */
+  /** Recorded on the asset, so a reel says which machine made each clip. */
   readonly name: string;
   /** False when the backend is down; the beat then waits for a human. */
   available(): Promise<boolean>;
-  /** Queues one shot and returns the id to poll. */
   animate(req: AnimateRequest): Promise<{ jobId: string }>;
   jobState(jobId: string): Promise<JobState>;
   /** Writes the finished clip to `dest`. */
   collect(jobId: string, dest: string): Promise<void>;
 }
 
-let registered: VideoProvider | null = null;
+const registered = new Map<string, VideoProvider>();
 
-export function registerVideoProvider(provider: VideoProvider | null): void {
-  registered = provider;
+export function registerVideoProvider(name: string, provider: VideoProvider | null): void {
+  if (provider) registered.set(name, provider);
+  else registered.delete(name);
 }
 
-export function videoProvider(): VideoProvider | null {
-  return registered;
+export function videoProvider(name: string): VideoProvider | null {
+  return registered.get(name) ?? null;
+}
+
+export function registeredProviders(): string[] {
+  return [...registered.keys()];
+}
+
+/**
+ * Which renderer owns a shot kind.
+ *
+ * `title` returns null because a title card is drawn by the pattern over
+ * whatever is behind it; it has never been generated and is not missing.
+ */
+export function providerNameFor(kind: ShotKind): string | null {
+  if (kind === 'screen') return 'webpage';
+  if (kind === 'talking-head') return 'lipsync';
+  return null;
 }
 
 /** The message a beat carries while no plugin is wired. */

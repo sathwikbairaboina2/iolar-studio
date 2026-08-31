@@ -6,7 +6,13 @@ import { beatSpans } from './assemble';
 import { loadPattern } from './patterns';
 import { reelAssetsDir } from '../paths';
 import { ffprobeMedia } from './probe';
-import { NO_PROVIDER, videoProvider } from './videoProvider';
+import { NO_PROVIDER, providerNameFor, videoProvider } from './videoProvider';
+import { resolveLink } from './build/links';
+import { beatAudioFile } from './build/audio';
+import { getSettings } from '../settings';
+import * as research from './research/store';
+import type { Candidate } from './research/candidate';
+import type { Script } from './research/script';
 
 export type ShotRequest = {
   beatId: string;
@@ -14,18 +20,23 @@ export type ShotRequest = {
   brief: string;
   hero: boolean;
   seconds: number;
+  /** The approved line behind this beat, if it came from one. */
+  sourceLineId: string | null;
 };
 
 /**
- * Shot kinds a video model may generate.
+ * Shot kinds a renderer can produce.
  *
- * `screen` is excluded on purpose. A screen recording is mostly text, and an image-to-video
- * model redraws text rather than preserving it — a UI screenshot comes back with the words
- * melted into plausible-looking nonsense. The same rule the carousels are built on applies
- * here: diffusion never renders text. Screen beats keep their screenshot and get a camera
- * move over it, which is also what the reference reel does with its captures.
+ * `screen` used to be excluded because an image-to-video model redraws text
+ * rather than preserving it, and a UI screenshot came back with the words melted
+ * into nonsense. That reasoning does not apply to a real browser rendering a real
+ * page, so with the pages renderer doing the work the exclusion inverts: screen
+ * is now the best-served kind there is.
+ *
+ * `broll` leaves the list because neither renderer makes generic b-roll, and a
+ * researched reel is planned without it.
  */
-export const GENERATABLE: Beat['shot']['kind'][] = ['broll', 'talking-head'];
+export const GENERATABLE: Beat['shot']['kind'][] = ['screen', 'talking-head'];
 
 /**
  * Beats still needing footage. Title beats are overlays, not clips, so they never queue.
@@ -52,6 +63,7 @@ export function planShots(reel: Reel, shotSec: [number, number]): ShotRequest[] 
       kind: beat.shot.kind,
       brief: beat.shot.brief,
       hero: beat.shot.hero,
+      sourceLineId: beat.shot.sourceLineId ?? null,
       seconds: Math.round(Math.min(hi, Math.max(lo, spoken)) * 10) / 10,
     });
   }
@@ -111,47 +123,77 @@ export async function attachAsset(
   return loadReel(slug);
 }
 
-async function generateOne(slug: string, req: ShotRequest, reel: Reel): Promise<void> {
+/** What a run needs to turn beats into jobs, loaded once rather than per beat. */
+type BuildContext = {
+  script: Pick<Script, 'lines'> | null;
+  candidates: Candidate[];
+  presenterImage: string;
+};
+
+async function buildContext(slug: string): Promise<BuildContext> {
+  const presenterImage = getSettings().presenterImage;
+  try {
+    const [script, pack] = await Promise.all([research.readScript(slug), research.readCandidates(slug)]);
+    return { script, candidates: pack.candidates, presenterImage };
+  } catch {
+    // A reel planned from a topic has no research behind it. Its talking-head
+    // beats still render; its screen beats have no citation to visit.
+    return { script: null, candidates: [], presenterImage };
+  }
+}
+
+async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: BuildContext): Promise<void> {
   const [width, height] = REEL_RATIOS[reel.ratio];
+  const providerName = providerNameFor(req.kind);
   const asset = await addAsset(slug, {
     kind: 'video',
     path: '',
     origin: 'plugin',
     status: 'queued',
     brief: req.brief,
+    provider: providerName ?? undefined,
     width,
     height,
   });
   await pointBeatAt(slug, req.beatId, asset.id);
 
+  const stall = (error: string) => updateAsset(slug, asset.id, { status: 'awaiting-manual', error });
+
   try {
-    const provider = videoProvider();
+    const provider = providerName ? videoProvider(providerName) : null;
     if (!provider || !(await provider.available())) {
-      await updateAsset(slug, asset.id, { status: 'awaiting-manual', error: NO_PROVIDER });
+      await stall(providerName ? `${providerName}: ${NO_PROVIDER}` : NO_PROVIDER);
       return;
     }
 
-    // A provider animates a still. Prefer the one dropped for this beat, then any spare.
-    const still =
-      reel.assets.find(
-        (a) => a.kind === 'image' && a.status === 'ready' && a.brief === `still:${req.beatId}`
-      ) ?? reel.assets.find((a) => a.kind === 'image' && a.status === 'ready');
-    if (!still) {
-      await updateAsset(slug, asset.id, {
-        status: 'awaiting-manual',
-        error: 'No source screenshot for this beat — drop an image and retry.',
-      });
+    // Both renderers are driven by this beat's own slice of the voiceover: it is
+    // what the presenter speaks, and it is what sets a page's screen time.
+    const audioPath = beatAudioFile(slug, req.beatId);
+    const hasAudio = await fs.stat(audioPath).then(() => true).catch(() => false);
+    if (!hasAudio) {
+      await stall('No audio for this beat — add the voiceover and align it first.');
       return;
     }
 
-    const { jobId } = await provider.animate({
-      imagePath: path.join(reelAssetsDir(slug), path.basename(still.path)),
-      brief: req.brief,
-      seconds: req.seconds,
-      seed: reel.seed,
-      ratio: reel.ratio,
-    });
-    await updateAsset(slug, asset.id, { status: 'running', jobId });
+    const shared = { audioPath, brief: req.brief, seconds: req.seconds, seed: reel.seed, ratio: reel.ratio };
+
+    if (provider.name === 'webpage') {
+      const link = ctx.script ? resolveLink(ctx.script, ctx.candidates, req.sourceLineId) : null;
+      if (!link) {
+        await stall('No source to show for this beat — its line cites nothing, so there is no page to visit.');
+        return;
+      }
+      const { jobId } = await provider.animate({ ...shared, url: link.url, highlight: link.highlight });
+      await updateAsset(slug, asset.id, { status: 'running', jobId, provider: provider.name });
+      return;
+    }
+
+    if (!ctx.presenterImage) {
+      await stall('No presenter image is set — choose one in settings before rendering a talking head.');
+      return;
+    }
+    const { jobId } = await provider.animate({ ...shared, imagePath: ctx.presenterImage });
+    await updateAsset(slug, asset.id, { status: 'running', jobId, provider: provider.name });
   } catch (err) {
     await updateAsset(slug, asset.id, { status: 'failed', error: String(err).slice(0, 300) });
   }
@@ -180,8 +222,9 @@ export async function runShots(slug: string): Promise<Reel> {
   await useStillsForScreens(slug);
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
+  const ctx = await buildContext(slug);
   for (const req of planShots(reel, pattern.pacing.shotSec)) {
-    await generateOne(slug, req, await loadReel(slug));
+    await generateOne(slug, req, await loadReel(slug), ctx);
   }
   return loadReel(slug);
 }
@@ -189,11 +232,12 @@ export async function runShots(slug: string): Promise<Reel> {
 /** Moves running provider jobs forward; called by the studio while it polls. */
 export async function refreshShots(slug: string): Promise<Reel> {
   const reel = await loadReel(slug);
-  const provider = videoProvider();
-  // Without a provider nothing can be running, and polling one would be a lie.
-  if (!provider) return reel;
   for (const asset of reel.assets) {
     if (asset.status !== 'running' || !asset.jobId) continue;
+    // Each asset records the renderer that made it, so a reel with both kinds of
+    // shot polls two machines without either knowing about the other.
+    const provider = asset.provider ? videoProvider(asset.provider) : null;
+    if (!provider) continue;
     const state = await provider.jobState(asset.jobId);
     if (state === 'ready') {
       const rel = path.join('assets', `${asset.id}.mp4`);

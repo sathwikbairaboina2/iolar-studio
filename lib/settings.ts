@@ -14,6 +14,7 @@ export type Settings = {
   kokoroSpeed: number;
   piperVoice: string;
   piperDataDir: string;
+  presenterImage: string;
   reelFps: number;
   reelRatio: string;
   reelPattern: string;
@@ -41,6 +42,7 @@ const DEFAULTS: Settings = {
   kokoroSpeed: 1.35,
   piperVoice: 'en_US-ryan-high',
   piperDataDir: 'models/piper',
+  presenterImage: '',
   reelFps: 30,
   reelRatio: '9:16',
   reelPattern: 'armand',

@@ -15,8 +15,8 @@ async function seed(slug = 'grok') {
   await saveReel(slug, {
     ...reel,
     beats: [
-      { id: 'b1', role: 'hook', text: 'One two.', shot: { kind: 'title', brief: 'x', hero: false , alsoAssetIds: [] } },
-      { id: 'b2', role: 'close', text: 'Three four.', shot: { kind: 'broll', brief: 'y', hero: false , alsoAssetIds: [] } },
+      { id: 'b1', role: 'hook', text: 'One two.', shot: { kind: 'title', brief: 'x', hero: false , alsoAssetIds: [], sourceLineId: null } },
+      { id: 'b2', role: 'close', text: 'Three four.', shot: { kind: 'broll', brief: 'y', hero: false , alsoAssetIds: [], sourceLineId: null } },
     ],
   });
 }

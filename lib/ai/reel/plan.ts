@@ -4,7 +4,7 @@ import { runClaude } from '../claude';
 import { extractJson } from '../revise';
 import { Pattern, loadPattern } from '../../reel/patterns';
 import { loadReel, saveReel } from '../../reel/store';
-import { Beat, Reel } from '../../reel/schema';
+import { Beat, Reel, ShotKind } from '../../reel/schema';
 import { reelRefsDir } from '../../paths';
 import { transcribe } from '../../reel/align';
 
@@ -25,7 +25,19 @@ Rules:
 - "hero": true on at most two beats, the shots worth a premium generation
 - ids are b1, b2, b3 ... in order`;
 
-export function beatsPrompt(pattern: Pattern, mode: PlanMode, source: string): string {
+export type PlanOpts = {
+  /**
+   * Shot kinds the planner may use.
+   *
+   * A researched reel is rendered entirely by two plugins — pages and lipsync —
+   * and neither makes generic b-roll. Narrowing the palette here is what lets
+   * every beat find a renderer, so the reel finishes without a human dropping
+   * files in.
+   */
+  kinds?: readonly ShotKind[];
+};
+
+export function beatsPrompt(pattern: Pattern, mode: PlanMode, source: string, opts: PlanOpts = {}): string {
   const [lo, hi] = pattern.pacing.shotSec;
   const voice = `Write in the voice of ${pattern.displayName}: direct, fast, second person, present tense, no throat-clearing.`;
   const pacing =
@@ -76,6 +88,9 @@ export function parseBeats(raw: string): PlanOut {
       brief: String(b.shot?.brief ?? '').trim() || 'establishing shot for this line',
       hero: Boolean(b.shot?.hero),
       alsoAssetIds: [],
+      // The bridge fills this in from the script's line offsets; a plan made
+      // from a topic has no line to point at.
+      sourceLineId: null,
     },
   })) as Beat[];
   if (!beats.length) throw new Error('plan returned no beats');
@@ -103,11 +118,11 @@ function checked(mode: PlanMode, source: string, out: PlanOut): PlanOut {
   return out;
 }
 
-async function generate(slug: string, mode: PlanMode, source: string): Promise<Reel> {
+async function generate(slug: string, mode: PlanMode, source: string, opts: PlanOpts = {}): Promise<Reel> {
   if (!source.trim()) throw new Error(`plan mode "${mode}" needs a source`);
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
-  const prompt = beatsPrompt(pattern, mode, source);
+  const prompt = beatsPrompt(pattern, mode, source, opts);
   const first = await runClaude(prompt, { timeoutMs: 900_000 });
   try {
     return await applyPlan(slug, checked(mode, source, parseBeats(first)));
@@ -124,8 +139,8 @@ export function planFromTopic(slug: string, topic: string) {
   return generate(slug, 'topic', topic);
 }
 
-export function planFromScript(slug: string, script: string) {
-  return generate(slug, 'paste', script);
+export function planFromScript(slug: string, script: string, opts: PlanOpts = {}) {
+  return generate(slug, 'paste', script, opts);
 }
 
 /** Downloads the reference, transcribes it, then writes a fresh script on the same story. */

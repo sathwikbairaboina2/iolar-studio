@@ -74,8 +74,8 @@ describe('assemble route', () => {
     await saveReel('grok', {
       ...reel,
       beats: [
-        { id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'broll', brief: '', hero: false, assetId: 'a1' , alsoAssetIds: [] } },
-        { id: 'b2', role: 'close', text: 'three four', shot: { kind: 'broll', brief: '', hero: false, assetId: 'a2' , alsoAssetIds: [] } },
+        { id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'broll', brief: '', hero: false, assetId: 'a1' , alsoAssetIds: [], sourceLineId: null } },
+        { id: 'b2', role: 'close', text: 'three four', shot: { kind: 'broll', brief: '', hero: false, assetId: 'a2' , alsoAssetIds: [], sourceLineId: null } },
       ],
       vo: { ...reel.vo, durationSec: 4, words: ['one', 'two', 'three', 'four'].map((w, i) => ({ w, start: i, end: i + 0.8 })) },
       assets: [
