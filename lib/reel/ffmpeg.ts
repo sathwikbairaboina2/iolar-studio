@@ -266,6 +266,20 @@ export async function exportReel(
   const loudness = voPath && !musicPath ? await measureLoudness(voPath, VOICE_CHAIN) : null;
   const args = buildExportArgs({ reel, pattern, assetPaths, overlayPaths, voPath, musicPath, outPath, loudness });
 
+  // Windows caps a command line at 32k characters, and a long reel's filter
+  // graph alone runs past it: four finished reels failed to export with
+  // `spawn ENAMETOOLONG` while every clip sat ready on disk. ffmpeg reads the
+  // graph from a file for exactly this reason.
+  const graphAt = args.indexOf('-filter_complex');
+  if (graphAt >= 0 && args.join(' ').length > 24_000) {
+    const scriptPath = path.join(outDir, 'filter.txt');
+    await fs.writeFile(scriptPath, args[graphAt + 1], 'utf8');
+    // ffmpeg 7 removed -filter_complex_script in favour of reading any option's
+    // value from a file with a leading slash.
+    args[graphAt] = '-/filter_complex';
+    args[graphAt + 1] = scriptPath;
+  }
+
   const { code, stderr } = await run('ffmpeg', args, {
     onStdout: (chunk) => {
       const pct = parseProgress(chunk, total);
