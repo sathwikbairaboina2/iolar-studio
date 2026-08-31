@@ -1,92 +1,100 @@
 # Where iolar-reels stands
 
-Last worked: 30 Aug 2026. Branch `feat/reels-engine`, working tree clean,
-490 tests green across 60 files (ffmpeg and e2e suites excluded — they run real
-encodes). Typecheck, lint and `next build` all clean.
+Last worked: 31 Aug 2026. Branch `feat/reel-build-boards` (off `feat/reels-engine`),
+573 tests green, typecheck and `next build` clean. Lint unchanged at its
+6 pre-existing errors.
 
 ## Run it
 
 ```bash
-npm run dev -- -p 3120          # studio (3100 belongs to IntaBot per _devkit/PORTMAP.md)
-docker compose -f agent/compose.yml up -d   # the local edit agent, port 3121
+npx next dev --webpack -p 3120   # --webpack is required, see below
 ```
 
-Needs: ComfyUI on 8188, Ollama on 11436 holding `lfm2.5`, `claude` on PATH.
+**`npm run dev` does not work on this machine.** An Application Control policy
+blocks `@next/swc-win32-x64-msvc`, Next falls back to WASM, and Turbopack refuses
+to start on WASM bindings. Use `--webpack`.
 
-## What was built this session
+Needs on PATH / up:
 
-**1. Preview playback fix** — `components/reel/Player.tsx`
-The playback effect listed `onTimeChange`/`onEnded` in its deps and the studio
-passes a fresh arrow each render, so every frame tore the clock down and
-re-seeded it. The voiceover ran at roughly a quarter speed. Callbacks now go
-through refs.
+| Service | Port | Notes |
+|---|---|---|
+| `webpage-mp4-plugin` | 8080 | page shots; queue caps at 32 waiting, one slot |
+| lipsync API | 8300 | talking-head shots; brings its own redis |
+| ComfyUI | 8188 | what the lipsync API is actually pointed at |
+| Ollama | 11436 | `lfm2.5`, for the edit agent only |
+| `claude` | — | research and planning both shell out to it |
 
-**2. Server-authoritative command layer** — `lib/reel/{commands,history,bus}.ts`
-Every edit is a named command. `edits.ts` stays pure and untouched, so preview
-and export cannot drift. Snapshot history with server-backed undo (50 deep);
-an in-process SSE bus pushes the reel to open tabs. Rejections name the valid
-ops / ids / schema, because an agent is a first-class caller.
+## What this branch adds
 
-Ordering that matters: the reel is saved *before* the log is appended, so a
-failed history write costs a log line rather than the edit — which is why
-`history.push` is handed the previous reel instead of reading disk.
+An approved script now becomes a finished reel without a human in the middle.
 
-**3. Local agent that proposes edits** — `agent/` (Python, LangGraph, port 3121)
-`settings.agentProvider` swaps between `local` (lfm2.5 via Ollama 11436) and
-`claude`. The agent proposes; it never writes. Apply is a separate call.
+```
+approved script
+   └─ planFromScript (paste mode; wordingDrift refuses a paraphrase)
+        └─ beats, each carrying shot.sourceLineId
+   └─ voice: synthesised locally, or the file you upload
+        └─ whisper alignment → word timings → one wav per beat
+   └─ routed per beat kind
+        screen        → webpage-mp4   (the page its line cites, sweeping the pull quote)
+        talking-head  → lipsync       (presenter image + that beat's audio)
+        title         → overlay, never queued
+   └─ clips land as assets → timeline → export
+```
 
-Model chosen by measurement, recorded in the spec: lfm2.5 at 5.2GB answers in
-1–2s and leaves the 4090 free for ComfyUI, where qwen3.6:27b leaves 842MB.
-gemma4:12b emitted a well-formed command to *lengthen* a clip the request
-called too long — which is why propose-then-approve exists.
+**The join that makes it worth doing:** a cited line already knows its source's
+canonical URL and pull quotes, and `webpage-mp4` wants exactly a url and a
+phrase. So a page shot is the evidence for that sentence, on screen, with the
+marker on the words that prove it.
 
-**4. Draggable timeline** — `components/reel/Timeline.tsx`
-Was sized by clips alone, so a 12.1s caption on a 7.86s lane sat at 154% and
-pushed the page 1175px sideways. Now spans clips, captions and voiceover, and
-scrolls in its own box. Lanes memoised so a playhead tick does not re-render
-twenty blocks. Clips reorder, edges trim, cue bars retime — one command per
-gesture, on pointer-up.
+Key modules: `lib/reel/build/{bridge,audio,links,run}.ts`,
+`lib/reel/providers/{webpage,lipsync}.ts`, `lib/reel/videoProvider.ts` (a registry
+keyed by renderer name), and three boards — Build, Pages, Presenter.
 
-**5. Research workflow** — `lib/reel/research/`, `components/reel/ResearchPanel.tsx`
-Topic → brief (5 questions) → hunt → critic → review gate → gather → script →
-approve gate. The Research tab in the studio. Runs through `runClaude`, the
-same headless CLI that writes the beats.
+Design: `docs/superpowers/specs/2026-08-31-reel-build-boards-design.md`.
+
+## Proven end to end
+
+`webgpu-ships-everywhere`: approved script → 14 beats → synthesised voice →
+alignment → 14 audio slices → 8 page shots + 6 lipsync shots → assembled →
+`export/reel.mp4`, 61.7s. GPU peaked at 23.7 of 24.5 GB.
+
+## What bit, and what now guards it
+
+Worth reading before changing any of this — each of these was silent.
+
+- **The palette instruction never reached the prompt.** An edit failed without
+  saying so, the planner kept being told b-roll was allowed, and beats came back
+  that nothing could render. `coerceKinds` is the guarantee; the prompt is the
+  request.
+- **The renderers were registered by importing a module the collecting route did
+  not import.** Every finished job stayed `running` for ever, silently.
+- **Replacing a voiceover left the old word timings**, so the build skipped
+  alignment and cut every beat on the previous take.
+- **`scriptText` read array order, not `line.order`** — when those disagree every
+  beat cites the wrong line.
+- **One unreachable plugin took down the whole refresh**, losing the finished
+  clips of the renderer that was up.
+- **`done` meant "nothing running"**, so a reel where every shot failed reported
+  success. There is a `stalled` stage now.
+- **Building several reels at once earns 429s.** `webpage-mp4` holds 32 waiting
+  and runs one at a time. Build one reel at a time.
 
 ## Where to pick up
 
-**The research flow has never been run end to end on a live topic.** Every
-stage is unit-tested and the routes are contract-tested, but a real run costs
-several minutes of Claude time and has not been done. That is the next thing
-to do, and the most likely place to find problems.
-
-Specifically unproven:
-- whether the critic reliably returns candidates matching `CandidateSchema`
-  (the prompt now embeds the generated JSON schema, but no live run has
-  confirmed the model honours it)
-- whether `gatherEvidence` copes with real pages at scale
-- whether a drafted script's citations land on ids that actually exist
-
-**Deliberately not built:** anything past an approved script. No clip building,
-no asset generation from research, no bridge from `script.json` into
-`planFromScript`. The user drives that.
+- **`the-s-in-sbom` fails `wordingDrift` repeatedly.** The planner keeps
+  paraphrasing that script. The guard is right; the retry is not persistent
+  enough. Worth deciding whether a third attempt should relax the split rather
+  than the wording.
+- **Beat counts vary wildly** — 6 approved lines became 14 beats on one reel and
+  43 on another. The pacing prompt is not holding.
+- **`useStillsForScreens` only runs when no page renderer is wired.** If you ever
+  want dropped screenshots to win over a page shot, that rule needs revisiting.
+- Nothing bridges an approved script into a *second* pass — re-bridging replans
+  from scratch and re-queues every shot.
 
 ## Sibling: reelscout
 
 `C:\Users\sathwik\projects\plugins\reelscout` — the standalone research plugin
-this was ported from. Still works, still on 3100, `master` clean, 166 tests.
-Its `/reel` command does the same workflow in Claude Code.
-
-The two are **copies, not a shared library**: reelscout is on zod 3, instastudio
-on zod 4, and `z.record()` changed signature between them. Fixes to the shared
-logic (`script.ts`, `gather.ts`, `scriptBoard.ts`) have to be applied twice.
-
-Left behind in reelscout: a hand-written demo `script.json` in
-`runs/ltx-video-open-weights-20260830-2140/`, created to screenshot the review
-screen. It is not a real run output. Delete it and set that brief's status back
-to `critiqued` when it stops being useful.
-
-## Specs
-
-- `docs/superpowers/specs/2026-08-30-reel-editor-command-layer-design.md`
-- `docs/superpowers/specs/2026-08-30-local-agent-editor-design.md`
-- `../../plugins/reelscout/docs/superpowers/specs/2026-08-30-reel-workflow-design.md`
+this was ported from, still on 3100. The two are copies, not a shared library:
+reelscout is on zod 3, instastudio on zod 4. Fixes to `script.ts`, `gather.ts`
+and `scriptBoard.ts` have to be applied twice.
