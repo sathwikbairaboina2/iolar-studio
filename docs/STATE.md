@@ -79,6 +79,29 @@ Worth reading before changing any of this — each of these was silent.
 - **Building several reels at once earns 429s.** `webpage-mp4` holds 32 waiting
   and runs one at a time. Build one reel at a time.
 
+## What the plugins themselves refused
+
+Found by running fifteen reels through them, not by reading the code.
+
+- **Wan S2V rejects certain audio lengths.** A 6.76s slice fails with
+  `einops: can't divide axis of length 14040 in chunks of 7`; the same beat at
+  6.40s renders. It is the 77-frame window maths in `plan_chunks`, and it hit two
+  reels out of fifteen. Trimming the slice is the workaround; the real fix is
+  either rejecting the duration up front or padding it to a window boundary.
+- **`webpage-mp4` answers 429 at 32 queued.** It runs one job at a time, so
+  building several reels at once just burns beats. Build one reel at a time.
+- **Export died with `spawn ENAMETOOLONG` past about forty beats.** Windows caps
+  a command line at 32k characters and the filter graph alone runs past it. The
+  graph now spills to `filter.txt` and is passed as `-/filter_complex` —
+  `-filter_complex_script` was removed in ffmpeg 7, and this box runs 9.0.1.
+
+## Fifteen reels, built unattended
+
+`data/reel/<slug>/export/reel.mp4`, 54–112s each, voice synthesised locally with
+kokoro and aligned by whisper. Research, script, beats, audio, both renderers,
+assemble and export ran without a human in the loop, driven through the same
+HTTP API the studio uses.
+
 ## Where to pick up
 
 - **`the-s-in-sbom` fails `wordingDrift` repeatedly.** The planner keeps
