@@ -11,6 +11,8 @@ import {
 import Player from '@/components/reel/Player';
 import AgentPanel from '@/components/reel/AgentPanel';
 import ResearchPanel from '@/components/reel/ResearchPanel';
+import BuildBoard from '@/components/reel/BuildBoard';
+import JobsBoard from '@/components/reel/JobsBoard';
 import { useReelEditor } from './useReelEditor';
 import Timeline from '@/components/reel/Timeline';
 import type { Pattern } from '@/lib/reel/pattern-schema';
@@ -218,6 +220,85 @@ export default function ReelStudio() {
               children: (
                 <Card size="small">
                   <ResearchPanel slug={slug} />
+                </Card>
+              ),
+            },
+            {
+              key: 'build',
+              label: 'Build',
+              children: (
+                <Card size="small">
+                  <BuildBoard slug={slug} beats={(reel?.beats ?? []) as never} />
+                </Card>
+              ),
+            },
+            {
+              key: 'pages',
+              label: 'Pages',
+              children: (
+                <Card size="small">
+                  <JobsBoard
+                    slug={slug}
+                    provider="webpage"
+                    title="Source pages"
+                    empty="No page shots queued yet — build the reel first."
+                    extraColumns={[
+                      {
+                        title: 'Visits',
+                        width: 260,
+                        render: (j) =>
+                          j.url ? (
+                            <a href={j.url} target="_blank" rel="noreferrer">
+                              {j.url.replace(/^https?:\/\//, '').slice(0, 46)}
+                            </a>
+                          ) : null,
+                      },
+                      {
+                        title: 'Sweeps',
+                        width: 220,
+                        render: (j) =>
+                          j.highlight ? (
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              {j.highlight.slice(0, 60)}
+                            </Typography.Text>
+                          ) : null,
+                      },
+                      {
+                        title: 'Review',
+                        width: 90,
+                        render: (j) =>
+                          j.review ? (
+                            <Tooltip title={j.review.notes}>
+                              <Tag color={j.review.ok ? 'green' : 'red'}>{j.review.ok ? 'passed' : 'failed'}</Tag>
+                            </Tooltip>
+                          ) : null,
+                      },
+                    ]}
+                  />
+                </Card>
+              ),
+            },
+            {
+              key: 'presenter',
+              label: 'Presenter',
+              children: (
+                <Card size="small">
+                  <JobsBoard
+                    slug={slug}
+                    provider="lipsync"
+                    title="Talking head"
+                    empty="No presenter shots queued yet — build the reel first."
+                    extraColumns={[
+                      {
+                        title: 'Speaks',
+                        render: (j) => (
+                          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                            {j.brief.slice(0, 70)}
+                          </Typography.Text>
+                        ),
+                      },
+                    ]}
+                  />
                 </Card>
               ),
             },

@@ -243,7 +243,7 @@ describe('shot refresh', () => {
     await saveReel('grok', {
       ...reel,
       assets: [
-        { id: 'a1', kind: 'video', path: '', origin: 'plugin', provider: 'webpage', status: 'running', jobId: 'p-1', provider: 'webpage', brief: '' },
+        { id: 'a1', kind: 'video', path: '', origin: 'plugin', provider: 'webpage', status: 'running', jobId: 'p-1', brief: '' },
       ],
       beats: reel.beats.map((b) => (b.id === 'b3' ? { ...b, shot: { ...b.shot, assetId: 'a1' , alsoAssetIds: [], sourceLineId: null } } : b)),
     });
@@ -271,7 +271,7 @@ describe('shot refresh', () => {
     const reel = await loadReel('grok');
     await saveReel('grok', {
       ...reel,
-      assets: [{ id: 'a1', kind: 'video', path: '', origin: 'plugin', provider: 'webpage', status: 'running', jobId: 'p-1', provider: 'webpage', brief: '' }],
+      assets: [{ id: 'a1', kind: 'video', path: '', origin: 'plugin', provider: 'webpage', status: 'running', jobId: 'p-1', brief: '' }],
     });
     mockProvider({ jobState: vi.fn().mockResolvedValue('failed') });
     const { refreshShots } = await import('@/lib/reel/shots');
