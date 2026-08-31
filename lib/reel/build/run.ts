@@ -43,7 +43,10 @@ export async function buildState(slug: string): Promise<BuildState> {
   const bridged = reel.beats.some((b) => b.shot.sourceLineId);
   const generatable = reel.beats.filter((b) => b.shot.kind === 'screen' || b.shot.kind === 'talking-head');
 
-  const assets = reel.assets.filter((a) => a.origin === 'plugin');
+  // Only what a beat currently points at. A retry leaves the previous attempt
+  // behind, and counting orphans would report failures the reel has moved past.
+  const live = new Set(reel.beats.map((b) => b.shot.assetId).filter(Boolean));
+  const assets = reel.assets.filter((a) => a.origin === 'plugin' && live.has(a.id));
   const counts = {
     queued: assets.filter((a) => a.status === 'queued' || a.status === 'running').length,
     ready: assets.filter((a) => a.status === 'ready').length,

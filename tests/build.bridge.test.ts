@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { attachSourceLines, scriptText, RESEARCHED_KINDS } from '@/lib/reel/build/bridge';
+import { attachSourceLines, coerceKinds, scriptText, RESEARCHED_KINDS } from '@/lib/reel/build/bridge';
 
 /**
  * The bridge's whole job is provenance: a beat has to know which line it came
@@ -64,5 +64,30 @@ describe('RESEARCHED_KINDS', () => {
   it('excludes broll, so every beat has a renderer', () => {
     expect(RESEARCHED_KINDS).not.toContain('broll');
     expect(RESEARCHED_KINDS).toEqual(['title', 'talking-head', 'screen']);
+  });
+});
+
+describe('coerceKinds', () => {
+  const cited = [{ id: 'l1', citations: ['c1'] }, { id: 'l2', citations: [] }];
+  const b = (id: string, kind: string, sourceLineId: string | null) => ({
+    id,
+    shot: { kind, brief: '', hero: false, alsoAssetIds: [], sourceLineId },
+  });
+
+  // The palette is in the prompt, and the first live run ignored it for three
+  // beats out of fourteen. A prompt is a request, not a guarantee.
+  it('turns a stray broll beat into a page visit when its line cites something', () => {
+    const [out] = coerceKinds(cited as never, [b('b1', 'broll', 'l1')] as never);
+    expect(out.shot.kind).toBe('screen');
+  });
+
+  it('turns a stray broll beat into the presenter when there is nothing to show', () => {
+    const [out] = coerceKinds(cited as never, [b('b1', 'broll', 'l2')] as never);
+    expect(out.shot.kind).toBe('talking-head');
+  });
+
+  it('leaves the kinds a renderer already owns alone', () => {
+    const out = coerceKinds(cited as never, [b('b1', 'screen', 'l1'), b('b2', 'title', null), b('b3', 'talking-head', 'l2')] as never);
+    expect(out.map((o) => o.shot.kind)).toEqual(['screen', 'title', 'talking-head']);
   });
 });

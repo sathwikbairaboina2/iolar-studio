@@ -90,11 +90,13 @@ describe('lipsync provider', () => {
     expect(await state('queued')).toBe('running');
   });
 
-  // Its health check covers the queue, the worker, ComfyUI and the models.
-  it('is available only when its own checks pass', async () => {
-    const ok = vi.fn(async () => reply({ ok: true })) as unknown as typeof fetch;
-    const bad = vi.fn(async () => reply({ ok: false })) as unknown as typeof fetch;
-    expect(await createLipsyncProvider({ fetchImpl: ok }).available()).toBe(true);
-    expect(await createLipsyncProvider({ fetchImpl: bad }).available()).toBe(false);
+  // Its health check also reports on ComfyUI, which reports unhealthy while it
+  // is busy rendering. Gating on that stranded five beats on a human because the
+  // first one was still going, so answering at all is the bar.
+  it('stays available while it is busy, and only goes away when it stops answering', async () => {
+    const busy = vi.fn(async () => reply({ ok: false, checks: { comfyui: { ok: false } } })) as unknown as typeof fetch;
+    const down = vi.fn(async () => { throw new Error('refused'); }) as unknown as typeof fetch;
+    expect(await createLipsyncProvider({ fetchImpl: busy }).available()).toBe(true);
+    expect(await createLipsyncProvider({ fetchImpl: down }).available()).toBe(false);
   });
 });

@@ -71,6 +71,27 @@ export function attachSourceLines<T extends { id: string; shot: { sourceLineId: 
 }
 
 /**
+ * Forces every beat onto a kind something can actually render.
+ *
+ * The palette is in the prompt, and on the first live run the planner used
+ * `broll` anyway for three beats out of fourteen. A prompt is a request; this is
+ * the guarantee. A beat whose line cites something becomes a page visit, because
+ * showing that source is the strongest thing the reel can do with it; a beat with
+ * no citation becomes the presenter, who can say anything.
+ */
+export function coerceKinds<T extends { shot: { kind: string; sourceLineId: string | null } & Record<string, unknown> }>(
+  lines: Pick<ScriptLine, 'id' | 'citations'>[],
+  beats: T[]
+): T[] {
+  const cited = new Set(lines.filter((l) => l.citations.length > 0).map((l) => l.id));
+  return beats.map((beat) => {
+    if (RESEARCHED_KINDS.includes(beat.shot.kind as ShotKind)) return beat;
+    const kind = beat.shot.sourceLineId && cited.has(beat.shot.sourceLineId) ? 'screen' : 'talking-head';
+    return { ...beat, shot: { ...beat.shot, kind } };
+  });
+}
+
+/**
  * Plans the reel from the approved script and records where each beat came from.
  *
  * Throws rather than half-writing: `planFromScript` already refuses a plan whose
@@ -84,7 +105,7 @@ export async function buildBeatsFromScript(slug: string, script: Pick<Script, 'l
   await planFromScript(slug, source, { kinds: RESEARCHED_KINDS });
 
   const reel = await loadReel(slug);
-  const beats = attachSourceLines(script.lines, reel.beats);
+  const beats = coerceKinds(script.lines, attachSourceLines(script.lines, reel.beats));
   await saveReel(slug, { ...reel, beats });
   return loadReel(slug);
 }

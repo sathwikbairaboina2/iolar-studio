@@ -128,17 +128,19 @@ type BuildContext = {
   script: Pick<Script, 'lines'> | null;
   candidates: Candidate[];
   presenterImage: string;
+  /** Asked once per run: a renderer busy with beat one is not missing for beat six. */
+  up: Map<string, boolean>;
 };
 
 async function buildContext(slug: string): Promise<BuildContext> {
   const presenterImage = getSettings().presenterImage;
   try {
     const [script, pack] = await Promise.all([research.readScript(slug), research.readCandidates(slug)]);
-    return { script, candidates: pack.candidates, presenterImage };
+    return { script, candidates: pack.candidates, presenterImage, up: new Map() };
   } catch {
     // A reel planned from a topic has no research behind it. Its talking-head
     // beats still render; its screen beats have no citation to visit.
-    return { script: null, candidates: [], presenterImage };
+    return { script: null, candidates: [], presenterImage, up: new Map() };
   }
 }
 
@@ -161,7 +163,8 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: Buil
 
   try {
     const provider = providerName ? videoProvider(providerName) : null;
-    if (!provider || !(await provider.available())) {
+    if (provider && !ctx.up.has(provider.name)) ctx.up.set(provider.name, await provider.available());
+    if (!provider || !ctx.up.get(provider.name)) {
       await stall(providerName ? `${providerName}: ${NO_PROVIDER}` : NO_PROVIDER);
       return;
     }

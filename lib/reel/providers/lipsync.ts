@@ -37,12 +37,12 @@ export function createLipsyncProvider(opts: LipsyncOpts = {}): VideoProvider {
 
     async available() {
       try {
+        // Answering at all is the bar. Its health check also reports on ComfyUI,
+        // and ComfyUI reports unhealthy while it is busy rendering — so gating on
+        // the sub-checks marked five beats "no provider wired" purely because the
+        // first one was still going. A queue exists for exactly this.
         const r = await http(`${base}/healthz`, { cache: 'no-store' });
-        if (!r.ok) return false;
-        const body = (await r.json()) as { ok?: boolean; checks?: Record<string, { ok?: boolean }> };
-        // Its health check covers the things that actually stop a render: the
-        // queue, the worker, ComfyUI itself and whether the models are present.
-        return Boolean(body.ok);
+        return r.ok;
       } catch {
         return false;
       }
