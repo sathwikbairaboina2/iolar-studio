@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as store from '@/lib/reel/research/store';
+import { withStableIds } from '@/lib/reel/research/candidate';
 import { critique, draftScript, huntSources } from '@/lib/reel/research/agents';
 import { gatherEvidence } from '@/lib/reel/research/gatherRun';
 import { parseBrief } from '@/lib/reel/research/brief';
@@ -44,6 +45,8 @@ export async function POST(req: Request, ctx: Ctx) {
     if (status === 'briefed') {
       const raw = await huntSources(brief);
       const judged = await critique(brief, raw);
+      // Ids come from the URL, not from the model that invented the rest.
+      const candidates = withStableIds(judged.candidates);
       await store.writeCandidates(slug, {
         runId: slug,
         generatedAt: new Date().toISOString(),
@@ -51,14 +54,14 @@ export async function POST(req: Request, ctx: Ctx) {
         stats: {
           perClass: {},
           totalFound: raw.length,
-          totalKept: judged.candidates.filter((c) => c.verdict === 'keep').length,
-          dupesCollapsed: judged.candidates.filter((c) => c.dupeOf).length,
+          totalKept: candidates.filter((c) => c.verdict === 'keep').length,
+          dupesCollapsed: candidates.filter((c) => c.dupeOf).length,
         },
         // Only the candidates are the model's to give. The critic's prompt used
         // to ask it for stats too, and spreading them here overwrote the counts
         // computed above with whatever shape it invented — a perClass of plain
         // numbers, which failed validation after eleven minutes of searching.
-        candidates: judged.candidates,
+        candidates,
       } as never);
       await store.setResearchStatus(slug, 'critiqued');
       return NextResponse.json({ status: 'critiqued', waitingOn: 'review', done: false });

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { SourceClassSchema } from './brief';
+import { canonicalizeUrl, candidateId } from './url';
 
 export const SCORE_WEIGHTS = {
   relevance: 0.3,
@@ -118,4 +119,44 @@ export function parseCandidates(raw: unknown): CandidatesFile {
     throw new Error(`candidates.json: ${issue.path.join(".") || "root"} — ${issue.message}`);
   }
   return parsed.data;
+}
+
+/**
+ * Gives every candidate an id derived from its canonical URL.
+ *
+ * The critic is a language model and its ids were its own invention: asked for
+ * twelve hex characters it mostly complied, and the one time it did not the
+ * whole pack failed validation at the write — thirteen minutes of searching
+ * gone for a field the server can compute exactly. `candidateId` already
+ * existed for this and nothing called it.
+ *
+ * `dupeOf` points at ids the model assigned, so it is remapped through the same
+ * table rather than left dangling. Two rows on one canonical URL are the same
+ * source, but they still get distinct ids: an id shared by two rows makes every
+ * pointer to it ambiguous.
+ */
+export function withStableIds(candidates: Candidate[]): Candidate[] {
+  const remap = new Map<string, string>();
+  const taken = new Set<string>();
+
+  const withIds = candidates.map((c) => {
+    let base: string;
+    try {
+      base = candidateId(canonicalizeUrl(c.canonicalUrl || c.url));
+    } catch {
+      // An unparseable URL is still a source worth keeping; hash what it says.
+      base = candidateId(String(c.canonicalUrl || c.url));
+    }
+
+    let id = base;
+    for (let n = 1; taken.has(id); n += 1) id = candidateId(`${base}#${n}`);
+    taken.add(id);
+    if (c.id) remap.set(c.id, id);
+    return { ...c, id };
+  });
+
+  return withIds.map((c) => ({
+    ...c,
+    dupeOf: c.dupeOf ? remap.get(c.dupeOf) ?? null : null,
+  }));
 }

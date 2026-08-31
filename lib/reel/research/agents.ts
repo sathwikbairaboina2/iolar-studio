@@ -122,8 +122,9 @@ Judge these candidates. Do not search for more — your job is to sort what was 
 
 ${JSON.stringify(raw, null, 1)}
 
-For each: give it a stable 12-hex-character id, score it, and set a verdict of keep, maybe or
-reject with a reason. Collapse duplicates by setting dupeOf to the id you kept. Reject anything
+For each: score it, and set a verdict of keep, maybe or reject with a reason. Collapse
+duplicates by setting dupeOf to the id of the one you kept. Ids are rewritten from the URL
+after you reply, so any stable placeholder will do — dupeOf is remapped with them. Reject anything
 that is SEO filler, is outside the recency window without being foundational, cannot be
 verified, or leans on the framing the brief said to avoid.
 
