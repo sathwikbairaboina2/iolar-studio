@@ -96,8 +96,17 @@ export default function Player({
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !frame.clip) return;
-    const want = frame.clip.srcIn + (currentTime - frame.clip.start);
-    if (Math.abs(video.currentTime - want) > 0.15) video.currentTime = Math.max(0, want);
+    const raw = Math.max(0, frame.clip.srcIn + (currentTime - frame.clip.start));
+    // The export feeds every video input through -stream_loop -1, so a clip that runs past
+    // the end of its footage wraps back to the top there. Wrap here too: clamping instead
+    // parks the element on its last frame, and — since the drift never closes — asks for a
+    // fresh seek on every animation frame, which freezes the picture and pins a core.
+    const src = video.duration;
+    const looped = Number.isFinite(src) && src > 0;
+    const want = looped ? raw % src : raw;
+    const gap = Math.abs(video.currentTime - want);
+    const drift = looped ? Math.min(gap, src - gap) : gap;
+    if (drift > 0.15) video.currentTime = want;
     if (playing && video.paused) video.play().catch(() => {});
     if (!playing && !video.paused) video.pause();
   }, [currentTime, frame.clip, playing]);
@@ -105,6 +114,23 @@ export default function Player({
   const transform = frame.clip ? motionCss(frame.clip.motion, frame.progress) : undefined;
   const transformOrigin = frame.clip ? motionOriginCss(frame.clip.motion) : undefined;
   const isStill = !!asset && asset.kind === 'image';
+
+  // The next shot's file, mounted off-screen and keyed by its asset so the cut promotes the
+  // very element that has been loading. Mounting a fresh <video> at the cut instead cost a
+  // tenth to a quarter of a second of black on every one of them.
+  const clips = reel.timeline.clips;
+  const clipIndex = frame.clip ? clips.indexOf(frame.clip) : -1;
+  const nextClip =
+    clipIndex >= 0 ? clips.slice(clipIndex + 1).find((c) => c.assetId !== frame.clip!.assetId) : undefined;
+  const nextAsset = nextClip ? reel.assets.find((a) => a.id === nextClip.assetId) : undefined;
+  const preloadId =
+    nextAsset && nextAsset.status === 'ready' && nextAsset.path && nextAsset.kind !== 'image'
+      ? nextAsset.id
+      : undefined;
+
+  const lanes: { assetId: string; current: boolean }[] = [];
+  if (frame.clip && ready && !isStill) lanes.push({ assetId: frame.clip.assetId, current: true });
+  if (preloadId) lanes.push({ assetId: preloadId, current: false });
 
   return (
     <div
@@ -127,27 +153,32 @@ export default function Player({
         ) as React.CSSProperties),
       }}
     >
-      {frame.clip && ready && !isStill && (
+      {lanes.map((lane) => (
         <video
-          key={frame.clip.assetId}
-          ref={videoRef}
-          data-testid="reel-video"
-          data-asset={frame.clip.assetId}
-          src={assetSrc(slug, frame.clip.assetId)}
+          key={lane.assetId}
+          ref={lane.current ? videoRef : undefined}
+          data-testid={lane.current ? 'reel-video' : 'reel-preload'}
+          data-asset={lane.assetId}
+          src={assetSrc(slug, lane.assetId)}
           muted
           playsInline
           preload="auto"
+          // Footage shorter than its clip loops in the export; let the element do the same
+          // rather than firing ended and sitting on a frozen last frame.
+          loop
           style={{
             position: 'absolute',
             inset: 0,
             width: '100%',
             height: '100%',
-            objectFit: frame.clip.fit === 'contain' ? 'contain' : 'cover',
-            transform,
-            transformOrigin,
+            objectFit: frame.clip?.fit === 'contain' ? 'contain' : 'cover',
+            transform: lane.current ? transform : undefined,
+            transformOrigin: lane.current ? transformOrigin : undefined,
+            opacity: lane.current ? 1 : 0,
+            pointerEvents: 'none',
           }}
         />
-      )}
+      ))}
 
       {frame.clip && ready && isStill && (
         // eslint-disable-next-line @next/next/no-img-element

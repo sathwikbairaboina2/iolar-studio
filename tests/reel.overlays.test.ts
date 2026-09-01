@@ -50,7 +50,7 @@ describe('overlay markup', () => {
     const { loadPattern } = await import('@/lib/reel/patterns');
     const html = overlayHtml(await loadPattern('armand'), 'file:///x/caption.css', '<i></i>');
     expect(html).toContain('href="file:///x/caption.css"');
-    expect(html).toContain('--cap-y: 73%');
+    expect(html).toContain('--cap-y: 84%');
   });
 });
 
@@ -73,7 +73,7 @@ describe('overlay rendering', () => {
     const { data, info } = await sharp(map.get('k1')!).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const alphaAt = (x: number, y: number) => data[(y * info.width + x) * info.channels + 3];
     expect(alphaAt(540, 100)).toBe(0);
-    expect(alphaAt(540, Math.round(1920 * 0.73))).toBeGreaterThan(0);
+    expect(alphaAt(540, Math.round(1920 * 0.84))).toBeGreaterThan(0);
   }, 120_000);
 
   it('reuses one file for repeated caption text', async () => {

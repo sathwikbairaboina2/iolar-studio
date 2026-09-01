@@ -162,7 +162,79 @@ describe('reel player', () => {
       <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     const stage = screen.getByTestId('reel-stage');
-    expect(stage.style.getPropertyValue('--cap-y')).toBe('73%');
+    expect(stage.style.getPropertyValue('--cap-y')).toBe('84%');
     expect(stage.style.getPropertyValue('--cap-size')).toBe('1.9cqh');
+  });
+  it('wraps a clip that outruns its source, the way the export loops the footage', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { reel, pattern } = await build({
+      timeline: { clips: [clip('c1', 'a1', 0, 4, { srcIn: 5 })], captions: [], overlays: [] },
+    });
+    const { rerender } = render(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={0} playing={false} onTimeChange={() => {}} />
+    );
+    const video = screen.getByTestId('reel-video') as HTMLVideoElement;
+    Object.defineProperty(video, 'duration', { configurable: true, value: 4 });
+    rerender(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+    );
+    // ffmpeg reads these inputs with -stream_loop -1, so second 6 of a 4s source is second 2.
+    expect(video.currentTime).toBeCloseTo(2, 3);
+  });
+
+  it('stops re-seeking a wrapped clip once it is in position', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { reel, pattern } = await build({
+      timeline: { clips: [clip('c1', 'a1', 0, 4, { srcIn: 5 })], captions: [], overlays: [] },
+    });
+    const { rerender } = render(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={0} playing={false} onTimeChange={() => {}} />
+    );
+    const video = screen.getByTestId('reel-video') as HTMLVideoElement;
+    Object.defineProperty(video, 'duration', { configurable: true, value: 4 });
+    // A real element clamps a seek past the end, which is what turned one bad seek into one
+    // per animation frame: the drift never closed.
+    let ct = 0;
+    const seeks: number[] = [];
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => ct,
+      set: (v: number) => {
+        ct = Math.min(v, 4);
+        seeks.push(v);
+      },
+    });
+    for (const t of [1, 1.1, 1.2, 1.3]) {
+      rerender(
+        <Player reel={reel} pattern={pattern} slug="grok" currentTime={t} playing={false} onTimeChange={() => {}} />
+      );
+      ct = Math.min(ct + 0.1, 4);
+    }
+    expect(seeks.length).toBe(1);
+  });
+
+  it('holds the next clip loaded off-screen so the cut has something to show', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { reel, pattern } = await build();
+    render(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+    );
+    const pre = screen.getByTestId('reel-preload');
+    expect(pre.getAttribute('data-asset')).toBe('a2');
+    expect(pre.getAttribute('src')).toContain('id=a2');
+  });
+
+  it('promotes that same element at the cut instead of mounting a fresh one', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { reel, pattern } = await build();
+    const { rerender } = render(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+    );
+    const preloaded = screen.getByTestId('reel-preload');
+    rerender(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={5} playing={false} onTimeChange={() => {}} />
+    );
+    // A remount means an empty decoder and a black frame for as long as the file takes to load.
+    expect(screen.getByTestId('reel-video')).toBe(preloaded);
   });
 });

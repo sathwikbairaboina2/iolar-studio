@@ -232,7 +232,7 @@ describe('captions read the script, not the transcript', () => {
     expect(scriptAlignedWords(reel).map((w) => w.start)).toEqual([0, 0.3, 0.6]);
   });
 
-  it('falls back to the transcript for a beat whose word counts disagree', async () => {
+  it('still reads the script when the counts disagree', async () => {
     const { scriptAlignedWords } = await import('@/lib/reel/assemble');
     const { validateReel } = await import('@/lib/reel/schema');
     const reel = validateReel({
@@ -249,8 +249,89 @@ describe('captions read the script, not the transcript', () => {
         { w: 'four', start: 0.6, end: 0.8 },
       ] },
     });
-    // b1 matches 3-for-3 and is corrected; b2 expected two words but only one was heard
+    // The voiceover was synthesised from this script, so every word in it was spoken —
+    // one the recogniser did not return is a miss on its side, not a word to drop.
+    expect(scriptAlignedWords(reel).map((w) => w.w)).toEqual(['one', 'two', 'three', 'four', 'five']);
+  });
+
+  it('drops a word the recogniser invented mid-script rather than captioning it', async () => {
+    const { scriptAlignedWords } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const reel = validateReel({
+      pattern: 'test',
+      title: 'T',
+      beats: [{ id: 'b1', role: 'hook', text: 'one two three', shot: { kind: 'broll', brief: '' } }],
+      vo: { words: [
+        { w: 'one', start: 0, end: 0.2 },
+        { w: 'uh', start: 0.2, end: 0.3 },
+        { w: 'two', start: 0.3, end: 0.5 },
+        { w: 'three', start: 0.5, end: 0.7 },
+      ] },
+    });
+    expect(scriptAlignedWords(reel).map((w) => w.w)).toEqual(['one', 'two', 'three']);
+  });
+
+  it('keeps a mis-count inside one beat from shifting every beat after it', async () => {
+    const { beatSpans, scriptAlignedWords } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const reel = validateReel({
+      pattern: 'test',
+      title: 'T',
+      beats: [
+        { id: 'b1', role: 'hook', text: 'twenty five years', shot: { kind: 'broll', brief: '' } },
+        { id: 'b2', role: 'body', text: 'after end of mission', shot: { kind: 'broll', brief: '' } },
+      ],
+      // the recogniser heard "25" as one word, so a naive walk hands b2 the wrong slice
+      vo: { words: [
+        { w: '25', start: 0, end: 0.4 },
+        { w: 'years', start: 0.4, end: 0.8 },
+        { w: 'after', start: 1, end: 1.2 },
+        { w: 'end', start: 1.2, end: 1.4 },
+        { w: 'of', start: 1.4, end: 1.5 },
+        { w: 'mission', start: 1.5, end: 2 },
+      ] },
+    });
+    const spans = beatSpans(reel);
+    expect(spans.get('b2')!.start).toBeCloseTo(1, 3);
+    expect(spans.get('b2')!.end).toBeCloseTo(2, 3);
+    expect(scriptAlignedWords(reel).map((w) => w.w).join(' ')).toBe('twenty five years after end of mission');
+  });
+
+  it('gives no span to a beat the recogniser returned nothing for', async () => {
+    const { beatSpans, scriptAlignedWords } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const reel = validateReel({
+      pattern: 'test',
+      title: 'T',
+      beats: [
+        { id: 'b1', role: 'hook', text: 'one two', shot: { kind: 'broll', brief: '' } },
+        { id: 'b2', role: 'close', text: 'three four', shot: { kind: 'broll', brief: '' } },
+      ],
+      vo: { words: [{ w: 'one', start: 0, end: 0.4 }, { w: 'two', start: 0.4, end: 0.9 }] },
+    });
+    // Captions still read the whole script; the build has nothing to cut b2 against.
     expect(scriptAlignedWords(reel).map((w) => w.w)).toEqual(['one', 'two', 'three', 'four']);
+    expect(beatSpans(reel).has('b2')).toBe(false);
+  });
+
+  it('gives every word a span that starts no earlier than the one before it', async () => {
+    const { scriptAlignedWords } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
+    const reel = validateReel({
+      pattern: 'test',
+      title: 'T',
+      beats: [{ id: 'b1', role: 'hook', text: 'rule 47 CFR 25.283(e) applies', shot: { kind: 'broll', brief: '' } }],
+      vo: { words: [
+        { w: 'rule', start: 0, end: 0.3 },
+        { w: 'applies', start: 1.4, end: 1.8 },
+      ] },
+    });
+    const words = scriptAlignedWords(reel);
+    expect(words.map((w) => w.w)).toEqual(['rule', '47', 'CFR', '25.283(e)', 'applies']);
+    for (let i = 1; i < words.length; i++) {
+      expect(words[i].start).toBeGreaterThanOrEqual(words[i - 1].start);
+      expect(words[i].end).toBeGreaterThan(words[i].start);
+    }
   });
 
   it('captions the whole voiceover even when the recogniser runs past the script', async () => {
@@ -366,5 +447,44 @@ describe('a line can cut between several shots', () => {
       ],
     });
     for (const c of assemble({ reel, pattern: PATTERN }).clips) expect(c.assetId).toBe('a1');
+  });
+});
+
+describe('caption cues break where a reader would', () => {
+  const at = (list: [string, number, number][]) => list.map(([w, start, end]) => ({ w, start, end }));
+
+  it('ends a cue at a full stop instead of carrying the next sentence into it', async () => {
+    const { groupCaptions } = await import('@/lib/reel/assemble');
+    const words = at([
+      ['was', 0, 0.3], ['a', 0.3, 0.4], ['recommended', 0.4, 0.9], ['practice.', 0.9, 1.4],
+      ['A', 1.4, 1.6], ['suggestion.', 1.6, 2.1],
+    ]);
+    for (const cue of groupCaptions(words, PATTERN)) {
+      const stops = cue.text.match(/[.!?](?=\s)/g) ?? [];
+      expect(stops).toHaveLength(0);
+    }
+  });
+
+  it('does not strand a lone word in its own cue when it fits with the one before', async () => {
+    const { groupCaptions } = await import('@/lib/reel/assemble');
+    const words = at([['for', 0, 0.2], ['ignoring', 0.2, 0.6], ['it', 0.6, 0.8]]);
+    const cues = groupCaptions(words, PATTERN);
+    expect(cues.some((c) => c.text.split(' ').length === 1)).toBe(false);
+  });
+
+  it('pulls a stranded word forward when the cue before it is already full', async () => {
+    const { groupCaptions } = await import('@/lib/reel/assemble');
+    // "130" is said slowly, so the cue clock alone would leave "For" and "130" alone in turn
+    const words = at([['For', 0, 0.4], ['130', 0.4, 1.56], ['years', 1.56, 1.9], ['the', 1.9, 2.1]]);
+    const cues = groupCaptions(words, PATTERN);
+    expect(cues.some((c) => c.text.split(' ').length === 1)).toBe(false);
+  });
+
+  it('still honours the char cap when it merges a stranded word back', async () => {
+    const { groupCaptions } = await import('@/lib/reel/assemble');
+    const words = at([['transmissible', 0, 0.6], ['spongiform', 0.6, 1.2], ['x', 1.2, 1.4]]);
+    for (const cue of groupCaptions(words, PATTERN)) {
+      expect(cue.text.length).toBeLessThanOrEqual(PATTERN.caption.maxChars);
+    }
   });
 });

@@ -2,22 +2,28 @@ import { mulberry32 } from '../rng';
 import { Pattern } from './patterns';
 import { CaptionCue, Clip, Overlay, Reel, Timeline, Word } from './schema';
 import { sortTimeline } from './timeline';
+import { alignScriptWords } from './script-align';
 
 export type AssembleInput = { reel: Reel; pattern: Pattern };
 
 const r3 = (n: number) => Math.round(n * 1e3) / 1e3;
 
-/** Words belong to beats in script order: walk both lists together. */
+/**
+ * A beat runs from its first aligned word to its last.
+ *
+ * A beat the recogniser returned nothing for gets no span at all: its words carry borrowed
+ * timings, good enough to caption but not to cut audio or footage against — a slice taken
+ * there is silence with a mouth moving over it.
+ */
 export function beatSpans(reel: Reel): Map<string, { start: number; end: number }> {
   const spans = new Map<string, { start: number; end: number }>();
-  let i = 0;
-  for (const beat of reel.beats) {
-    const count = beat.text.trim().split(/\s+/).filter(Boolean).length;
-    const slice = reel.vo.words.slice(i, i + count);
-    i += count;
-    if (!slice.length) continue;
-    spans.set(beat.id, { start: slice[0].start, end: slice.at(-1)!.end });
+  const anyHeard = new Set<string>();
+  for (const w of alignScriptWords(reel.beats, reel.vo.words)) {
+    if (w.heard) anyHeard.add(w.beatId);
+    const span = spans.get(w.beatId);
+    spans.set(w.beatId, span ? { start: span.start, end: Math.max(span.end, w.end) } : { start: w.start, end: w.end });
   }
+  for (const id of spans.keys()) if (!anyHeard.has(id)) spans.delete(id);
   return spans;
 }
 
@@ -25,51 +31,25 @@ export function beatSpans(reel: Reel): Map<string, { start: number; end: number 
  *  Whisper does emit words whose start equals their end, usually at the very end of a take. */
 export const MIN_CUE_SEC = 0.12;
 
-/**
- * The script's own words, carrying the timings the recogniser found.
- *
- * Captions must read like the script, not like a transcript: the voiceover was synthesised
- * FROM the script, so whisper's text is only ever a lossy round trip of it — it heard
- * "Rock Bot" for "Grok Bot". Timings are all we want from it. Word counts are compared per
- * beat, and a beat whose counts disagree keeps the recogniser's text rather than risk
- * pairing the wrong word with the wrong moment.
- */
+/** The script's own words, carrying the timings the recogniser found. See `script-align.ts`. */
 export function scriptAlignedWords(reel: Reel): Word[] {
-  const out: Word[] = [];
-  let i = 0;
-  for (const beat of reel.beats) {
-    const tokens = beat.text.trim().split(/\s+/).filter(Boolean);
-    const heard = reel.vo.words.slice(i, i + tokens.length);
-    i += tokens.length;
-    if (!heard.length) continue;
-    out.push(
-      ...(heard.length === tokens.length
-        ? heard.map((w, n) => ({ ...w, w: tokens[n] }))
-        : heard)
-    );
-  }
-  // Anything the recogniser found past the end of the script still needs to be captioned.
-  return [...out, ...reel.vo.words.slice(i)];
+  return alignScriptWords(reel.beats, reel.vo.words);
 }
+
+const ORPHAN_SPAN_RELAX = 1.6;
+
+/** A cue that ends here is a cue a reader would end: the sentence is over. */
+const ENDS_SENTENCE = /[.!?…]["'”’)\]]?$/;
 
 export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
   const [, maxW] = pattern.caption.wordsPerBeat;
   const [, maxSec] = pattern.pacing.captionBeatSec;
-  const out: CaptionCue[] = [];
+  const out: { words: Word[] }[] = [];
   let group: Word[] = [];
 
   const flush = () => {
     if (!group.length) return;
-    const start = group[0].start;
-    const end = Math.max(group.at(-1)!.end, start + MIN_CUE_SEC);
-    out.push({
-      id: `k${out.length + 1}`,
-      text: group.map((w) => w.w).join(' '),
-      start: r3(start),
-      end: r3(end),
-      hidden: false,
-      locked: false,
-    });
+    out.push({ words: group });
     group = [];
   };
 
@@ -81,12 +61,68 @@ export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
     if (group.length && (text.length > pattern.caption.maxChars || span > maxSec)) {
       flush();
       group = [w];
-      continue;
+    } else {
+      group = candidate;
     }
-    group = candidate;
-    if (group.length >= maxW) flush();
+    // Reading "practice. A" as one cue and "suggestion. Nobody" as the next puts the break
+    // in the middle of a thought every time. Break where the sentence does instead.
+    if (ENDS_SENTENCE.test(w.w) || group.length >= maxW) flush();
   }
   flush();
+
+  return rebalance(out, pattern).map((g, i) => {
+    const start = g.words[0].start;
+    const end = Math.max(g.words.at(-1)!.end, start + MIN_CUE_SEC);
+    return {
+      id: `k${i + 1}`,
+      text: g.words.map((w) => w.w).join(' '),
+      start: r3(start),
+      end: r3(end),
+      hidden: false,
+      locked: false,
+    };
+  });
+}
+
+/**
+ * Pulls a stranded word back into the cue before it.
+ *
+ * A char cap that trips one word early leaves that word alone on screen for a fifth of a
+ * second — the flicker that reads as the captions breaking up. Merging is refused when it
+ * would burst the pill, outrun the cue clock, or paste across a full stop.
+ */
+function rebalance(groups: { words: Word[] }[], pattern: Pattern): { words: Word[] }[] {
+  const [, maxW] = pattern.caption.wordsPerBeat;
+  const [, maxSec] = pattern.pacing.captionBeatSec;
+  const chars = (ws: Word[]) => ws.map((w) => w.w).join(' ').length;
+  const span = (ws: Word[]) => ws.at(-1)!.end - ws[0].start;
+  const joinable = (ws: Word[], limit: number) =>
+    ws.length <= maxW && chars(ws) <= pattern.caption.maxChars && span(ws) <= limit;
+
+  const out: { words: Word[] }[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const prev = out.at(-1);
+    const alone = g.words.length === 1;
+    if (alone && prev && !ENDS_SENTENCE.test(prev.words.at(-1)!.w) && joinable([...prev.words, ...g.words], maxSec)) {
+      out[out.length - 1] = { words: [...prev.words, ...g.words] };
+      continue;
+    }
+    // Nowhere to put it behind: take the next cue's words instead. A word alone on screen for
+    // a fifth of a second reads as a flicker, which is worse than a cue that runs slightly long.
+    const next = groups[i + 1];
+    if (
+      alone &&
+      next &&
+      !ENDS_SENTENCE.test(g.words[0].w) &&
+      joinable([...g.words, ...next.words], maxSec * ORPHAN_SPAN_RELAX)
+    ) {
+      out.push({ words: [...g.words, ...next.words] });
+      i++;
+      continue;
+    }
+    out.push(g);
+  }
   return out;
 }
 

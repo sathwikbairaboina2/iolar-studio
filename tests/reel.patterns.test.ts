@@ -4,7 +4,7 @@ describe('patterns', () => {
   it('loads the armand preset with its caption geometry', async () => {
     const { loadPattern } = await import('@/lib/reel/patterns');
     const p = await loadPattern('armand');
-    expect(p.caption.yPct).toBe(73);
+    expect(p.caption.yPct).toBe(84);
     expect(p.caption.wordsPerBeat).toEqual([1, 3]);
     expect(p.pacing.shotSec[0]).toBeLessThan(p.pacing.shotSec[1]);
     expect(p.transitions.length).toBeGreaterThan(0);
@@ -19,7 +19,7 @@ describe('patterns', () => {
   it('emits css custom properties the stylesheet consumes', async () => {
     const { loadPattern, patternCssVars } = await import('@/lib/reel/patterns');
     const vars = patternCssVars(await loadPattern('armand'));
-    expect(vars).toContain('--cap-y: 73%');
+    expect(vars).toContain('--cap-y: 84%');
     expect(vars).toContain('--cap-size: 1.9cqh');
     expect(vars).toContain('--cap-pill: rgba(0, 0, 0, 0.85)');
     expect(vars).toContain('--hook-size: 6cqh');
