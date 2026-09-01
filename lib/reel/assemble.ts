@@ -103,7 +103,11 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     if (whole?.takeStart !== undefined && whole.durationSec) {
       if (laid.has(assetId)) continue;
       laid.add(assetId);
-      const start = r3(Math.max(cursor, whole.takeStart));
+      // On its own clock, never the cursor's: a recording is cut for a moment in the
+      // voiceover, and a neighbour that ran long — padded to the renderer's grid, or
+      // breathing out through its tail — must not shove this one off its words. Whatever
+      // overlap that leaves is the neighbour's silent surplus, trimmed below.
+      const start = r3(whole.takeStart);
       clips.push({
         id: `c${clips.length + 1}`,
         assetId,
@@ -116,7 +120,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
         transition: 'cut',
         locked: false,
       });
-      cursor = r3(start + whole.durationSec);
+      cursor = r3(Math.max(cursor, start + whole.durationSec));
       continue;
     }
     // the footage this line can cut between, primary first
@@ -189,8 +193,17 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
    */
   const inOrder = [...clips].sort((a, b) => a.start - b.start);
   for (let i = 0; i < inOrder.length; i++) {
+    const c = inOrder[i];
     const next = inOrder[i + 1];
-    inOrder[i].end = r3(next ? Math.max(inOrder[i].end, next.start) : Math.max(inOrder[i].end, reel.vo.durationSec));
+    if (!next) {
+      c.end = r3(Math.max(c.end, reel.vo.durationSec));
+      continue;
+    }
+    // Both directions meet at the neighbour's start: a short clip is held to it, and one
+    // that runs past it gives the surplus up — the overrun is padding, silence and a held
+    // frame, and shoving the neighbour late is what put lips out of step. A clip a person
+    // locked keeps whatever they gave it.
+    c.end = r3(c.locked ? Math.max(c.end, next.start) : Math.max(next.start, c.start + 0.033));
   }
 
   // No burned-in subtitles. The words are spoken; a second copy of them across the picture

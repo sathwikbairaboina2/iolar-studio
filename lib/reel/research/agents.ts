@@ -186,6 +186,19 @@ ${sources}
 - Honour the avoid list. Work the must-include names in naturally or leave them out.
 - A reel is roughly 120-160 spoken words. Earn the first two seconds; land the angle at the end.
 
+# Craft — what separates this from narrated slides
+
+- The hook is a specific, checkable surprise: a number, a contradiction, a deadline, a cost.
+  Never "in this video", never a question the viewer can answer with "no".
+- Open one loop in the hook or first body line — something named but not yet explained — and
+  pay it off before the close. The payoff line should be the strongest fact you have.
+- One idea per sentence. Spoken sentences run short — twelve words is long. Concrete numbers
+  beat adjectives; "35 million euros" beats "massive fines".
+- Every line is one or two COMPLETE sentences. Never end a line mid-sentence; the line is the
+  unit the video is cut on.
+- The close is an implication or a sting, not a summary. Banned: "so there you have it",
+  "at the end of the day", any ask to like, follow or subscribe.
+
 Reply with ONLY:
 { "lines": [ { "id": "l1", "order": 0, "role": "hook|body|close", "text": "...",
                "citations": ["<id>"], "assetIds": ["<id>"], "note": null, "commentary": false } ] }

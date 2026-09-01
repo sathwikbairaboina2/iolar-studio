@@ -283,3 +283,42 @@ describe('the music bed', () => {
     expect(xml).toContain('kdenlive:track_name">Music<');
   });
 });
+
+describe('captions for the editor', () => {
+  it('cuts cues at sentence ends, pauses and the width of a phone', async () => {
+    const { buildSrt } = await import('@/lib/reel/handoff');
+    const srt = buildSrt([
+      { w: 'Ship', start: 0, end: 0.3 },
+      { w: 'it.', start: 0.3, end: 0.6 },
+      { w: 'Then', start: 2.0, end: 2.3 },
+      { w: 'watch', start: 2.3, end: 2.6 },
+      { w: 'what', start: 2.6, end: 2.8 },
+      { w: 'happens.', start: 2.8, end: 3.2 },
+    ]);
+
+    const cues = srt.trim().split('\n\n');
+    expect(cues).toHaveLength(2);
+    expect(cues[0]).toContain('Ship it.');
+    expect(cues[0]).toContain('00:00:00,000 --> 00:00:00,600');
+    expect(cues[1]).toContain('Then watch what happens.');
+  });
+
+  it('never builds a line wider than a phone', async () => {
+    const { buildSrt } = await import('@/lib/reel/handoff');
+    const words = Array.from({ length: 30 }, (_, i) => ({
+      w: 'somewhat', start: i * 0.3, end: i * 0.3 + 0.25,
+    }));
+    for (const line of buildSrt(words).split('\n')) {
+      if (/^[0-9]+$/.test(line) || line.includes('-->') || !line.trim()) continue;
+      expect(line.length).toBeLessThanOrEqual(38);
+    }
+  });
+
+  it('lands in the handoff folder when the words are aligned', async () => {
+    await seed();
+    const { writeHandoff } = await import('@/lib/reel/handoff');
+    const out = await writeHandoff('grok');
+    const names = await fs.readdir(out.dir);
+    expect(names).toContain('captions.srt');
+  });
+});

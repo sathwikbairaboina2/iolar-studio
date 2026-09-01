@@ -60,7 +60,16 @@ export function beatsPrompt(pattern: Pattern, mode: PlanMode, source: string, op
     ? `Use ONLY these shot kinds: ${opts.kinds.join(', ')}. Any other kind is invalid, b-roll included.`
     : '';
 
-  return [task, voice, pacing, mix, palette, SHAPE].filter(Boolean).join('\n\n');
+  // Paste mode may not touch a word, so the craft rules would only tempt it to.
+  const craft =
+    mode === 'paste'
+      ? ''
+      : `Craft: the hook is a specific, checkable surprise — a number, a contradiction, a deadline — never "in this video". ` +
+        `Open one loop early and pay it off before the close; the payoff is your strongest fact. ` +
+        `One idea per sentence, spoken-short; concrete numbers over adjectives. ` +
+        `The close is an implication or a sting, never a summary, and never asks to like, follow or subscribe.`;
+
+  return [task, voice, pacing, mix, palette, craft, SHAPE].filter(Boolean).join('\n\n');
 }
 
 /** Whitespace-insensitive comparison; everything else must match exactly. */

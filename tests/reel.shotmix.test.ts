@@ -317,3 +317,33 @@ describe('collapsing neighbours into one request', () => {
     expect(groups[2].startsAt).toBeCloseTo(4, 3);
   });
 });
+
+describe('the anchor cadence', () => {
+  it('plants a face in a long faceless middle when budget remains', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    // Hook and close earn faces; twenty two-second body beats between them run forty
+    // seconds without one. The cadence owes the middle an anchor.
+    const beats = Array.from({ length: 22 }, (_, i) =>
+      beat(`b${i + 1}`, i === 0 ? 'hook' : i === 21 ? 'close' : 'body', 2)
+    );
+
+    const withCadence = presenterBites(planShotMix(beats, { minBiteSec: 4, presenterMaxSec: 16, anchorEverySec: 10 }));
+    const without = presenterBites(planShotMix(beats, { minBiteSec: 4, presenterMaxSec: 16 }));
+
+    expect(withCadence.length).toBeGreaterThan(without.length);
+    // The cap is a cap, cadence or not.
+    const spent = withCadence.reduce((s, b) => s + b.seconds, 0);
+    expect(spent).toBeLessThanOrEqual(16);
+  });
+
+  it('never busts the budget to keep the cadence', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    const beats = Array.from({ length: 40 }, (_, i) =>
+      beat(`b${i + 1}`, i === 0 ? 'hook' : i === 39 ? 'close' : 'body', 2)
+    );
+
+    const bites = presenterBites(planShotMix(beats, { minBiteSec: 5, anchorEverySec: 8 }));
+    const spent = bites.reduce((s, b) => s + b.seconds, 0);
+    expect(spent).toBeLessThanOrEqual(15);
+  });
+});

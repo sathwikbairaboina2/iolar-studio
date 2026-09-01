@@ -45,6 +45,15 @@ export type MixOptions = {
    * talking head, when a longer reel is exactly where that palls.
    */
   presenterMaxSec?: number;
+  /**
+   * How long the reel may run without a face before one is owed.
+   *
+   * The hook and the close bracket the reel, but a long middle spent entirely on documents
+   * reads as a screencast with narration. When a stretch without the presenter passes this
+   * many seconds, an anchor bite is planted in it — out of whatever budget the hook and
+   * close left, never over the cap.
+   */
+  anchorEverySec?: number;
 };
 
 /** A run of neighbouring presenter lines, rendered as one continuous bite. */
@@ -147,6 +156,29 @@ export function planShotMix(beats: MixBeat[], opts: MixOptions = {}): Mixed[] {
     const forced = !b.cites;
     if (!forced && presenter.size > 0 && spent() + cost > budget) continue;
     for (const id of bite) presenter.add(id);
+  }
+
+  // A long middle spent entirely on documents reads as a screencast. Every stretch that
+  // runs past the anchor cadence without a face gets a bite planted mid-stretch, paid for
+  // out of whatever the hook and the close left — the cap still holds.
+  if (opts.anchorEverySec) {
+    let sinceFace = 0;
+    for (let i = 0; i < beats.length; i += 1) {
+      if (presenter.has(beats[i].beatId)) {
+        sinceFace = 0;
+        continue;
+      }
+      sinceFace += beats[i].seconds;
+      if (sinceFace < opts.anchorEverySec) continue;
+      const bite = grow(i);
+      const cost = bite
+        .filter((id) => !presenter.has(id))
+        .reduce((s, id) => s + beats.find((x) => x.beatId === id)!.seconds, 0);
+      if (spent() + cost <= budget) for (const id of bite) presenter.add(id);
+      // Reset either way: a stretch the budget cannot cover must not re-ask on every
+      // following beat.
+      sinceFace = 0;
+    }
   }
 
   // A reel with no face at all reads as a slideshow. The opening keeps one.

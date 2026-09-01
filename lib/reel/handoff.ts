@@ -375,6 +375,47 @@ ${extras.music ? '    <track producer="music" hide="video"/>\n' : ''}  </tractor
 `;
 }
 
+/** SRT counts in comma-separated milliseconds. */
+const srtTime = (seconds: number) => timecode(seconds).replace('.', ',');
+
+/**
+ * The words as subtitles, cut where the speech cuts.
+ *
+ * The studio burns no captions — that call belongs to the editor — but the word timings
+ * already exist, and typing them back in by hand is the single most tedious job in the
+ * edit. A cue breaks where a sentence ends, where the speaker pauses, or where the line
+ * would run wider than a phone: whichever comes first.
+ */
+export function buildSrt(words: { w: string; start: number; end: number }[]): string {
+  const MAX_CHARS = 38;
+  const PAUSE = 0.6;
+
+  const cues: { start: number; end: number; text: string }[] = [];
+  let open: { start: number; end: number; parts: string[] } | null = null;
+
+  const close = () => {
+    if (open) cues.push({ start: open.start, end: open.end, text: open.parts.join(' ') });
+    open = null;
+  };
+
+  for (const w of words) {
+    const word = w.w.trim();
+    if (!word) continue;
+    if (open && (w.start - open.end > PAUSE || open.parts.join(' ').length + word.length + 1 > MAX_CHARS)) {
+      close();
+    }
+    if (!open) open = { start: w.start, end: w.end, parts: [] };
+    open.parts.push(word);
+    open.end = Math.max(open.end, w.end);
+    if (/[.!?…]["'’”)\]»]*$/.test(word)) close();
+  }
+  close();
+
+  return cues
+    .map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text}\n`)
+    .join('\n');
+}
+
 /** The script as words on a page: who says what, and what is on screen while they do. */
 export function buildScript(reel: Reel): string {
   const lines = reel.beats.map((b) => {
@@ -437,6 +478,10 @@ export async function writeHandoff(slug: string): Promise<Handoff> {
   }
 
   await fs.writeFile(path.join(dir, 'script.txt'), buildScript(reel), 'utf8');
+  // The editor's call whether these burn in; the timings are too tedious to retype.
+  if (reel.vo.words.length) {
+    await fs.writeFile(path.join(dir, 'captions.srt'), buildSrt(reel.vo.words), 'utf8');
+  }
   await fs.writeFile(path.join(dir, 'project.mlt'), buildProject(reel, clips, 'mlt', { music }), 'utf8');
   await fs.writeFile(path.join(dir, 'project.kdenlive'), buildProject(reel, clips, 'kdenlive', { music }), 'utf8');
 

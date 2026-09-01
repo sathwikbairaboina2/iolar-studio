@@ -274,3 +274,33 @@ describe('a line can cut between several shots', () => {
   });
 });
 
+
+describe('a padded recording never pushes its neighbour off its words', () => {
+  it('keeps the next take on its own clock and trims the surplus instead', async () => {
+    const { assemble } = await import('@/lib/reel/assemble');
+    const reel = await baseReel();
+    // Two whole recordings on the reel clock. The first was padded to the half-second
+    // grid, so it measures 3.4s but its neighbour starts at 3.0.
+    const padded = {
+      ...reel,
+      beats: [
+        { ...reel.beats[0], shot: { ...reel.beats[0].shot, assetId: 'a1' } },
+        { ...reel.beats[1], shot: { ...reel.beats[1].shot, assetId: 'a2' } },
+        { ...reel.beats[2], shot: { ...reel.beats[2].shot, assetId: 'a2' } },
+      ],
+      assets: [
+        { ...reel.assets[0], takeStart: 0, durationSec: 3.4 },
+        { ...reel.assets[1], takeStart: 3.0, durationSec: 3.0 },
+        reel.assets[2],
+      ],
+    };
+
+    const t = assemble({ reel: padded as never, pattern: PATTERN as never });
+    const second = t.clips.find((c) => c.assetId === 'a2')!;
+    // Lips in step: the recording plays from the moment it was cut for...
+    expect(second.start).toBe(3.0);
+    // ...and the padded one gives up its silent surplus rather than shoving it.
+    const first = t.clips.find((c) => c.assetId === 'a1')!;
+    expect(first.end).toBeLessThanOrEqual(3.0);
+  });
+});
