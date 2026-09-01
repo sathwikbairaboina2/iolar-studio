@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CLIP_FITS, CLIP_TRANSITIONS, MOTION_TYPES, validateReel, type Reel } from './schema';
+import { validateReel, type Reel } from './schema';
 import { loadReel, saveReel } from './store';
 import * as edits from './edits';
 import * as history from './history';
@@ -9,14 +9,16 @@ import type { Actor } from './history';
 /**
  * The single write path into a reel.
  *
- * Every edit is a named command with a declared argument schema, so the studio
- * and an agent reach the same operations through the same door. `edits.ts` stays
- * pure and unaware of any of this — which is what keeps preview and export in
- * step, since no new editing semantics are introduced here.
+ * Every edit is a named command with a declared argument schema, so the studio and an agent
+ * reach the same operations through the same door.
+ *
+ * Cutting is not among them. Trimming, splitting, reordering and captioning happen in an
+ * editor now — the studio hands over the recordings and takes back a finished file — so what
+ * is left is the thing only the studio knows: the words each beat speaks.
  */
 
 /** Which lane an id argument must be found in before the command runs. */
-type Lane = 'clip' | 'caption' | 'asset';
+type Lane = 'beat' | 'asset';
 
 type Command = {
   /** Name of the `edits.ts` function this wraps. A test pins the correspondence. */
@@ -27,12 +29,6 @@ type Command = {
   apply: (reel: Reel, args: never) => Reel;
   summary: (args: never) => string;
 };
-
-const clipId = z.string().min(1);
-const cueId = z.string().min(1);
-const sec = z.number().finite();
-
-const signed = (n: number) => `${n > 0 ? '+' : ''}${n}s`;
 
 function command<S extends z.ZodTypeAny>(c: {
   fn: keyof typeof edits;
@@ -45,114 +41,14 @@ function command<S extends z.ZodTypeAny>(c: {
 }
 
 export const COMMANDS = {
-  'clip.trim': command({
-    fn: 'trimClip',
-    args: z.object({ clipId, edge: z.enum(['in', 'out']), deltaSec: sec }),
-    refs: [{ arg: 'clipId', lane: 'clip' }],
-    apply: (r, a) => edits.trimClip(r, a.clipId, a.edge, a.deltaSec),
-    summary: (a) => `trim ${a.clipId} ${a.edge} ${signed(a.deltaSec)}`,
-  }),
-  'clip.split': command({
-    fn: 'splitClip',
-    args: z.object({ clipId, atSec: sec.nonnegative() }),
-    refs: [{ arg: 'clipId', lane: 'clip' }],
-    apply: (r, a) => edits.splitClip(r, a.clipId, a.atSec),
-    summary: (a) => `split ${a.clipId} at ${a.atSec}s`,
-  }),
-  'clip.delete': command({
-    fn: 'deleteClip',
-    args: z.object({ clipId }),
-    refs: [{ arg: 'clipId', lane: 'clip' }],
-    apply: (r, a) => edits.deleteClip(r, a.clipId),
-    summary: (a) => `delete ${a.clipId}`,
-  }),
-  'clip.move': command({
-    fn: 'moveClip',
-    args: z.object({ clipId, toIndex: z.number().int().nonnegative() }),
-    refs: [{ arg: 'clipId', lane: 'clip' }],
-    apply: (r, a) => edits.moveClip(r, a.clipId, a.toIndex),
-    summary: (a) => `move ${a.clipId} to slot ${a.toIndex}`,
-  }),
-  'clip.motion': command({
-    fn: 'setClipMotion',
-    args: z.object({
-      clipId,
-      motion: z
-        .object({
-          type: z.enum(MOTION_TYPES).optional(),
-          strength: z.number().optional(),
-          origin: z.tuple([z.number(), z.number()]).optional(),
-        })
-        .refine((m) => Object.keys(m).length > 0, 'motion needs at least one field'),
-    }),
-    refs: [{ arg: 'clipId', lane: 'clip' }],
-    apply: (r, a) => edits.setClipMotion(r, a.clipId, a.motion as Parameters<typeof edits.setClipMotion>[2]),
-    summary: (a) => `motion ${a.clipId} → ${a.motion.type ?? 'tweaked'}`,
-  }),
-  'clip.fit': command({
-    fn: 'setClipFit',
-    args: z.object({ clipId, fit: z.enum(CLIP_FITS) }),
-    refs: [{ arg: 'clipId', lane: 'clip' }],
-    apply: (r, a) => edits.setClipFit(r, a.clipId, a.fit),
-    summary: (a) => `fit ${a.clipId} → ${a.fit}`,
-  }),
-  'clip.transition': command({
-    fn: 'setClipTransition',
-    args: z.object({ clipId, transition: z.enum(CLIP_TRANSITIONS) }),
-    refs: [{ arg: 'clipId', lane: 'clip' }],
-    apply: (r, a) => edits.setClipTransition(r, a.clipId, a.transition),
-    summary: (a) => `transition ${a.clipId} → ${a.transition}`,
-  }),
-  'clip.asset': command({
-    fn: 'replaceClipAsset',
-    args: z.object({ clipId, assetId: z.string().min(1) }),
-    refs: [
-      { arg: 'clipId', lane: 'clip' },
-      { arg: 'assetId', lane: 'asset' },
-    ],
-    apply: (r, a) => edits.replaceClipAsset(r, a.clipId, a.assetId),
-    summary: (a) => `swap ${a.clipId} → asset ${a.assetId}`,
-  }),
   'beat.text': command({
     fn: 'editBeatText',
     args: z.object({ beatId: z.string().min(1), text: z.string().min(1) }),
+    // Checked against the reel before it runs, so a beat that is not there comes back as a
+    // rejection naming the ones that are, rather than an exception from inside the edit.
+    refs: [{ arg: 'beatId', lane: 'beat' }],
     apply: (r, a) => edits.editBeatText(r, a.beatId, a.text),
     summary: (a) => `rewrite ${a.beatId}`,
-  }),
-  'caption.edit': command({
-    fn: 'editCaption',
-    args: z.object({ cueId, text: z.string() }),
-    refs: [{ arg: 'cueId', lane: 'caption' }],
-    apply: (r, a) => edits.editCaption(r, a.cueId, a.text),
-    summary: (a) => `caption ${a.cueId} → "${a.text}"`,
-  }),
-  'caption.nudge': command({
-    fn: 'nudgeCaption',
-    args: z.object({ cueId, deltaSec: sec }),
-    refs: [{ arg: 'cueId', lane: 'caption' }],
-    apply: (r, a) => edits.nudgeCaption(r, a.cueId, a.deltaSec),
-    summary: (a) => `nudge ${a.cueId} ${signed(a.deltaSec)}`,
-  }),
-  'caption.toggle': command({
-    fn: 'toggleCaption',
-    args: z.object({ cueId }),
-    refs: [{ arg: 'cueId', lane: 'caption' }],
-    apply: (r, a) => edits.toggleCaption(r, a.cueId),
-    summary: (a) => `toggle ${a.cueId}`,
-  }),
-  'caption.merge': command({
-    fn: 'mergeCaption',
-    args: z.object({ cueId }),
-    refs: [{ arg: 'cueId', lane: 'caption' }],
-    apply: (r, a) => edits.mergeCaption(r, a.cueId),
-    summary: (a) => `merge ${a.cueId} with the next cue`,
-  }),
-  'caption.split': command({
-    fn: 'splitCaption',
-    args: z.object({ cueId }),
-    refs: [{ arg: 'cueId', lane: 'caption' }],
-    apply: (r, a) => edits.splitCaption(r, a.cueId),
-    summary: (a) => `split ${a.cueId}`,
   }),
 } satisfies Record<string, Command>;
 
@@ -177,8 +73,7 @@ export class CommandError extends Error {
 }
 
 function idsInLane(reel: Reel, lane: Lane): string[] {
-  if (lane === 'clip') return reel.timeline.clips.map((c) => c.id);
-  if (lane === 'caption') return reel.timeline.captions.map((c) => c.id);
+  if (lane === 'beat') return reel.beats.map((b) => b.id);
   return reel.assets.map((a) => a.id);
 }
 

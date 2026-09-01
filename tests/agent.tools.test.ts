@@ -20,37 +20,26 @@ describe('agent tool schemas', () => {
 
     const names = agentTools().map((t) => t.function.name);
 
-    expect(names).toContain('clip_trim');
-    expect(names).toContain('caption_nudge');
+    expect(names).toContain('beat_text');
     expect(names.some((n) => n.includes('.'))).toBe(false);
   });
 
   it('maps a tool name back to the op it came from', async () => {
     const { toolNameToOp, opToToolName } = await import('@/lib/ai/agent/tools');
 
-    expect(toolNameToOp('clip_trim')).toBe('clip.trim');
-    expect(opToToolName('caption.merge')).toBe('caption_merge');
+    expect(toolNameToOp('beat_text')).toBe('beat.text');
+    expect(opToToolName('beat.text')).toBe('beat_text');
     expect(toolNameToOp('not_a_tool')).toBeNull();
   });
 
   it('carries the real argument schema, not a hand-written copy', async () => {
     const { agentTools } = await import('@/lib/ai/agent/tools');
 
-    const trim = agentTools().find((t) => t.function.name === 'clip_trim')!;
-    const props = trim.function.parameters.properties as Record<string, { enum?: string[] }>;
+    const rewrite = agentTools().find((t) => t.function.name === 'beat_text')!;
+    const props = rewrite.function.parameters.properties as Record<string, { enum?: string[] }>;
 
-    expect(Object.keys(props).sort()).toEqual(['clipId', 'deltaSec', 'edge']);
-    expect(props.edge.enum).toEqual(['in', 'out']);
-  });
-
-  it('takes the transition values from the schema, so they cannot drift', async () => {
-    const { agentTools } = await import('@/lib/ai/agent/tools');
-    const { CLIP_TRANSITIONS } = await import('@/lib/reel/schema');
-
-    const tool = agentTools().find((t) => t.function.name === 'clip_transition')!;
-    const props = tool.function.parameters.properties as Record<string, { enum?: string[] }>;
-
-    expect(props.transition.enum).toEqual([...CLIP_TRANSITIONS]);
+    // Straight off the command's own zod schema, so the two cannot drift apart.
+    expect(Object.keys(props).sort()).toEqual(['beatId', 'text']);
   });
 
   it('gives every tool a description, since that is all the model has to go on', async () => {

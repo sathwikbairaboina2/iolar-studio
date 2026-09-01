@@ -33,6 +33,10 @@ async function seed() {
     ...emptyReel('grok'),
     title: 'Grok',
     vo: { durationSec: 12 },
+    beats: [
+      { id: 'b1', role: 'hook', text: 'the first line', shot: { kind: 'talking-head', brief: '' } },
+      { id: 'b2', role: 'close', text: 'the second line', shot: { kind: 'talking-head', brief: '' } },
+    ],
     assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' }],
     timeline: {
       clips: [clip('c1', 'a1', 0, 4), clip('c2', 'a1', 4, 9)],
@@ -50,12 +54,12 @@ describe('previewCommands', () => {
     await seed();
 
     const out = await previewCommands('grok', [
-      { op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'agent' },
-      { op: 'caption.edit', args: { cueId: 'k1', text: 'rewritten' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten first line' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b2', text: 'a rewritten second line' }, actor: 'agent' },
     ]);
 
-    expect(out.reel.timeline.clips[0].fit).toBe('contain');
-    expect(out.reel.timeline.captions[0].text).toBe('rewritten');
+    expect(out.reel.beats[0].text).toBe('a rewritten first line');
+    expect(out.reel.beats[1].text).toBe('a rewritten second line');
     expect(out.rejected).toEqual([]);
   });
 
@@ -64,13 +68,13 @@ describe('previewCommands', () => {
     await seed();
 
     const out = await previewCommands('grok', [
-      { op: 'clip.split', args: { clipId: 'c1', atSec: 2 }, actor: 'agent' },
-      { op: 'clip.fit', args: { clipId: 'c1-b', fit: 'contain' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b2', text: 'the second line rewritten again' }, actor: 'agent' },
     ]);
 
-    // c1-b exists only because the split ran first.
+    // The second rewrite lands on the reel the first one produced.
     expect(out.rejected).toEqual([]);
-    expect(out.reel.timeline.clips.find((c) => c.id === 'c1-b')?.fit).toBe('contain');
+    expect(out.reel.beats.map((b) => b.text)).toEqual(['a rewritten line', 'the second line rewritten again']);
   });
 
   it('leaves the reel on disk untouched', async () => {
@@ -78,7 +82,7 @@ describe('previewCommands', () => {
     const { loadReel } = await import('@/lib/reel/store');
     const before = await seed();
 
-    await previewCommands('grok', [{ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'agent' }]);
+    await previewCommands('grok', [{ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'agent' }]);
 
     expect(await loadReel('grok')).toEqual(before);
   });
@@ -88,7 +92,7 @@ describe('previewCommands', () => {
     const history = await import('@/lib/reel/history');
     await seed();
 
-    await previewCommands('grok', [{ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'agent' }]);
+    await previewCommands('grok', [{ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'agent' }]);
 
     expect(await history.read('grok')).toEqual({ cursor: 0, entries: [] });
   });
@@ -100,7 +104,7 @@ describe('previewCommands', () => {
     const seen: unknown[] = [];
     subscribe('grok', (r) => seen.push(r));
 
-    await previewCommands('grok', [{ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'agent' }]);
+    await previewCommands('grok', [{ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'agent' }]);
 
     expect(seen).toEqual([]);
   });
@@ -110,12 +114,12 @@ describe('previewCommands', () => {
     await seed();
 
     const out = await previewCommands('grok', [
-      { op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'agent' },
-      { op: 'caption.toggle', args: { cueId: 'k1' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b2', text: 'another rewritten line' }, actor: 'agent' },
     ]);
 
-    expect(out.applied.map((a) => a.op)).toEqual(['clip.fit', 'caption.toggle']);
-    expect(out.applied[0].summary).toMatch(/c1/);
+    expect(out.applied.map((a) => a.op)).toEqual(['beat.text', 'beat.text']);
+    expect(out.applied[0].summary).toMatch(/b1/);
   });
 
   it('reports a rejection with the reason and the index that failed', async () => {
@@ -123,13 +127,12 @@ describe('previewCommands', () => {
     await seed();
 
     const out = await previewCommands('grok', [
-      { op: 'clip.delete', args: { clipId: 'c99' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b404', text: 'a line for a beat that is not there' }, actor: 'agent' },
     ]);
 
     expect(out.rejected).toHaveLength(1);
-    expect(out.rejected[0]).toMatchObject({ index: 0, op: 'clip.delete' });
-    expect(out.rejected[0].error).toMatch(/c99/);
-    expect(out.rejected[0].detail).toMatchObject({ validIds: ['c1', 'c2'] });
+    expect(out.rejected[0]).toMatchObject({ index: 0, op: 'beat.text' });
+    expect(out.rejected[0].error).toMatch(/b404/);
   });
 
   // Preview is diagnostic: an agent on a revision budget should learn every problem at once.
@@ -138,13 +141,13 @@ describe('previewCommands', () => {
     await seed();
 
     const out = await previewCommands('grok', [
-      { op: 'clip.delete', args: { clipId: 'c99' }, actor: 'agent' },
-      { op: 'caption.nudge', args: { cueId: 'k404' }, actor: 'agent' },
-      { op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b404', text: 'a line for a beat that is not there' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b999', text: 'another missing beat' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'agent' },
     ]);
 
     expect(out.rejected.map((r) => r.index)).toEqual([0, 1]);
-    expect(out.applied.map((a) => a.op)).toEqual(['clip.fit']);
+    expect(out.applied.map((a) => a.op)).toEqual(['beat.text']);
   });
 
   it('projects only the commands that applied', async () => {
@@ -152,12 +155,13 @@ describe('previewCommands', () => {
     await seed();
 
     const out = await previewCommands('grok', [
-      { op: 'clip.delete', args: { clipId: 'c99' }, actor: 'agent' },
-      { op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b404', text: 'a line for a beat that is not there' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'agent' },
     ]);
 
-    expect(out.reel.timeline.clips).toHaveLength(2);
-    expect(out.reel.timeline.clips[0].fit).toBe('contain');
+    // The rejected one changed nothing; the one that applied did.
+    expect(out.reel.beats[0].text).toBe('a rewritten line');
+    expect(out.reel.beats[1].text).toBe('the second line');
   });
 
   it('rejects an unknown op the same way the real command path does', async () => {
@@ -166,15 +170,16 @@ describe('previewCommands', () => {
 
     const out = await previewCommands('grok', [{ op: 'clip.explode', args: {}, actor: 'agent' }]);
 
-    expect(out.rejected[0].detail).toMatchObject({ validOps: expect.arrayContaining(['clip.trim']) });
+    expect(out.rejected[0].detail).toMatchObject({ validOps: expect.arrayContaining(['beat.text']) });
   });
 
   it('rejects malformed args and hands back the schema they failed', async () => {
     const { previewCommands } = await import('@/lib/reel/preview');
     await seed();
 
+    // No text at all: the schema, not the reel, is what refuses this.
     const out = await previewCommands('grok', [
-      { op: 'clip.trim', args: { clipId: 'c1' }, actor: 'agent' },
+      { op: 'beat.text', args: { beatId: 'b1' }, actor: 'agent' },
     ]);
 
     expect(out.rejected).toHaveLength(1);

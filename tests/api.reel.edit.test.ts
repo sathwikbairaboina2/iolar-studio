@@ -38,6 +38,10 @@ async function seed() {
     ...emptyReel('grok'),
     title: 'Grok',
     vo: { durationSec: 12 },
+    beats: [
+      { id: 'b1', role: 'hook', text: 'the first line', shot: { kind: 'talking-head', brief: '' } },
+      { id: 'b2', role: 'close', text: 'the second line', shot: { kind: 'talking-head', brief: '' } },
+    ],
     assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' }],
     timeline: {
       clips: [clip('c1', 'a1', 0, 4), clip('c2', 'a1', 4, 9)],
@@ -54,19 +58,19 @@ describe('POST /api/reel/[slug]/edit', () => {
     const { POST } = await import('@/app/api/reel/[slug]/edit/route');
     await seed();
 
-    const res = await POST(post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' } }), ctx('grok'));
+    const res = await POST(post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' } }), ctx('grok'));
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.reel.timeline.clips[0].fit).toBe('contain');
-    expect(body.entry.summary).toMatch(/c1/);
+    expect(body.reel.beats[0].text).toBe('a rewritten line');
+    expect(body.entry.summary).toMatch(/b1/);
   });
 
   it('defaults an unlabelled caller to the agent, since the studio always says so', async () => {
     const { POST } = await import('@/app/api/reel/[slug]/edit/route');
     await seed();
 
-    const res = await POST(post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' } }), ctx('grok'));
+    const res = await POST(post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' } }), ctx('grok'));
 
     expect((await res.json()).entry.actor).toBe('agent');
   });
@@ -76,7 +80,7 @@ describe('POST /api/reel/[slug]/edit', () => {
     await seed();
 
     const res = await POST(
-      post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'ui' }),
+      post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'ui' }),
       ctx('grok')
     );
 
@@ -87,29 +91,30 @@ describe('POST /api/reel/[slug]/edit', () => {
     const { POST } = await import('@/app/api/reel/[slug]/edit/route');
     await seed();
 
-    const res = await POST(post({ op: 'clip.explode', args: {} }), ctx('grok'));
+    const res = await POST(post({ op: 'beat.explode', args: {} }), ctx('grok'));
     const body = await res.json();
 
     expect(res.status).toBe(400);
-    expect(body.validOps).toContain('caption.nudge');
+    expect(body.validOps).toContain('beat.text');
   });
 
-  it('answers a bad id with 404 and the ids that exist', async () => {
+  it('refuses a beat the reel does not have', async () => {
     const { POST } = await import('@/app/api/reel/[slug]/edit/route');
     await seed();
 
-    const res = await POST(post({ op: 'clip.delete', args: { clipId: 'nope' } }), ctx('grok'));
+    const res = await POST(post({ op: 'beat.text', args: { beatId: 'nope', text: 'a line for no beat' } }), ctx('grok'));
     const body = await res.json();
 
+    // The lane check answers before the edit runs, so it can say which beats do exist.
     expect(res.status).toBe(404);
-    expect(body.validIds).toEqual(['c1', 'c2']);
+    expect(body.validIds).toEqual(['b1', 'b2']);
   });
 
   it('answers malformed args with 400 and the schema they failed', async () => {
     const { POST } = await import('@/app/api/reel/[slug]/edit/route');
     await seed();
 
-    const res = await POST(post({ op: 'clip.trim', args: { clipId: 'c1' } }), ctx('grok'));
+    const res = await POST(post({ op: 'beat.text', args: { beatId: 'b1' } }), ctx('grok'));
     const body = await res.json();
 
     expect(res.status).toBe(400);
@@ -141,11 +146,11 @@ describe('/api/reel/[slug]/history', () => {
     const { GET } = await import('@/app/api/reel/[slug]/history/route');
     await seed();
 
-    await edit(post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' }, actor: 'ui' }), ctx('grok'));
-    await edit(post({ op: 'caption.toggle', args: { cueId: 'k1' }, actor: 'agent' }), ctx('grok'));
+    await edit(post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' }, actor: 'ui' }), ctx('grok'));
+    await edit(post({ op: 'beat.text', args: { beatId: 'b2', text: 'another rewritten line' }, actor: 'agent' }), ctx('grok'));
     const body = await (await GET(new Request('http://localhost/h'), ctx('grok'))).json();
 
-    expect(body.entries.map((e: { op: string }) => e.op)).toEqual(['clip.fit', 'caption.toggle']);
+    expect(body.entries.map((e: { op: string }) => e.op)).toEqual(['beat.text', 'beat.text']);
     expect(body.entries[1].actor).toBe('agent');
     expect(body.cursor).toBe(2);
   });
@@ -155,7 +160,7 @@ describe('/api/reel/[slug]/history', () => {
     const { POST } = await import('@/app/api/reel/[slug]/history/route');
     await seed();
 
-    await edit(post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' } }), ctx('grok'));
+    await edit(post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' } }), ctx('grok'));
     const res = await POST(
       new Request('http://localhost/h', { method: 'POST', body: JSON.stringify({ action: 'undo' }) }),
       ctx('grok')
@@ -174,11 +179,11 @@ describe('/api/reel/[slug]/history', () => {
     const act = (action: string) =>
       POST(new Request('http://localhost/h', { method: 'POST', body: JSON.stringify({ action }) }), ctx('grok'));
 
-    await edit(post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' } }), ctx('grok'));
+    await edit(post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' } }), ctx('grok'));
     await act('undo');
     const body = await (await act('redo')).json();
 
-    expect(body.reel.timeline.clips[0].fit).toBe('contain');
+    expect(body.reel.beats[0].text).toBe('a rewritten line');
   });
 
   it('answers 409 when there is nothing left to undo', async () => {
@@ -210,7 +215,7 @@ describe('/api/reel/[slug]/history', () => {
     const { POST } = await import('@/app/api/reel/[slug]/history/route');
     const { subscribe } = await import('@/lib/reel/bus');
     await seed();
-    await edit(post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' } }), ctx('grok'));
+    await edit(post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' } }), ctx('grok'));
     const seen: string[] = [];
     subscribe('grok', (r) => seen.push(r.timeline.clips[0].fit));
 
@@ -233,11 +238,11 @@ describe('GET /api/reel/[slug]/events', () => {
     expect(res.headers.get('content-type')).toMatch(/text\/event-stream/);
 
     const reader = res.body!.getReader();
-    await edit(post({ op: 'clip.fit', args: { clipId: 'c1', fit: 'contain' } }), ctx('grok'));
+    await edit(post({ op: 'beat.text', args: { beatId: 'b1', text: 'a rewritten line' } }), ctx('grok'));
 
     const text = new TextDecoder().decode((await reader.read()).value);
     expect(text).toMatch(/^data: /m);
-    expect(JSON.parse(text.replace(/^data: /, '').trim()).timeline.clips[0].fit).toBe('contain');
+    expect(JSON.parse(text.replace(/^data: /, '').trim()).beats[0].text).toBe('a rewritten line');
 
     await reader.cancel();
   });

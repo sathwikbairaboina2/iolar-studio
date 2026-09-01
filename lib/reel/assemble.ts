@@ -1,6 +1,6 @@
 import { mulberry32 } from '../rng';
 import { Pattern } from './patterns';
-import { CaptionCue, Clip, Overlay, Reel, Timeline, Word } from './schema';
+import { Clip, Overlay, Reel, Timeline, Word } from './schema';
 import { sortTimeline } from './timeline';
 import { alignScriptWords } from './script-align';
 
@@ -25,105 +25,6 @@ export function beatSpans(reel: Reel): Map<string, { start: number; end: number 
   }
   for (const id of spans.keys()) if (!anyHeard.has(id)) spans.delete(id);
   return spans;
-}
-
-/** A caption still has to be readable, and the schema rejects a zero-length cue.
- *  Whisper does emit words whose start equals their end, usually at the very end of a take. */
-export const MIN_CUE_SEC = 0.12;
-
-/** The script's own words, carrying the timings the recogniser found. See `script-align.ts`. */
-export function scriptAlignedWords(reel: Reel): Word[] {
-  return alignScriptWords(reel.beats, reel.vo.words);
-}
-
-const ORPHAN_SPAN_RELAX = 1.6;
-
-/** A cue that ends here is a cue a reader would end: the sentence is over. */
-const ENDS_SENTENCE = /[.!?…]["'”’)\]]?$/;
-
-export function groupCaptions(words: Word[], pattern: Pattern): CaptionCue[] {
-  const [, maxW] = pattern.caption.wordsPerBeat;
-  const [, maxSec] = pattern.pacing.captionBeatSec;
-  const out: { words: Word[] }[] = [];
-  let group: Word[] = [];
-
-  const flush = () => {
-    if (!group.length) return;
-    out.push({ words: group });
-    group = [];
-  };
-
-  for (const w of words) {
-    const candidate = [...group, w];
-    const text = candidate.map((x) => x.w).join(' ');
-    const span = w.end - candidate[0].start;
-    // A word that would burst the pill starts the next caption instead of overflowing it.
-    if (group.length && (text.length > pattern.caption.maxChars || span > maxSec)) {
-      flush();
-      group = [w];
-    } else {
-      group = candidate;
-    }
-    // Reading "practice. A" as one cue and "suggestion. Nobody" as the next puts the break
-    // in the middle of a thought every time. Break where the sentence does instead.
-    if (ENDS_SENTENCE.test(w.w) || group.length >= maxW) flush();
-  }
-  flush();
-
-  return rebalance(out, pattern).map((g, i) => {
-    const start = g.words[0].start;
-    const end = Math.max(g.words.at(-1)!.end, start + MIN_CUE_SEC);
-    return {
-      id: `k${i + 1}`,
-      text: g.words.map((w) => w.w).join(' '),
-      start: r3(start),
-      end: r3(end),
-      hidden: false,
-      locked: false,
-    };
-  });
-}
-
-/**
- * Pulls a stranded word back into the cue before it.
- *
- * A char cap that trips one word early leaves that word alone on screen for a fifth of a
- * second — the flicker that reads as the captions breaking up. Merging is refused when it
- * would burst the pill, outrun the cue clock, or paste across a full stop.
- */
-function rebalance(groups: { words: Word[] }[], pattern: Pattern): { words: Word[] }[] {
-  const [, maxW] = pattern.caption.wordsPerBeat;
-  const [, maxSec] = pattern.pacing.captionBeatSec;
-  const chars = (ws: Word[]) => ws.map((w) => w.w).join(' ').length;
-  const span = (ws: Word[]) => ws.at(-1)!.end - ws[0].start;
-  const joinable = (ws: Word[], limit: number) =>
-    ws.length <= maxW && chars(ws) <= pattern.caption.maxChars && span(ws) <= limit;
-
-  const out: { words: Word[] }[] = [];
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
-    const prev = out.at(-1);
-    const alone = g.words.length === 1;
-    if (alone && prev && !ENDS_SENTENCE.test(prev.words.at(-1)!.w) && joinable([...prev.words, ...g.words], maxSec)) {
-      out[out.length - 1] = { words: [...prev.words, ...g.words] };
-      continue;
-    }
-    // Nowhere to put it behind: take the next cue's words instead. A word alone on screen for
-    // a fifth of a second reads as a flicker, which is worse than a cue that runs slightly long.
-    const next = groups[i + 1];
-    if (
-      alone &&
-      next &&
-      !ENDS_SENTENCE.test(g.words[0].w) &&
-      joinable([...g.words, ...next.words], maxSec * ORPHAN_SPAN_RELAX)
-    ) {
-      out.push({ words: [...g.words, ...next.words] });
-      i++;
-      continue;
-    }
-    out.push(g);
-  }
-  return out;
 }
 
 /**

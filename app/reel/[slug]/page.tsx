@@ -1,12 +1,10 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
+import { Button, Card, Slider, Space, Spin, Tabs, Tag, Tooltip, Typography, Upload, message } from 'antd';
 import {
-  Button, Card, Empty, Input, Progress, Segmented, Slider, Space, Spin, Tabs, Tag, Tooltip, Typography, Upload, message,
-} from 'antd';
-import {
-  AudioOutlined, DeleteOutlined, ExportOutlined, PlayCircleOutlined, PauseCircleOutlined,
-  ReloadOutlined, ScissorOutlined, ThunderboltOutlined, UploadOutlined, WarningOutlined,
+  AudioOutlined, PlayCircleOutlined, PauseCircleOutlined,
+  ReloadOutlined, ThunderboltOutlined, UploadOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import Player from '@/components/reel/Player';
 import AgentPanel from '@/components/reel/AgentPanel';
@@ -24,18 +22,15 @@ import type { Pattern } from '@/lib/reel/pattern-schema';
 import type { Reel } from '@/lib/reel/schema';
 import { timelineDuration } from '@/lib/reel/timeline';
 
-const MOTIONS = ['zoom-in', 'zoom-out', 'pan-left', 'pan-right', 'hold'] as const;
-
 export default function ReelStudio() {
   const slug = String(useParams().slug ?? '');
-  const { reel, setReel, error, setError, run, undo, redo } = useReelEditor(slug);
+  const { reel, setReel, error, setError, undo, redo } = useReelEditor(slug);
   const [pattern, setPattern] = useState<Pattern | null>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [clipId, setClipId] = useState<string | null>(null);
   const [cueId, setCueId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [exportPct, setExportPct] = useState<number | null>(null);
   const [tab, setTab] = useState('research');
 
   // A rejected command names both what was wrong and what would have been valid;
@@ -122,36 +117,6 @@ export default function ReelStudio() {
     }
   };
 
-  const runExport = async () => {
-    setExportPct(0);
-    try {
-      const res = await fetch(`/api/reel/${slug}/export`, { method: 'POST' });
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        for (const line of buffer.split('\n\n')) {
-          const payload = line.replace(/^data: /, '').trim();
-          if (!payload.startsWith('{')) continue;
-          const evt = JSON.parse(payload);
-          if (typeof evt.pct === 'number') setExportPct(evt.pct);
-          if (evt.error) message.error(evt.error);
-          if (evt.done) message.success('exported');
-        }
-        buffer = buffer.slice(buffer.lastIndexOf('\n\n') + 2);
-      }
-    } catch (err) {
-      message.error(String(err));
-    } finally {
-      setExportPct(null);
-    }
-  };
-
-  const clip = useMemo(() => reel?.timeline.clips.find((c) => c.id === clipId) ?? null, [reel, clipId]);
-  const cue = useMemo(() => reel?.timeline.captions.find((c) => c.id === cueId) ?? null, [reel, cueId]);
 
   if (!reel || !pattern) return <Spin style={{ marginTop: 64 }} />;
   const duration = timelineDuration(reel.timeline) || reel.vo.durationSec;
@@ -175,18 +140,9 @@ export default function ReelStudio() {
           <Button icon={<ReloadOutlined />} loading={busy === 'assemble'} onClick={() => stage('assemble', 'assemble')}>
             Assemble
           </Button>
-          <Button
-            type="primary"
-            icon={<ExportOutlined />}
-            disabled={exportPct !== null}
-            onClick={runExport}
-          >
-            Export
-          </Button>
         </Space.Compact>
       </div>
 
-      {exportPct !== null && <Progress percent={Math.round(exportPct * 100)} status="active" />}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
         <div>
@@ -368,90 +324,6 @@ export default function ReelStudio() {
               ),
             },
             {
-              key: 'clip',
-              label: 'Clip',
-              children: clip ? (
-                <Card size="small" title={`${clip.id}${clip.locked ? ' · locked' : ''}`}>
-                  <Space orientation="vertical" style={{ width: '100%' }} size="middle">
-                    <Segmented
-                      value={clip.motion.type}
-                      options={MOTIONS as unknown as string[]}
-                      onChange={(v) => run('clip.motion', { clipId: clip.id, motion: { type: v as (typeof MOTIONS)[number] } })}
-                    />
-                    <div>
-                      <Typography.Text type="secondary">Motion strength</Typography.Text>
-                      <Slider
-                        min={0}
-                        max={0.4}
-                        step={0.01}
-                        value={clip.motion.strength}
-                        onChangeComplete={(v) => run('clip.motion', { clipId: clip.id, motion: { strength: v as number } })}
-                      />
-                    </div>
-                    <Segmented
-                      value={clip.fit}
-                      options={['cover', 'contain']}
-                      onChange={(v) => run('clip.fit', { clipId: clip.id, fit: v as 'cover' | 'contain' })}
-                    />
-                    <Segmented
-                      value={clip.transition}
-                      options={['cut', 'crossfade']}
-                      onChange={(v) => run('clip.transition', { clipId: clip.id, transition: v as 'cut' | 'crossfade' })}
-                    />
-                    <Space wrap>
-                      <Button onClick={() => run('clip.trim', { clipId: clip.id, edge: 'in', deltaSec: 0.1 })}>Trim in +0.1</Button>
-                      <Button onClick={() => run('clip.trim', { clipId: clip.id, edge: 'out', deltaSec: -0.1 })}>Trim out −0.1</Button>
-                      <Button icon={<ScissorOutlined />} onClick={() => run('clip.split', { clipId: clip.id, atSec: time })}>
-                        Split here
-                      </Button>
-                      <Button danger icon={<DeleteOutlined />} onClick={() => run('clip.delete', { clipId: clip.id })}>
-                        Delete
-                      </Button>
-                    </Space>
-                    <Space wrap>
-                      <Button
-                        onClick={() => run('clip.move', { clipId: clip.id, toIndex: Math.max(0, reel.timeline.clips.findIndex((c) => c.id === clip.id) - 1) })}
-                      >
-                        Move earlier
-                      </Button>
-                      <Button
-                        onClick={() => run('clip.move', { clipId: clip.id, toIndex: Math.min(reel.timeline.clips.length - 1, reel.timeline.clips.findIndex((c) => c.id === clip.id) + 1) })}
-                      >
-                        Move later
-                      </Button>
-                    </Space>
-                  </Space>
-                </Card>
-              ) : (
-                <Empty description="Pick a clip in the timeline" />
-              ),
-            },
-            {
-              key: 'caption',
-              label: 'Caption',
-              children: cue ? (
-                <Card size="small" title={`${cue.id}${cue.locked ? ' · locked' : ''}`}>
-                  <Space orientation="vertical" style={{ width: '100%' }}>
-                    <Input
-                      value={cue.text}
-                      onChange={(e) => run('caption.edit', { cueId: cue.id, text: e.target.value })}
-                    />
-                    <Space wrap>
-                      <Button onClick={() => run('caption.nudge', { cueId: cue.id, deltaSec: -0.05 })}>−0.05s</Button>
-                      <Button onClick={() => run('caption.nudge', { cueId: cue.id, deltaSec: 0.05 })}>+0.05s</Button>
-                      <Button onClick={() => run('caption.merge', { cueId: cue.id })}>Merge next</Button>
-                      <Button onClick={() => run('caption.split', { cueId: cue.id })}>Split</Button>
-                      <Button onClick={() => run('caption.toggle', { cueId: cue.id })}>
-                        {cue.hidden ? 'Show' : 'Hide'}
-                      </Button>
-                    </Space>
-                  </Space>
-                </Card>
-              ) : (
-                <Empty description="Pick a caption in the timeline" />
-              ),
-            },
-            {
               key: 'shots',
               label: `Shots (${reel.beats.length})`,
               children: (
@@ -541,7 +413,6 @@ export default function ReelStudio() {
           onSeek={setTime}
           onSelectClip={setClipId}
           onSelectCue={setCueId}
-          onCommand={run}
         />
       </Card>
     </div>

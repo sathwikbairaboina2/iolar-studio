@@ -75,13 +75,13 @@ describe('applyCommand', () => {
     await seed();
 
     const { reel } = await applyCommand('grok', {
-      op: 'clip.motion',
-      args: { clipId: 'c1', motion: { type: 'pan-left' } },
+      op: 'beat.text',
+      args: { beatId: 'b1', text: 'a rewritten opening line' },
       actor: 'agent',
     });
 
-    expect(reel.timeline.clips[0].motion.type).toBe('pan-left');
-    expect((await loadReel('grok')).timeline.clips[0].motion.type).toBe('pan-left');
+    expect(reel.beats.find((b) => b.id === 'b1')!.text).toBe('a rewritten opening line');
+    expect((await loadReel('grok')).beats.find((b) => b.id === 'b1')!.text).toBe('a rewritten opening line');
   });
 
   it('records the command in history with its actor and a readable summary', async () => {
@@ -90,15 +90,15 @@ describe('applyCommand', () => {
     await seed();
 
     await applyCommand('grok', {
-      op: 'clip.trim',
-      args: { clipId: 'c1', edge: 'out', deltaSec: -0.5 },
+      op: 'beat.text',
+      args: { beatId: 'b1', text: 'a rewritten opening line' },
       actor: 'agent',
     });
     const log = await history.read('grok');
 
     expect(log.entries).toHaveLength(1);
     expect(log.entries[0].actor).toBe('agent');
-    expect(log.entries[0].summary).toMatch(/c1/);
+    expect(log.entries[0].summary).toMatch(/b1/);
   });
 
   it('broadcasts the saved reel so an open studio tab updates', async () => {
@@ -106,15 +106,15 @@ describe('applyCommand', () => {
     const { subscribe } = await import('@/lib/reel/bus');
     await seed();
     const seen: string[] = [];
-    subscribe('grok', (r) => seen.push(r.timeline.clips[0].motion.type));
+    subscribe('grok', (r) => seen.push(r.beats.find((b) => b.id === 'b1')!.text));
 
     await applyCommand('grok', {
-      op: 'clip.motion',
-      args: { clipId: 'c1', motion: { type: 'pan-right' } },
+      op: 'beat.text',
+      args: { beatId: 'b1', text: 'the line the tab should see' },
       actor: 'ui',
     });
 
-    expect(seen).toEqual(['pan-right']);
+    expect(seen).toEqual(['the line the tab should see']);
   });
 
   it('refuses an unknown op and names the valid ones', async () => {
@@ -125,7 +125,7 @@ describe('applyCommand', () => {
 
     expect(err).toBeInstanceOf(CommandError);
     expect(err.status).toBe(400);
-    expect(err.detail.validOps).toContain('clip.trim');
+    expect(err.detail.validOps).toContain('beat.text');
   });
 
   it('refuses arguments the op does not accept', async () => {
@@ -133,7 +133,7 @@ describe('applyCommand', () => {
     await seed();
 
     const err = await applyCommand('grok', {
-      op: 'clip.trim',
+      op: 'beat.text',
       args: { clipId: 'c1', edge: 'sideways', deltaSec: -0.5 },
       actor: 'ui',
     }).catch((e) => e);
@@ -142,33 +142,7 @@ describe('applyCommand', () => {
     expect(err.detail.schema).toBeDefined();
   });
 
-  it('refuses an id that is not on the timeline and names the ids that are', async () => {
-    const { applyCommand } = await import('@/lib/reel/commands');
-    await seed();
 
-    const err = await applyCommand('grok', {
-      op: 'clip.delete',
-      args: { clipId: 'c99' },
-      actor: 'agent',
-    }).catch((e) => e);
-
-    expect(err.status).toBe(404);
-    expect(err.detail.validIds).toEqual(['c1', 'c2']);
-  });
-
-  it('checks caption ids against the caption lane, not the clip lane', async () => {
-    const { applyCommand } = await import('@/lib/reel/commands');
-    await seed();
-
-    const err = await applyCommand('grok', {
-      op: 'caption.edit',
-      args: { cueId: 'c1', text: 'nope' },
-      actor: 'ui',
-    }).catch((e) => e);
-
-    expect(err.status).toBe(404);
-    expect(err.detail.validIds).toEqual(['k1', 'k2']);
-  });
 
   it('leaves the reel, the history and the bus untouched when a command fails', async () => {
     const { applyCommand } = await import('@/lib/reel/commands');
@@ -179,7 +153,7 @@ describe('applyCommand', () => {
     const seen: unknown[] = [];
     subscribe('grok', (r) => seen.push(r));
 
-    await applyCommand('grok', { op: 'clip.delete', args: { clipId: 'c99' }, actor: 'agent' }).catch(() => {});
+    await applyCommand('grok', { op: 'beat.text', args: { clipId: 'c99' }, actor: 'agent' }).catch(() => {});
 
     expect(await loadReel('grok')).toEqual(before);
     expect((await history.read('grok')).entries).toEqual([]);
@@ -190,7 +164,7 @@ describe('applyCommand', () => {
     const { applyCommand } = await import('@/lib/reel/commands');
 
     const err = await applyCommand('no-such-reel', {
-      op: 'clip.delete',
+      op: 'beat.text',
       args: { clipId: 'c1' },
       actor: 'agent',
     }).catch((e) => e);
@@ -198,49 +172,6 @@ describe('applyCommand', () => {
     expect(err.status).toBe(404);
   });
 
-  it('drives every clip op end to end', async () => {
-    const { applyCommand } = await import('@/lib/reel/commands');
-    await seed();
-    const run = (op: string, args: unknown) => applyCommand('grok', { op, args, actor: 'ui' });
 
-    expect((await run('clip.split', { clipId: 'c1', atSec: 2 })).reel.timeline.clips).toHaveLength(3);
-    expect((await run('clip.fit', { clipId: 'c1', fit: 'contain' })).reel.timeline.clips[0].fit).toBe('contain');
-    expect(
-      (await run('clip.transition', { clipId: 'c1', transition: 'crossfade' })).reel.timeline.clips[0]
-        .transition
-    ).toBe('crossfade');
-    expect((await run('clip.asset', { clipId: 'c1', assetId: 'a2' })).reel.timeline.clips[0].assetId).toBe('a2');
-    expect((await run('clip.move', { clipId: 'c1', toIndex: 1 })).reel.timeline.clips[1].id).toBe('c1');
-    expect((await run('clip.delete', { clipId: 'c1' })).reel.timeline.clips.some((c) => c.id === 'c1')).toBe(false);
-  });
 
-  it('drives every caption op end to end', async () => {
-    const { applyCommand } = await import('@/lib/reel/commands');
-    await seed();
-    const run = (op: string, args: unknown) => applyCommand('grok', { op, args, actor: 'ui' });
-
-    expect((await run('caption.edit', { cueId: 'k1', text: 'rewritten' })).reel.timeline.captions[0].text).toBe(
-      'rewritten'
-    );
-    expect((await run('caption.nudge', { cueId: 'k1', deltaSec: 0.2 })).reel.timeline.captions[0].start).toBeCloseTo(
-      0.7
-    );
-    expect((await run('caption.toggle', { cueId: 'k1' })).reel.timeline.captions[0].hidden).toBe(true);
-    expect((await run('caption.split', { cueId: 'k2' })).reel.timeline.captions).toHaveLength(3);
-    expect((await run('caption.merge', { cueId: 'k1' })).reel.timeline.captions[0].text).toMatch(/rewritten/);
-  });
-
-  it('refuses an asset id the reel does not carry', async () => {
-    const { applyCommand } = await import('@/lib/reel/commands');
-    await seed();
-
-    const err = await applyCommand('grok', {
-      op: 'clip.asset',
-      args: { clipId: 'c1', assetId: 'a99' },
-      actor: 'agent',
-    }).catch((e) => e);
-
-    expect(err.status).toBe(404);
-    expect(err.detail.validIds).toEqual(['a1', 'a2']);
-  });
 });

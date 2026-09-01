@@ -155,6 +155,35 @@ describe('reel player', () => {
     expect(audioPlay).not.toHaveBeenCalled();
   });
 
+  it('lets a recording speak for itself instead of the voiceover under it', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { validateReel } = await import('@/lib/reel/schema');
+    const { reel, pattern } = await build();
+    const own = validateReel({
+      ...reel,
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', takeStart: 0, durationSec: 4 }],
+      timeline: { ...reel.timeline, clips: [clip('c1', 'a1', 0, 4)], captions: [], overlays: [] },
+    });
+    render(
+      <Player reel={own} pattern={pattern} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
+    );
+
+    // The lips were made from the audio inside this file. Hearing the voiceover over the top
+    // is a second copy of the same words, slightly out.
+    expect((screen.getByTestId('reel-video') as HTMLVideoElement).muted).toBe(false);
+    expect((screen.getByTestId('reel-audio') as HTMLAudioElement).muted).toBe(true);
+  });
+
+  it('keeps the voiceover under footage that brought no sound of its own', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { reel, pattern } = await build();
+    render(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
+    );
+    expect((screen.getByTestId('reel-video') as HTMLVideoElement).muted).toBe(true);
+    expect((screen.getByTestId('reel-audio') as HTMLAudioElement).muted).toBe(false);
+  });
+
   it('exposes the pattern custom properties on the stage', async () => {
     const Player = (await import('@/components/reel/Player')).default;
     const { reel, pattern } = await build();

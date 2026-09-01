@@ -55,7 +55,7 @@ describe('local agent backend', () => {
       return Promise.resolve({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ commands: [{ op: 'clip.delete', args: { clipId: 'c1' } }] }),
+        json: () => Promise.resolve({ commands: [{ op: 'beat.text', args: { clipId: 'c1' } }] }),
       } as Response);
     });
 
@@ -66,7 +66,7 @@ describe('local agent backend', () => {
     expect(body.prompt).toBe('tighten the hook');
     expect(body.tools.length).toBeGreaterThan(0);
     expect(body.model).toBe('lfm2.5');
-    expect(out.commands).toEqual([{ op: 'clip.delete', args: { clipId: 'c1' }, actor: 'agent' }]);
+    expect(out.commands).toEqual([{ op: 'beat.text', args: { clipId: 'c1' }, actor: 'agent' }]);
   });
 
   it('says which URL it could not reach when the container is down', async () => {
@@ -115,14 +115,14 @@ describe('local agent backend', () => {
         status: 200,
         json: () =>
           Promise.resolve({
-            commands: [{ op: 'clip.explode', args: {} }, { op: 'clip.delete', args: { clipId: 'c1' } }],
+            commands: [{ op: 'clip.explode', args: {} }, { op: 'beat.text', args: { clipId: 'c1' } }],
           }),
       } as Response)
     );
 
     const out = await localBackend().propose(req);
 
-    expect(out.commands).toEqual([{ op: 'clip.delete', args: { clipId: 'c1' }, actor: 'agent' }]);
+    expect(out.commands).toEqual([{ op: 'beat.text', args: { clipId: 'c1' }, actor: 'agent' }]);
   });
 
   it('forces actor to agent even if the service claims otherwise', async () => {
@@ -131,7 +131,7 @@ describe('local agent backend', () => {
       Promise.resolve({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ commands: [{ op: 'clip.delete', args: { clipId: 'c1' }, actor: 'ui' }] }),
+        json: () => Promise.resolve({ commands: [{ op: 'beat.text', args: { clipId: 'c1' }, actor: 'ui' }] }),
       } as Response)
     );
 

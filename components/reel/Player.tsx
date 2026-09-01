@@ -1,5 +1,5 @@
 'use client';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { Pattern } from '@/lib/reel/pattern-schema';
 import type { Reel } from '@/lib/reel/schema';
 import { REEL_RATIOS } from '@/lib/reel/schema';
@@ -42,28 +42,6 @@ export default function Player({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   /** Every mounted lane, so the ones that are not on screen can be held still. */
   const laneRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
-  const laneCallbacks = useRef<Map<string, (el: HTMLVideoElement | null) => void>>(new Map());
-  /**
-   * One ref callback per asset, kept for the life of the component.
-   *
-   * An inline `ref={(el) => ...}` is a new function on every render, and React answers that
-   * by calling the previous one with null — so anything doing cleanup there runs on every
-   * render rather than on unmount. Pausing from such a callback stopped the shot being
-   * watched sixty times a second.
-   */
-  const laneRefFor = useCallback((assetId: string) => {
-    const held = laneCallbacks.current.get(assetId);
-    if (held) return held;
-    const fn = (el: HTMLVideoElement | null) => {
-      if (el) laneRefs.current.set(assetId, el);
-      else {
-        laneRefs.current.get(assetId)?.pause();
-        laneRefs.current.delete(assetId);
-      }
-    };
-    laneCallbacks.current.set(assetId, fn);
-    return fn;
-  }, []);
   const rafRef = useRef<number | null>(null);
   const clockRef = useRef<{ start: number; at: number }>({ start: 0, at: 0 });
   // The studio re-creates these arrows on every render, and the loop calls onTimeChange every
@@ -80,6 +58,11 @@ export default function Player({
   const frame = frameAt(reel.timeline, currentTime);
   const asset = frame.clip ? reel.assets.find((a) => a.id === frame.clip!.assetId) : undefined;
   const ready = asset?.status === 'ready' && !!asset.path;
+  // A recording made for a stretch of the reel carries the audio it was rendered against —
+  // a lipsync take especially, whose lips were made from it. Under one of those the
+  // voiceover is a second copy of the same words, slightly out, so the clip speaks and the
+  // voiceover holds its tongue.
+  const speaksForItself = !!asset && asset.origin === 'plugin' && asset.takeStart !== undefined;
   const [voFailed, setVoFailed] = useState(false);
 
   useEffect(() => {
@@ -199,11 +182,21 @@ export default function Player({
       {lanes.map((lane) => (
         <video
           key={lane.assetId}
-          ref={laneRefFor(lane.assetId)}
+          ref={(el) => {
+            if (!el) return;
+            laneRefs.current.set(lane.assetId, el);
+            // React 19 calls this cleanup on unmount instead of calling the ref with null,
+            // which is what makes it safe to stop the recording here: a detached element
+            // carries on playing until it is collected.
+            return () => {
+              laneRefs.current.get(lane.assetId)?.pause();
+              laneRefs.current.delete(lane.assetId);
+            };
+          }}
           data-testid={lane.current ? 'reel-video' : 'reel-preload'}
           data-asset={lane.assetId}
           src={assetSrc(slug, lane.assetId)}
-          muted
+          muted={!(lane.current && speaksForItself)}
           playsInline
           preload="auto"
           // Footage shorter than its clip loops in the export; let the element do the same
@@ -280,6 +273,7 @@ export default function Player({
         <audio
           ref={audioRef}
           data-testid="reel-audio"
+          muted={speaksForItself}
           src={`/api/reel/${slug}/vo`}
           preload="auto"
           onError={() => setVoFailed(true)}
