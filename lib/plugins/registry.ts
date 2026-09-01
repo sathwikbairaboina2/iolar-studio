@@ -7,7 +7,7 @@
  * lets a page say which one is missing, and start the two that can be started from here.
  */
 
-export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama' | 'jobsreel';
+export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama';
 
 export type StartRecipe = {
   command: string;
@@ -32,7 +32,6 @@ const lipsyncBase = (process.env.LIPSYNC_URL ?? 'http://127.0.0.1:8300').replace
 const webpageBase = (process.env.WEBPAGE_MP4_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, '');
 const comfyBase = (process.env.COMFY_URL ?? 'http://127.0.0.1:8189').replace(/\/$/, '');
 const ollamaBase = (process.env.OLLAMA_URL ?? 'http://127.0.0.1:11436').replace(/\/$/, '');
-const jobsreelBase = (process.env.JOBSREEL_URL ?? 'http://127.0.0.1:26100').replace(/\/$/, '');
 
 const port = (url: string) => Number(new URL(url).port || 80);
 
@@ -82,20 +81,6 @@ export const PLUGINS: Plugin[] = [
     port: port(ollamaBase),
     healthUrl: `${ollamaBase}/api/tags`,
     what: 'The local model behind the edit agent. Nothing renders without it; nothing stops either.',
-  },
-  {
-    name: 'jobsreel',
-    label: 'jobs-reel',
-    port: port(jobsreelBase),
-    healthUrl: `${jobsreelBase}/healthz`,
-    what: 'The weekly jobs digest reel. Renders from a sheet; nothing generated at run time.',
-    openUrl: jobsreelBase,
-    start: {
-      command: 'npm',
-      args: ['run', 'dev'],
-      cwd: `${PLUGIN_ROOT}/plugins/jobs-reel-plugin`,
-      hint: 'npm run dev',
-    },
   },
 ];
 
