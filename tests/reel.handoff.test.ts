@@ -176,3 +176,39 @@ describe('handing the reel to an editor', () => {
     await expect(writeHandoff('grok')).rejects.toThrow(/still rendering|not ready/i);
   });
 });
+
+describe('a recording that runs into its neighbour', () => {
+  it('is trimmed to the neighbour, because the surplus is only padding', async () => {
+    const { buildProject } = await import('@/lib/reel/handoff');
+    const reel = {
+      title: 'grok',
+      ratio: '9:16',
+      fps: 30,
+      vo: { durationSec: 12 },
+    } as never;
+    // The first take was padded to the half-second grid, so it measures 5.5 seconds but
+    // its neighbour starts at 5.2.
+    const xml = buildProject(reel, [
+      { file: 'clips/01.mp4', startsAt: 0, seconds: 5.5, speaks: true },
+      { file: 'clips/02.mp4', startsAt: 5.2, seconds: 4.0 },
+    ]);
+
+    const video = xml.split('<playlist id="video">')[1].split('</playlist>')[0];
+    // 5.2 seconds at 30fps, out = last frame that plays: 5.2 - 1/30 ≈ 5.167
+    expect(video).toContain('<entry producer="clip0" in="00:00:00.000" out="00:00:05.16');
+    expect(video).not.toContain('<blank length="-');
+  });
+
+  it('keeps a clip that fits exactly as it is', async () => {
+    const { buildProject } = await import('@/lib/reel/handoff');
+    const reel = { title: 'grok', ratio: '9:16', fps: 30, vo: { durationSec: 12 } } as never;
+    const xml = buildProject(reel, [
+      { file: 'clips/01.mp4', startsAt: 0, seconds: 5.0 },
+      { file: 'clips/02.mp4', startsAt: 6.0, seconds: 4.0 },
+    ]);
+
+    const video = xml.split('<playlist id="video">')[1].split('</playlist>')[0];
+    expect(video).toContain('<entry producer="clip0" in="00:00:00.000" out="00:00:04.96');
+    expect(video).toContain('<blank length="00:00:01.000"');
+  });
+});

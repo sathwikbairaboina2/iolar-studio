@@ -330,8 +330,9 @@ export async function previewShots(slug: string): Promise<ResolvedShot[]> {
   const out: ResolvedShot[] = [];
   for (const g of await planGroups(slug, reel, ctx, pattern.pacing.shotSec)) {
     const req = { ...g.first, seconds: g.seconds };
-    const audio =
-      g.beatIds.length === 1 ? beatAudioFile(slug, g.beatIds[0]) : groupAudioFile(slug, `${g.key}-${g.startsAt}`);
+    // The same name `runShots` will cut to — a group of one included — so the gate shows
+    // exactly the call that will be made.
+    const audio = groupAudioFile(slug, `${g.key}-${g.startsAt}`);
     const shot = await resolveShot(slug, req, reel, ctx, audio, beatAudioFile(slug, g.beatIds[0]));
     out.push({ ...shot, beatIds: g.beatIds });
   }
@@ -392,7 +393,9 @@ async function generateGroup(
   const stall = (error: string) => updateAsset(slug, asset.id, { status: 'awaiting-manual', error });
 
   try {
-    const plan = await resolveShot(slug, req, reel, ctx, audio);
+    // The group cut is made moments before this runs, so its file is a poor witness for
+    // "does this beat have audio at all" — the per-beat slice is the honest probe.
+    const plan = await resolveShot(slug, req, reel, ctx, audio, beatAudioFile(slug, beatIds[0]));
     if (plan.blocked) {
       await stall(plan.blocked);
       return;
@@ -541,13 +544,16 @@ export async function runShots(slug: string, beatIds?: string[]): Promise<Reel> 
   for (const g of await planGroups(slug, reel, ctx, pattern.pacing.shotSec)) {
     if (wanted && !g.beatIds.some((id) => wanted.has(id))) continue;
     // One stretch of voiceover per request, cut before it is sent: the renderer is told
-    // what this picture is spoken over, not what one sentence inside it is.
-    // A group of one is already cut: its beat's own audio is that stretch. Only a run of
-    // beats needs a fresh cut spanning them.
-    const audio =
-      g.beatIds.length === 1
-        ? beatAudioFile(slug, g.beatIds[0])
-        : await sliceSpan(slug, `${g.key}-${g.startsAt}`, g.startsAt, g.startsAt + g.seconds);
+    // what this picture is spoken over, not what one sentence inside it is. Every group
+    // gets a fresh cut — a group of one included — because the cut does more than the
+    // per-beat slice: it runs out into the silence after the last word instead of clipping
+    // its decay, and a presenter group lands on the half-second grid the lipsync renderer
+    // needs, padded with silence rather than cut short of its words.
+    const audio = await sliceSpan(slug, `${g.key}-${g.startsAt}`, g.startsAt, g.startsAt + g.seconds, {
+      words: reel.vo.words,
+      voiceEnd: reel.vo.durationSec || undefined,
+      grid: g.key === 'presenter',
+    });
     await generateGroup(slug, { ...g.first, seconds: g.seconds }, g.beatIds, g.startsAt, audio, await loadReel(slug), ctx);
   }
   return loadReel(slug);

@@ -60,3 +60,80 @@ describe('sliceBeatAudio', () => {
     expect(Object.keys(out)).toEqual(['b1']);
   });
 });
+
+describe('where a cut ends', () => {
+  it('runs out into the silence after the last word', async () => {
+    const { tailEnd } = await import('@/lib/reel/build/audio');
+    const words = [
+      { start: 0, end: 0.9 },
+      { start: 2.0, end: 2.4 },
+    ];
+    // The span ends at 0.9; the next word starts at 2.0. The tail takes its 0.35 in full.
+    expect(tailEnd(words, 0.9)).toBeCloseTo(1.25, 3);
+  });
+
+  it('never clips the onset of the next word', async () => {
+    const { tailEnd } = await import('@/lib/reel/build/audio');
+    const words = [
+      { start: 0, end: 0.9 },
+      { start: 1.0, end: 1.4 },
+    ];
+    // Only 0.1s of silence exists; the tail stops 0.05 clear of the next word.
+    expect(tailEnd(words, 0.9)).toBeCloseTo(0.95, 3);
+  });
+
+  it('never runs past the end of the voiceover', async () => {
+    const { tailEnd } = await import('@/lib/reel/build/audio');
+    expect(tailEnd([{ start: 0, end: 5.0 }], 5.0, 5.1)).toBeCloseTo(5.1, 3);
+  });
+
+  it('never moves a cut earlier', async () => {
+    const { tailEnd } = await import('@/lib/reel/build/audio');
+    // Degenerate alignment: the next word starts before the span ends.
+    expect(tailEnd([{ start: 0.8, end: 1.2 }], 0.9)).toBeCloseTo(0.9, 3);
+  });
+});
+
+describe('sliceSpan', () => {
+  it('pads a presenter cut up to the half-second grid instead of cutting words off', async () => {
+    const calls: string[][] = [];
+    vi.doMock('@/lib/reel/probe', () => ({ run: vi.fn(async (_c: string, args: string[]) => { calls.push(args); return ''; }) }));
+    const { sliceSpan } = await import('@/lib/reel/build/audio');
+
+    await sliceSpan('grok', 'presenter-0', 0, 6.72, { grid: true });
+
+    const args = calls[0];
+    // The full 6.72 seconds of words are kept...
+    expect(args[args.indexOf('-t') + 1]).toBe('6.720');
+    // ...and silence carries the file to 7.0, the next half-second up.
+    expect(args[args.indexOf('-af') + 1]).toBe('apad=whole_dur=7.000');
+  });
+
+  it('cuts a page group exactly, with no grid', async () => {
+    const calls: string[][] = [];
+    vi.doMock('@/lib/reel/probe', () => ({ run: vi.fn(async (_c: string, args: string[]) => { calls.push(args); return ''; }) }));
+    const { sliceSpan } = await import('@/lib/reel/build/audio');
+
+    await sliceSpan('grok', 'page-x', 1.5, 4.72);
+
+    const args = calls[0];
+    expect(args[args.indexOf('-t') + 1]).toBe('3.220');
+    expect(args).not.toContain('-af');
+  });
+
+  it('lets the cut breathe out through the word timings it is given', async () => {
+    const calls: string[][] = [];
+    vi.doMock('@/lib/reel/probe', () => ({ run: vi.fn(async (_c: string, args: string[]) => { calls.push(args); return ''; }) }));
+    const { sliceSpan } = await import('@/lib/reel/build/audio');
+
+    const words = [
+      { start: 0, end: 3.0 },
+      { start: 4.0, end: 4.5 },
+    ];
+    await sliceSpan('grok', 'page-y', 0, 3.0, { words });
+
+    const args = calls[0];
+    // 3.0 + the full 0.35 tail: the next word is far enough away.
+    expect(args[args.indexOf('-t') + 1]).toBe('3.350');
+  });
+});

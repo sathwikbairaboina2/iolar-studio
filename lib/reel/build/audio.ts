@@ -31,6 +31,52 @@ export function groupAudioFile(slug: string, key: string): string {
   return path.join(beatAudioDir(slug), `${key.replace(/[^a-z0-9]+/gi, '-').slice(0, 60)}.wav`);
 }
 
+/** How far a cut may run past its last word, chasing the breath after it. */
+const TAIL_MAX = 0.35;
+/** Clearance kept before the next word, so a tail never clips its onset. */
+const TAIL_CLEAR = 0.05;
+
+/**
+ * Where a cut should actually end: in the silence after the words, not on top of them.
+ *
+ * The aligned span ends at the instant the last word does, and a cut landing exactly there
+ * clips the word's decay and the breath behind it — every bite ended with the sound of a
+ * door closing. The cut runs on into the pause, stopping short of the next word's onset,
+ * so the take breathes out the way the speaker did.
+ */
+export function tailEnd(
+  words: { start: number; end: number }[],
+  end: number,
+  voiceEnd?: number
+): number {
+  // A word still sounding at the cut point means there is no silence to run into at all —
+  // degenerate alignment, but a tail laid over someone talking is worse than none.
+  if (words.some((w) => w.start < end - 1e-3 && w.end > end + 1e-3)) {
+    return Math.round(end * 1e3) / 1e3;
+  }
+  const next = words.find((w) => w.start >= end - 1e-3);
+  const room = next ? next.start - TAIL_CLEAR : voiceEnd ?? end + TAIL_MAX;
+  return Math.round(Math.max(end, Math.min(end + TAIL_MAX, room)) * 1e3) / 1e3;
+}
+
+export type SliceOptions = {
+  /** Word timings, so the cut can run out into the silence after its span. */
+  words?: { start: number; end: number }[];
+  /** Where the voiceover ends; a tail never runs past the file. */
+  voiceEnd?: number;
+  /**
+   * Whether the length must land on the half-second grid.
+   *
+   * The lipsync renderer fails certain durations with an einops shape mismatch ("can't
+   * divide axis of length 29640 in chunks of 18"); half-second lengths have not failed.
+   * This used to be done by cutting the audio DOWN to the grid, which threw away up to
+   * half a second of words — the ends of sentences, mostly. Now the cut keeps every word
+   * and pads UP to the grid with silence instead. The real fix is still in the plugin's
+   * own planner.
+   */
+  grid?: boolean;
+};
+
 /**
  * Cuts one stretch of the voiceover.
  *
@@ -38,26 +84,33 @@ export function groupAudioFile(slug: string, key: string): string {
  * of audio: handing the renderer the beats separately is what produced four recordings of
  * the same document.
  */
-export async function sliceSpan(slug: string, key: string, start: number, end: number): Promise<string> {
+export async function sliceSpan(
+  slug: string,
+  key: string,
+  start: number,
+  end: number,
+  opts: SliceOptions = {}
+): Promise<string> {
   const dir = beatAudioDir(slug);
   await fs.mkdir(dir, { recursive: true });
   const dest = groupAudioFile(slug, key);
-  // Covering for a length edge case in the renderer: certain durations fail inside it with
-  // an einops shape mismatch ("can't divide axis of length 29640 in chunks of 18"). 6.72s
-  // fails, 6.50s of the same audio succeeds. Half-second lengths have not, so a bite is cut
-  // to one. The real fix is in the plugin's own planner.
-  const asked = Math.max(0.5, end - start);
-  const safe = Math.floor(asked * 2) / 2;
-  await run('ffmpeg', [
+
+  const stops = opts.words ? tailEnd(opts.words, end, opts.voiceEnd) : end;
+  const asked = Math.max(0.5, stops - start);
+  const padded = opts.grid ? Math.max(0.5, Math.ceil(asked * 2) / 2) : asked;
+
+  const args = [
     '-y',
     '-ss', start.toFixed(3),
-    '-t', safe.toFixed(3),
+    '-t', asked.toFixed(3),
     '-i', reelVoFile(slug),
-    '-ac', '1',
-    '-ar', '16000',
-    '-c:a', 'pcm_s16le',
-    dest,
-  ]);
+  ];
+  // Padding is applied whenever the grid asks for it, even when the cut already measures
+  // out: a span reaching past the end of the voiceover file comes back short from ffmpeg,
+  // and the grid promise has to hold on what lands on disk, not on what was asked for.
+  if (opts.grid) args.push('-af', `apad=whole_dur=${padded.toFixed(3)}`);
+  args.push('-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', dest);
+  await run('ffmpeg', args);
   return dest;
 }
 

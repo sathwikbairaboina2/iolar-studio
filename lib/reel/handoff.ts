@@ -74,13 +74,26 @@ function documentId(reel: Reel): number {
  */
 export function buildProject(
   reel: Reel,
-  clips: HandoffClip[],
+  laidClips: HandoffClip[],
   flavour: 'mlt' | 'kdenlive' = 'mlt'
 ): string {
   const [width, height] = REEL_RATIOS[reel.ratio];
   const kden = flavour === 'kdenlive';
   const voiceSec = reel.vo.durationSec;
   const nl = '\n';
+
+  /**
+   * A recording may now run a breath past its span — the cut chases the silence after the
+   * last word, and a presenter take is padded up to the renderer's half-second grid rather
+   * than cut short of its words. On the timeline that surplus is only silence and a held
+   * face, so a clip that would run into its neighbour is trimmed to the neighbour's start:
+   * a blank of negative length is not a gap, it is a broken project file.
+   */
+  const clips = laidClips.map((c, i) => {
+    const next = laidClips[i + 1];
+    const room = next ? next.startsAt - c.startsAt : c.seconds;
+    return { ...c, seconds: Math.round(Math.max(0.1, Math.min(c.seconds, room)) * 1e3) / 1e3 };
+  });
 
   /**
    * MLT's `out` is the last frame that plays, not the length.
