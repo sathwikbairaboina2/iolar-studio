@@ -219,9 +219,50 @@ describe('reel player', () => {
     render(
       <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
-    const pre = screen.getByTestId('reel-preload');
-    expect(pre.getAttribute('data-asset')).toBe('a2');
-    expect(pre.getAttribute('src')).toContain('id=a2');
+    const pre = screen.getAllByTestId('reel-preload');
+    expect(pre[0].getAttribute('data-asset')).toBe('a2');
+    expect(pre[0].getAttribute('src')).toContain('id=a2');
+  });
+
+  it('stops the shot it has cut away from', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { reel, pattern } = await build();
+    const { rerender } = render(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
+    );
+    const first = screen.getByTestId('reel-video') as HTMLVideoElement;
+    const pause = vi.fn();
+    Object.defineProperty(first, 'pause', { configurable: true, value: pause });
+
+    rerender(
+      <Player reel={reel} pattern={pattern} slug="grok" currentTime={5} playing onTimeChange={() => {}} />
+    );
+
+    // Left running, it plays on behind the shot you are watching — and with loop on it wraps
+    // for ever, holding a decoder open for every clip the reel has been through.
+    expect(pause).toHaveBeenCalled();
+  });
+
+  it('keeps several shots loading, not just the next one', async () => {
+    const Player = (await import('@/components/reel/Player')).default;
+    const { validateReel } = await import('@/lib/reel/schema');
+    const { reel, pattern } = await build();
+    const many = validateReel({
+      ...reel,
+      assets: ['a1', 'a2', 'a4', 'a5'].map((id) => ({
+        id, kind: 'video', path: `assets/${id}.mp4`, origin: 'plugin', status: 'ready',
+      })),
+      timeline: {
+        ...reel.timeline,
+        clips: [clip('c1', 'a1', 0, 2), clip('c2', 'a2', 2, 4), clip('c3', 'a4', 4, 6), clip('c4', 'a5', 6, 8)],
+      },
+    });
+    render(
+      <Player reel={many} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+    );
+    // A reel cut to speech runs under two seconds a shot; one shot of runway is not enough
+    // to have the bytes ready by the time the cut arrives.
+    expect(screen.getAllByTestId('reel-preload').map((e) => e.getAttribute('data-asset'))).toEqual(['a2', 'a4', 'a5']);
   });
 
   it('promotes that same element at the cut instead of mounting a fresh one', async () => {
@@ -230,7 +271,7 @@ describe('reel player', () => {
     const { rerender } = render(
       <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
-    const preloaded = screen.getByTestId('reel-preload');
+    const preloaded = screen.getAllByTestId('reel-preload')[0];
     rerender(
       <Player reel={reel} pattern={pattern} slug="grok" currentTime={5} playing={false} onTimeChange={() => {}} />
     );

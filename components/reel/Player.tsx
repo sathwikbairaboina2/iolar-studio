@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { Pattern } from '@/lib/reel/pattern-schema';
 import type { Reel } from '@/lib/reel/schema';
 import { REEL_RATIOS } from '@/lib/reel/schema';
@@ -16,6 +16,9 @@ export type PlayerProps = {
   onTimeChange: (t: number) => void;
   onEnded?: () => void;
 };
+
+/** How many shots ahead are kept loading off-screen. */
+const PRELOAD_AHEAD = 3;
 
 export function assetSrc(slug: string, assetId: string) {
   return `/api/reel/${slug}/assets?id=${encodeURIComponent(assetId)}`;
@@ -37,6 +40,30 @@ export default function Player({
 }: PlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  /** Every mounted lane, so the ones that are not on screen can be held still. */
+  const laneRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const laneCallbacks = useRef<Map<string, (el: HTMLVideoElement | null) => void>>(new Map());
+  /**
+   * One ref callback per asset, kept for the life of the component.
+   *
+   * An inline `ref={(el) => ...}` is a new function on every render, and React answers that
+   * by calling the previous one with null — so anything doing cleanup there runs on every
+   * render rather than on unmount. Pausing from such a callback stopped the shot being
+   * watched sixty times a second.
+   */
+  const laneRefFor = useCallback((assetId: string) => {
+    const held = laneCallbacks.current.get(assetId);
+    if (held) return held;
+    const fn = (el: HTMLVideoElement | null) => {
+      if (el) laneRefs.current.set(assetId, el);
+      else {
+        laneRefs.current.get(assetId)?.pause();
+        laneRefs.current.delete(assetId);
+      }
+    };
+    laneCallbacks.current.set(assetId, fn);
+    return fn;
+  }, []);
   const rafRef = useRef<number | null>(null);
   const clockRef = useRef<{ start: number; at: number }>({ start: 0, at: 0 });
   // The studio re-creates these arrows on every render, and the loop calls onTimeChange every
@@ -94,8 +121,10 @@ export default function Player({
 
   // Keep the clip's own playhead matched to the timeline, tolerating small drift.
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !frame.clip) return;
+    if (!frame.clip) return;
+    const video = laneRefs.current.get(frame.clip.assetId) ?? null;
+    videoRef.current = video;
+    if (!video) return;
     const raw = Math.max(0, frame.clip.srcIn + (currentTime - frame.clip.start));
     // The export feeds every video input through -stream_loop -1, so a clip that runs past
     // the end of its footage wraps back to the top there. Wrap here too: clamping instead
@@ -109,28 +138,42 @@ export default function Player({
     if (drift > 0.15) video.currentTime = want;
     if (playing && video.paused) video.play().catch(() => {});
     if (!playing && !video.paused) video.pause();
+
+    // A lane that is no longer on screen must be held still. Left running it plays on behind
+    // the shot you are watching, and since these elements loop it never stops — one decoder
+    // per clip the reel has been through, all of them competing for the same frames.
+    for (const [assetId, el] of laneRefs.current) {
+      if (assetId !== frame.clip.assetId) el.pause();
+    }
   }, [currentTime, frame.clip, playing]);
 
   const transform = frame.clip ? motionCss(frame.clip.motion, frame.progress) : undefined;
   const transformOrigin = frame.clip ? motionOriginCss(frame.clip.motion) : undefined;
   const isStill = !!asset && asset.kind === 'image';
 
-  // The next shot's file, mounted off-screen and keyed by its asset so the cut promotes the
+  // The shots after this one, mounted off-screen and keyed by asset so each cut promotes the
   // very element that has been loading. Mounting a fresh <video> at the cut instead cost a
   // tenth to a quarter of a second of black on every one of them.
+  //
+  // Three deep, not one: a reel cut to the voiceover runs about 1.8 seconds a clip, and one
+  // clip of runway left the player asking for bytes it needed immediately — twenty-one
+  // stalls in half a minute of playback.
   const clips = reel.timeline.clips;
   const clipIndex = frame.clip ? clips.indexOf(frame.clip) : -1;
-  const nextClip =
-    clipIndex >= 0 ? clips.slice(clipIndex + 1).find((c) => c.assetId !== frame.clip!.assetId) : undefined;
-  const nextAsset = nextClip ? reel.assets.find((a) => a.id === nextClip.assetId) : undefined;
-  const preloadId =
-    nextAsset && nextAsset.status === 'ready' && nextAsset.path && nextAsset.kind !== 'image'
-      ? nextAsset.id
-      : undefined;
+  const upcoming: string[] = [];
+  if (clipIndex >= 0) {
+    for (const c of clips.slice(clipIndex + 1)) {
+      if (c.assetId === frame.clip!.assetId || upcoming.includes(c.assetId)) continue;
+      const asset = reel.assets.find((a) => a.id === c.assetId);
+      if (!asset || asset.status !== 'ready' || !asset.path || asset.kind === 'image') continue;
+      upcoming.push(c.assetId);
+      if (upcoming.length >= PRELOAD_AHEAD) break;
+    }
+  }
 
   const lanes: { assetId: string; current: boolean }[] = [];
   if (frame.clip && ready && !isStill) lanes.push({ assetId: frame.clip.assetId, current: true });
-  if (preloadId) lanes.push({ assetId: preloadId, current: false });
+  for (const id of upcoming) lanes.push({ assetId: id, current: false });
 
   return (
     <div
@@ -156,7 +199,7 @@ export default function Player({
       {lanes.map((lane) => (
         <video
           key={lane.assetId}
-          ref={lane.current ? videoRef : undefined}
+          ref={laneRefFor(lane.assetId)}
           data-testid={lane.current ? 'reel-video' : 'reel-preload'}
           data-asset={lane.assetId}
           src={assetSrc(slug, lane.assetId)}
@@ -164,8 +207,9 @@ export default function Player({
           playsInline
           preload="auto"
           // Footage shorter than its clip loops in the export; let the element do the same
-          // rather than firing ended and sitting on a frozen last frame.
-          loop
+          // rather than firing ended and sitting on a frozen last frame. Only the shot on
+          // screen needs it — a lane that is merely loading has nothing to wrap.
+          loop={lane.current}
           style={{
             position: 'absolute',
             inset: 0,

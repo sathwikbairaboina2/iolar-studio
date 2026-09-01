@@ -13,7 +13,9 @@ type Reply = { status?: number; body: unknown };
 let replies: Record<string, Reply>;
 const calls: { url: string; method: string; body: unknown }[] = [];
 
+const PAYLOAD = { image: 'C:/p/madhu.png', prompt: 'to camera', preset: 'portrait', fps: 30, steps: 10, seed: 918 };
 const READY = {
+  payload: PAYLOAD,
   beatId: 'b3',
   kind: 'talking-head',
   provider: 'lipsync',
@@ -66,6 +68,19 @@ describe('shot gate', () => {
     expect(row).toContain('to camera');
     expect(row).toContain('4.2');
     expect(screen.getByTestId('gate-row-b2').textContent).toContain('cites nothing');
+  });
+
+  it('can show the request itself, not just a summary of it', async () => {
+    await gate();
+    const row = screen.getByTestId('gate-row-b3');
+    (row.querySelector('.ant-table-row-expand-icon') as HTMLElement).click();
+    await waitFor(() => expect(screen.getByTestId('gate-payload-b3')).toBeTruthy());
+    const shown = screen.getByTestId('gate-payload-b3').textContent ?? '';
+    // Steps and frame rate decide whether the shot comes back usable, so they are readable
+    // before the spend rather than after it.
+    expect(shown).toContain('"steps": 10');
+    expect(shown).toContain('"fps": 30');
+    expect(shown).toContain('madhu.png');
   });
 
   it('queues only the beats that are ticked', async () => {

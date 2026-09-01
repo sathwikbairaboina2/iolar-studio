@@ -11,6 +11,7 @@ const req = {
   seconds: 6,
   seed: 42,
   ratio: '9:16',
+  fps: 30,
   brief: 'the source page, scrolled',
 };
 
@@ -70,9 +71,44 @@ describe('lipsync provider', () => {
     expect(body.type).toBe('lipsync');
     expect(body.params.image_path).toBe('C:/p/madhu_desk.png');
     expect(body.params.audio_path).toBe(req.audioPath);
-    // A dozen renders a reel: four steps rather than ten decides whether this is usable.
-    expect(body.params.fast).toBe(true);
+    // Full quality by default now: four steps cost the gesture and printed text on the shirt.
+    expect(body.params.fast).toBe(false);
     expect(body.params.preset).toBe('portrait');
+  });
+
+  it('asks for full quality and the reel’s frame rate, not the four-step draft', async () => {
+    const calls: [string, RequestInit | undefined][] = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return reply({ id: 5 });
+    }) as unknown as typeof fetch;
+
+    const p = createLipsyncProvider({ baseUrl: 'http://x:8300', fetchImpl });
+    await p.animate({ ...req, imagePath: 'C:/p/madhu_desk.png' });
+
+    const params = JSON.parse(String(calls[0][1]!.body)).params;
+    // Four steps printed garbled lettering and produced no gesture; 16fps footage in a
+    // 30fps reel is duplicated frames.
+    expect(params.fast).toBe(false);
+    expect(params.fps).toBe(30);
+  });
+
+  it('tells the model not to draw text on the shot', async () => {
+    const calls: [string, RequestInit | undefined][] = [];
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return reply({ id: 7 });
+    }) as unknown as typeof fetch;
+
+    const p = createLipsyncProvider({ baseUrl: 'http://x:8300', fetchImpl });
+    await p.animate({ ...req, imagePath: 'C:/p/madhu_desk.png' });
+
+    // Wan draws letterforms unprompted: one shot came back with "SLEAHENGLI&$U£TINIE"
+    // across the presenter's shirt, which no amount of editing removes.
+    const negative = JSON.parse(String(calls[0][1]!.body)).params.negative as string;
+    expect(negative).toMatch(/text/i);
+    expect(negative).toMatch(/watermark/i);
+    expect(negative).toContain('字幕');
   });
 
   it('refuses a talking head with no presenter', async () => {

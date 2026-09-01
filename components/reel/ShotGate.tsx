@@ -80,6 +80,23 @@ export default function ShotGate({ slug, onQueued }: Props) {
         size="small"
         rowKey="beatId"
         pagination={false}
+        expandable={{
+          rowExpandable: (row) => !!row.payload,
+          expandedRowRender: (row) => (
+            <pre
+              data-testid={`gate-payload-${row.beatId}`}
+              style={{
+                margin: 0,
+                fontSize: 12,
+                lineHeight: 1.5,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+              }}
+            >
+              {JSON.stringify(row.payload, null, 2)}
+            </pre>
+          ),
+        }}
         dataSource={shots ?? []}
         loading={!shots}
         onRow={(row) => ({ 'data-testid': `gate-row-${row.beatId}` } as never)}

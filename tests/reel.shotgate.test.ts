@@ -81,10 +81,10 @@ function mockLink(link: unknown = { url: 'https://example.com/a', highlight: 'ph
   vi.doMock('@/lib/reel/build/links', () => ({ resolveLink: () => link }));
 }
 
-function mockPresenter(image = 'C:/presenter.png') {
+function mockPresenter(image = 'C:/presenter.png', over: Record<string, unknown> = {}) {
   vi.doMock('@/lib/settings', async (orig) => ({
     ...(await (orig() as Promise<Record<string, unknown>>)),
-    getSettings: () => ({ presenterImage: image }),
+    getSettings: () => ({ presenterImage: image, lipsyncSteps: 10, lipsyncFps: 0, ...over }),
   }));
 }
 
@@ -111,6 +111,45 @@ describe('shot preview', () => {
 
     // The whole point: looking costs nothing.
     expect((await loadReel('grok')).assets).toHaveLength(0);
+  });
+
+  it('shows the request itself, not a summary of it', async () => {
+    await seed();
+    mockProvider();
+    mockBeatAudio();
+    mockScript();
+    mockLink();
+    mockPresenter();
+    const { previewShots } = await import('@/lib/reel/shots');
+
+    const head = (await previewShots('grok')).find((r) => r.beatId === 'b3')!;
+
+    // The point of a gate is that you can read what is about to be spent, including the
+    // settings that decide whether the shot comes back usable.
+    expect(head.payload).toMatchObject({
+      image: 'C:/presenter.png',
+      prompt: 'to camera',
+      preset: 'portrait',
+      steps: 10,
+      fps: 30,
+    });
+    expect(head.payload!.seed).toEqual(expect.any(Number));
+
+    const page = (await previewShots('grok')).find((r) => r.beatId === 'b2')!;
+    expect(page.payload).toMatchObject({ url: 'https://example.com/a', highlight: 'phrase' });
+  });
+
+  it('renders at the rate the settings ask for, over the reel’s own', async () => {
+    await seed();
+    mockProvider();
+    mockBeatAudio();
+    mockScript();
+    mockLink();
+    mockPresenter('C:/presenter.png', { lipsyncFps: 24, lipsyncSteps: 4 });
+    const { previewShots } = await import('@/lib/reel/shots');
+
+    const head = (await previewShots('grok')).find((r) => r.beatId === 'b3')!;
+    expect(head.payload).toMatchObject({ fps: 24, steps: 4 });
   });
 
   it('names what is missing rather than letting the run discover it', async () => {
@@ -166,6 +205,18 @@ describe('shot preview', () => {
 
     const rows = await previewShots('grok');
     for (const r of rows) expect(r.blocked).toBeTruthy();
+  });
+});
+
+describe('every shot gets its own take', () => {
+  it('folds the beat into the seed so no two shots repeat the same performance', async () => {
+    const { seedForBeat } = await import('@/lib/reel/shots');
+    // One seed for the reel gave thirteen beats the same tilt of the head and the same
+    // hands, which is most of why the reel read as generated.
+    expect(seedForBeat(42, 'b1')).not.toBe(seedForBeat(42, 'b2'));
+    // Reproducible, though: the same reel and beat is the same take.
+    expect(seedForBeat(42, 'b1')).toBe(seedForBeat(42, 'b1'));
+    expect(seedForBeat(42, 'b1')).toBeLessThan(2147483647);
   });
 });
 

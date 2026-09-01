@@ -15,6 +15,10 @@ export type Settings = {
   piperVoice: string;
   piperDataDir: string;
   presenterImage: string;
+  /** Sampling steps for a talking head. 4 is the draft LoRA; 10 is full quality. */
+  lipsyncSteps: number;
+  /** Frame rate to render talking heads at. 0 follows the reel's own rate. */
+  lipsyncFps: number;
   reelFps: number;
   reelRatio: string;
   reelPattern: string;
@@ -43,6 +47,8 @@ const DEFAULTS: Settings = {
   piperVoice: 'en_US-ryan-high',
   piperDataDir: 'models/piper',
   presenterImage: '',
+  lipsyncSteps: 10,
+  lipsyncFps: 0,
   reelFps: 30,
   reelRatio: '9:16',
   reelPattern: 'armand',

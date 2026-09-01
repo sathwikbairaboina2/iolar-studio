@@ -128,19 +128,26 @@ type BuildContext = {
   script: Pick<Script, 'lines'> | null;
   candidates: Candidate[];
   presenterImage: string;
+  /** What the renderers will be asked for, so the gate shows the real numbers. */
+  fps: number;
+  steps: number;
   /** Asked once per run: a renderer busy with beat one is not missing for beat six. */
   up: Map<string, boolean>;
 };
 
-async function buildContext(slug: string): Promise<BuildContext> {
-  const presenterImage = getSettings().presenterImage;
+async function buildContext(slug: string, reel: Reel): Promise<BuildContext> {
+  const settings = getSettings();
+  const presenterImage = settings.presenterImage;
+  // 0 means "follow the reel", which is the setting that avoids resampling.
+  const fps = settings.lipsyncFps || reel.fps;
+  const steps = settings.lipsyncSteps;
   // A reel planned from a topic has no research behind it, and a pack that fails
   // to load is not the same failure as a script that does — reporting "its line
   // cites nothing" for a corrupt candidates file sends you looking in the wrong
   // place.
   const script = await research.readScript(slug).catch(() => null);
   const pack = await research.readCandidates(slug).catch(() => null);
-  return { script, candidates: pack?.candidates ?? [], presenterImage, up: new Map() };
+  return { script, candidates: pack?.candidates ?? [], presenterImage, fps, steps, up: new Map() };
 }
 
 /** What a renderer would be handed for one beat, or the reason it cannot be. */
@@ -156,6 +163,8 @@ export type ResolvedShot = {
   highlight?: string;
   imagePath?: string;
   blocked: string | null;
+  /** Exactly what would be posted to the renderer, for the gate to show before it is. */
+  payload?: Record<string, unknown>;
 };
 
 /**
@@ -205,13 +214,31 @@ export async function resolveShot(
         blocked: 'No source to show for this beat — its line cites nothing, so there is no page to visit.',
       };
     }
-    return { ...base, url: link.url, highlight: link.highlight };
+    return {
+      ...base,
+      url: link.url,
+      highlight: link.highlight,
+      payload: { url: link.url, highlight: link.highlight, audio: audioPath, fps: ctx.fps, seconds: req.seconds },
+    };
   }
 
   if (!ctx.presenterImage) {
     return { ...base, blocked: 'No presenter image is set — choose one in settings before rendering a talking head.' };
   }
-  return { ...base, imagePath: ctx.presenterImage };
+  return {
+    ...base,
+    imagePath: ctx.presenterImage,
+    payload: {
+      image: ctx.presenterImage,
+      audio: audioPath,
+      prompt: req.brief,
+      preset: reel.ratio === '9:16' ? 'portrait' : 'square',
+      fps: ctx.fps,
+      steps: ctx.steps,
+      seed: seedForBeat(reel.seed, req.beatId),
+      seconds: req.seconds,
+    },
+  };
 }
 
 /**
@@ -223,12 +250,22 @@ export async function resolveShot(
 export async function previewShots(slug: string): Promise<ResolvedShot[]> {
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
-  const ctx = await buildContext(slug);
+  const ctx = await buildContext(slug, reel);
   const out: ResolvedShot[] = [];
   for (const req of planShots(reel, pattern.pacing.shotSec)) {
     out.push(await resolveShot(slug, req, reel, ctx));
   }
   return out;
+}
+
+/** A stable per-beat seed: same reel and beat, same take; different beat, different take. */
+export function seedForBeat(reelSeed: number, beatId: string): number {
+  let h = 2166136261 ^ reelSeed;
+  for (let i = 0; i < beatId.length; i++) {
+    h ^= beatId.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) % 2147483647;
 }
 
 async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: BuildContext): Promise<void> {
@@ -256,7 +293,18 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: Buil
     }
 
     const provider = videoProvider(plan.provider!)!;
-    const shared = { audioPath: plan.audioPath, brief: plan.brief, seconds: plan.seconds, seed: reel.seed, ratio: reel.ratio };
+    const shared = {
+      audioPath: plan.audioPath,
+      brief: plan.brief,
+      seconds: plan.seconds,
+      // One seed for the whole reel gave every beat the same performance: the same tilt of
+      // the head, the same hands, thirteen times over. The beat is folded in so each shot
+      // is its own take while the reel as a whole stays reproducible.
+      seed: seedForBeat(reel.seed, req.beatId),
+      ratio: reel.ratio,
+      fps: ctx.fps,
+      steps: ctx.steps,
+    };
     const { jobId } = await provider.animate(
       plan.url ? { ...shared, url: plan.url, highlight: plan.highlight } : { ...shared, imagePath: plan.imagePath! }
     );
@@ -298,7 +346,7 @@ export async function runShots(slug: string, beatIds?: string[]): Promise<Reel> 
   await useStillsForScreens(slug);
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
-  const ctx = await buildContext(slug);
+  const ctx = await buildContext(slug, reel);
   const wanted = beatIds ? new Set(beatIds) : null;
   for (const req of planShots(reel, pattern.pacing.shotSec)) {
     if (wanted && !wanted.has(req.beatId)) continue;

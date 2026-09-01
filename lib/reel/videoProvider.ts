@@ -26,6 +26,10 @@ export type AnimateRequest = {
   seconds: number;
   seed: number;
   ratio: string;
+  /** The reel's frame rate. A shot rendered at another one is resampled into judder. */
+  fps: number;
+  /** Sampling steps. Four is the draft LoRA, ten is full quality. */
+  steps?: number;
   /** What the shot should show, in the beat's own words. */
   brief: string;
 

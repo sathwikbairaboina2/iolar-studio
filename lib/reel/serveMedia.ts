@@ -44,15 +44,25 @@ export async function serveMedia(file: string, req: Request): Promise<Response> 
   const stat = await fs.stat(file);
   const type = mimeFor(file);
   const range = parseRange(req.headers.get('range'), stat.size);
+  // Size and mtime together: a re-rendered shot keeps its name, and a retry that happens to
+  // land on the same byte count still moves the clock.
+  const etag = `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+  const cache = { etag, 'cache-control': 'no-cache' };
 
   if (!range) {
+    // `no-cache` means "ask me first", not "do not keep it". The player mounts a fresh
+    // element at every cut and preloads the shot after it; without this each of those reads
+    // the file down the wire again, and a reel of short clips stalls between them.
+    if (req.headers.get('if-none-match') === etag) {
+      return new Response(null, { status: 304, headers: { ...cache, 'accept-ranges': 'bytes' } });
+    }
     const buf = await fs.readFile(file);
     return new Response(new Uint8Array(buf), {
       headers: {
         'content-type': type,
         'content-length': String(stat.size),
         'accept-ranges': 'bytes',
-        'cache-control': 'no-store',
+        ...cache,
       },
     });
   }
@@ -69,7 +79,7 @@ export async function serveMedia(file: string, req: Request): Promise<Response> 
         'content-length': String(length),
         'content-range': `bytes ${range.start}-${range.end}/${stat.size}`,
         'accept-ranges': 'bytes',
-        'cache-control': 'no-store',
+        ...cache,
       },
     });
   } finally {
