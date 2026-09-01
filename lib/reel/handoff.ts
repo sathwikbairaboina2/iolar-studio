@@ -145,7 +145,9 @@ export function buildProject(
   const clips = laidClips.map((c, i) => {
     const next = laidClips[i + 1];
     const room = next ? next.startsAt - c.startsAt : c.seconds;
-    return { ...c, seconds: Math.round(Math.max(0.1, Math.min(c.seconds, room)) * 1e3) / 1e3 };
+    // The floor is one frame — MLT cannot play less — not some larger nicety: a floor
+    // above the available room would itself overlap the neighbour it is trimming for.
+    return { ...c, seconds: Math.round(Math.max(1 / reel.fps, Math.min(c.seconds, room)) * 1e3) / 1e3 };
   });
 
   /**

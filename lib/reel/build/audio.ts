@@ -95,7 +95,9 @@ export async function sliceSpan(
   await fs.mkdir(dir, { recursive: true });
   const dest = groupAudioFile(slug, key);
 
-  const stops = opts.words ? tailEnd(opts.words, end, opts.voiceEnd) : end;
+  // `?.length`, not truthiness: an unaligned reel hands over an empty array, and a tail
+  // computed against no words at all would run into whatever the words would have said.
+  const stops = opts.words?.length ? tailEnd(opts.words, end, opts.voiceEnd) : end;
   const asked = Math.max(0.5, stops - start);
   const padded = opts.grid ? Math.max(0.5, Math.ceil(asked * 2) / 2) : asked;
 
