@@ -334,3 +334,20 @@ describe('cue balance', () => {
     expect(cues[0]).toContain('reference list.');
   });
 });
+
+describe('the voice comes back when the words end', () => {
+  it('gaps the voiceover by the spoken span, not the padded file', async () => {
+    const { buildProject } = await import('@/lib/reel/handoff');
+    const reel = { title: 'grok', ratio: '9:16', fps: 30, vo: { durationSec: 20, words: [] } } as never;
+    // The take's file runs 8.0s (grid padding) but the words end at 7.87.
+    const xml = buildProject(reel, [
+      { file: 'clips/01.mp4', startsAt: 0, seconds: 8.0, speaks: true, speaksSec: 7.87 },
+      { file: 'clips/02.mp4', startsAt: 8.0, seconds: 4.0 },
+    ]);
+
+    const voice = xml.split('<playlist id="audio">')[1].split('</playlist>')[0];
+    // The voiceover resumes at 7.87 — the onset of the next word survives.
+    expect(voice).toContain('<entry producer="voice" in="00:00:07.870"');
+    expect(voice).toContain('<blank length="00:00:07.870"/>');
+  });
+});

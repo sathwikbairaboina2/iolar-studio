@@ -4,6 +4,7 @@ import { loadReel } from './store';
 import { reelDir, reelVoFile } from '../paths';
 import type { Reel } from './schema';
 import { REEL_RATIOS } from './schema';
+import { beatSpans } from './assemble';
 
 /**
  * The reel, handed to whoever is actually cutting it.
@@ -24,6 +25,15 @@ export type HandoffClip = {
   seconds: number;
   /** A take of the presenter saying these words, so it carries its own voice. */
   speaks?: boolean;
+  /**
+   * How long the take actually speaks, when that is shorter than the file.
+   *
+   * A recording is padded past its words — the renderer's half-second grid, the breath at
+   * the end of a cut — and the surplus is silence. The voice track has to come back when
+   * the WORDS end, not when the file does: gapping the voiceover for the whole file length
+   * swallowed the onset of the next word ("read" came back as "ead").
+   */
+  speaksSec?: number;
 };
 
 export type Handoff = { dir: string; clips: HandoffClip[] };
@@ -304,13 +314,17 @@ export function buildProject(
       if (until - from > 0.001) {
         rows.push(`    <entry producer="voice" in="${timecode(from)}" out="${lastFrame(until)}"/>`);
       }
-      const held = Math.min(c.seconds, Math.max(0, voiceSec - c.startsAt));
+      // The gap runs for as long as the take SPEAKS, not as long as its file: the file is
+      // padded past the words with silence, and holding the voiceover out for the padding
+      // clipped the onset of whatever word came next.
+      const speaks = Math.min(c.speaksSec ?? c.seconds, c.seconds);
+      const held = Math.min(speaks, Math.max(0, voiceSec - c.startsAt));
       rows.push(
         kden
-          ? `    <entry producer="clip${i}_audio" in="00:00:00.000" out="${lastFrame(c.seconds)}"/>`
+          ? `    <entry producer="clip${i}_audio" in="00:00:00.000" out="${lastFrame(speaks)}"/>`
           : `    <blank length="${timecode(held)}"/>`
       );
-      from = c.startsAt + c.seconds;
+      from = c.startsAt + speaks;
     }
     if (voiceSec - from > 0.001) {
       rows.push(`    <entry producer="voice" in="${timecode(from)}" out="${lastFrame(voiceSec)}"/>`);
@@ -460,15 +474,31 @@ export async function writeHandoff(slug: string): Promise<Handoff> {
   }
   await fs.mkdir(path.join(dir, 'clips'), { recursive: true });
 
+  // Where each take's WORDS end, from the aligned spans of the beats it covers — the file
+  // itself runs longer, padded with silence, and the voice track resumes on the words.
+  const spans = beatSpans(reel);
+  const spokenEnd = (assetId: string) => {
+    let end = 0;
+    for (const b of reel.beats) {
+      if (b.shot.assetId !== assetId) continue;
+      const span = spans.get(b.id);
+      if (span) end = Math.max(end, span.end);
+    }
+    return end;
+  };
+
   const clips: Handoff['clips'] = [];
   for (const [i, { asset, startsAt }] of pieces.entries()) {
     const name = `${String(i + 1).padStart(2, '0')}-${asset.provider ?? 'clip'}-${asset.id}.mp4`;
     await fs.copyFile(path.join(reelDir(slug), asset.path), path.join(dir, 'clips', name));
+    const seconds = asset.durationSec ?? 0;
+    const spoken = spokenEnd(asset.id) - startsAt;
     clips.push({
       file: `clips/${name}`,
       startsAt,
-      seconds: asset.durationSec ?? 0,
+      seconds,
       speaks: asset.provider === 'lipsync',
+      ...(spoken > 0.05 && spoken < seconds ? { speaksSec: Math.round(spoken * 1e3) / 1e3 } : {}),
     });
   }
 
