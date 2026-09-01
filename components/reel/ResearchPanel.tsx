@@ -1,8 +1,10 @@
 'use client';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Empty, Input, Select, Space, Steps, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Button, Card, Collapse, Empty, Input, Select, Space, Steps, Tag, Tooltip, Typography } from 'antd';
 import type { Brief } from '@/lib/reel/research/brief';
 import { SOURCE_CLASSES } from '@/lib/reel/research/brief';
+import type { PlannedQuery, SearchPlan } from '@/lib/reel/research/plan';
+import type { TraceEvent } from '@/lib/reel/research/trace';
 import type { Candidate } from '@/lib/reel/research/candidate';
 import type { Script, ScriptLine } from '@/lib/reel/research/script';
 import { canApprove, citationsFor, dropLine, spokenWordCount, uncitedLines } from '@/lib/reel/research/scriptBoard';
@@ -20,8 +22,47 @@ import { canApprove, citationsFor, dropLine, spokenWordCount, uncitedLines } fro
 
 type Status = Brief['status'] | null;
 
-const STAGES = ['briefed', 'critiqued', 'reviewed', 'gathered', 'drafted', 'approved'] as const;
-const STEP_LABELS = ['Brief', 'Research', 'Review', 'Evidence', 'Script', 'Done'];
+const STAGES = ['briefed', 'planned', 'critiqued', 'reviewed', 'gathered', 'drafted', 'approved'] as const;
+const STEP_LABELS = ['Brief', 'Plan', 'Research', 'Review', 'Evidence', 'Script', 'Done'];
+
+const TRACE_ICON: Record<TraceEvent['kind'], string> = { search: '🔍', read: '📄', dispatch: '🧭', note: '·' };
+
+/**
+ * What the researcher is doing, line by line.
+ *
+ * Drawn live while the hunt runs and kept afterwards: a pack of sources is only worth
+ * trusting alongside the record of the searches that found it.
+ */
+function TraceList({ events, live }: { events: TraceEvent[]; live: boolean }) {
+  if (!events.length) {
+    return (
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {live ? 'waiting for the first search…' : 'nothing logged'}
+      </Typography.Text>
+    );
+  }
+  return (
+    <div data-testid="research-trace" style={{ fontSize: 12, maxHeight: 260, overflowY: 'auto', fontFamily: 'ui-monospace, monospace' }}>
+      {events.map((e, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, padding: '2px 0', opacity: e.kind === 'note' ? 0.7 : 1 }}>
+          <span style={{ width: 18, textAlign: 'center' }}>{TRACE_ICON[e.kind]}</span>
+          <span style={{ color: 'var(--text-secondary, #888)', width: 62, flexShrink: 0 }}>
+            {new Date(e.at).toLocaleTimeString('en-GB', { hour12: false })}
+          </span>
+          <span style={{ wordBreak: 'break-word' }}>
+            {e.kind === 'read' && e.url ? (
+              <a href={e.url} target="_blank" rel="noreferrer">
+                {e.text}
+              </a>
+            ) : (
+              e.text
+            )}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 /** What the five questions collect, before it becomes a Brief. */
 type Answers = {
@@ -64,6 +105,8 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
   const [script, setScript] = useState<Script | null>(null);
   const [lines, setLines] = useState<ScriptLine[]>([]);
   const [answers, setAnswers] = useState<Answers>(EMPTY);
+  const [plan, setPlan] = useState<SearchPlan | null>(null);
+  const [trace, setTrace] = useState<TraceEvent[]>([]);
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +116,8 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
     const data = await fetch(`/api/reel/${slug}/research`).then((r) => r.json());
     setStatus(data.status ?? null);
     setBrief(data.brief ?? null);
+    setPlan(data.plan ?? null);
+    setTrace(data.trace ?? []);
     setCandidates(data.candidates ?? []);
     if (data.script) {
       setScript(data.script);
@@ -99,6 +144,16 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
     // Only on mount: load() closes over keeps, and re-running would fight the user.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
+
+  // While the run route blocks on a hunt, the trace file is the only window into it.
+  useEffect(() => {
+    if (busy !== 'run') return;
+    const timer = setInterval(async () => {
+      const r = await fetch(`/api/reel/${slug}/research/trace`).then((x) => x.json()).catch(() => null);
+      if (r?.events) setTrace(r.events);
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [busy, slug]);
 
   const call = async (path: string, init: RequestInit, label: string) => {
     setBusy(label);
@@ -149,13 +204,29 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
     await load();
   };
 
-  const advance = async () => {
-    const data = await call('/run', { method: 'POST', body: JSON.stringify({}) }, 'run');
+  const advance = async (body: Record<string, unknown> = {}) => {
+    const data = await call('/run', { method: 'POST', body: JSON.stringify(body) }, 'run');
     // 'hunted' is where the hunt lands on disk so the critic can be retried
     // without searching again — not a step anyone asked for. Run straight on.
     if (data?.status === 'hunted') await call('/run', { method: 'POST', body: JSON.stringify({}) }, 'run');
     await load();
   };
+
+  const editQuery = (i: number, patch: Partial<PlannedQuery>) => {
+    if (!plan) return;
+    setPlan({ ...plan, queries: plan.queries.map((q, j) => (j === i ? { ...q, ...patch } : q)) });
+  };
+  const dropQuery = (i: number) => plan && setPlan({ ...plan, queries: plan.queries.filter((_, j) => j !== i) });
+  const addQuery = () =>
+    plan &&
+    setPlan({
+      ...plan,
+      queries: [
+        ...plan.queries,
+        { class: brief?.sourceClasses[0] ?? 'news', query: '', proves: brief?.mustProve[0] ?? '', why: 'added by hand' },
+      ],
+    });
+  const planReady = Boolean(plan && plan.queries.length && plan.queries.every((q) => q.query.trim() && q.proves.trim()));
 
   const saveReview = async () => {
     const decisions = Object.fromEntries(
@@ -180,7 +251,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
   };
 
   // 'hunted' is a resting point inside Research, not a step of its own.
-  const railStatus = status === 'hunted' ? 'briefed' : status;
+  const railStatus = status === 'hunted' ? 'planned' : status;
   const stepIndex = railStatus ? STAGES.indexOf(railStatus as (typeof STAGES)[number]) + 1 : 0;
   const uncited = useMemo(() => new Set(uncitedLines(lines)), [lines]);
   const keptCount = Object.values(keeps).filter(Boolean).length;
@@ -248,22 +319,109 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
           <Typography.Paragraph type="secondary">
             The hunt is saved. Carrying on runs the critic over what it found; it does not search again.
           </Typography.Paragraph>
-          <Button data-testid="research-judge" type="primary" loading={busy === 'run'} onClick={advance}>
+          <Button data-testid="research-judge" type="primary" loading={busy === 'run'} onClick={() => advance()}>
             Judge what was found
           </Button>
         </Card>
       )}
 
       {status === 'briefed' && (
-        <Card size="small" title="Ready to research">
+        <Card size="small" title="Plan the research">
           <Typography.Paragraph type="secondary">
-            Claude will dispatch one hunter per source class, then judge everything it found. This takes a
-            few minutes.
+            Nothing is searched yet. First the strategy is written down — the exact queries, each tied to
+            a claim the brief must prove — for you to read and edit. The hunt runs only what you approve.
           </Typography.Paragraph>
-          <Button data-testid="research-run" type="primary" loading={busy === 'run'} onClick={advance}>
-            Research {brief?.sourceClasses.length ?? 0} source classes
+          <Button data-testid="research-plan" type="primary" loading={busy === 'run'} onClick={() => advance()}>
+            Write the search plan
           </Button>
         </Card>
+      )}
+
+      {/* Gate — the strategy, before a single search. Edit anything; the hunt runs exactly this. */}
+      {status === 'planned' && plan && (
+        <Card size="small" title={`Search plan · ${plan.queries.length} queries`} data-testid="research-plan-card">
+          <Space orientation="vertical" style={{ width: '100%' }} size="small">
+            <Typography.Text strong>Approach</Typography.Text>
+            <Input.TextArea
+              autoSize={{ minRows: 2, maxRows: 5 }}
+              value={plan.approach}
+              onChange={(e) => setPlan({ ...plan, approach: e.target.value })}
+            />
+            {plan.queries.map((q, i) => (
+              <div key={i} style={{ border: '1px solid var(--border, #e5e5e7)', borderRadius: 6, padding: 8 }}>
+                <Space wrap style={{ width: '100%' }}>
+                  <Select
+                    size="small"
+                    style={{ width: 110 }}
+                    value={q.class}
+                    options={(brief?.sourceClasses ?? [...SOURCE_CLASSES]).map((c) => ({ label: c, value: c }))}
+                    onChange={(v) => editQuery(i, { class: v })}
+                  />
+                  <Input
+                    size="small"
+                    style={{ width: 460 }}
+                    data-testid={`plan-query-${i}`}
+                    value={q.query}
+                    onChange={(e) => editQuery(i, { query: e.target.value })}
+                  />
+                  <Button size="small" danger onClick={() => dropQuery(i)}>
+                    drop
+                  </Button>
+                </Space>
+                <div style={{ marginTop: 6 }}>
+                  <Space wrap>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      proves
+                    </Typography.Text>
+                    <Select
+                      size="small"
+                      style={{ minWidth: 320 }}
+                      value={q.proves}
+                      options={(brief?.mustProve ?? []).map((c) => ({ label: c, value: c }))}
+                      onChange={(v) => editQuery(i, { proves: v })}
+                    />
+                  </Space>
+                </div>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {q.why}
+                </Typography.Text>
+              </div>
+            ))}
+            <Space>
+              <Button size="small" onClick={addQuery}>
+                add a query
+              </Button>
+              <Button
+                data-testid="research-run"
+                type="primary"
+                disabled={!planReady}
+                loading={busy === 'run'}
+                onClick={() => advance({ plan })}
+              >
+                Run this plan
+              </Button>
+            </Space>
+            {busy === 'run' && (
+              <Card size="small" title="What the researcher is doing" type="inner">
+                <TraceList events={trace.filter((e) => e.stage === 'hunt')} live />
+              </Card>
+            )}
+          </Space>
+        </Card>
+      )}
+
+      {/* The record stays with the pack: what was searched and read to find it. */}
+      {status !== 'briefed' && status !== 'planned' && trace.some((e) => e.stage === 'hunt') && (
+        <Collapse
+          size="small"
+          items={[
+            {
+              key: 'trace',
+              label: `What the researcher did · ${trace.filter((e) => e.stage === 'hunt' && e.kind !== 'note').length} searches and reads`,
+              children: <TraceList events={trace.filter((e) => e.stage === 'hunt')} live={false} />,
+            },
+          ]}
+        />
       )}
 
       {/* Gate — nothing is gathered or written until you have kept something. */}
@@ -318,7 +476,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
             Transcripts and page text, so the script can quote what was actually said. No video is
             downloaded.
           </Typography.Paragraph>
-          <Button type="primary" loading={busy === 'run'} onClick={advance}>
+          <Button type="primary" loading={busy === 'run'} onClick={() => advance()}>
             Gather evidence
           </Button>
         </Card>
@@ -326,7 +484,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
 
       {status === 'gathered' && (
         <Card size="small" title="Write the script">
-          <Button data-testid="script-draft" type="primary" loading={busy === 'run'} onClick={advance}>
+          <Button data-testid="script-draft" type="primary" loading={busy === 'run'} onClick={() => advance()}>
             Draft from {candidates.filter((c) => keeps[c.id]).length} sources
           </Button>
         </Card>

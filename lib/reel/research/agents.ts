@@ -4,6 +4,7 @@ import type { Brief } from './brief';
 import { CandidateSchema, type Candidate } from './candidate';
 import type { Evidence } from './gather';
 import type { ScriptLine } from './script';
+import { parsePlan, type SearchPlan } from './plan';
 
 /**
  * The three stages Claude runs, driven through the same headless CLI that
@@ -18,7 +19,10 @@ import type { ScriptLine } from './script';
  * more, or the pack the user reviewed stops being the pack the script cites.
  */
 
-export type Runner = (prompt: string, opts?: { timeoutMs?: number; allowedTools?: string[] }) => Promise<string>;
+export type Runner = (
+  prompt: string,
+  opts?: { timeoutMs?: number; allowedTools?: string[]; onTool?: (call: { name: string; input: Record<string, unknown> }) => void }
+) => Promise<string>;
 
 const HUNT_TIMEOUT_MS = 900_000;
 /**
@@ -78,10 +82,48 @@ function briefBlock(brief: Brief): string {
     .join('\n');
 }
 
+/**
+ * Stage 1½ — the strategy, before any search runs.
+ *
+ * No tools: this is thinking, not looking. The reply is the plan a person will read and
+ * edit, so it asks for concrete queries — the kind you could paste into a search box —
+ * each pinned to one of the brief's claims, each with the reason it should work.
+ */
+export async function planSearch(brief: Brief, run: Runner = runClaude): Promise<SearchPlan> {
+  const prompt = `You are planning the research for a short video. Do not search yet — write the plan.
+
+${briefBlock(brief)}
+
+Source classes available: ${brief.sourceClasses.join(', ')}.
+
+Write 2-4 concrete search queries per source class the brief allows — the exact strings a
+person would type — each aimed at ONE of the must-prove claims above, quoted verbatim in
+"proves". Prefer queries that would land on primary sources (the paper, the filing, the
+changelog, the talk) over coverage of them. Vary the queries: names, numbers, dates and
+document types beat restating the angle.
+
+Reply with ONLY:
+{ "approach": "<two or three sentences: what to look for first, what to distrust>",
+  "queries": [ { "class": "<one of the classes>", "query": "...", "proves": "<a must-prove claim, verbatim>", "why": "<one sentence>" } ] }
+
+No prose, no fence.`;
+
+  const out = extractJson<{ approach: string; queries: unknown[] }>(
+    await run(prompt, { timeoutMs: STAGE_TIMEOUT_MS })
+  );
+  return parsePlan({
+    runId: brief.runId,
+    generatedAt: new Date().toISOString(),
+    approach: out.approach,
+    queries: out.queries,
+  });
+}
+
 /** Stage 2 — one subagent per source class, dispatched together. */
 export async function huntSources(
   brief: Brief,
-  run: Runner = runClaude
+  run: Runner = runClaude,
+  onTool?: Parameters<Runner>[1] extends { onTool?: infer T } | undefined ? T : never
 ): Promise<Record<string, unknown>[]> {
   const perClass = brief.searchQueries
     .map((q) => `### ${q.class}\n${q.queries.map((s) => `  - ${s}`).join('\n')}`)
@@ -110,7 +152,7 @@ Prefer primary sources over coverage of them. Do not invent a URL you did not op
 Reply with ONLY the concatenated JSON array of every subagent's results. No prose, no fence.`;
 
   return extractJson<Record<string, unknown>[]>(
-    await run(prompt, { timeoutMs: HUNT_TIMEOUT_MS, allowedTools: ['Task', 'WebSearch', 'WebFetch'] })
+    await run(prompt, { timeoutMs: HUNT_TIMEOUT_MS, allowedTools: ['Task', 'WebSearch', 'WebFetch'], onTool })
   );
 }
 

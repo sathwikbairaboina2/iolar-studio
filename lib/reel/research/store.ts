@@ -6,6 +6,7 @@ import { parseCandidates, type CandidatesFile } from './candidate';
 import { emptySelection, parseSelection, type Selection } from './selection';
 import { parseScript, type Script } from './script';
 import { parseEvidence, type Evidence } from './gather';
+import { parsePlan, type SearchPlan } from './plan';
 
 /**
  * Where a reel's research lives: `data/reel/<slug>/research/`.
@@ -74,6 +75,20 @@ export async function setResearchStatus(slug: string, status: Brief['status']): 
  */
 export async function writeHunt(slug: string, found: Record<string, unknown>[]): Promise<void> {
   await writeJson(reelHuntFile(slug), found);
+}
+
+/** The search strategy, written before the hunt and edited by a person before it runs. */
+export async function writePlan(slug: string, plan: SearchPlan): Promise<void> {
+  await writeJson(path.join(researchDir(slug), 'plan.json'), parsePlan(plan));
+}
+
+export async function readPlan(slug: string): Promise<SearchPlan | null> {
+  try {
+    return parsePlan(await readJson(path.join(researchDir(slug), 'plan.json')));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
 }
 
 export async function readHunt(slug: string): Promise<Record<string, unknown>[]> {

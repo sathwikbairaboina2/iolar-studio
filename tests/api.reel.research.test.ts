@@ -64,6 +64,16 @@ const CANDIDATE = {
   risk: { paywall: false, licence: null, unstable: false },
 };
 
+const PLAN = {
+  runId: 'grok',
+  generatedAt: '2026-08-30T21:41:00.000Z',
+  approach: 'Start from the repository and the model card; distrust coverage that paraphrases the license.',
+  queries: [
+    { class: 'github', query: 'Lightricks LTX-Video LICENSE', proves: 'the weights are open', why: 'the license file is the primary source' },
+    { class: 'docs', query: 'LTX-Video inference limits documentation', proves: 'inference is unlimited', why: 'the docs state the terms' },
+  ],
+};
+
 async function seedBrief(over: Record<string, unknown> = {}) {
   const store = await import('@/lib/reel/research/store');
   await store.writeBrief('grok', { ...BRIEF, ...over } as never);
@@ -146,7 +156,7 @@ describe('POST /api/reel/[slug]/research/run', () => {
   // the critic had finished and the pack validated, so any failure in between
   // threw all of it away.
   it('lands the hunt on disk before the critic runs, and stops there', async () => {
-    await seedBrief();
+    await seedBrief({ status: 'planned' });
     vi.doMock('@/lib/reel/research/agents', () => ({
       huntSources: async () => [{ url: 'https://github.com/x' }],
       critique: async () => {
@@ -155,11 +165,91 @@ describe('POST /api/reel/[slug]/research/run', () => {
     }));
 
     const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
-    const body = await (await POST(post(), ctx('grok'))).json();
+    const body = await (await POST(post({ plan: PLAN }), ctx('grok'))).json();
 
     expect(body.status).toBe('hunted');
     const store = await import('@/lib/reel/research/store');
     expect(await store.readHunt('grok')).toHaveLength(1);
+  });
+
+  // The strategy is a stage with a gate: a person reads the queries before any of
+  // them runs. A pack with no visible strategy behind it is not one to trust.
+  it('writes the search plan first and waits for it to be approved', async () => {
+    await seedBrief();
+    const hunt = vi.fn();
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      planSearch: async () => PLAN,
+      huntSources: hunt,
+      critique: vi.fn(),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const body = await (await POST(post(), ctx('grok'))).json();
+
+    expect(body.status).toBe('planned');
+    expect(body.waitingOn).toBe('plan');
+    expect(body.plan.queries).toHaveLength(2);
+    expect(hunt).not.toHaveBeenCalled();
+
+    // A bare call at the gate holds; nothing searches until the plan comes back.
+    const held = await (await POST(post(), ctx('grok'))).json();
+    expect(held.status).toBe('planned');
+    expect(hunt).not.toHaveBeenCalled();
+  });
+
+  it('hunts with exactly the queries the person approved', async () => {
+    await seedBrief({ status: 'planned' });
+    const hunt = vi.fn(async () => [{ url: 'https://github.com/x' }]);
+    vi.doMock('@/lib/reel/research/agents', () => ({ huntSources: hunt, critique: vi.fn() }));
+
+    const edited = {
+      ...PLAN,
+      queries: [{ class: 'github', query: 'LTX-Video license file', proves: 'the weights are open', why: 'edited' }],
+    };
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    await POST(post({ plan: edited }), ctx('grok'));
+
+    const armed = (hunt.mock.calls as unknown as [{ searchQueries: { class: string; queries: string[] }[] }][])[0][0];
+    expect(armed.searchQueries).toEqual([{ class: 'github', queries: ['LTX-Video license file'] }]);
+  });
+
+  it('records what the hunter searched and read, live', async () => {
+    await seedBrief({ status: 'planned' });
+    vi.doMock('@/lib/reel/research/agents', () => ({
+      huntSources: async (_b: unknown, _r: unknown, onTool?: (c: { name: string; input: Record<string, unknown> }) => void) => {
+        onTool?.({ name: 'WebSearch', input: { query: 'LTX-Video weights license' } });
+        onTool?.({ name: 'WebFetch', input: { url: 'https://github.com/Lightricks/LTX-Video', prompt: 'find the license' } });
+        return [{ url: 'https://github.com/x' }];
+      },
+      critique: vi.fn(),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    await POST(post({ plan: PLAN }), ctx('grok'));
+
+    const { readTrace } = await import('@/lib/reel/research/trace');
+    const events = await readTrace('grok');
+    expect(events.some((e) => e.kind === 'search' && e.text === 'LTX-Video weights license')).toBe(true);
+    expect(events.some((e) => e.kind === 'read' && e.url === 'https://github.com/Lightricks/LTX-Video')).toBe(true);
+  });
+
+  it('sends the hunt to the local research service when settings say so', async () => {
+    await seedBrief({ status: 'planned' });
+    const hunt = vi.fn();
+    vi.doMock('@/lib/reel/research/agents', () => ({ huntSources: hunt, critique: vi.fn() }));
+    const local = vi.fn(async () => [{ url: 'https://example.org/paper' }]);
+    vi.doMock('@/lib/reel/research/local', () => ({ huntLocally: local }));
+    vi.doMock('@/lib/settings', async (orig) => ({
+      ...(await (orig() as Promise<Record<string, unknown>>)),
+      getSettings: () => ({ researchProvider: 'local', researchUrl: 'http://127.0.0.1:25100' }),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const body = await (await POST(post({ plan: PLAN }), ctx('grok'))).json();
+
+    expect(body.status).toBe('hunted');
+    expect(local).toHaveBeenCalledTimes(1);
+    expect(hunt).not.toHaveBeenCalled();
   });
 
   it('judges what is already on disk rather than searching again', async () => {

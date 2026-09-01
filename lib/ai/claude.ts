@@ -12,12 +12,42 @@ export class ClaudeUnavailableError extends Error {
  * on Windows the CLI is a .cmd shim that needs shell:true, and a shell
  * concatenates argv, which mangles multi-line prompts.
  */
+export type ToolCall = { name: string; input: Record<string, unknown> };
+
+/**
+ * One line of `--output-format stream-json`, reduced to what a caller can use.
+ *
+ * Assistant turns carry `tool_use` blocks — the searches, fetches and subagent dispatches
+ * the run is making — and the final `result` line carries the answer. Everything else
+ * (hooks, system notes, user echoes) is noise here. A line that is not JSON is skipped
+ * rather than fatal: the CLI prints the odd warning on stdout.
+ */
+export function parseStreamLine(line: string): { tools: ToolCall[]; result?: string } {
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(line);
+  } catch {
+    return { tools: [] };
+  }
+  if (data.type === 'result' && typeof data.result === 'string') return { tools: [], result: data.result };
+  if (data.type !== 'assistant') return { tools: [] };
+  const message = data.message as { content?: unknown } | undefined;
+  const content = Array.isArray(message?.content) ? (message!.content as Record<string, unknown>[]) : [];
+  const tools = content
+    .filter((b) => b.type === 'tool_use' && typeof b.name === 'string')
+    .map((b) => ({ name: b.name as string, input: (b.input as Record<string, unknown>) ?? {} }));
+  return { tools };
+}
+
 export function runClaude(
   prompt: string,
-  opts: { timeoutMs?: number; allowedTools?: string[] } = {}
+  opts: { timeoutMs?: number; allowedTools?: string[]; onTool?: (call: ToolCall) => void } = {}
 ): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
-  const args = ['-p', '--output-format', 'text'];
+  // A caller that wants to watch the tools go by gets the streamed form; the answer is
+  // then the `result` line rather than everything printed.
+  const streaming = Boolean(opts.onTool);
+  const args = streaming ? ['-p', '--output-format', 'stream-json', '--verbose'] : ['-p', '--output-format', 'text'];
   if (opts.allowedTools?.length) args.push('--allowedTools', opts.allowedTools.join(','));
 
   return new Promise((resolve, reject) => {
@@ -29,6 +59,8 @@ export function runClaude(
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let result: string | undefined;
+    let pending = '';
 
     const timer = setTimeout(() => {
       if (settled) return;
@@ -37,7 +69,19 @@ export function runClaude(
       reject(new Error(`claude timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stdout.on('data', (d) => {
+      const chunk = d.toString();
+      stdout += chunk;
+      if (!streaming) return;
+      pending += chunk;
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) {
+        const parsed = parseStreamLine(line);
+        for (const call of parsed.tools) opts.onTool?.(call);
+        if (parsed.result !== undefined) result = parsed.result;
+      }
+    });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
 
     child.on('error', (err) => {
@@ -53,6 +97,14 @@ export function runClaude(
       settled = true;
       clearTimeout(timer);
       if (code !== 0) return reject(new Error(`claude exited ${code}: ${stderr.slice(0, 400)}`));
+      if (streaming) {
+        if (pending.trim()) {
+          const parsed = parseStreamLine(pending);
+          if (parsed.result !== undefined) result = parsed.result;
+        }
+        if (result === undefined) return reject(new Error('claude streamed no result line'));
+        return resolve(result);
+      }
       resolve(stdout);
     });
 

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import * as store from '@/lib/reel/research/store';
+import { readTrace } from '@/lib/reel/research/trace';
 
 type Ctx = { params: Promise<{ slug: string }> };
 
@@ -13,10 +14,14 @@ export async function GET(_req: Request, ctx: Ctx) {
   const candidates = await store.readCandidates(slug).catch(() => null);
   const script = await store.readScript(slug).catch(() => null);
   const evidence = await store.readAllEvidence(slug);
+  const plan = await store.readPlan(slug);
+  const trace = await readTrace(slug);
 
   return NextResponse.json({
     status,
     brief,
+    plan,
+    trace,
     selection,
     candidates: candidates?.candidates ?? [],
     script,

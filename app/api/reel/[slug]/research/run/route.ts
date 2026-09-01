@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import * as store from '@/lib/reel/research/store';
 import { siftCandidates, withStableIds } from '@/lib/reel/research/candidate';
-import { critique, draftScript, huntSources, judgeCoverage } from '@/lib/reel/research/agents';
+import { critique, draftScript, huntSources, judgeCoverage, planSearch } from '@/lib/reel/research/agents';
+import { briefWithPlan, parsePlan } from '@/lib/reel/research/plan';
+import { huntLocally } from '@/lib/reel/research/local';
+import { appendTrace, clearTrace, traceFromTool } from '@/lib/reel/research/trace';
+import { getSettings } from '@/lib/settings';
 import { gatherEvidence } from '@/lib/reel/research/gatherRun';
 import { parseBrief } from '@/lib/reel/research/brief';
 import { unsupportedClaims } from '@/lib/reel/research/script';
@@ -48,13 +52,50 @@ export async function POST(req: Request, ctx: Ctx) {
 
     const brief = await store.readBrief(slug);
 
+    // The strategy comes first, and it is a gate: the queries the hunt will run are
+    // written down, shown, and edited by a person before a single search happens. A
+    // pack with no visible strategy behind it is not one to trust.
+    if (status === 'briefed') {
+      await clearTrace(slug);
+      const plan = await planSearch(brief);
+      await store.writePlan(slug, plan);
+      await store.setResearchStatus(slug, 'planned');
+      await appendTrace(slug, { stage: 'plan', kind: 'note', text: `planned ${plan.queries.length} queries` });
+      return NextResponse.json({ status: 'planned', waitingOn: 'plan', done: false, plan });
+    }
+
     // The hunt is the expensive half and lands on disk on its own, so a critic
     // that fails is retried against what was already found rather than sending
-    // every hunter out again.
-    if (status === 'briefed') {
-      const found = await huntSources(brief);
+    // every hunter out again. It runs only when the plan comes back approved —
+    // possibly edited — in the body; a bare call at this stage is the gate holding.
+    if (status === 'planned') {
+      if (!body.plan) {
+        return NextResponse.json({ status, waitingOn: 'plan', done: false, plan: await store.readPlan(slug) });
+      }
+      const plan = parsePlan({ ...body.plan, runId: slug, generatedAt: body.plan.generatedAt ?? new Date().toISOString() });
+      await store.writePlan(slug, plan);
+      const armed = briefWithPlan(brief, plan);
+      await store.writeBrief(slug, armed);
+
+      const settings = getSettings();
+      await appendTrace(slug, {
+        stage: 'hunt',
+        kind: 'note',
+        text: `hunting with ${settings.researchProvider === 'local' ? 'the local research service' : 'Claude subagents'}: ${plan.queries.length} queries`,
+      });
+      const found =
+        settings.researchProvider === 'local'
+          ? await huntLocally(armed, plan, {
+              baseUrl: settings.researchUrl,
+              onStep: (ev) => void appendTrace(slug, { stage: 'hunt', ...ev }),
+            })
+          : await huntSources(armed, undefined, (call) => {
+              const ev = traceFromTool(call.name, call.input);
+              if (ev) void appendTrace(slug, { stage: 'hunt', ...ev });
+            });
       await store.writeHunt(slug, found);
       await store.setResearchStatus(slug, 'hunted');
+      await appendTrace(slug, { stage: 'hunt', kind: 'note', text: `hunt returned ${found.length} sources` });
       return NextResponse.json({ status: 'hunted', waitingOn: null, done: false, found: found.length });
     }
 

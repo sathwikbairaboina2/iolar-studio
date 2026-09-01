@@ -28,6 +28,16 @@ export type Settings = {
   agentModel: string;
   agentNumPredict: number;
   agentMaxRevisions: number;
+  /**
+   * Who hunts the sources.
+   *
+   * `claude` dispatches headless Claude subagents with WebSearch. `local` sends the plan to
+   * the research service — a local model, SearXNG and a page reader that leaves nothing
+   * off the machine and pays nobody. The critic, the writer and the coverage judge stay on
+   * Claude either way; only the hunt moves.
+   */
+  researchProvider: 'claude' | 'local';
+  researchUrl: string;
 };
 
 const DEFAULTS: Settings = {
@@ -61,6 +71,8 @@ const DEFAULTS: Settings = {
   // looks like a model that cannot tool-call at all; 1200 answers in 1-2s.
   agentNumPredict: 1200,
   agentMaxRevisions: 3,
+  researchProvider: 'claude',
+  researchUrl: 'http://127.0.0.1:25100',
 };
 
 function file() {

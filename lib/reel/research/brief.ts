@@ -36,7 +36,7 @@ export const BriefSchema = z
     referenceReel: ReferenceReelSchema.nullable(),
     // The run directory is the state machine: /reel reads this and continues
     // from wherever the run stopped.
-    status: z.enum(["briefed", "hunted", "critiqued", "reviewed", "gathered", "drafted", "approved"]),
+    status: z.enum(["briefed", "planned", "hunted", "critiqued", "reviewed", "gathered", "drafted", "approved"]),
   })
   .strict();
 

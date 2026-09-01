@@ -51,6 +51,21 @@ export default function SettingsPage() {
           <InputNumber min={0} max={30} style={{ width: 160 }} />
         </Form.Item>
 
+        <Typography.Title level={5} style={{ marginTop: 24 }}>Research</Typography.Title>
+        <Form.Item
+          name="researchProvider"
+          label="Who hunts the sources"
+          extra="Claude dispatches headless subagents with web search. Local sends the approved plan to the research service on this machine — nothing leaves it, nothing is paid for. The critic and the writer stay on Claude either way."
+        >
+          <Select
+            options={[
+              { value: 'claude', label: 'Claude — headless subagents' },
+              { value: 'local', label: 'Local — research service' },
+            ]}
+          />
+        </Form.Item>
+        <Form.Item name="researchUrl" label="Research service URL"><Input /></Form.Item>
+
         <Button type="primary" htmlType="submit">Save</Button>
       </Form>
     </div>
