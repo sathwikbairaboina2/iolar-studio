@@ -172,14 +172,18 @@ export function groupAdjacent(
     // instead put every group at the wrong offset — the audio for the closing bite was cut
     // from the opening of the voiceover, and two groups collided on the same filename.
     const startsAt = s.startsAt ?? at;
+    const endsAt = startsAt + s.seconds;
     const open = out.at(-1);
     if (open && open.key === s.key) {
       open.beatIds.push(s.beatId);
-      open.seconds = Math.round((open.seconds + s.seconds) * 1e3) / 1e3;
+      // The clock, not the sum. Beats do not butt together — there is breath between them,
+      // and adding their durations asked the renderer for a recording two seconds shorter
+      // than the words it had to cover, which then froze at the end.
+      open.seconds = Math.round((endsAt - open.startsAt) * 1e3) / 1e3;
     } else {
       out.push({ key: s.key, beatIds: [s.beatId], seconds: s.seconds, startsAt: Math.round(startsAt * 1e3) / 1e3 });
     }
-    at = startsAt + s.seconds;
+    at = endsAt;
   }
   return out;
 }

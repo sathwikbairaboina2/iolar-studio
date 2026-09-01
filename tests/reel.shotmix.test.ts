@@ -234,6 +234,21 @@ describe('collapsing neighbours into one request', () => {
     expect(groups[1].startsAt).toBeCloseTo(3.3, 3);
   });
 
+  it('measures a group by the clock, not by adding its beats up', async () => {
+    const { groupAdjacent } = await import('@/lib/reel/shotmix');
+    const groups = groupAdjacent([
+      { beatId: 'b1', key: 'presenter', seconds: 1.2, startsAt: 55.78 },
+      { beatId: 'b2', key: 'presenter', seconds: 1.4, startsAt: 57.6 },
+      { beatId: 'b3', key: 'presenter', seconds: 1.5, startsAt: 65.34 },
+    ]);
+
+    // Beats do not butt together — there is breath between them. Adding the three durations
+    // gave 4.1s for a stretch that runs eleven on the clock, so the recording came back two
+    // seconds short of the words it was meant to cover and froze at the end.
+    expect(groups).toHaveLength(1);
+    expect(groups[0].seconds).toBeCloseTo(11.06, 2);
+  });
+
   it('keeps the same source apart when something else comes between', async () => {
     const { groupAdjacent } = await import('@/lib/reel/shotmix');
     const groups = groupAdjacent([

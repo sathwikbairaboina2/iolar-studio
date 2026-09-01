@@ -52,6 +52,86 @@ async function fixture(over: Record<string, unknown> = {}) {
   return { reel, pattern: await loadPattern('armand') };
 }
 
+describe('a recording is used as it came back', () => {
+  const held = { motion: { type: 'hold' as const, strength: 0, origin: [0.5, 0.5] as [number, number] } };
+
+  it('does not run a held clip through zoompan', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture({
+      timeline: { clips: [clip('c1', 0, 3, held)], captions: [], overlays: [] },
+    });
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(),
+      voPath: null, musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    const graph = args[args.indexOf('-filter_complex') + 1];
+    // zoompan resamples every frame even at zoom 1. Footage meant to be held is scaled to
+    // the frame and otherwise left as it came back.
+    expect(graph).not.toContain('zoompan');
+    expect(graph).toContain('scale=1080:1920');
+  });
+
+  it('freezes a recording held past its end instead of looping it back to frame one', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture({
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', provider: 'lipsync', takeStart: 0, durationSec: 9 }],
+      timeline: { clips: [clip('c1', 0, 11, held)], captions: [], overlays: [] },
+    });
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(),
+      voPath: 'C:/x/vo.mp3', musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+
+    // Looping restarted the performance two seconds before the end while its audio had
+    // already finished — the mouth moving against the wrong words, which is the one thing
+    // a lipsync take must never do.
+    const before = args.slice(0, args.indexOf('-i', args.indexOf('C:/x/a1.mp4') - 2));
+    expect(before.join(' ')).not.toContain('-stream_loop -1');
+    expect(args[args.indexOf('-filter_complex') + 1]).toContain('tpad=stop_mode=clone');
+  });
+
+  it('silences the voiceover only while the recording is actually speaking', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture({
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', provider: 'lipsync', takeStart: 0, durationSec: 9 }],
+      timeline: { clips: [clip('c1', 0, 11, held)], captions: [], overlays: [] },
+    });
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(),
+      voPath: 'C:/x/vo.mp3', musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+
+    // Nine seconds of the clip's own audio, then the voiceover carries the words spoken over
+    // the frozen tail. Silencing the whole eleven would have dropped them.
+    expect(args[args.indexOf('-filter_complex') + 1]).toContain("volume=0:enable='between(t,0,9)'");
+  });
+
+  it('takes the audio from the recording rather than laying the voiceover over it', async () => {
+    const { buildExportArgs } = await import('@/lib/reel/ffmpeg');
+    const { reel, pattern } = await fixture({
+      assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', provider: 'lipsync', takeStart: 2.5, durationSec: 3 }],
+      timeline: { clips: [clip('c1', 2.5, 5.5, held)], captions: [], overlays: [] },
+    });
+    const args = buildExportArgs({
+      reel, pattern,
+      assetPaths: new Map([['a1', 'C:/x/a1.mp4']]),
+      overlayPaths: new Map(),
+      voPath: 'C:/x/vo.mp3', musicPath: null, outPath: 'C:/x/out.mp4',
+    });
+    const graph = args[args.indexOf('-filter_complex') + 1];
+    // The lips are in step with the audio inside the file. Playing the voiceover over the
+    // top puts a second copy of the words against them.
+    expect(graph).toContain('adelay=2500|2500');
+    expect(graph).toContain("volume=0:enable='between(t,2.5,5.5)'");
+  });
+});
+
 describe('export filter graph', () => {
   it('trims one input per clip and overlays each caption in its own window', async () => {
     const { buildExportArgs } = await import('@/lib/reel/ffmpeg');

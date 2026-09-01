@@ -71,6 +71,27 @@ describe('planning one take', () => {
   });
 });
 
+describe('cutting inside a recording that covers several beats', () => {
+  it('never reads from before the recording starts', async () => {
+    const { loadReel, saveReel } = await import('@/lib/reel/store');
+    const { loadPattern } = await import('@/lib/reel/patterns');
+    const reel = await seed();
+    await saveReel('grok', {
+      ...reel,
+      // Cut for b2 and b3, which begin at 1.6s of the reel.
+      assets: [{ id: 'g1', kind: 'video', path: 'assets/g1.mp4', origin: 'plugin', status: 'ready', brief: '', takeStart: 1.6, durationSec: 3.2 }],
+      beats: reel.beats.map((b) => (b.id === 'b1' ? b : { ...b, shot: { ...b.shot, assetId: 'g1' } })),
+    } as never);
+
+    const { assemble } = await import('@/lib/reel/assemble');
+    const tl = assemble({ reel: await loadReel('grok'), pattern: await loadPattern('armand') });
+
+    // A clip inherits the silence before its own words, so it can begin before the recording
+    // made for it. Negative offsets are not a thing, and the schema refuses them.
+    for (const c of tl.clips) expect(c.srcIn).toBeGreaterThanOrEqual(0);
+  });
+});
+
 describe('cutting inside the take', () => {
   it('gives every clip the offset it sits at in the take', async () => {
     const { loadReel, saveReel } = await import('@/lib/reel/store');

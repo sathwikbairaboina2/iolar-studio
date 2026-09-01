@@ -183,10 +183,41 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
   let cursor = 0;
   let prevMotion: Clip['motion'] | undefined;
 
+  /**
+   * Recordings made for a stretch of the reel, each laid down once.
+   *
+   * The renderer returns a continuous performance. Cutting it into per-beat pieces, panning
+   * across them and re-timing them against a separately cut voiceover threw that away and
+   * put the lips out of step with the words — so a recording that knows where it starts goes
+   * in whole, from its first frame, for exactly as long as it runs.
+   */
+  const laid = new Set<string>();
+
   for (const beat of reel.beats) {
     const span = spans.get(beat.id);
     const assetId = beat.shot.assetId;
     if (!span || !assetId || !ready.has(assetId)) continue;
+
+    const whole = reel.assets.find((a) => a.id === assetId);
+    if (whole?.takeStart !== undefined && whole.durationSec) {
+      if (laid.has(assetId)) continue;
+      laid.add(assetId);
+      const start = r3(Math.max(cursor, whole.takeStart));
+      clips.push({
+        id: `c${clips.length + 1}`,
+        assetId,
+        beatId: beat.id,
+        start,
+        end: r3(start + whole.durationSec),
+        srcIn: 0,
+        fit: 'cover',
+        motion: HELD,
+        transition: 'cut',
+        locked: false,
+      });
+      cursor = r3(start + whole.durationSec);
+      continue;
+    }
     // the footage this line can cut between, primary first
     const pool = [assetId, ...beat.shot.alsoAssetIds].filter((id) => ready.has(id));
 
@@ -226,7 +257,11 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
         // previous shot continue through it
         srcIn:
           fromTake ? r3(start + p * each)
-          : takeStart !== undefined ? r3(start + p * each - takeStart)
+          // Clips butt up against each other, so a clip can begin fractionally before the
+          // recording made for it — the beat's own words start later than the silence it
+          // inherits from the previous line. Reading from before the file starts is not a
+          // thing, so that lands on its opening frame.
+          : takeStart !== undefined ? r3(Math.max(0, start + p * each - takeStart))
           : pool.length > 1 ? 0
           : r3(p * each),
         fit: 'cover',
@@ -238,10 +273,28 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     cursor = clips.at(-1)!.end;
   }
 
-  const generated = groupCaptions(scriptAlignedWords(reel), pattern)
-    .filter((c) => !lockedCaptions.some((l) => c.start < l.end && l.start < c.end))
-    .map((c, i) => ({ ...c, id: `k${lockedCaptions.length + i + 1}` }));
-  const captions = [...lockedCaptions, ...generated];
+  /**
+   * Closes the holes between recordings without moving any of them.
+   *
+   * A recording is cut for a moment in the voiceover and its lips are in step with the words
+   * there, so sliding it to meet its neighbour puts them out. What gives instead is how long
+   * the neighbour is held: the export loops its input, so a page that runs four seconds
+   * covers six by carrying on scrolling. The last one is held to the end of the voiceover,
+   * which is what stops the closing sentence playing over black.
+   *
+   * Nothing is pulled back to cover the opening. Starting the first recording early would
+   * shift it off the words it was cut from, and a face two and a half seconds out of step
+   * with its own voice is worse than a moment of black.
+   */
+  const inOrder = [...clips].sort((a, b) => a.start - b.start);
+  for (let i = 0; i < inOrder.length; i++) {
+    const next = inOrder[i + 1];
+    inOrder[i].end = r3(next ? Math.max(inOrder[i].end, next.start) : Math.max(inOrder[i].end, reel.vo.durationSec));
+  }
+
+  // No burned-in subtitles. The words are spoken; a second copy of them across the picture
+  // is what a caption track is for, and this reel does not want one.
+  const captions = lockedCaptions;
 
   const hookBeat = reel.beats.find((b) => b.role === 'hook');
   const overlays: Overlay[] = lockedOverlays.length

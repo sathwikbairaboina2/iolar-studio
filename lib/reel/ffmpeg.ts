@@ -118,8 +118,14 @@ export function buildExportArgs(input: ExportInput): string[] {
     //
     // Footage shorter than its clip is looped rather than frozen: cloning the last frame
     // to fill the gap is what put three dead stretches of up to a second into the cut.
+    // A recording placed whole is a performance: looping it back to frame one part way
+    // through plays the mouth against words it has already said. Held past its end it
+    // freezes on its last frame instead — the padding below does that. Everything else
+    // still loops, because a page that runs short is better carrying on scrolling than
+    // stopping dead.
+    const whole = reel.assets.find((a) => a.id === clip.assetId)?.takeStart !== undefined;
     if (isStill) args.push('-loop', '1', '-t', String(dur));
-    else args.push('-stream_loop', '-1');
+    else if (!whole) args.push('-stream_loop', '-1');
     args.push('-i', file);
     clipInput.push(inputIndex++);
   });
@@ -156,7 +162,12 @@ export function buildExportArgs(input: ExportInput): string[] {
         // shortening the reel. Video inputs loop, so this only ever catches a still.
         `tpad=stop_mode=clone:stop_duration=${r3(srcIn + dur + 1)},` +
         `trim=start=${srcIn}:duration=${dur},setpts=PTS-STARTPTS,` +
-        `fps=${fps},${fit},${motionFfmpeg(clip.motion, { fps, frames, width, height })},` +
+        // A held clip is footage that already moves; zoompan would resample every frame of
+        // it at zoom 1 for nothing. Only a clip that is actually being moved gets one.
+        `fps=${fps},${fit},` +
+        (clip.motion.type === 'hold' || clip.motion.strength === 0
+          ? ''
+          : `${motionFfmpeg(clip.motion, { fps, frames, width, height })},`) +
         `format=yuv420p,setsar=1[v${i}]`
     );
   });
@@ -196,6 +207,30 @@ export function buildExportArgs(input: ExportInput): string[] {
     acc = out;
   }
 
+  /**
+   * Recordings speak for themselves.
+   *
+   * Each one was rendered against the stretch of voiceover it covers, so its own track is
+   * already in step with its picture — a lipsync take especially, where the lips were made
+   * from it. Laying the voiceover over the top put a second copy of the same words against
+   * them, slightly out. So the voiceover is silenced under every clip that brought audio,
+   * and that clip's own track is delayed into its place instead.
+   */
+  const speaking = timeline.clips
+    .map((clip, i) => ({ clip, i, asset: reel.assets.find((a) => a.id === clip.assetId) }))
+    .filter(({ asset }) => asset?.origin === 'plugin' && asset.takeStart !== undefined)
+    // How long each one actually speaks for. A clip held past the end of its recording is
+    // frozen on its last frame, and the voiceover carries the words over that tail — muting
+    // the whole held length would drop them.
+    .map((s) => ({ ...s, speaks: Math.min(s.clip.end - s.clip.start, s.asset?.durationSec ?? s.clip.end - s.clip.start) }));
+
+  const ownAudio: string[] = [];
+  for (const { clip, i } of speaking) {
+    const at = Math.round(clip.start * 1000);
+    filters.push(`[${clipInput[i]}:a]adelay=${at}|${at}[ca${i}]`);
+    ownAudio.push(`[ca${i}]`);
+  }
+
   const maps = ['-map', acc];
   if (voInput >= 0 && musicInput >= 0) {
     const gain = reel.timeline.music.gainDb;
@@ -207,7 +242,18 @@ export function buildExportArgs(input: ExportInput): string[] {
     );
     maps.push('-map', '[aout]');
   } else if (voInput >= 0) {
-    filters.push(`[${voInput}:a]${VOICE_CHAIN},${loudnorm}[aout]`);
+    const under = speaking
+      .map(({ clip, speaks }) => `between(t,${r3(clip.start)},${r3(clip.start + speaks)})`)
+      .join('+');
+    const ducked = under ? `,volume=0:enable='${under}'` : '';
+    if (ownAudio.length) {
+      filters.push(
+        `[${voInput}:a]${VOICE_CHAIN}${ducked}[vobed]`,
+        `[vobed]${ownAudio.join('')}amix=inputs=${ownAudio.length + 1}:duration=first:dropout_transition=0,${loudnorm}[aout]`
+      );
+    } else {
+      filters.push(`[${voInput}:a]${VOICE_CHAIN},${loudnorm}[aout]`);
+    }
     maps.push('-map', '[aout]');
   } else if (musicInput >= 0) {
     filters.push(`[${musicInput}:a]${loudnorm}[aout]`);

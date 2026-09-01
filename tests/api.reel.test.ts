@@ -85,14 +85,15 @@ describe('assemble route', () => {
     });
   };
 
-  it('builds clips and captions from the stored words', async () => {
+  it('builds clips from the stored words', async () => {
     await seed();
     const { POST } = await import('@/app/api/reel/[slug]/assemble/route');
     const res = await POST(new Request('http://x', { method: 'POST' }), ctx('grok'));
     expect(res.status).toBe(200);
     const { reel } = await res.json();
     expect(reel.timeline.clips).toHaveLength(2);
-    expect(reel.timeline.captions.length).toBeGreaterThan(0);
+    // Nothing is burned across the picture: the words are spoken, not printed.
+    expect(reel.timeline.captions).toEqual([]);
 
     const { loadReel } = await import('@/lib/reel/store');
     expect((await loadReel('grok')).timeline.clips).toHaveLength(2);

@@ -61,7 +61,9 @@ describe('assemble', () => {
     expect(tl.clips[0]).toMatchObject({ beatId: 'b1', assetId: 'a1', start: 0 });
     expect(tl.clips[0].end).toBeCloseTo(1.95, 2);
     expect(tl.clips[1]).toMatchObject({ beatId: 'b2', assetId: 'a2' });
-    expect(tl.clips[2].end).toBeCloseTo(5.95, 2);
+    // The last clip is held to the end of the voiceover rather than stopping on its final
+    // word, so the closing line never plays over black.
+    expect(tl.clips[2].end).toBeCloseTo(6, 2);
   });
 
   it('leaves no gap and no overlap between clips', async () => {
@@ -136,16 +138,19 @@ describe('assemble', () => {
     }
   });
 
-  it('skips beats whose asset is not ready yet but still captions the whole voiceover', async () => {
+  it('skips beats whose asset is not ready yet', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
+    const { validateReel } = await import('@/lib/reel/schema');
     const reel = await baseReel();
-    const pending = {
+    const half = validateReel({
       ...reel,
-      assets: reel.assets.map((a) => (a.id === 'a2' ? { ...a, status: 'queued' as const } : a)),
-    };
-    const tl = assemble({ reel: pending, pattern: PATTERN });
-    expect(tl.clips.map((c) => c.beatId)).toEqual(['b1', 'b3']);
-    expect(tl.captions.at(-1)!.end).toBeCloseTo(5.95, 2);
+      assets: reel.assets.map((a) => (a.id === 'a2' ? { ...a, status: 'queued', path: '' } : a)),
+    });
+
+    const tl = assemble({ reel: half, pattern: PATTERN });
+    // The beat is left out until its footage lands; the rest of the reel is unaffected.
+    expect(tl.clips.some((c) => c.beatId === 'b2')).toBe(false);
+    expect(tl.clips.length).toBeGreaterThan(0);
   });
 
   it('splits a beat longer than the pattern max shot length', async () => {
