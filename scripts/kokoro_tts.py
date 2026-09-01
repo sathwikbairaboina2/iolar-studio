@@ -21,8 +21,19 @@ chunks = []
 for part in kokoro.create_stream_sync(text, voice=voice, speed=float(speed), lang="en-us") if hasattr(kokoro, "create_stream_sync") else []:
     chunks.append(part[0])
 
+RATE = 24000
+# A real speaker breathes between sentences; the model's chunks butt together with almost
+# none. The gap is where everything downstream cuts — whisper hears clean sentence
+# boundaries, and the bite planner gets silence to cut in instead of clipping a word.
+PAUSE = np.zeros(int(0.30 * RATE), dtype=np.float32)
+
 if not chunks:
     samples, rate = kokoro.create(text, voice=voice, speed=float(speed), lang="en-us")
     sf.write(out_path, samples, rate)
 else:
-    sf.write(out_path, np.concatenate(chunks), 24000)
+    spaced = []
+    for i, c in enumerate(chunks):
+        if i:
+            spaced.append(PAUSE)
+        spaced.append(np.asarray(c, dtype=np.float32))
+    sf.write(out_path, np.concatenate(spaced), RATE)

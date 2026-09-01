@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { getSettings } from '../settings';
 import { run } from './probe';
+import { masterVoice } from './build/master';
 
 export class TtsUnavailableError extends Error {
   constructor(detail: string) {
@@ -143,8 +144,10 @@ async function synthSapi(text: string, wavPath: string): Promise<void> {
 
 async function toMp3(wavPath: string, mp3Path: string): Promise<void> {
   await fs.mkdir(path.dirname(mp3Path), { recursive: true });
+  // 256k because this file is the source everything else is cut from — the per-beat
+  // slices, the lipsync takes, the editor's voice track all inherit its artefacts.
   const { code, stderr } = await run('ffmpeg', [
-    '-v', 'error', '-y', '-i', wavPath, '-c:a', 'libmp3lame', '-b:a', '192k', mp3Path,
+    '-v', 'error', '-y', '-i', wavPath, '-c:a', 'libmp3lame', '-b:a', '256k', mp3Path,
   ]);
   if (code !== 0) throw new Error(`voiceover encode failed: ${stderr.slice(0, 300)}`);
 }
@@ -180,8 +183,17 @@ export async function speak(text: string, mp3Path: string): Promise<{ provider: 
       } else {
         await synthSapi(text, wav);
       }
-      await toMp3(wav, mp3Path);
+      // Mastered before the encode, so the mp3 everything is cut from is already the
+      // levelled, de-essed take rather than raw synthesis. A mastering failure falls back
+      // to the raw wav: an unmastered voiceover still beats no voiceover.
+      const mastered = wav.replace(/\.wav$/i, '.mastered.wav');
+      const source = await masterVoice(wav, mastered).then(
+        () => mastered,
+        () => wav
+      );
+      await toMp3(source, mp3Path);
       await fs.unlink(wav).catch(() => {});
+      await fs.unlink(mastered).catch(() => {});
       return { provider };
     } catch (err) {
       problems.push(`${provider}: ${String(err).slice(0, 160)}`);
