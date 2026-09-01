@@ -3,7 +3,7 @@ import React from 'react';
 import { Button, Input, Layout, Menu, Tag } from 'antd';
 import {
   BookOutlined, VideoCameraOutlined, ClockCircleOutlined, MessageOutlined, SmileOutlined,
-  ShareAltOutlined, PictureOutlined, SettingOutlined, MoonOutlined, SunOutlined,
+  ShareAltOutlined, PictureOutlined, SettingOutlined, MoonOutlined, SunOutlined, ApiOutlined,
 } from '@ant-design/icons';
 import { usePathname, useRouter } from 'next/navigation';
 import { SWEEP, useTheme } from './ThemeProvider';
@@ -34,6 +34,7 @@ const items = [
     children: [
       { key: '/graph', icon: <ShareAltOutlined />, label: 'Knowledge graph' },
       { key: '/assets', icon: <PictureOutlined />, label: 'Assets' },
+      { key: '/plugins', icon: <ApiOutlined />, label: 'Plugins' },
       { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
     ],
   },
