@@ -19,8 +19,6 @@ import type { AnimateRequest, JobState, VideoProvider } from '../videoProvider';
 
 export type WebpageOpts = {
   baseUrl?: string;
-  /** Its own review pass inspects the render instead of trusting it. */
-  review?: boolean;
   fetchImpl?: typeof fetch;
 };
 
@@ -28,7 +26,6 @@ type Job = { id: string; status: string; error?: string; pages?: { slug?: string
 
 export function createWebpageProvider(opts: WebpageOpts = {}): VideoProvider {
   const base = (opts.baseUrl ?? process.env.WEBPAGE_MP4_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, '');
-  const review = opts.review ?? true;
   const http = opts.fetchImpl ?? fetch;
 
   const job = async (id: string): Promise<Job> => {
@@ -58,9 +55,9 @@ export function createWebpageProvider(opts: WebpageOpts = {}): VideoProvider {
         body: JSON.stringify({
           // The audio's duration is what sets this page's screen time, so the
           // page is up for exactly as long as its line is spoken. No dwell.
+          // The page, the phrase on it, and what is said over it. How it is recorded —
+          // size, frame rate, dwell, chrome, the review pass — is the plugin's own business.
           links: [{ url: req.url, highlight: req.highlight || undefined, audio: req.audioPath }],
-          review,
-          label: req.brief.slice(0, 120),
         }),
       });
       const body = await r.json().catch(() => ({}));

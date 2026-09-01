@@ -126,30 +126,15 @@ describe('shot preview', () => {
 
     // The point of a gate is that you can read what is about to be spent, including the
     // settings that decide whether the shot comes back usable.
-    expect(head.payload).toMatchObject({
-      image: 'C:/presenter.png',
-      prompt: 'to camera',
+    // Only what the renderer needs: how it renders is the plugin's business.
+    expect(head.payload).toEqual({
+      image_path: 'C:/presenter.png',
+      audio_path: expect.any(String),
       preset: 'portrait',
-      steps: 10,
-      fps: 30,
     });
-    expect(head.payload!.seed).toEqual(expect.any(Number));
 
     const page = (await previewShots('grok')).find((r) => r.beatId === 'b2')!;
     expect(page.payload).toMatchObject({ url: 'https://example.com/a', highlight: 'phrase' });
-  });
-
-  it('renders at the rate the settings ask for, over the reel’s own', async () => {
-    await seed();
-    mockProvider();
-    mockBeatAudio();
-    mockScript();
-    mockLink();
-    mockPresenter('C:/presenter.png', { lipsyncFps: 24, lipsyncSteps: 4 });
-    const { previewShots } = await import('@/lib/reel/shots');
-
-    const head = (await previewShots('grok')).find((r) => r.beatId === 'b3')!;
-    expect(head.payload).toMatchObject({ fps: 24, steps: 4 });
   });
 
   it('names what is missing rather than letting the run discover it', async () => {

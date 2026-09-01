@@ -15,15 +15,18 @@ import type { Script } from '../research/script';
  * page visit with no source is the fabrication this pipeline exists to prevent.
  */
 
-export type ResolvedLink = { url: string; highlight: string; candidateId: string };
+export type ResolvedLink = { url: string; highlight?: string; candidateId: string };
 
 /**
  * Picks the strongest citation on a line and the phrase to sweep on it.
  *
  * Strongest means the critic's own `scoreTotal` — it already ranked these, and
- * ranking them again here would be a second opinion nobody asked for. The
- * highlight is the candidate's first pull quote, falling back to the line's own
- * words, which is what the plugin does with a missing phrase anyway.
+ * ranking them again here would be a second opinion nobody asked for.
+ *
+ * The highlight is a phrase the marker sweeps on the page, so it can only be words that are
+ * on the page: the candidate's own pull quote. The narration is not — sending the line's
+ * text asked the plugin to find a sentence nobody had written there. With no quote there is
+ * no highlight, and the plugin decides what to do about it.
  */
 export function resolveLink(
   script: Pick<Script, 'lines'>,
@@ -43,11 +46,7 @@ export function resolveLink(
   if (!url) return null;
 
   const quote = best.pullQuotes?.[0]?.text?.trim();
-  return {
-    url,
-    // A quote long enough to be a paragraph is not a phrase a marker can sweep,
-    // and the plugin scrolls to what it can find.
-    highlight: quote && quote.length <= 180 ? quote : line.text.trim(),
-    candidateId: best.id,
-  };
+  // A quote long enough to be a paragraph is not a phrase a marker can sweep.
+  const highlight = quote && quote.length <= 180 ? quote : undefined;
+  return { url, highlight, candidateId: best.id };
 }

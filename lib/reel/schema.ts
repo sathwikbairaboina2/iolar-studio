@@ -55,6 +55,10 @@ const AssetSchema = z.object({
   path: z.string(),
   origin: z.enum(['user', 'plugin']),
   status: z.enum(['queued', 'running', 'ready', 'failed', 'awaiting-manual']).default('queued'),
+  /** One continuous render of the whole voiceover, which the timeline cuts inside. */
+  fullTake: z.boolean().optional(),
+  /** Where this footage starts on the reel's clock, when it covers several beats. */
+  takeStart: z.number().optional(),
   jobId: z.string().optional(),
   /** Which renderer made it, so a reel records the machine behind each clip. */
   provider: z.string().optional(),

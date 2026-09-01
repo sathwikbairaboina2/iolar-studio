@@ -204,6 +204,13 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     const pieces = Math.max(1, Math.ceil(total / maxShot));
     const each = total / pieces;
     const isScreen = beat.shot.kind === 'screen';
+    // One continuous take runs to the same clock as the reel, so a clip at 2.4s shows
+    // second 2.4 of it. Anything else replays the opening under every line.
+    const covering = reel.assets.find((a) => a.id === pool[0]);
+    const fromTake = covering?.fullTake === true;
+    // Footage that covers several beats starts somewhere on the reel's clock; a clip inside
+    // it shows the part that matches when it plays, not the top of the recording again.
+    const takeStart = covering?.takeStart;
     for (let p = 0; p < pieces; p++) {
       const pieceAsset = pool[p % pool.length];
       const isStill = reel.assets.find((a) => a.id === pieceAsset)?.kind === 'image';
@@ -217,7 +224,11 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
         end: r3(start + (p + 1) * each),
         // a piece on its own footage starts at the top of it; only pieces reusing the
         // previous shot continue through it
-        srcIn: pool.length > 1 ? 0 : r3(p * each),
+        srcIn:
+          fromTake ? r3(start + p * each)
+          : takeStart !== undefined ? r3(start + p * each - takeStart)
+          : pool.length > 1 ? 0
+          : r3(p * each),
         fit: 'cover',
         motion,
         transition: pattern.transitions[clips.length % pattern.transitions.length],

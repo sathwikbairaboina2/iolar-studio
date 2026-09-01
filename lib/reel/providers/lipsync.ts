@@ -11,42 +11,26 @@ import type { AnimateRequest, JobState, VideoProvider } from '../videoProvider';
  * The API takes filesystem paths rather than uploads, which suits us — the beat
  * audio was cut on this machine and the presenter image lives in settings.
  *
- * `fast` is off. The four-step distill LoRA was on by default here on the belief that full
- * quality cost half an hour a beat — true of the model this was first written against, not
- * of Wan S2V, which is 18 seconds at four steps and 30 to 60 at ten. Measured side by side
- * on the same seed and audio, four steps printed garbled lettering across the presenter's
- * shirt and produced no gesture at all; ten steps did neither. A dozen renders is minutes
- * either way, so the draft setting is opt-in now.
+ * The studio sends the image, the audio and the shape it needs back. Steps, frame rate,
+ * sampler, negative prompt and frame size all belong to the plugin, which documents its own
+ * measurements for them. Sending a per-shot written brief as the prompt was measurably
+ * worse than sending none: on the same seed and audio, the prompted take re-interpreted the
+ * composition every chunk and drifted, where the unprompted one held the photo's framing.
  *
  * The plugin is not modified by any of this.
  */
 
 export type LipsyncOpts = {
   baseUrl?: string;
-  fast?: boolean;
   preset?: 'square' | 'portrait' | 'landscape';
   fetchImpl?: typeof fetch;
 };
 
 type Job = { id: string; status: string; error?: string | null };
 
-/**
- * What the model must not draw.
- *
- * Wan renders letterforms unasked — a shot came back with garbled type across the
- * presenter's shirt, which is baked into the footage and survives every edit downstream.
- * The renderer's own default covers the usual artefacts in Chinese; sending our own
- * replaces it, so the parts worth keeping are carried here alongside the text clauses.
- */
-const NO_TEXT_NEGATIVE =
-  '字幕，文字，标志，水印，色调艳丽，过曝，静态，细节模糊不清，画面静止，' +
-  'text, letters, words, lettering, captions, subtitles, watermark, logo, signage, ' +
-  'garbled text, gibberish writing, printed words on clothing';
-
 export function createLipsyncProvider(opts: LipsyncOpts = {}): VideoProvider {
   const base = (opts.baseUrl ?? process.env.LIPSYNC_URL ?? 'http://127.0.0.1:8300').replace(/\/$/, '');
   const http = opts.fetchImpl ?? fetch;
-  const fast = opts.fast ?? false;
 
   return {
     name: 'lipsync',
@@ -74,18 +58,14 @@ export function createLipsyncProvider(opts: LipsyncOpts = {}): VideoProvider {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           type: 'lipsync',
+          // Only what the renderer needs to make this shot. Everything else — steps, frame
+          // rate, negative prompt, frame size — is the plugin's own business, and the
+          // studio sending its opinion about them is how a written brief ended up fighting
+          // the reference photo and drifting the framing every chunk.
           params: {
             image_path: req.imagePath,
             audio_path: req.audioPath,
-            prompt: req.brief,
-            negative: NO_TEXT_NEGATIVE,
             preset: opts.preset ?? (req.ratio === '9:16' ? 'portrait' : 'square'),
-            // Rendered at the reel's own rate: 16fps footage in a 30fps reel is duplicated
-            // frames, which reads as judder however good the shot is.
-            fps: req.fps,
-            fast,
-            ...(req.steps ? { steps: req.steps } : {}),
-            ...(req.seed >= 0 ? { seed: req.seed % 2147483647 } : {}),
           },
         }),
       });

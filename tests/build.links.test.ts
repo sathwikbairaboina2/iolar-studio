@@ -28,16 +28,20 @@ describe('resolveLink', () => {
     expect(link!.candidateId).toBe('c2');
   });
 
-  it('falls back to the line text when the source has no pull quote', () => {
+  it('sends no highlight when the source has no phrase to sweep', () => {
     const link = resolveLink(script(['c1']) as never, [cand('c1', { pullQuotes: [] })] as never, 'l1');
-    expect(link!.highlight).toBe('The claim as spoken.');
+    // The marker sweeps words that are on the page. The narration is not on the page, so
+    // sending it asked the plugin to find a sentence nobody had written there.
+    expect(link!.highlight).toBeUndefined();
   });
 
   // A marker sweeps a phrase, not a paragraph.
-  it('will not use a pull quote too long to sweep', () => {
+  it('sends no highlight when the only quote is too long to sweep', () => {
     const long = 'x'.repeat(200);
     const link = resolveLink(script(['c1']) as never, [cand('c1', { pullQuotes: [{ text: long, context: '' }] })] as never, 'l1');
-    expect(link!.highlight).toBe('The claim as spoken.');
+    // The marker sweeps words that are on the page. The narration is not on the page, so
+    // sending it asked the plugin to find a sentence nobody had written there.
+    expect(link!.highlight).toBeUndefined();
   });
 
   // A page visit with no source is exactly the fabrication the research prevents.

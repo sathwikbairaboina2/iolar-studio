@@ -4,11 +4,12 @@ import { Beat, REEL_RATIOS, Reel } from './schema';
 import { addAsset, loadReel, saveReel, updateAsset } from './store';
 import { beatSpans } from './assemble';
 import { loadPattern } from './patterns';
-import { reelAssetsDir } from '../paths';
+import { reelAssetsDir, reelVoFile } from '../paths';
 import { ffprobeMedia } from './probe';
 import { NO_PROVIDER, providerNameFor, videoProvider } from './videoProvider';
 import { resolveLink } from './build/links';
-import { beatAudioFile } from './build/audio';
+import { beatAudioFile, groupAudioFile, sliceSpan } from './build/audio';
+import { groupAdjacent } from './shotmix';
 import { getSettings } from '../settings';
 import * as research from './research/store';
 import type { Candidate } from './research/candidate';
@@ -68,6 +69,20 @@ export function planShots(reel: Reel, shotSec: [number, number]): ShotRequest[] 
     });
   }
   return out;
+}
+
+/**
+ * The one render a wholly spoken reel needs.
+ *
+ * Null when the reel has no aligned voiceover to speak, or when any beat wants a page shot:
+ * that is a different renderer and a different picture, and cutting to it out of one take is
+ * the studio's job, not the renderer's.
+ */
+export function planTake(reel: Reel, slug: string): { kind: Beat['shot']['kind']; seconds: number; audioPath: string } | null {
+  if (!reel.vo.durationSec || !reel.vo.words.length) return null;
+  const spoken = reel.beats.filter((b) => b.shot.kind !== 'title');
+  if (!spoken.length || spoken.some((b) => b.shot.kind !== 'talking-head')) return null;
+  return { kind: 'talking-head', seconds: reel.vo.durationSec, audioPath: reelVoFile(slug) };
 }
 
 async function pointBeatAt(slug: string, beatId: string, assetId: string): Promise<void> {
@@ -153,6 +168,8 @@ async function buildContext(slug: string, reel: Reel): Promise<BuildContext> {
 /** What a renderer would be handed for one beat, or the reason it cannot be. */
 export type ResolvedShot = {
   beatId: string;
+  /** Every beat this one request covers. A run over one page is one recording of it. */
+  beatIds?: string[];
   kind: Beat['shot']['kind'];
   provider: string | null;
   brief: string;
@@ -178,10 +195,22 @@ export async function resolveShot(
   slug: string,
   req: ShotRequest,
   reel: Reel,
-  ctx: BuildContext
+  ctx: BuildContext,
+  /** The audio this request is spoken over, when it covers more than its own beat. */
+  spanAudio?: string,
+  /**
+   * What to check for when asking whether this beat has audio at all.
+   *
+   * A request covering several beats is spoken over a stretch cut at run time, so the file
+   * named in the payload does not exist while the gate is only being looked at. Judging the
+   * request by it reported every such row as having no audio; the beats it covers are the
+   * honest test.
+   */
+  audioProbe?: string
 ): Promise<ResolvedShot> {
   const providerName = providerNameFor(req.kind);
-  const audioPath = beatAudioFile(slug, req.beatId);
+  const audioPath = spanAudio ?? (req.beatId === '*' ? reelVoFile(slug) : beatAudioFile(slug, req.beatId));
+  const probePath = audioProbe ?? audioPath;
   const base: ResolvedShot = {
     beatId: req.beatId,
     kind: req.kind,
@@ -201,7 +230,7 @@ export async function resolveShot(
 
   // Both renderers are driven by this beat's own slice of the voiceover: it is
   // what the presenter speaks, and it is what sets a page's screen time.
-  const hasAudio = await fs.stat(audioPath).then(() => true).catch(() => false);
+  const hasAudio = await fs.stat(probePath).then(() => true).catch(() => false);
   if (!hasAudio) {
     return { ...base, blocked: 'No audio for this beat — add the voiceover and align it first.' };
   }
@@ -218,7 +247,7 @@ export async function resolveShot(
       ...base,
       url: link.url,
       highlight: link.highlight,
-      payload: { url: link.url, highlight: link.highlight, audio: audioPath, fps: ctx.fps, seconds: req.seconds },
+      payload: { url: link.url, ...(link.highlight ? { highlight: link.highlight } : {}), audio: audioPath },
     };
   }
 
@@ -229,16 +258,39 @@ export async function resolveShot(
     ...base,
     imagePath: ctx.presenterImage,
     payload: {
-      image: ctx.presenterImage,
-      audio: audioPath,
-      prompt: req.brief,
+      image_path: ctx.presenterImage,
+      audio_path: audioPath,
       preset: reel.ratio === '9:16' ? 'portrait' : 'square',
-      fps: ctx.fps,
-      steps: ctx.steps,
-      seed: seedForBeat(reel.seed, req.beatId),
-      seconds: req.seconds,
     },
   };
+}
+
+/**
+ * The reel as a list of requests, with neighbours that show the same thing collapsed.
+ *
+ * A beat is not a render. Four lines spoken over one document is one recording of that
+ * document; three presenter lines in a row is one bite. What separates two requests is a
+ * change of picture, not a change of sentence.
+ */
+export async function planGroups(slug: string, reel: Reel, ctx: BuildContext, shotSec: [number, number]) {
+  const spans = beatSpans(reel);
+  const reqs = planShots(reel, shotSec);
+  const segments: { beatId: string; key: string; seconds: number }[] = [];
+  const keyed = new Map<string, ShotRequest>();
+
+  for (const req of reqs) {
+    const span = spans.get(req.beatId);
+    const seconds = span ? span.end - span.start : req.seconds;
+    let key = 'presenter';
+    if (providerNameFor(req.kind) === 'webpage') {
+      const link = ctx.script ? resolveLink(ctx.script, ctx.candidates, req.sourceLineId) : null;
+      key = link ? `page:${link.url}` : `page:none:${req.beatId}`;
+    }
+    segments.push({ beatId: req.beatId, key, seconds });
+    keyed.set(req.beatId, req);
+  }
+
+  return groupAdjacent(segments).map((g) => ({ ...g, first: keyed.get(g.beatIds[0])! }));
 }
 
 /**
@@ -251,12 +303,27 @@ export async function previewShots(slug: string): Promise<ResolvedShot[]> {
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
   const ctx = await buildContext(slug, reel);
+
   const out: ResolvedShot[] = [];
-  for (const req of planShots(reel, pattern.pacing.shotSec)) {
-    out.push(await resolveShot(slug, req, reel, ctx));
+  for (const g of await planGroups(slug, reel, ctx, pattern.pacing.shotSec)) {
+    const req = { ...g.first, seconds: g.seconds };
+    const audio =
+      g.beatIds.length === 1 ? beatAudioFile(slug, g.beatIds[0]) : groupAudioFile(slug, `${g.key}-${g.startsAt}`);
+    const shot = await resolveShot(slug, req, reel, ctx, audio, beatAudioFile(slug, g.beatIds[0]));
+    out.push({ ...shot, beatIds: g.beatIds });
   }
   return out;
 }
+
+/** The whole reel as one shot request. `*` is the take rather than any one beat. */
+const TAKE_REQUEST = (take: { seconds: number }): ShotRequest => ({
+  beatId: '*',
+  kind: 'talking-head',
+  brief: 'the whole voiceover, in one take',
+  hero: true,
+  seconds: take.seconds,
+  sourceLineId: null,
+});
 
 /** A stable per-beat seed: same reel and beat, same take; different beat, different take. */
 export function seedForBeat(reelSeed: number, beatId: string): number {
@@ -266,6 +333,56 @@ export function seedForBeat(reelSeed: number, beatId: string): number {
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0) % 2147483647;
+}
+
+/**
+ * Renders one picture and hands it to every beat spoken over it.
+ *
+ * `takeStart` is where this footage begins on the reel's clock, so the timeline can cut
+ * inside it: a clip at 12s of a visit that started at 9s shows second three of the
+ * recording, not the top of it again.
+ */
+async function generateGroup(
+  slug: string,
+  req: ShotRequest,
+  beatIds: string[],
+  startsAt: number,
+  audio: string,
+  reel: Reel,
+  ctx: BuildContext
+): Promise<void> {
+  const [width, height] = REEL_RATIOS[reel.ratio];
+  const providerName = providerNameFor(req.kind);
+  const asset = await addAsset(slug, {
+    kind: 'video',
+    path: '',
+    origin: 'plugin',
+    status: 'queued',
+    brief: req.brief,
+    provider: providerName ?? undefined,
+    takeStart: startsAt,
+    width,
+    height,
+  });
+  for (const id of beatIds) await pointBeatAt(slug, id, asset.id);
+
+  const stall = (error: string) => updateAsset(slug, asset.id, { status: 'awaiting-manual', error });
+
+  try {
+    const plan = await resolveShot(slug, req, reel, ctx, audio);
+    if (plan.blocked) {
+      await stall(plan.blocked);
+      return;
+    }
+    const provider = videoProvider(plan.provider!)!;
+    const shared = { audioPath: plan.audioPath, brief: plan.brief, seconds: plan.seconds, seed: reel.seed, ratio: reel.ratio, fps: reel.fps };
+    const { jobId } = await provider.animate(
+      plan.url ? { ...shared, url: plan.url, highlight: plan.highlight } : { ...shared, imagePath: plan.imagePath! }
+    );
+    await updateAsset(slug, asset.id, { status: 'running', jobId, provider: provider.name });
+  } catch (err) {
+    await updateAsset(slug, asset.id, { status: 'failed', error: String(err).slice(0, 300) });
+  }
 }
 
 async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: BuildContext): Promise<void> {
@@ -342,15 +459,73 @@ export async function useStillsForScreens(slug: string): Promise<Reel> {
  * `beatIds` is what came back through the gate: an empty list means a human looked and chose
  * none, which is not the same as never having been asked, so it queues nothing.
  */
+export async function runTake(slug: string): Promise<Reel> {
+  const reel = await loadReel(slug);
+  const take = planTake(reel, slug);
+  if (!take) throw new Error('this reel is not one continuous take — some beats want another renderer');
+
+  const ctx = await buildContext(slug, reel);
+  const plan = await resolveShot(slug, TAKE_REQUEST(take), reel, ctx);
+  if (plan.blocked) throw new Error(plan.blocked);
+
+  const [width, height] = REEL_RATIOS[reel.ratio];
+  const asset = await addAsset(slug, {
+    kind: 'video',
+    path: '',
+    origin: 'plugin',
+    status: 'queued',
+    brief: 'the whole voiceover, in one take',
+    provider: plan.provider ?? undefined,
+    fullTake: true,
+    width,
+    height,
+  });
+
+  try {
+    const provider = videoProvider(plan.provider!)!;
+    const { jobId } = await provider.animate({
+      audioPath: plan.audioPath,
+      brief: plan.brief,
+      seconds: plan.seconds,
+      seed: reel.seed,
+      ratio: reel.ratio,
+      fps: reel.fps,
+      imagePath: plan.imagePath!,
+    });
+    await updateAsset(slug, asset.id, { status: 'running', jobId, provider: provider.name });
+  } catch (err) {
+    await updateAsset(slug, asset.id, { status: 'failed', error: String(err).slice(0, 300) });
+  }
+
+  // Every spoken beat is cut from it.
+  const current = await loadReel(slug);
+  await saveReel(slug, {
+    ...current,
+    beats: current.beats.map((b) =>
+      b.shot.kind === 'title' ? b : { ...b, shot: { ...b.shot, assetId: asset.id } }
+    ),
+  });
+  return loadReel(slug);
+}
+
 export async function runShots(slug: string, beatIds?: string[]): Promise<Reel> {
   await useStillsForScreens(slug);
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
   const ctx = await buildContext(slug, reel);
   const wanted = beatIds ? new Set(beatIds) : null;
-  for (const req of planShots(reel, pattern.pacing.shotSec)) {
-    if (wanted && !wanted.has(req.beatId)) continue;
-    await generateOne(slug, req, await loadReel(slug), ctx);
+
+  for (const g of await planGroups(slug, reel, ctx, pattern.pacing.shotSec)) {
+    if (wanted && !g.beatIds.some((id) => wanted.has(id))) continue;
+    // One stretch of voiceover per request, cut before it is sent: the renderer is told
+    // what this picture is spoken over, not what one sentence inside it is.
+    // A group of one is already cut: its beat's own audio is that stretch. Only a run of
+    // beats needs a fresh cut spanning them.
+    const audio =
+      g.beatIds.length === 1
+        ? beatAudioFile(slug, g.beatIds[0])
+        : await sliceSpan(slug, `${g.key}-${g.startsAt}`, g.startsAt, g.startsAt + g.seconds);
+    await generateGroup(slug, { ...g.first, seconds: g.seconds }, g.beatIds, g.startsAt, audio, await loadReel(slug), ctx);
   }
   return loadReel(slug);
 }

@@ -26,6 +26,35 @@ export function beatAudioFile(slug: string, beatId: string): string {
   return path.join(beatAudioDir(slug), `${beatId}.wav`);
 }
 
+/** The audio a group of neighbouring beats is spoken over, cut as one continuous stretch. */
+export function groupAudioFile(slug: string, key: string): string {
+  return path.join(beatAudioDir(slug), `${key.replace(/[^a-z0-9]+/gi, '-').slice(0, 60)}.wav`);
+}
+
+/**
+ * Cuts one stretch of the voiceover.
+ *
+ * A run of beats shown over the same picture is one request, so it is spoken over one piece
+ * of audio: handing the renderer the beats separately is what produced four recordings of
+ * the same document.
+ */
+export async function sliceSpan(slug: string, key: string, start: number, end: number): Promise<string> {
+  const dir = beatAudioDir(slug);
+  await fs.mkdir(dir, { recursive: true });
+  const dest = groupAudioFile(slug, key);
+  await run('ffmpeg', [
+    '-y',
+    '-ss', start.toFixed(3),
+    '-t', Math.max(0.05, end - start).toFixed(3),
+    '-i', reelVoFile(slug),
+    '-ac', '1',
+    '-ar', '16000',
+    '-c:a', 'pcm_s16le',
+    dest,
+  ]);
+  return dest;
+}
+
 export class NoAlignmentError extends Error {}
 
 /**
