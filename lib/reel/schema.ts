@@ -134,6 +134,8 @@ export const ReelSchema = z.object({
       file: z.string().default('vo.mp3'),
       durationSec: z.number().default(0),
       words: z.array(WordSchema).default([]),
+      /** Fingerprint of the script this take was made from; absent on takes from before. */
+      scriptHash: z.string().optional(),
     })
     .prefault({}),
   assets: z.array(AssetSchema).default([]),

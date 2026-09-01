@@ -113,6 +113,12 @@ export const COMMANDS = {
     apply: (r, a) => edits.replaceClipAsset(r, a.clipId, a.assetId),
     summary: (a) => `swap ${a.clipId} → asset ${a.assetId}`,
   }),
+  'beat.text': command({
+    fn: 'editBeatText',
+    args: z.object({ beatId: z.string().min(1), text: z.string().min(1) }),
+    apply: (r, a) => edits.editBeatText(r, a.beatId, a.text),
+    summary: (a) => `rewrite ${a.beatId}`,
+  }),
   'caption.edit': command({
     fn: 'editCaption',
     args: z.object({ cueId, text: z.string() }),

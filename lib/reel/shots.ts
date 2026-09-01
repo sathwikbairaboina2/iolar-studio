@@ -143,6 +143,94 @@ async function buildContext(slug: string): Promise<BuildContext> {
   return { script, candidates: pack?.candidates ?? [], presenterImage, up: new Map() };
 }
 
+/** What a renderer would be handed for one beat, or the reason it cannot be. */
+export type ResolvedShot = {
+  beatId: string;
+  kind: Beat['shot']['kind'];
+  provider: string | null;
+  brief: string;
+  seconds: number;
+  hero: boolean;
+  audioPath: string;
+  url?: string;
+  highlight?: string;
+  imagePath?: string;
+  blocked: string | null;
+};
+
+/**
+ * Works out the whole request without sending it.
+ *
+ * Dispatch and preview read the same function, so what the gate shows is what the renderer
+ * gets — a preview assembled separately would drift from the call it describes and stop
+ * being worth looking at.
+ */
+export async function resolveShot(
+  slug: string,
+  req: ShotRequest,
+  reel: Reel,
+  ctx: BuildContext
+): Promise<ResolvedShot> {
+  const providerName = providerNameFor(req.kind);
+  const audioPath = beatAudioFile(slug, req.beatId);
+  const base: ResolvedShot = {
+    beatId: req.beatId,
+    kind: req.kind,
+    provider: providerName,
+    brief: req.brief,
+    seconds: req.seconds,
+    hero: req.hero,
+    audioPath,
+    blocked: null,
+  };
+
+  const provider = providerName ? videoProvider(providerName) : null;
+  if (provider && !ctx.up.has(provider.name)) ctx.up.set(provider.name, await provider.available());
+  if (!provider || !ctx.up.get(provider.name)) {
+    return { ...base, blocked: providerName ? `${providerName}: ${NO_PROVIDER}` : NO_PROVIDER };
+  }
+
+  // Both renderers are driven by this beat's own slice of the voiceover: it is
+  // what the presenter speaks, and it is what sets a page's screen time.
+  const hasAudio = await fs.stat(audioPath).then(() => true).catch(() => false);
+  if (!hasAudio) {
+    return { ...base, blocked: 'No audio for this beat — add the voiceover and align it first.' };
+  }
+
+  if (providerName === 'webpage') {
+    const link = ctx.script ? resolveLink(ctx.script, ctx.candidates, req.sourceLineId) : null;
+    if (!link) {
+      return {
+        ...base,
+        blocked: 'No source to show for this beat — its line cites nothing, so there is no page to visit.',
+      };
+    }
+    return { ...base, url: link.url, highlight: link.highlight };
+  }
+
+  if (!ctx.presenterImage) {
+    return { ...base, blocked: 'No presenter image is set — choose one in settings before rendering a talking head.' };
+  }
+  return { ...base, imagePath: ctx.presenterImage };
+}
+
+/**
+ * Every request this reel would send, as it would be sent.
+ *
+ * Read-only on purpose: a look at the queue must not create the assets it describes, or
+ * opening the gate would itself be the thing that commits the spend.
+ */
+export async function previewShots(slug: string): Promise<ResolvedShot[]> {
+  const reel = await loadReel(slug);
+  const pattern = await loadPattern(reel.pattern);
+  const ctx = await buildContext(slug);
+  const out: ResolvedShot[] = [];
+  for (const req of planShots(reel, pattern.pacing.shotSec)) {
+    out.push(await resolveShot(slug, req, reel, ctx));
+  }
+  return out;
+}
+
 async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: BuildContext): Promise<void> {
   const [width, height] = REEL_RATIOS[reel.ratio];
   const providerName = providerNameFor(req.kind);
@@ -161,40 +249,17 @@ async function generateOne(slug: string, req: ShotRequest, reel: Reel, ctx: Buil
   const stall = (error: string) => updateAsset(slug, asset.id, { status: 'awaiting-manual', error });
 
   try {
-    const provider = providerName ? videoProvider(providerName) : null;
-    if (provider && !ctx.up.has(provider.name)) ctx.up.set(provider.name, await provider.available());
-    if (!provider || !ctx.up.get(provider.name)) {
-      await stall(providerName ? `${providerName}: ${NO_PROVIDER}` : NO_PROVIDER);
+    const plan = await resolveShot(slug, req, reel, ctx);
+    if (plan.blocked) {
+      await stall(plan.blocked);
       return;
     }
 
-    // Both renderers are driven by this beat's own slice of the voiceover: it is
-    // what the presenter speaks, and it is what sets a page's screen time.
-    const audioPath = beatAudioFile(slug, req.beatId);
-    const hasAudio = await fs.stat(audioPath).then(() => true).catch(() => false);
-    if (!hasAudio) {
-      await stall('No audio for this beat — add the voiceover and align it first.');
-      return;
-    }
-
-    const shared = { audioPath, brief: req.brief, seconds: req.seconds, seed: reel.seed, ratio: reel.ratio };
-
-    if (providerName === 'webpage') {
-      const link = ctx.script ? resolveLink(ctx.script, ctx.candidates, req.sourceLineId) : null;
-      if (!link) {
-        await stall('No source to show for this beat — its line cites nothing, so there is no page to visit.');
-        return;
-      }
-      const { jobId } = await provider.animate({ ...shared, url: link.url, highlight: link.highlight });
-      await updateAsset(slug, asset.id, { status: 'running', jobId, provider: provider.name });
-      return;
-    }
-
-    if (!ctx.presenterImage) {
-      await stall('No presenter image is set — choose one in settings before rendering a talking head.');
-      return;
-    }
-    const { jobId } = await provider.animate({ ...shared, imagePath: ctx.presenterImage });
+    const provider = videoProvider(plan.provider!)!;
+    const shared = { audioPath: plan.audioPath, brief: plan.brief, seconds: plan.seconds, seed: reel.seed, ratio: reel.ratio };
+    const { jobId } = await provider.animate(
+      plan.url ? { ...shared, url: plan.url, highlight: plan.highlight } : { ...shared, imagePath: plan.imagePath! }
+    );
     await updateAsset(slug, asset.id, { status: 'running', jobId, provider: provider.name });
   } catch (err) {
     await updateAsset(slug, asset.id, { status: 'failed', error: String(err).slice(0, 300) });
@@ -223,12 +288,20 @@ export async function useStillsForScreens(slug: string): Promise<Reel> {
 }
 
 /** Queues every beat that still needs footage. Idempotent: pending beats are skipped. */
-export async function runShots(slug: string): Promise<Reel> {
+/**
+ * Queues the plan, or the part of it that was approved.
+ *
+ * `beatIds` is what came back through the gate: an empty list means a human looked and chose
+ * none, which is not the same as never having been asked, so it queues nothing.
+ */
+export async function runShots(slug: string, beatIds?: string[]): Promise<Reel> {
   await useStillsForScreens(slug);
   const reel = await loadReel(slug);
   const pattern = await loadPattern(reel.pattern);
   const ctx = await buildContext(slug);
+  const wanted = beatIds ? new Set(beatIds) : null;
   for (const req of planShots(reel, pattern.pacing.shotSec)) {
+    if (wanted && !wanted.has(req.beatId)) continue;
     await generateOne(slug, req, await loadReel(slug), ctx);
   }
   return loadReel(slug);
@@ -297,5 +370,45 @@ export async function retryShot(slug: string, beatId: string, brief?: string): P
         : b
     ),
   });
-  return runShots(slug);
+  // One beat was asked for, so one beat is queued: a retry that swept up every other
+  // pending shot spent an hour of GPU nobody had approved.
+  return runShots(slug, [beatId]);
+}
+
+/**
+ * Changes what kind of shot a beat is, and lets go of whatever was made for it.
+ *
+ * The way out of a beat that can never be rendered as planned — a page shot whose line cites
+ * nothing, a talking head with no presenter. It queues nothing: the recast beat goes back
+ * into the plan and through the gate like any other.
+ */
+export async function recastShot(slug: string, beatId: string, kind: Beat['shot']['kind']): Promise<Reel> {
+  if (!GENERATABLE.includes(kind)) {
+    throw new Error(`no renderer makes a ${kind} shot — pick ${GENERATABLE.join(' or ')}`);
+  }
+  const reel = await loadReel(slug);
+  const beat = reel.beats.find((b) => b.id === beatId);
+  if (!beat) throw new Error(`no beat ${beatId}`);
+  await saveReel(slug, {
+    ...reel,
+    beats: reel.beats.map((b) => (b.id === beatId ? { ...b, shot: { ...b.shot, kind, assetId: undefined } } : b)),
+  });
+  return loadReel(slug);
+}
+
+/**
+ * Stops waiting on a job and hands the beat to a human.
+ *
+ * A renderer that restarted has forgotten its queue, and the studio would otherwise poll a
+ * job id nobody will ever answer for. The asset stays attached so the drop target for your
+ * own file stays where it was.
+ */
+export async function abandonShot(slug: string, beatId: string, why: string): Promise<Reel> {
+  const reel = await loadReel(slug);
+  const beat = reel.beats.find((b) => b.id === beatId);
+  const asset = beat?.shot.assetId ? reel.assets.find((a) => a.id === beat.shot.assetId) : undefined;
+  if (!asset) throw new Error(`beat ${beatId} has no shot to abandon`);
+  if (asset.status === 'ready') throw new Error(`beat ${beatId} already has a ready shot`);
+  await updateAsset(slug, asset.id, { status: 'awaiting-manual', error: why.slice(0, 300) });
+  return loadReel(slug);
 }

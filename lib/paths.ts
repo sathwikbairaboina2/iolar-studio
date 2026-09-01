@@ -57,6 +57,9 @@ export function reelEvidenceDir(slug: string) { return path.join(reelResearchDir
 export function reelHistoryDir(slug: string) { return path.join(reelDir(slug), 'history'); }
 export function reelHistoryIndex(slug: string) { return path.join(reelHistoryDir(slug), 'index.json'); }
 export function reelHistorySnap(slug: string, seq: number) { return path.join(reelHistoryDir(slug), `${seq}.json`); }
+/** Where a creator drops their own footage: one folder per beat, filled from the desktop. */
+export function reelInboxDir(slug: string) { return path.join(reelDir(slug), 'inbox'); }
+export function beatInboxDir(slug: string, beatId: string) { return path.join(reelInboxDir(slug), beatId); }
 export function reelVoFile(slug: string) { return path.join(reelDir(slug), 'vo.mp3'); }
 export function reelWordsFile(slug: string) { return path.join(reelDir(slug), 'vo.words.json'); }
 export function reelRendersDir(slug: string) { return path.join(reelDir(slug), 'renders'); }

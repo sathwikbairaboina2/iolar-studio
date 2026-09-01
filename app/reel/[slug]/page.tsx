@@ -12,6 +12,11 @@ import Player from '@/components/reel/Player';
 import AgentPanel from '@/components/reel/AgentPanel';
 import ResearchPanel from '@/components/reel/ResearchPanel';
 import BuildBoard from '@/components/reel/BuildBoard';
+import VoicePanel from '@/components/reel/VoicePanel';
+import ShotGate from '@/components/reel/ShotGate';
+import ShotActions from '@/components/reel/ShotActions';
+import InboxPanel from '@/components/reel/InboxPanel';
+import BeatText from '@/components/reel/BeatText';
 import JobsBoard from '@/components/reel/JobsBoard';
 import { useReelEditor } from './useReelEditor';
 import Timeline from '@/components/reel/Timeline';
@@ -31,6 +36,7 @@ export default function ReelStudio() {
   const [cueId, setCueId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [exportPct, setExportPct] = useState<number | null>(null);
+  const [tab, setTab] = useState('research');
 
   // A rejected command names both what was wrong and what would have been valid;
   // surface it rather than letting the edit look like it silently did nothing.
@@ -160,10 +166,10 @@ export default function ReelStudio() {
         <Tag>{reel.ratio}</Tag>
         <Tag>{duration ? `${duration.toFixed(1)}s` : 'no timeline yet'}</Tag>
         <Space.Compact>
-          <Button icon={<AudioOutlined />} loading={busy === 'voice'} onClick={() => stage('voice', 'voice')}>
+          <Button icon={<AudioOutlined />} onClick={() => setTab('voice')}>
             Voice
           </Button>
-          <Button icon={<ThunderboltOutlined />} loading={busy === 'shots'} onClick={() => stage('shots', 'shots')}>
+          <Button icon={<ThunderboltOutlined />} onClick={() => setTab('shots')}>
             Shots
           </Button>
           <Button icon={<ReloadOutlined />} loading={busy === 'assemble'} onClick={() => stage('assemble', 'assemble')}>
@@ -213,6 +219,8 @@ export default function ReelStudio() {
         </div>
 
         <Tabs
+          activeKey={tab}
+          onChange={setTab}
           items={[
             {
               key: 'research',
@@ -220,6 +228,22 @@ export default function ReelStudio() {
               children: (
                 <Card size="small">
                   <ResearchPanel slug={slug} />
+                </Card>
+              ),
+            },
+            {
+              key: 'voice',
+              label: 'Voice',
+              children: (
+                <Card size="small">
+                  <VoicePanel
+                    slug={slug}
+                    onVoice={async () => {
+                      // Alignment rewrites the word timings the whole build reads from.
+                      const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                      if (r?.reel) setReel(r.reel as Reel);
+                    }}
+                  />
                 </Card>
               ),
             },
@@ -233,6 +257,21 @@ export default function ReelStudio() {
                       const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
                       if (r?.reel) setReel(r.reel as Reel);
                     }} />
+                </Card>
+              ),
+            },
+            {
+              key: 'files',
+              label: 'Files',
+              children: (
+                <Card size="small">
+                  <InboxPanel
+                    slug={slug}
+                    onAdopted={async () => {
+                      const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                      if (r?.reel) setReel(r.reel as Reel);
+                    }}
+                  />
                 </Card>
               ),
             },
@@ -417,11 +456,28 @@ export default function ReelStudio() {
               label: `Shots (${reel.beats.length})`,
               children: (
                 <Space orientation="vertical" style={{ width: '100%' }}>
+                  <Card size="small" title="Before anything is rendered">
+                    <ShotGate
+                      slug={slug}
+                      onQueued={async () => {
+                        const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                        if (r?.reel) setReel(r.reel as Reel);
+                      }}
+                    />
+                  </Card>
                   {reel.beats.map((beat) => {
                     const asset = reel.assets.find((a) => a.id === beat.shot.assetId);
                     return (
                       <Card key={beat.id} size="small" title={`${beat.id} · ${beat.shot.kind}`}>
-                        <Typography.Paragraph style={{ marginBottom: 8 }}>{beat.text}</Typography.Paragraph>
+                        <BeatText
+                          slug={slug}
+                          beatId={beat.id}
+                          text={beat.text}
+                          onEdited={async () => {
+                            const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                            if (r?.reel) setReel(r.reel as Reel);
+                          }}
+                        />
                         <Typography.Text type="secondary">{beat.shot.brief}</Typography.Text>
                         <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                           <Tag color={asset?.status === 'ready' ? 'green' : asset?.status === 'failed' ? 'red' : 'orange'}>
@@ -450,10 +506,22 @@ export default function ReelStudio() {
                               Drop file
                             </Button>
                           </Upload>
-                          <Button size="small" onClick={() => stage('shots', 'shots', { beatId: beat.id })}>
-                            Regenerate
-                          </Button>
                         </div>
+                        {beat.shot.kind !== 'title' && (
+                          <div style={{ marginTop: 8 }}>
+                            <ShotActions
+                              slug={slug}
+                              beatId={beat.id}
+                              kind={beat.shot.kind}
+                              brief={beat.shot.brief}
+                              status={asset?.status}
+                              onChanged={async () => {
+                                const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                                if (r?.reel) setReel(r.reel as Reel);
+                              }}
+                            />
+                          </div>
+                        )}
                       </Card>
                     );
                   })}

@@ -151,3 +151,20 @@ export function splitCaption(reel: Reel, cueId: string): Reel {
   const captions = reel.timeline.captions.flatMap((c) => (c.id === cueId ? [first, second] : [c]));
   return withTimeline(reel, { ...reel.timeline, captions });
 }
+
+/**
+ * Rewrites one beat's line.
+ *
+ * The take on disk is left exactly as it is: it is real audio of the old words, and
+ * throwing it away over a typo would cost a re-synthesis and a re-alignment. What changes
+ * is that the reel can now tell the two apart — see `voMatchesScript`.
+ */
+export function editBeatText(reel: Reel, beatId: string, text: string): Reel {
+  const next = text.trim();
+  if (!next) throw new Error('a beat cannot be empty — delete it instead of emptying it');
+  if (!reel.beats.some((b) => b.id === beatId)) throw new Error(`no beat ${beatId} in this reel`);
+  return {
+    ...reel,
+    beats: reel.beats.map((b) => (b.id === beatId ? { ...b, text: next } : b)),
+  };
+}

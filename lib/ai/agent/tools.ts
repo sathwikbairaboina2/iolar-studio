@@ -40,6 +40,8 @@ const DESCRIPTIONS: Record<string, string> = {
   'clip.fit': 'Choose whether a clip fills the frame (cover) or is letterboxed whole (contain).',
   'clip.transition': 'Set how a clip enters: a hard cut, or a crossfade from the previous clip.',
   'clip.asset': 'Point a clip at a different piece of footage already attached to this reel.',
+  'beat.text':
+    'Rewrite the line one beat speaks. The recorded voiceover still says the old words, so the take has to be spoken again before the reel matches the script.',
   'caption.edit': 'Rewrite the words of one caption cue.',
   'caption.nudge':
     'Shift a caption cue earlier or later. Negative deltaSec moves it earlier, which is the fix when a caption appears late.',

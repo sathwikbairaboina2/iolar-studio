@@ -7,10 +7,9 @@ import { alignVoice } from './align';
 import { speak } from './tts';
 import { getSettings } from '../settings';
 import { ffprobeMedia } from './probe';
+import { scriptHash, voScript } from './script';
 
-export function voScript(reel: Reel): string {
-  return reel.beats.map((b) => b.text.trim()).join(' ');
-}
+export { voScript } from './script';
 
 /** Alignment runs against whatever audio is on disk — TTS output or a creator's own recording. */
 export async function alignExistingVoice(slug: string): Promise<Reel> {
@@ -21,7 +20,9 @@ export async function alignExistingVoice(slug: string): Promise<Reel> {
   await fs.writeFile(reelWordsFile(slug), JSON.stringify(words, null, 2));
   const next: Reel = {
     ...reel,
-    vo: { ...reel.vo, file: 'vo.mp3', durationSec: info.durationSec, words },
+    // Stamped with the script it was made from, so a beat revised afterwards is visible
+    // rather than silently cut against audio of the old words.
+    vo: { ...reel.vo, file: 'vo.mp3', durationSec: info.durationSec, words, scriptHash: scriptHash(reel) },
   };
   await saveReel(slug, next);
   return next;
