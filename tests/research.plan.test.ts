@@ -190,12 +190,14 @@ describe('the verifier', () => {
   it("hands the model the sentences that carry each line's numbers, and keeps only real flags", async () => {
     const { verifyScript } = await import('@/lib/reel/research/agents');
     const candidates = [{ id: 'abcdef012345', title: 'Testing', summary: 's' }] as never;
+    const padding = 'Menu Home About Download Support Purchase Search Documentation Changelog. '.repeat(8);
     const evidence = {
-      abcdef012345: { text: 'Intro sentence. The library is 155.8 KSLOC of C. The tests are 92,053 KSLOC. Closing.' },
+      abcdef012345: { text: `${padding}The library is 155.8 KSLOC of C. The tests are 92,053 KSLOC. ${padding}Unrelated closing.` },
     };
     const run = vi.fn(async (prompt: string) => {
       expect(prompt).toContain('155.8 KSLOC');
-      expect(prompt).not.toContain('Intro sentence');
+      // The navigation run far from the figures is not handed over as evidence.
+      expect(prompt).not.toContain('Unrelated closing');
       return JSON.stringify({ flags: [{ lineId: 'l1', issue: 'kilobytes is not KSLOC' }, { lineId: 'ghost', issue: 'x' }] });
     });
     const flags = await verifyScript([line('l1', 'That is 92,000 kilobytes against 155.8.', ['abcdef012345'])], candidates, evidence, run);

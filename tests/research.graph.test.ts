@@ -160,6 +160,7 @@ describe('the research graph', () => {
   });
 
   it('gathers, writes and judges in one stretch, then waits for approval', async () => {
+    scripted.mockClear();
     const store = await seed('reviewed');
     await store.writeCandidates('grok', {
       runId: 'grok',
@@ -181,6 +182,13 @@ describe('the research graph', () => {
     expect(script.unsupported).toEqual(['inference is unlimited']);
     // The verifier read it against the sources: one line says what its source does not.
     expect(script.flags).toEqual([{ lineId: 'l1', issue: 'the source says 155.8 KSLOC, the line says kilobytes' }]);
+    // The writer was sent back once for length (the scripted draft is nine words) and
+    // once with the verifier's objection — and once only for each.
+    const drafts = scripted.mock.calls.map((c) => c[0]).filter((p) => p.includes('Write the narration'));
+    expect(drafts).toHaveLength(3);
+    expect(drafts[1]).toContain('too short');
+    expect(drafts[2]).toContain('rejected these lines');
+    expect(drafts[2]).toContain('kilobytes');
     vi.doUnmock('@/lib/reel/research/gatherRun');
   });
 

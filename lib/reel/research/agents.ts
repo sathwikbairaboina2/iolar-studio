@@ -192,7 +192,9 @@ export async function draftScript(
   brief: Brief,
   candidates: Candidate[],
   evidence: Record<string, Pick<Evidence, 'text'>>,
-  run: Runner = runClaude
+  run: Runner = runClaude,
+  /** A note from the last attempt — what was wrong with it — for a retry. */
+  redo?: string
 ): Promise<ScriptLine[]> {
   const sources = candidates
     .map((c) => {
@@ -244,7 +246,11 @@ ${sources}
   unit the video is cut on.
 - The close is an implication or a sting, not a summary. Banned: "so there you have it",
   "at the end of the day", any ask to like, follow or subscribe.
+${redo ? `
+# About the last attempt
 
+${redo}
+` : ''}
 Reply with ONLY:
 { "lines": [ { "id": "l1", "order": 0, "role": "hook|body|close", "text": "...",
                "citations": ["<id>"], "assetIds": ["<id>"], "note": null, "commentary": false } ] }
@@ -258,16 +264,62 @@ No prose, no fence.`;
 export type Coverage = { claim: string; lineIds: string[]; why: string };
 export type Flag = { lineId: string; issue: string };
 
-/** The sentences of a text that carry any of the numbers in a line, or its opening if none do. */
-function evidenceFor(lineText: string, text: string, limit = 1400): string {
+/**
+ * The passages of a text a line should be checked against.
+ *
+ * Numbers first: a line that says 155.8 is checked against the passage that says 155.8.
+ * Then quantity words and names — trillion, Android, Hipp — because a line with no figure
+ * in it is still a claim about something the source either names or does not.
+ *
+ * Windows, not sentences: a scraped page's navigation arrives as one run with no full stop
+ * in it, and splitting on punctuation fused that run with the first real sentence into a
+ * single "sentence" that outranked everything and spent the whole budget on menu items.
+ * Each hit gets a window of text around it; windows are merged when they overlap and
+ * ranked by how many of the line's tokens they carry.
+ */
+export function evidenceFor(lineText: string, text: string, limit = 2400): string {
   // "155.8." at the end of a sentence is 155.8, not a number with a trailing stop.
   const numbers = (lineText.match(/\d[\d,.]*/g) ?? []).map((n) => n.replace(/[.,]+$/, ''));
-  const sentences = text.split(/(?<=[.!?])\s+/);
-  const hits = numbers.length
-    ? sentences.filter((sn) => numbers.some((n) => sn.includes(n.replace(/,/g, '')) || sn.includes(n)))
-    : [];
-  const picked = (hits.length ? hits : sentences.slice(0, 6)).join(' ');
-  return picked.slice(0, limit);
+  const quantities = (lineText.match(/\b(million|billion|trillion|percent|per cent|thousand)s?\b/gi) ?? []).map((q) => q.toLowerCase());
+  const names = (lineText.match(/\b[A-Z][A-Za-z]{2,}\b/g) ?? []).filter(
+    (w) => !/^(The|It|That|This|There|Your|You|But|And|Every|Billions|Most|They|With|Its)$/.test(w)
+  );
+  // Figures settle a line; a name only locates it. "SQLite" appears in every paragraph of
+  // a page about SQLite, and windows around it must not outrank the one that says "trillion".
+  const weight = new Map<string, number>();
+  for (const n of [...numbers, ...numbers.map((n) => n.replace(/,/g, '')), ...quantities]) weight.set(n, 3);
+  for (const n of names) if (!weight.has(n)) weight.set(n, 1);
+  const tokens = [...weight.keys()];
+  if (!tokens.length) return text.slice(0, Math.min(limit, 900));
+
+  const low = text.toLowerCase();
+  const RADIUS = 180;
+  const MAX_WINDOW = 600;
+  const windows: { start: number; end: number; hits: Set<string> }[] = [];
+  for (const t of tokens) {
+    const needle = t.toLowerCase();
+    let at = low.indexOf(needle);
+    let guard = 0;
+    while (at >= 0 && guard < 12) {
+      const w = { start: Math.max(0, at - RADIUS), end: Math.min(text.length, at + needle.length + RADIUS), hits: new Set([t]) };
+      const overlapping = windows.find((o) => w.start <= o.end && o.start <= w.end);
+      // Merge only while the window stays readable; past that a hit gets its own.
+      if (overlapping && Math.max(overlapping.end, w.end) - Math.min(overlapping.start, w.start) <= MAX_WINDOW) {
+        overlapping.start = Math.min(overlapping.start, w.start);
+        overlapping.end = Math.max(overlapping.end, w.end);
+        overlapping.hits.add(t);
+      } else windows.push(w); // its own window, even overlapping: a dropped hit is a lost fact
+      at = low.indexOf(needle, at + needle.length);
+      guard += 1;
+    }
+  }
+  if (!windows.length) return text.slice(0, Math.min(limit, 900));
+  const score = (w: { hits: Set<string> }) => [...w.hits].reduce((n, t) => n + (weight.get(t) ?? 1), 0);
+  const ranked = windows.sort((a, b) => score(b) - score(a) || a.start - b.start);
+  return ranked
+    .map((w) => text.slice(w.start, w.end).replace(/\s+/g, ' ').trim())
+    .join(' … ')
+    .slice(0, limit);
 }
 
 /**

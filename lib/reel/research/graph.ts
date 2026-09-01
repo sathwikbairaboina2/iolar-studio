@@ -39,6 +39,8 @@ export const ResearchState = Annotation.Root({
   lines: Annotation<ScriptLine[]>({ value: (_, b) => b, default: () => [] }),
   coverage: Annotation<Coverage[]>({ value: (_, b) => b, default: () => [] }),
   flags: Annotation<Flag[]>({ value: (_, b) => b, default: () => [] }),
+  /** How many times the writer has been sent back by the verifier. */
+  revisions: Annotation<number>({ value: (_, b) => b, default: () => 0 }),
   /** What the last advance produced, for the route's reply. */
   note: Annotation<Record<string, unknown>>({ value: (a, b) => ({ ...a, ...b }), default: () => ({}) }),
 });
@@ -126,7 +128,16 @@ export function buildResearchGraph(deps: GraphDeps) {
           return candidates.filter((c) => effectiveState(c, selection) === 'keep');
         })();
     const evidence = await store.readAllEvidence(s.slug);
-    const lines = await draftScript(s.brief, kept, evidence, deps.run);
+    let lines = await draftScript(s.brief, kept, evidence, deps.run);
+    // A local model told "120-160 words" comes back with 80 one time in three. One
+    // retry with the shortfall spelled out; after that the draft stands and a person
+    // sees the count.
+    const words = (ls: ScriptLine[]) => ls.reduce((n, l) => n + l.text.split(/\s+/).filter(Boolean).length, 0);
+    if (words(lines) < 110) {
+      const shortfall = `The previous draft was ${words(lines)} words — too short. Write 130-150 spoken words this time: more of the evidence, one fact per line.`;
+      const again = await draftScript(s.brief, kept, evidence, deps.run, shortfall).catch(() => lines);
+      if (words(again) > words(lines)) lines = again;
+    }
     return { lines, candidates: kept };
   };
 
@@ -142,6 +153,28 @@ export function buildResearchGraph(deps: GraphDeps) {
     }
     return { flags };
   };
+
+  /**
+   * The writer, sent back with the verifier's objections.
+   *
+   * One round: the flags say exactly which line says what its source does not, and a
+   * model handed that fixes most of them. A second round rarely earns its minutes, and a
+   * line still flagged after one is a line a person should look at anyway.
+   */
+  const revise = async (s: ResearchStateT) => {
+    const evidence = await store.readAllEvidence(s.slug);
+    const objections = s.flags
+      .map((f) => {
+        const line = s.lines.find((l) => l.id === f.lineId);
+        return `- "${line?.text ?? f.lineId}": ${f.issue}`;
+      })
+      .join('\n');
+    const redo = `A verifier read the previous draft against the sources and rejected these lines. Fix each one so it says only what its cited source says — or cut it, or mark it commentary:\n${objections}`;
+    const lines = await draftScript(s.brief, s.candidates, evidence, deps.run, redo).catch(() => s.lines);
+    return { lines, revisions: s.revisions + 1 };
+  };
+
+  const afterVerify = (s: ResearchStateT): string => (s.flags.length && s.revisions < 1 ? 'revise' : 'judgeScript');
 
   const judgeScript = async (s: ResearchStateT) => {
     let coverage: Coverage[] = [];
@@ -164,7 +197,7 @@ export function buildResearchGraph(deps: GraphDeps) {
       flags: s.flags,
     } as never);
     await store.setResearchStatus(s.slug, 'drafted');
-    return { coverage, status: 'drafted' as const, note: { waitingOn: 'approval', unsupported: unsupported.length, flagged: s.flags.length } };
+    return { coverage, status: 'drafted' as const, note: { waitingOn: 'approval', unsupported: unsupported.length, flagged: s.flags.length, revisions: s.revisions } };
   };
 
   /** Where to start, from where the research stopped. */
@@ -192,6 +225,7 @@ export function buildResearchGraph(deps: GraphDeps) {
     .addNode('gather', gather)
     .addNode('write', write)
     .addNode('verify', verify)
+    .addNode('revise', revise)
     .addNode('judgeScript', judgeScript)
     .addConditionalEdges(START, entry, ['planSearch', 'hunt', 'judgePack', 'gather', 'write', END])
     .addEdge('planSearch', END) // gate: the plan
@@ -199,7 +233,8 @@ export function buildResearchGraph(deps: GraphDeps) {
     .addEdge('judgePack', END) // gate: the review
     .addEdge('gather', 'write')
     .addEdge('write', 'verify')
-    .addEdge('verify', 'judgeScript')
+    .addConditionalEdges('verify', afterVerify, ['revise', 'judgeScript'])
+    .addEdge('revise', 'verify')
     .addEdge('judgeScript', END) // gate: the approval
     .compile();
 }
