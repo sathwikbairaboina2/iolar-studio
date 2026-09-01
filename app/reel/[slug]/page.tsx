@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Button, Card, Slider, Space, Spin, Tabs, Tag, Tooltip, Typography, Upload, message } from 'antd';
 import {
@@ -29,8 +29,6 @@ export default function ReelStudio() {
   const [pattern, setPattern] = useState<Pattern | null>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [clipId, setClipId] = useState<string | null>(null);
-  const [cueId, setCueId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [tab, setTab] = useState('research');
 
@@ -421,15 +419,7 @@ export default function ReelStudio() {
       </div>
 
       <Card size="small">
-        <Timeline
-          reel={reel}
-          currentTime={time}
-          selectedClipId={clipId}
-          selectedCueId={cueId}
-          onSeek={setTime}
-          onSelectClip={setClipId}
-          onSelectCue={setCueId}
-        />
+        <Timeline reel={reel} currentTime={time} onSeek={setTime} />
       </Card>
     </div>
   );
