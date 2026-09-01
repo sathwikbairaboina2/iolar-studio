@@ -76,7 +76,7 @@ export default function ShotActions({ slug, beatId, kind, brief, status, onChang
           Make it a {other === 'talking-head' ? 'talking head' : 'page shot'}
         </Button>
       </Tooltip>
-      {status !== 'ready' && (
+      {!!status && status !== 'ready' && (
         <Tooltip title="Stop polling a job the renderer has forgotten, and drop your own file for it instead.">
           <Button
             data-testid="shot-abandon"

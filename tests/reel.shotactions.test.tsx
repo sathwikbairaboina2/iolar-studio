@@ -72,4 +72,10 @@ describe('shot actions', () => {
     await actions({ status: 'ready' });
     expect(screen.queryByTestId('shot-abandon')).toBeNull();
   });
+
+  it('does not offer to abandon a beat that never had a shot', async () => {
+    // There is no job to stop waiting on, and asking would only earn a refusal.
+    await actions({ status: undefined });
+    expect(screen.queryByTestId('shot-abandon')).toBeNull();
+  });
 });
