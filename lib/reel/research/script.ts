@@ -51,6 +51,12 @@ export const ScriptSchema = z
     coverage: z
       .array(z.object({ claim: z.string(), lineIds: z.array(z.string()), why: z.string() }).strict())
       .default([]),
+    /**
+     * What the verifier could not confirm, line by line: a number that is not in the
+     * cited source, a unit that changed on the way, a name the source never gives. Kept
+     * on the script so the panel can mark the line; defaulted for scripts from before.
+     */
+    flags: z.array(z.object({ lineId: z.string(), issue: z.string() }).strict()).default([]),
   })
   .strict()
   .superRefine((script, ctx) => {

@@ -254,6 +254,8 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
   const railStatus = status === 'hunted' ? 'planned' : status;
   const stepIndex = railStatus ? STAGES.indexOf(railStatus as (typeof STAGES)[number]) + 1 : 0;
   const uncited = useMemo(() => new Set(uncitedLines(lines)), [lines]);
+  // The verifier's objections, by line: a number or a name the cited source does not give.
+  const flagsFor = (lineId: string) => (script?.flags ?? []).filter((f) => f.lineId === lineId).map((f) => f.issue);
   const keptCount = Object.values(keeps).filter(Boolean).length;
 
   if (!loaded) return <Empty description="loading research…" />;
@@ -532,6 +534,13 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
                 <Space wrap size={4} style={{ marginBottom: 4 }}>
                   <Tag>{line.role}</Tag>
                   {uncited.has(line.id) && <Tag color="red">needs a source</Tag>}
+                  {flagsFor(line.id).map((f, i) => (
+                    <Tooltip key={i} title={f}>
+                      <Tag color="orange" data-testid={`line-flag-${line.id}`}>
+                        not what the source says
+                      </Tag>
+                    </Tooltip>
+                  ))}
                   {line.commentary && <Tag>commentary</Tag>}
                   {citationsFor(line, candidates).map((c) => (
                     <Tooltip key={c.id} title={c.title}>

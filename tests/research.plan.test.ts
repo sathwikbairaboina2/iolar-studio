@@ -181,3 +181,32 @@ describe('the local research service', () => {
     );
   });
 });
+
+describe('the verifier', () => {
+  const line = (id: string, text: string, citations: string[]) => ({
+    id, order: 0, role: 'body' as const, text, citations, assetIds: [], note: null, commentary: false,
+  });
+
+  it("hands the model the sentences that carry each line's numbers, and keeps only real flags", async () => {
+    const { verifyScript } = await import('@/lib/reel/research/agents');
+    const candidates = [{ id: 'abcdef012345', title: 'Testing', summary: 's' }] as never;
+    const evidence = {
+      abcdef012345: { text: 'Intro sentence. The library is 155.8 KSLOC of C. The tests are 92,053 KSLOC. Closing.' },
+    };
+    const run = vi.fn(async (prompt: string) => {
+      expect(prompt).toContain('155.8 KSLOC');
+      expect(prompt).not.toContain('Intro sentence');
+      return JSON.stringify({ flags: [{ lineId: 'l1', issue: 'kilobytes is not KSLOC' }, { lineId: 'ghost', issue: 'x' }] });
+    });
+    const flags = await verifyScript([line('l1', 'That is 92,000 kilobytes against 155.8.', ['abcdef012345'])], candidates, evidence, run);
+    expect(flags).toEqual([{ lineId: 'l1', issue: 'kilobytes is not KSLOC' }]);
+  });
+
+  it('asks nothing when no line is cited', async () => {
+    const { verifyScript } = await import('@/lib/reel/research/agents');
+    const run = vi.fn();
+    const out = await verifyScript([{ ...line('l1', 'Opinion.', []), commentary: true }], [] as never, {}, run);
+    expect(out).toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+  });
+});

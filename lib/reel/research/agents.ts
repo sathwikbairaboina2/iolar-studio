@@ -226,7 +226,11 @@ ${sources}
 - "citations" is what proves the line. "assetIds" is what should be on screen while it is said.
   They are frequently different.
 - Honour the avoid list. Work the must-include names in naturally or leave them out.
-- A reel is roughly 120-160 spoken words. Earn the first two seconds; land the angle at the end.
+- A reel is roughly 120-160 spoken words. Fewer than 110 is a failure — a thin script wastes the
+  sources. Earn the first two seconds; land the angle at the end.
+- Numbers travel with their units, verbatim: "155.8 KSLOC" stays thousands of lines, never
+  kilobytes; "92,053" is not "92,000" unless you say "about". If the evidence does not state a
+  figure, the script does not either.
 
 # Craft — what separates this from narrated slides
 
@@ -252,6 +256,68 @@ No prose, no fence.`;
 }
 
 export type Coverage = { claim: string; lineIds: string[]; why: string };
+export type Flag = { lineId: string; issue: string };
+
+/** The sentences of a text that carry any of the numbers in a line, or its opening if none do. */
+function evidenceFor(lineText: string, text: string, limit = 1400): string {
+  // "155.8." at the end of a sentence is 155.8, not a number with a trailing stop.
+  const numbers = (lineText.match(/\d[\d,.]*/g) ?? []).map((n) => n.replace(/[.,]+$/, ''));
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const hits = numbers.length
+    ? sentences.filter((sn) => numbers.some((n) => sn.includes(n.replace(/,/g, '')) || sn.includes(n)))
+    : [];
+  const picked = (hits.length ? hits : sentences.slice(0, 6)).join(' ');
+  return picked.slice(0, limit);
+}
+
+/**
+ * Stage 6½ — every cited line checked against what its sources actually say.
+ *
+ * The writer is a model, and a model paraphrasing a figure will round it, drop its unit, or
+ * promote a "three continents" into "three people" one time in ten. The coverage judge asks
+ * whether the claims are made; this asks whether each line is TRUE to its citation — the
+ * numbers, the units, the names — with the source text in front of it. Only the cited lines:
+ * commentary owns itself.
+ */
+export async function verifyScript(
+  lines: ScriptLine[],
+  candidates: Candidate[],
+  evidence: Record<string, Pick<Evidence, 'text'>>,
+  run: Runner = runClaude
+): Promise<Flag[]> {
+  const cited = lines.filter((l) => !l.commentary && l.citations.length > 0);
+  if (cited.length === 0) return [];
+
+  const blocks = cited.map((l) => {
+    const sources = l.citations
+      .map((id) => {
+        const c = candidates.find((x) => x.id === id);
+        const text = evidence[id]?.text;
+        const excerpt = text ? evidenceFor(l.text, text) : c?.summary ?? '';
+        return `  [${id}] ${c?.title ?? id}\n  ${excerpt || '(nothing gathered from this source)'}`;
+      })
+      .join('\n');
+    return `LINE ${l.id}: ${l.text}\nCITED EVIDENCE:\n${sources}`;
+  });
+
+  const prompt = `You are checking a short video script against the sources it cites, line by line.
+
+For each line, decide whether the cited evidence supports it EXACTLY: every number matches (a rounded
+number is fine only if the line says "about" or "over"), every unit is the source's unit (KSLOC is
+thousands of lines, not kilobytes), every name or count of people is one the source actually gives.
+A line that says more than its evidence, or says it differently, fails.
+
+${blocks.join('\n\n')}
+
+Reply with ONLY:
+{ "flags": [ { "lineId": "<id>", "issue": "<one sentence: what the line says vs what the source says>" } ] }
+
+Only the lines that fail. An empty list means every cited line is true to its source. No prose, no fence.`;
+
+  const out = extractJson<{ flags?: Flag[] }>(await run(prompt, { timeoutMs: STAGE_TIMEOUT_MS }));
+  const known = new Set(cited.map((l) => l.id));
+  return (out.flags ?? []).filter((f) => f && known.has(f.lineId) && typeof f.issue === 'string');
+}
 
 /**
  * Which of the brief's must-prove claims the script actually makes.

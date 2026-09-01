@@ -1,6 +1,6 @@
 import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import * as store from './store';
-import { critique, draftScript, judgeCoverage, planSearch, type Runner } from './agents';
+import { critique, draftScript, judgeCoverage, planSearch, verifyScript, type Flag, type Runner } from './agents';
 import { briefWithPlan, parsePlan, type SearchPlan } from './plan';
 import { huntLocally } from './local';
 import { gatherEvidence } from './gatherRun';
@@ -38,6 +38,7 @@ export const ResearchState = Annotation.Root({
   candidates: Annotation<Candidate[]>({ value: (_, b) => b, default: () => [] }),
   lines: Annotation<ScriptLine[]>({ value: (_, b) => b, default: () => [] }),
   coverage: Annotation<Coverage[]>({ value: (_, b) => b, default: () => [] }),
+  flags: Annotation<Flag[]>({ value: (_, b) => b, default: () => [] }),
   /** What the last advance produced, for the route's reply. */
   note: Annotation<Record<string, unknown>>({ value: (a, b) => ({ ...a, ...b }), default: () => ({}) }),
 });
@@ -129,6 +130,19 @@ export function buildResearchGraph(deps: GraphDeps) {
     return { lines, candidates: kept };
   };
 
+  const verify = async (s: ResearchStateT) => {
+    const evidence = await store.readAllEvidence(s.slug);
+    let flags: Flag[] = [];
+    try {
+      flags = await verifyScript(s.lines, s.candidates, evidence, deps.run);
+    } catch {
+      // A verifier that cannot answer flags nothing; the script still lands, unmarked,
+      // rather than the whole stretch dying on the last agent.
+      flags = [];
+    }
+    return { flags };
+  };
+
   const judgeScript = async (s: ResearchStateT) => {
     let coverage: Coverage[] = [];
     let unsupported: string[];
@@ -147,9 +161,10 @@ export function buildResearchGraph(deps: GraphDeps) {
       lines: s.lines,
       unsupported,
       coverage,
+      flags: s.flags,
     } as never);
     await store.setResearchStatus(s.slug, 'drafted');
-    return { coverage, status: 'drafted' as const, note: { waitingOn: 'approval', unsupported: unsupported.length } };
+    return { coverage, status: 'drafted' as const, note: { waitingOn: 'approval', unsupported: unsupported.length, flagged: s.flags.length } };
   };
 
   /** Where to start, from where the research stopped. */
@@ -176,13 +191,15 @@ export function buildResearchGraph(deps: GraphDeps) {
     .addNode('judgePack', judgePack)
     .addNode('gather', gather)
     .addNode('write', write)
+    .addNode('verify', verify)
     .addNode('judgeScript', judgeScript)
     .addConditionalEdges(START, entry, ['planSearch', 'hunt', 'judgePack', 'gather', 'write', END])
     .addEdge('planSearch', END) // gate: the plan
     .addEdge('hunt', 'judgePack')
     .addEdge('judgePack', END) // gate: the review
     .addEdge('gather', 'write')
-    .addEdge('write', 'judgeScript')
+    .addEdge('write', 'verify')
+    .addEdge('verify', 'judgeScript')
     .addEdge('judgeScript', END) // gate: the approval
     .compile();
 }

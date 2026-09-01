@@ -76,6 +76,9 @@ const scripted = vi.fn(async (prompt: string, _opts?: { allowedTools?: string[] 
       ],
     });
   }
+  if (prompt.includes('checking a short video script against the sources')) {
+    return JSON.stringify({ flags: [{ lineId: 'l1', issue: 'the source says 155.8 KSLOC, the line says kilobytes' }] });
+  }
   if (prompt.includes('checking whether a short video script')) {
     return JSON.stringify({ coverage: [{ claim: 'the weights are open', lineIds: ['l1'], why: 'says so' }, { claim: 'inference is unlimited', lineIds: [], why: 'never said' }] });
   }
@@ -176,6 +179,8 @@ describe('the research graph', () => {
     expect(script.lines).toHaveLength(2);
     // The judge read the script: one claim covered, one not.
     expect(script.unsupported).toEqual(['inference is unlimited']);
+    // The verifier read it against the sources: one line says what its source does not.
+    expect(script.flags).toEqual([{ lineId: 'l1', issue: 'the source says 155.8 KSLOC, the line says kilobytes' }]);
     vi.doUnmock('@/lib/reel/research/gatherRun');
   });
 
