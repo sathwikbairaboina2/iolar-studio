@@ -191,19 +191,19 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
    * shift it off the words it was cut from, and a face two and a half seconds out of step
    * with its own voice is worse than a moment of black.
    */
-  const inOrder = [...clips].sort((a, b) => a.start - b.start);
+  const inOrder = [...clips].sort((a, b) => a.start - b.start || a.end - b.end);
   for (let i = 0; i < inOrder.length; i++) {
     const c = inOrder[i];
     const next = inOrder[i + 1];
+    if (c.locked) continue; // a person's edit is verbatim: not held out, not trimmed
     if (!next) {
       c.end = r3(Math.max(c.end, reel.vo.durationSec));
       continue;
     }
     // Both directions meet at the neighbour's start: a short clip is held to it, and one
     // that runs past it gives the surplus up — the overrun is padding, silence and a held
-    // frame, and shoving the neighbour late is what put lips out of step. A clip a person
-    // locked keeps whatever they gave it.
-    c.end = r3(c.locked ? Math.max(c.end, next.start) : Math.max(next.start, c.start + 0.033));
+    // frame, and shoving the neighbour late is what put lips out of step.
+    c.end = r3(Math.max(next.start, c.start + 0.033));
   }
 
   // No burned-in subtitles. The words are spoken; a second copy of them across the picture

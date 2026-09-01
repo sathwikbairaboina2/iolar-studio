@@ -390,6 +390,10 @@ export function buildSrt(words: { w: string; start: number; end: number }[]): st
   const MAX_CHARS = 38;
   const PAUSE = 0.6;
 
+  // Sorted defensively: an unsorted list would defeat the pause detection and write cues
+  // out of chronological order, which players refuse.
+  const inOrder = [...words].sort((a, b) => a.start - b.start);
+
   const cues: { start: number; end: number; text: string }[] = [];
   let open: { start: number; end: number; parts: string[] } | null = null;
 
@@ -398,10 +402,15 @@ export function buildSrt(words: { w: string; start: number; end: number }[]): st
     open = null;
   };
 
-  for (const w of words) {
+  for (const w of inOrder) {
     const word = w.w.trim();
     if (!word) continue;
-    if (open && (w.start - open.end > PAUSE || open.parts.join(' ').length + word.length + 1 > MAX_CHARS)) {
+    const wide = open && open.parts.join(' ').length + word.length + 1 > MAX_CHARS;
+    // A word that finishes its sentence may overflow the width a little: "reference /
+    // list." as two cues is worse than one line a few characters wide.
+    const finishes = /[.!?…]["'’”)\]»]*$/.test(word);
+    const overflowOk = finishes && open && open.parts.join(' ').length + word.length + 1 <= MAX_CHARS + 8;
+    if (open && (w.start - open.end > PAUSE || (wide && !overflowOk))) {
       close();
     }
     if (!open) open = { start: w.start, end: w.end, parts: [] };

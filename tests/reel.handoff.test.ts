@@ -310,7 +310,7 @@ describe('captions for the editor', () => {
     }));
     for (const line of buildSrt(words).split('\n')) {
       if (/^[0-9]+$/.test(line) || line.includes('-->') || !line.trim()) continue;
-      expect(line.length).toBeLessThanOrEqual(38);
+      expect(line.length).toBeLessThanOrEqual(46);
     }
   });
 
@@ -320,5 +320,17 @@ describe('captions for the editor', () => {
     const out = await writeHandoff('grok');
     const names = await fs.readdir(out.dir);
     expect(names).toContain('captions.srt');
+  });
+});
+
+describe('cue balance', () => {
+  it('lets a sentence-ending word overflow a little rather than orphan it', async () => {
+    const { buildSrt } = await import('@/lib/reel/handoff');
+    // "Einstein's 1905 paper has no reference" is 38 chars: "list." would orphan.
+    const text = "Einstein's 1905 paper has no reference list.".split(' ');
+    const words = text.map((w, i) => ({ w, start: i * 0.3, end: i * 0.3 + 0.28 }));
+    const cues = buildSrt(words).trim().split('\n\n');
+    expect(cues).toHaveLength(1);
+    expect(cues[0]).toContain('reference list.');
   });
 });
