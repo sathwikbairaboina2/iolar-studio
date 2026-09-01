@@ -212,3 +212,74 @@ describe('a recording that runs into its neighbour', () => {
     expect(video).toContain('<blank length="00:00:01.000"');
   });
 });
+
+describe('the music bed', () => {
+  const withMusic = (words: { start: number; end: number }[]) =>
+    ({
+      title: 'grok',
+      ratio: '9:16',
+      fps: 30,
+      vo: { durationSec: 10, words: words.map((w, i) => ({ w: `w${i}`, ...w })) },
+      timeline: { music: { path: 'assets/bed.mp3', gainDb: -18, duckDb: -12 } },
+    }) as never;
+
+  it('rides under the voice and comes up in the real pauses', async () => {
+    const { duckKeyframes } = await import('@/lib/reel/handoff');
+    // One run of words at 1-4s, then real silence.
+    const level = duckKeyframes([{ start: 1, end: 4 }], -18, -12);
+
+    const bed = '-18.00';
+    const duck = '-30.00';
+    // Ducked just before the words, held past them, back to the bed after.
+    expect(level).toContain(`00:00:00.900=${duck}`);
+    expect(level).toContain(`00:00:04.250=${duck}`);
+    expect(level).toContain(`00:00:04.650=${bed}`);
+    expect(level.startsWith(`00:00:00.500=${bed}`)).toBe(true);
+  });
+
+  it('does not swell into a breath between sentences', async () => {
+    const { duckKeyframes } = await import('@/lib/reel/handoff');
+    // Two runs 0.8s apart: one merged span, no rise in between.
+    const level = duckKeyframes(
+      [
+        { start: 1, end: 3 },
+        { start: 3.8, end: 6 },
+      ],
+      -18,
+      -12
+    );
+    const bed = '-18.00';
+    // Exactly one dip and one rise.
+    expect(level.split(bed).length - 1).toBe(2);
+  });
+
+  it('is written into the project with its automation', async () => {
+    const { buildProject } = await import('@/lib/reel/handoff');
+    const xml = buildProject(withMusic([{ start: 1, end: 4 }]), [
+      { file: 'clips/01.mp4', startsAt: 0, seconds: 5 },
+    ], 'mlt', { music: 'music.mp3' });
+
+    expect(xml).toContain('<playlist id="music">');
+    expect(xml).toContain('music.mp3');
+    expect(xml).toContain('mlt_service">volume<');
+    expect(xml).toContain('<track producer="music" hide="video"/>');
+  });
+
+  it('stays out of a reel that has none', async () => {
+    const { buildProject } = await import('@/lib/reel/handoff');
+    const xml = buildProject(withMusic([]), [{ file: 'clips/01.mp4', startsAt: 0, seconds: 5 }]);
+    expect(xml).not.toContain('<playlist id="music">');
+    expect(xml).not.toContain('producer id="music"');
+  });
+
+  it('rides in the Kdenlive copy too, and sits in the bin', async () => {
+    const { buildProject } = await import('@/lib/reel/handoff');
+    const xml = buildProject(withMusic([{ start: 1, end: 4 }]), [
+      { file: 'clips/01.mp4', startsAt: 0, seconds: 5 },
+    ], 'kdenlive', { music: 'music.mp3' });
+
+    const bin = xml.split('main_bin')[1].split('</playlist>')[0];
+    expect(bin).toContain('<entry producer="bed"/>');
+    expect(xml).toContain('kdenlive:track_name">Music<');
+  });
+});

@@ -28,6 +28,58 @@ export type HandoffClip = {
 
 export type Handoff = { dir: string; clips: HandoffClip[] };
 
+/**
+ * Where the music should sit, written as volume keyframes against the spoken words.
+ *
+ * A bed at one level end to end is the tell of an unedited export: real edits ride the
+ * music under the voice and let it up in the pauses. The word timings already say exactly
+ * where the voice is, so the automation is derived rather than guessed — duck a beat
+ * before a run of words, hold through it, and ease back up when the silence is long
+ * enough to enjoy.
+ *
+ * Values are decibels, because that is what MLT's volume filter reads `level` as — a
+ * linear gain written here comes out as a fraction of one dB and the duck disappears
+ * (measured: 0.44 dB of movement instead of 12).
+ */
+export function duckKeyframes(
+  words: { start: number; end: number }[],
+  gainDb: number,
+  duckDb: number
+): string {
+  const bed = gainDb.toFixed(2);
+  const duck = (gainDb + duckDb).toFixed(2);
+  if (!words.length) return `0=${bed}`;
+
+  // Words merge into speech runs: a breath between sentences is not an invitation to
+  // swell the music. Only a silence past 1.2 seconds gets the bed back.
+  const runs: { start: number; end: number }[] = [];
+  for (const w of [...words].sort((a, b) => a.start - b.start)) {
+    const last = runs[runs.length - 1];
+    if (last && w.start - last.end <= 1.2) last.end = Math.max(last.end, w.end);
+    else runs.push({ start: w.start, end: w.end });
+  }
+
+  const RAMP = 0.4;
+  const LEAD = 0.1;
+  const HOLD = 0.25;
+  const frames: [number, string][] = [];
+  for (const { start, end } of runs) {
+    const dip = Math.max(0, start - LEAD);
+    frames.push([Math.max(0, dip - RAMP), bed]);
+    frames.push([dip, duck]);
+    frames.push([end + HOLD, duck]);
+    frames.push([end + HOLD + RAMP, bed]);
+  }
+  // Clamped starts can land two keyframes on the same instant; the later intent wins.
+  const clean: [number, string][] = [];
+  for (const [t, v] of frames) {
+    const prev = clean[clean.length - 1];
+    if (prev && t <= prev[0] + 1e-3) clean[clean.length - 1] = [prev[0], v];
+    else clean.push([t, v]);
+  }
+  return clean.map(([t, v]) => `${timecode(t)}=${v}`).join(';');
+}
+
 const pad = (n: number, width = 2) => String(Math.floor(n)).padStart(width, '0');
 
 /** MLT counts in hours, minutes, seconds and milliseconds. */
@@ -75,7 +127,8 @@ function documentId(reel: Reel): number {
 export function buildProject(
   reel: Reel,
   laidClips: HandoffClip[],
-  flavour: 'mlt' | 'kdenlive' = 'mlt'
+  flavour: 'mlt' | 'kdenlive' = 'mlt',
+  extras: { music?: string } = {}
 ): string {
   const [width, height] = REEL_RATIOS[reel.ratio];
   const kden = flavour === 'kdenlive';
@@ -205,6 +258,7 @@ export function buildProject(
       `    <property name="xml_retain">1</property>` + nl +
       clips.map((_, i) => `    <entry producer="clip${i}"/>` + nl).join('') +
       `    <entry producer="voice"/>` + nl +
+      (extras.music ? `    <entry producer="bed"/>` + nl : '') +
       `  </playlist>` + nl
     : '';
 
@@ -268,6 +322,36 @@ export function buildProject(
         (audio ? `    <property name="kdenlive:audio_track">1</property>` + nl : '')
       : '';
 
+  /**
+   * The music bed, already ridden under the voice.
+   *
+   * The bed producer carries a volume filter whose keyframes are derived from the word
+   * timings — ducked while the voice speaks, back up in the real pauses. The editor gets a
+   * mix that already behaves, and every keyframe is theirs to drag. A bed shorter than the
+   * reel simply ends; looping it is an edit, and edits belong to the editor.
+   */
+  const musicRuns = () => Math.max(voiceSec, clips.length ? clips[clips.length - 1].startsAt + clips[clips.length - 1].seconds : 0);
+  const musicProducer = extras.music
+    ? `  <producer id="bed" in="00:00:00.000" out="${lastFrame(musicRuns())}">` + nl +
+      `    <property name="resource">${escape(extras.music)}</property>` + nl +
+      (kden
+        ? `    <property name="mlt_service">avformat-novalidate</property>` + nl +
+          `    <property name="kdenlive:id">${binId(clips.length + 1)}</property>` + nl +
+          `    <property name="kdenlive:clipname">${escape(extras.music)}</property>` + nl
+        : '') +
+      `    <filter id="music_duck">` + nl +
+      `      <property name="mlt_service">volume</property>` + nl +
+      `      <property name="level">${duckKeyframes(reel.vo.words ?? [], reel.timeline.music.gainDb, reel.timeline.music.duckDb)}</property>` + nl +
+      `    </filter>` + nl +
+      `  </producer>` + nl
+    : '';
+  const musicPlaylist = extras.music
+    ? `  <playlist id="music">` + nl +
+      track('Music', true) +
+      `    <entry producer="bed" in="00:00:00.000" out="${lastFrame(musicRuns())}"/>` + nl +
+      `  </playlist>` + nl
+    : '';
+
   return `<?xml version="1.0" standalone="no"?>
 <mlt LC_NUMERIC="C" version="7.0.0" title="${escape(reel.title)}" producer="main">
   <profile description="${width}x${height} ${reel.fps}fps" width="${width}" height="${height}" progressive="1"
@@ -275,16 +359,16 @@ export function buildProject(
     frame_rate_num="${reel.fps}" frame_rate_den="1" colorspace="709"/>
 ${black}${producers}
 ${speakingHalves ? speakingHalves + nl : ''}${voiceProducer}
-${bin}  <playlist id="video">
+${musicProducer}${bin}  <playlist id="video">
 ${track('Shots')}${entries}
   </playlist>
   <playlist id="audio">
 ${track('Voice', true)}${voiceLine()}
   </playlist>
-  <tractor id="main" title="${escape(reel.title)}">
+${musicPlaylist}  <tractor id="main" title="${escape(reel.title)}">
 ${kden ? '    <track producer="black_track"/>\n' : ''}    <track producer="video"/>
     <track producer="audio" hide="video"/>
-  </tractor>
+${extras.music ? '    <track producer="music" hide="video"/>\n' : ''}  </tractor>
 </mlt>
 `;
 }
@@ -337,9 +421,22 @@ export async function writeHandoff(slug: string): Promise<Handoff> {
   }
 
   await fs.copyFile(reelVoFile(slug), path.join(dir, 'voice.mp3'));
+
+  // The bed travels with the project when the reel has one; a music path that cannot be
+  // copied is treated as no music rather than a project pointing at a file that is not
+  // there.
+  let music: string | undefined;
+  if (reel.timeline.music.path) {
+    const name = `music${path.extname(reel.timeline.music.path) || '.mp3'}`;
+    music = await fs
+      .copyFile(path.join(reelDir(slug), reel.timeline.music.path), path.join(dir, name))
+      .then(() => name)
+      .catch(() => undefined);
+  }
+
   await fs.writeFile(path.join(dir, 'script.txt'), buildScript(reel), 'utf8');
-  await fs.writeFile(path.join(dir, 'project.mlt'), buildProject(reel, clips), 'utf8');
-  await fs.writeFile(path.join(dir, 'project.kdenlive'), buildProject(reel, clips, 'kdenlive'), 'utf8');
+  await fs.writeFile(path.join(dir, 'project.mlt'), buildProject(reel, clips, 'mlt', { music }), 'utf8');
+  await fs.writeFile(path.join(dir, 'project.kdenlive'), buildProject(reel, clips, 'kdenlive', { music }), 'utf8');
 
   return { dir, clips };
 }
