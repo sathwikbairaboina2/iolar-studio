@@ -156,3 +156,24 @@ describe('a page shot with no page', () => {
     expect(coerceKinds(lines as never, beats as never, new Set(['c1']))[0].shot.kind).toBe('screen');
   });
 });
+
+describe('finishing a sentence', () => {
+  it('reads terminal punctuation, quotes and brackets included', async () => {
+    const { finishesSentence } = await import('@/lib/reel/build/bridge');
+    expect(finishesSentence('It ships today.')).toBe(true);
+    expect(finishesSentence('He said "it ships."')).toBe(true);
+    expect(finishesSentence('Really?')).toBe(true);
+    expect(finishesSentence('It ships today and')).toBe(true); // last line: nowhere left to go
+  });
+
+  it('marks a line whose successor opens lowercase as left hanging', async () => {
+    const { finishesSentence } = await import('@/lib/reel/build/bridge');
+    expect(finishesSentence('The EU AI Act now requires', 'every provider to register.')).toBe(false);
+    expect(finishesSentence('The EU AI Act is here', 'Every provider must register.')).toBe(true);
+  });
+
+  it('lets a punctuation-free hook stand as its own thought', async () => {
+    const { finishesSentence } = await import('@/lib/reel/build/bridge');
+    expect(finishesSentence('POV: you ship on a Friday', 'The pipeline is red.')).toBe(true);
+  });
+});

@@ -42,6 +42,7 @@ export function beatsPrompt(pattern: Pattern, mode: PlanMode, source: string, op
   const voice = `Write in the voice of ${pattern.displayName}: direct, fast, second person, present tense, no throat-clearing.`;
   const pacing =
     `Each beat is one shot lasting ${lo}-${hi} seconds when spoken aloud — roughly ${Math.round(lo * 2.6)}-${Math.round(hi * 2.6)} words. ` +
+    `Never split a sentence across two beats: a beat ends where a sentence ends. ` +
     `Open with a hook of about ${pattern.hook.durationSec} seconds. Aim for 8-14 beats in total.`;
   const mix =
     `Shot mix target: about ${Math.round(pattern.shotMix.screen * 100)}% screen recordings, ` +

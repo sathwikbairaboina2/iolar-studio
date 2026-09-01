@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import { loadReel } from '../store';
 import { reelVoFile } from '@/lib/paths';
 import * as research from '../research/store';
-import { buildBeatsFromScript } from './bridge';
+import { buildBeatsFromScript, remixFromAudio } from './bridge';
 import { beatAudioDir, sliceBeatAudio } from './audio';
 import { runShots } from '../shots';
 import { synthesizeVoice, alignExistingVoice } from '../voice';
@@ -110,6 +110,10 @@ export async function advanceBuild(slug: string, voice: VoiceSource = 'supplied'
     case 'sliced':
     case 'aligned': {
       if (state.stage === 'aligned') {
+        // The words are placed now, so the mix is re-dealt from the take itself before
+        // anything is cut: bites planned on word-count guesses drift off the sentences
+        // as actually spoken. See `remixFromAudio`.
+        await remixFromAudio(slug);
         await sliceBeatAudio(slug, await loadReel(slug));
         break;
       }

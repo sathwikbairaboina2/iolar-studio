@@ -16,6 +16,15 @@ export type MixBeat = {
   seconds: number;
   /** Whether this line has a page behind it. A beat with none cannot be a page shot. */
   cites: boolean;
+  /**
+   * Whether the spoken line finishes its sentence.
+   *
+   * The planner splits scripts into beats, and nothing stops a sentence landing across two
+   * of them. A bite that ends on the first half is a presenter cut off mid-thought — the
+   * audio for it stops before the words do. Absent means "assume it does", so callers that
+   * have no text to look at keep today's behaviour.
+   */
+  endsSentence?: boolean;
 };
 
 export type Mixed = MixBeat & { kind: 'talking-head' | 'screen' };
@@ -74,27 +83,52 @@ export function planShotMix(beats: MixBeat[], opts: MixOptions = {}): Mixed[] {
    * than drifting off one end of it.
    */
   const grow = (index: number): string[] => {
-    const taken = [index];
-    let lo = index - 1;
-    let hi = index + 1;
+    let first = index;
+    let last = index;
     let length = beats[index].seconds;
-    while (length < minBite && (lo >= 0 || hi < beats.length)) {
-      const before = lo >= 0 ? beats[lo] : null;
-      const after = hi < beats.length ? beats[hi] : null;
+    while (length < minBite && (first > 0 || last < beats.length - 1)) {
+      const before = first > 0 ? beats[first - 1] : null;
+      const after = last < beats.length - 1 ? beats[last + 1] : null;
       // Prefer whichever neighbour is shorter, so the bite overshoots the floor as little
       // as it can and the budget stretches to another one.
       const takeBefore = before && (!after || before.seconds <= after.seconds);
       if (takeBefore && before) {
-        taken.unshift(lo);
+        first -= 1;
         length += before.seconds;
-        lo -= 1;
       } else if (after) {
-        taken.push(hi);
+        last += 1;
         length += after.seconds;
-        hi += 1;
       } else break;
     }
-    return taken.map((i) => beats[i].beatId);
+    // A bite opens where a sentence opens and closes where one closes. Length is settled;
+    // this walks each end out to the nearest sentence boundary, overshooting the budget
+    // rather than cutting the presenter off mid-thought.
+    //
+    // The walk is bounded, because the flag comes from a heuristic reading of the text: a
+    // script with no full stops at all would otherwise square every bite out to the whole
+    // reel and put the face back on screen end to end. Three beats without finding a
+    // boundary means the detection is not to be trusted, and the edge goes back where the
+    // length put it.
+    const HUNT = 3;
+    let end = last;
+    for (let step = 0; step <= HUNT && end < beats.length; step += 1) {
+      // The reel's last beat is a boundary whatever its flag says: the sentence has nowhere
+      // left to go.
+      if (end === beats.length - 1 || (beats[end].endsSentence ?? true)) {
+        last = end;
+        break;
+      }
+      end += 1;
+    }
+    let begin = first;
+    for (let step = 0; step <= HUNT && begin >= 0; step += 1) {
+      if (begin === 0 || (beats[begin - 1].endsSentence ?? true)) {
+        first = begin;
+        break;
+      }
+      begin -= 1;
+    }
+    return beats.slice(first, last + 1).map((b) => b.beatId);
   };
 
   const anchors = beats

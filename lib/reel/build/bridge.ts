@@ -4,7 +4,8 @@ import { normaliseScript } from '@/lib/ai/reel/plan';
 import type { Reel, ShotKind } from '../schema';
 import { planShotMix, type MixOptions } from '../shotmix';
 import type { Script, ScriptLine } from '../research/script';
-import { readCandidates } from '../research/store';
+import { readCandidates, readScript } from '../research/store';
+import { beatSpans } from '../assemble';
 
 /**
  * The crossing from an approved script to a reel that can be built.
@@ -106,7 +107,22 @@ export function attachSourceLines<T extends { id: string; shot: { sourceLineId: 
  * on their source and the face is spent on the hook, the close, and anything with nothing to
  * show. See `shotmix.ts`.
  */
-export function applyShotMix<T extends { id: string; role: 'hook' | 'body' | 'close'; shot: { kind: string; sourceLineId: string | null } & Record<string, unknown> }>(
+/**
+ * Whether a line finishes its sentence — the trailing quote or bracket after the full stop
+ * still counts as the sentence ending.
+ *
+ * The follower gets a say because hooks are often punctuation-free ("POV: you ship on a
+ * Friday") without being half of anything: a beat with no full stop whose successor opens
+ * with a capital ended its thought, whatever the punctuation says. Only a successor that
+ * opens lowercase marks a sentence genuinely left hanging.
+ */
+export function finishesSentence(text: string, nextText?: string): boolean {
+  if (/[.!?…:]["'’”)\]»]*$/.test(text.trim())) return true;
+  if (nextText === undefined) return true;
+  return /^["'“‘(\[«]*[^a-z]/.test(nextText.trim());
+}
+
+export function applyShotMix<T extends { id: string; role: 'hook' | 'body' | 'close'; text: string; shot: { kind: string; sourceLineId: string | null } & Record<string, unknown> }>(
   lines: Pick<ScriptLine, 'id' | 'citations'>[],
   beats: T[],
   spans: Map<string, { start: number; end: number }>,
@@ -127,6 +143,7 @@ export function applyShotMix<T extends { id: string; role: 'hook' | 'body' | 'cl
       role: opensOnTitle && i === 0 ? 'hook' : b.role,
       seconds: Math.max(0.2, (spans.get(b.id)?.end ?? 0) - (spans.get(b.id)?.start ?? 0)),
       cites: Boolean(b.shot.sourceLineId && cited.has(b.shot.sourceLineId)),
+      endsSentence: finishesSentence(b.text, spoken[i + 1]?.text),
     })),
     opts
   );
@@ -191,6 +208,46 @@ export async function buildBeatsFromScript(slug: string, script: Pick<Script, 'l
     })
   );
   const beats = applyShotMix(ordered, showable, new Map(spans), {}, kept);
+  await saveReel(slug, { ...reel, beats });
+  return loadReel(slug);
+}
+
+/**
+ * The same deal, re-dealt from the measured audio.
+ *
+ * `buildBeatsFromScript` rations the presenter before the voiceover exists, on word counts
+ * at speaking pace. Word counts are close, but they are not the take: a line read slowly
+ * grows, a rattled-off aside shrinks, and a bite planned at five seconds can land at four —
+ * or the boundaries can drift off the sentences as spoken. Once whisper has placed the
+ * words, this re-runs the mix on what the audio actually says, so the bites are planned
+ * from the take rather than from a guess at it.
+ *
+ * It refuses quietly once footage exists: a beat pointing at an asset has been rendered
+ * (or queued) as one kind, and re-dealing under it would orphan the render.
+ */
+export async function remixFromAudio(slug: string, opts: MixOptions = {}): Promise<Reel> {
+  const reel = await loadReel(slug);
+  if (!reel.vo.words.length) return reel;
+  if (reel.beats.some((b) => b.shot.assetId)) return reel;
+
+  const script = await readScript(slug).catch(() => null);
+  if (!script || script.lines.length === 0) return reel;
+
+  const ordered = orderedLines(script.lines);
+  const known = new Set((await readCandidates(slug).catch(() => null))?.candidates.map((c) => c.id) ?? []);
+  const kept = known.size ? known : undefined;
+
+  const spans = beatSpans(reel);
+  const mixed = applyShotMix(ordered, reel.beats, spans, opts, kept);
+  // Only the two kinds the mix deals in move. A researched kind, a title, or anything a
+  // person set to something else is not this function's to re-deal.
+  const dealable = new Set(['screen', 'talking-head']);
+  const kindOf = new Map(mixed.map((b) => [b.id, b.shot.kind]));
+  const beats = reel.beats.map((b) =>
+    dealable.has(b.shot.kind) && dealable.has(kindOf.get(b.id) ?? '')
+      ? { ...b, shot: { ...b.shot, kind: kindOf.get(b.id)! } }
+      : b
+  );
   await saveReel(slug, { ...reel, beats });
   return loadReel(slug);
 }

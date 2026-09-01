@@ -187,6 +187,62 @@ describe('a presenter bite is worth rendering', () => {
     expect(carrying.seconds).toBeGreaterThanOrEqual(5);
   });
 
+  it('never ends a bite before its sentence completes', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    // b1..b3 are one sentence split across three beats; the hook anchor sits on b1.
+    // Growing to five seconds alone would stop at b2 or b3's edge mid-thought.
+    const beats = [
+      { ...beat('b1', 'hook', 2), endsSentence: false },
+      { ...beat('b2', 'body', 2), endsSentence: false },
+      { ...beat('b3', 'body', 2), endsSentence: true },
+      { ...beat('b4', 'body', 2), endsSentence: true },
+      { ...beat('b5', 'close', 2), endsSentence: true },
+    ];
+
+    const plan = planShotMix(beats, { minBiteSec: 5 });
+    const bites = presenterBites(plan);
+    const byId = new Map(plan.map((p) => [p.beatId, p]));
+
+    for (const bite of bites) {
+      const last = byId.get(bite.beatIds[bite.beatIds.length - 1])!;
+      expect(last.endsSentence).toBe(true);
+    }
+  });
+
+  it('opens a bite where a sentence opens', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    // The close anchor lands on b5, but b4 left its sentence hanging: a bite starting at b5
+    // would open on the back half of a thought.
+    const beats = [
+      { ...beat('b1', 'hook', 6), endsSentence: true },
+      { ...beat('b2', 'body', 4), endsSentence: true },
+      { ...beat('b3', 'body', 4), endsSentence: true },
+      { ...beat('b4', 'body', 3), endsSentence: false },
+      { ...beat('b5', 'close', 5), endsSentence: true },
+    ];
+
+    const plan = planShotMix(beats, { minBiteSec: 5 });
+    const bites = presenterBites(plan);
+    const index = new Map(beats.map((b, i) => [b.beatId, i]));
+
+    for (const bite of bites) {
+      const first = index.get(bite.beatIds[0])!;
+      if (first > 0) expect(beats[first - 1].endsSentence).toBe(true);
+    }
+  });
+
+  it('treats a beat without the flag as ending its sentence', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    const beats = Array.from({ length: 10 }, (_, i) =>
+      beat(`b${i + 1}`, i === 0 ? 'hook' : i === 9 ? 'close' : 'body', 2)
+    );
+
+    // No endsSentence anywhere: the plan must match what it always produced.
+    const bites = presenterBites(planShotMix(beats, { minBiteSec: 5 }));
+    expect(bites.length).toBeGreaterThanOrEqual(1);
+    for (const bite of bites) expect(bite.seconds).toBeGreaterThanOrEqual(5);
+  });
+
   it('spends the budget on fewer, longer bites rather than many stubs', async () => {
     const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
     const beats = Array.from({ length: 40 }, (_, i) =>
