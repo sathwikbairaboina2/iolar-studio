@@ -116,15 +116,18 @@ export function applyShotMix<T extends { id: string; role: 'hook' | 'body' | 'cl
   const cited = new Set(
     lines.filter((l) => l.citations.some((id) => !known || known.has(id))).map((l) => l.id)
   );
+  const spoken = beats.filter((b) => b.shot.kind !== 'title');
+  // The hook is often a title card, which is an overlay rather than a shot. Without this the
+  // opening has no candidate for a face at all and the whole allowance lands on the close,
+  // so the reel starts on a document and only meets the person as it ends.
+  const opensOnTitle = spoken.length > 0 && !spoken.some((b) => b.role === 'hook');
   const mix = planShotMix(
-    beats
-      .filter((b) => b.shot.kind !== 'title')
-      .map((b) => ({
-        beatId: b.id,
-        role: b.role,
-        seconds: Math.max(0.2, (spans.get(b.id)?.end ?? 0) - (spans.get(b.id)?.start ?? 0)),
-        cites: Boolean(b.shot.sourceLineId && cited.has(b.shot.sourceLineId)),
-      })),
+    spoken.map((b, i) => ({
+      beatId: b.id,
+      role: opensOnTitle && i === 0 ? 'hook' : b.role,
+      seconds: Math.max(0.2, (spans.get(b.id)?.end ?? 0) - (spans.get(b.id)?.start ?? 0)),
+      cites: Boolean(b.shot.sourceLineId && cited.has(b.shot.sourceLineId)),
+    })),
     opts
   );
   const kindOf = new Map(mix.map((m) => [m.beatId, m.kind]));

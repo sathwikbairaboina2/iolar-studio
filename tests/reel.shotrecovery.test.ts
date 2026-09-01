@@ -122,6 +122,42 @@ describe('abandoning a job nobody is coming back to', () => {
   });
 });
 
+describe('retrying a shot that covers several beats', () => {
+  it('re-renders the whole stretch, not the one beat you clicked', async () => {
+    const { loadReel, saveReel } = await import('@/lib/reel/store');
+    await seed();
+    const reel = await loadReel('grok');
+    // One recording covering b2 and b3, the way a bite or a page visit is stored.
+    await saveReel('grok', {
+      ...reel,
+      assets: [{ id: 'a1', kind: 'video', path: '', origin: 'plugin', status: 'failed', provider: 'lipsync', brief: '', takeStart: 0 }],
+      // Both beats are the same picture, which is what makes them one recording.
+      beats: reel.beats.map((b) =>
+        b.id === 'b1' ? b : { ...b, shot: { ...b.shot, kind: 'talking-head', sourceLineId: null, assetId: 'a1' } }
+      ),
+    } as never);
+
+    const { retryShot } = await import('@/lib/reel/shots');
+    mockProvider();
+    // Half-finished: b2 has moved to a new asset while its neighbour still points at the dead
+    // one, which is what a failed retry leaves behind.
+    await saveReel('grok', {
+      ...(await loadReel('grok')),
+      beats: (await loadReel('grok')).beats.map((b) =>
+        b.id === 'b2' ? { ...b, shot: { ...b.shot, assetId: 'a9' } } : b
+      ),
+    } as never);
+    const out = await retryShot('grok', 'b2');
+
+    // Leaving b3 pointed at the dead asset re-rendered b2 alone: a second and a half of a
+    // face, which is the shot length this planner exists to avoid.
+    const b2 = out.beats.find((b) => b.id === 'b2')!.shot.assetId;
+    const b3 = out.beats.find((b) => b.id === 'b3')!.shot.assetId;
+    expect(b2).toBe(b3);
+    expect(b2).not.toBe('a1');
+  });
+});
+
 describe('retrying one shot', () => {
   it('re-queues that beat and nothing else', async () => {
     await seed();

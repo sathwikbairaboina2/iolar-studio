@@ -19,25 +19,35 @@ const beat = (beatId: string, role: 'hook' | 'body' | 'close', seconds: number) 
 });
 
 describe('planning who is on screen', () => {
-  it('keeps the presenter to about a quarter of the runtime', async () => {
+  it('never gives the presenter more than fifteen seconds, however long the reel', async () => {
     const { planShotMix } = await import('@/lib/reel/shotmix');
-    const beats = Array.from({ length: 12 }, (_, i) =>
-      beat(`b${i + 1}`, i === 0 ? 'hook' : i === 11 ? 'close' : 'body', 5)
+    // Two minutes at a quarter would be thirty seconds of one man talking.
+    const beats = Array.from({ length: 60 }, (_, i) =>
+      beat(`b${i + 1}`, i === 0 ? 'hook' : i === 59 ? 'close' : 'body', 2)
     );
 
-    const plan = planShotMix(beats, { presenterShare: 0.25 });
+    const plan = planShotMix(beats, {});
 
-    const presenterSec = plan.filter((p) => p.kind === 'talking-head').reduce((s, p) => s + p.seconds, 0);
-    expect(presenterSec).toBeGreaterThan(0);
-    expect(presenterSec / 60).toBeLessThanOrEqual(0.3);
+    const face = plan.filter((p) => p.kind === 'talking-head').reduce((s, p) => s + p.seconds, 0);
+    expect(face).toBeLessThanOrEqual(15);
+    expect(face).toBeGreaterThan(0);
   });
 
-  it('spends the face where it earns its place — the hook and the close', async () => {
+  it('spends the face on the hook first', async () => {
     const { planShotMix } = await import('@/lib/reel/shotmix');
     const beats = [beat('b1', 'hook', 4), ...Array.from({ length: 8 }, (_, i) => beat(`b${i + 2}`, 'body', 4)), beat('b10', 'close', 4)];
 
-    const plan = planShotMix(beats, { presenterShare: 0.25 });
+    // Forty seconds at a quarter is ten, and a bite has to run five: there is room for one
+    // here, and the opening is where a face buys the most.
+    const plan = planShotMix(beats, {});
+    expect(plan.find((p) => p.beatId === 'b1')!.kind).toBe('talking-head');
+  });
 
+  it('keeps the close as well once there is budget for two bites', async () => {
+    const { planShotMix } = await import('@/lib/reel/shotmix');
+    const beats = [beat('b1', 'hook', 4), ...Array.from({ length: 8 }, (_, i) => beat(`b${i + 2}`, 'body', 4)), beat('b10', 'close', 4)];
+
+    const plan = planShotMix(beats, { presenterMaxSec: 20 });
     expect(plan.find((p) => p.beatId === 'b1')!.kind).toBe('talking-head');
     expect(plan.find((p) => p.beatId === 'b10')!.kind).toBe('talking-head');
   });
@@ -51,7 +61,7 @@ describe('planning who is on screen', () => {
       beat('b4', 'close', 3),
     ];
 
-    const plan = planShotMix(beats, { presenterShare: 0.25 });
+    const plan = planShotMix(beats, {});
     // A page shot needs a page. Without one the only honest picture is the person saying it.
     expect(plan.find((p) => p.beatId === 'b2')!.kind).toBe('talking-head');
   });
@@ -60,7 +70,7 @@ describe('planning who is on screen', () => {
     const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
     const beats = [beat('b1', 'hook', 3), beat('b2', 'body', 3), beat('b3', 'body', 3), beat('b4', 'close', 3)];
 
-    const plan = planShotMix(beats, { presenterShare: 0.5 });
+    const plan = planShotMix(beats, { presenterMaxSec: 20 });
     const bites = presenterBites(plan);
 
     for (const bite of bites) {
@@ -81,7 +91,7 @@ describe('planning who is on screen', () => {
   it('never leaves the reel without a face', async () => {
     const { planShotMix } = await import('@/lib/reel/shotmix');
     const beats = Array.from({ length: 30 }, (_, i) => beat(`b${i + 1}`, 'body', 2));
-    const plan = planShotMix(beats, { presenterShare: 0.05 });
+    const plan = planShotMix(beats, { presenterMaxSec: 1 });
     expect(plan.some((p) => p.kind === 'talking-head')).toBe(true);
   });
 });
@@ -103,7 +113,7 @@ describe('the mix reaches the beats', () => {
     );
     const spans = new Map(beats.map((b) => [b.id, { start: 0, end: 4 }]));
 
-    const out = applyShotMix(lines, beats, spans, { presenterShare: 0.25 });
+    const out = applyShotMix(lines, beats, spans, {});
 
     const heads = out.filter((b) => b.shot.kind === 'talking-head');
     expect(heads.length).toBeGreaterThan(0);
@@ -113,19 +123,97 @@ describe('the mix reaches the beats', () => {
     expect(out.filter((b) => b.shot.kind === 'screen').length).toBeGreaterThanOrEqual(7);
   });
 
+  it('opens on a face even when the hook beat is a title card', async () => {
+    const { applyShotMix } = await import('@/lib/reel/build/bridge');
+    const lines = Array.from({ length: 8 }, (_, i) => line(`l${i + 1}`, true));
+    const beats = lines.map((l, i) => asBeat(`b${i + 1}`, i === 0 ? 'hook' : i === 7 ? 'close' : 'body', l.id));
+    beats[0].shot.kind = 'title';
+    const spans = new Map(beats.map((b) => [b.id, { start: 0, end: 3 }]));
+
+    const out = applyShotMix(lines, beats, spans, {});
+    // The title is an overlay, so the first spoken line is the opening as far as the face is
+    // concerned. Otherwise the reel meets the person only as it ends.
+    expect(out.find((b) => b.id === 'b2')!.shot.kind).toBe('talking-head');
+  });
+
   it('still gives an uncited line the presenter', async () => {
     const { applyShotMix } = await import('@/lib/reel/build/bridge');
     const lines = [line('l1', true), line('l2', false), line('l3', true), line('l4', true)];
     const beats = [asBeat('b1', 'hook', 'l1'), asBeat('b2', 'body', 'l2'), asBeat('b3', 'body', 'l3'), asBeat('b4', 'close', 'l4')];
     const spans = new Map(beats.map((b) => [b.id, { start: 0, end: 3 }]));
 
-    const out = applyShotMix(lines, beats, spans, { presenterShare: 0.25 });
+    const out = applyShotMix(lines, beats, spans, {});
     expect(out.find((b) => b.id === 'b2')!.shot.kind).toBe('talking-head');
+  });
+});
+
+describe('a presenter bite is worth rendering', () => {
+  const beat = (beatId: string, role: 'hook' | 'body' | 'close', seconds: number, cites = true) => ({
+    beatId, role, seconds, cites,
+  });
+
+  it('never asks for a bite shorter than five seconds', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    // Beats cut to speech run one to two seconds. Rendered alone that is what came back as
+    // half a second of a face restarting, which is the worst thing in the reel.
+    const beats = Array.from({ length: 30 }, (_, i) =>
+      beat(`b${i + 1}`, i === 0 ? 'hook' : i === 29 ? 'close' : 'body', 1.5)
+    );
+
+    const plan = planShotMix(beats, { minBiteSec: 5 });
+
+    for (const bite of presenterBites(plan)) {
+      expect(bite.seconds).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  it('grows a bite around a line that has nothing to show', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    const beats = [
+      beat('b1', 'hook', 2),
+      beat('b2', 'body', 2),
+      beat('b3', 'body', 2, false),
+      beat('b4', 'body', 2),
+      beat('b5', 'body', 2),
+      beat('b6', 'close', 2),
+    ];
+
+    const plan = planShotMix(beats, { presenterMaxSec: 20, minBiteSec: 5 });
+    const bites = presenterBites(plan);
+
+    // b3 cannot be a page shot, so the bite that carries it takes its neighbours until it is
+    // long enough to be worth rendering.
+    const carrying = bites.find((b) => b.beatIds.includes('b3'))!;
+    expect(carrying.seconds).toBeGreaterThanOrEqual(5);
+  });
+
+  it('spends the budget on fewer, longer bites rather than many stubs', async () => {
+    const { planShotMix, presenterBites } = await import('@/lib/reel/shotmix');
+    const beats = Array.from({ length: 40 }, (_, i) =>
+      beat(`b${i + 1}`, i === 0 ? 'hook' : i === 39 ? 'close' : 'body', 1.7)
+    );
+
+    const bites = presenterBites(planShotMix(beats, { minBiteSec: 5 }));
+    expect(bites.length).toBeLessThanOrEqual(3);
+    expect(bites.length).toBeGreaterThanOrEqual(1);
   });
 });
 
 describe('collapsing neighbours into one request', () => {
   const seg = (beatId: string, key: string, seconds: number) => ({ beatId, key, seconds });
+
+  it('takes the start of a group from the reel clock when it is given one', async () => {
+    const { groupAdjacent } = await import('@/lib/reel/shotmix');
+    const groups = groupAdjacent([
+      { beatId: 'b1', key: 'presenter', seconds: 2, startsAt: 2.56 },
+      { beatId: 'b2', key: 'presenter', seconds: 2, startsAt: 4.6 },
+      { beatId: 'b3', key: 'page:x', seconds: 3, startsAt: 6.7 },
+    ]);
+    // Summed durations put the closing bite at the top of the voiceover: it was rendered
+    // against the wrong words, and two groups wrote to the same audio file.
+    expect(groups[0].startsAt).toBeCloseTo(2.56, 2);
+    expect(groups[1].startsAt).toBeCloseTo(6.7, 2);
+  });
 
   it('visits a source once, however many lines are spoken over it', async () => {
     const { groupAdjacent } = await import('@/lib/reel/shotmix');

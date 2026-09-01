@@ -42,10 +42,16 @@ export async function sliceSpan(slug: string, key: string, start: number, end: n
   const dir = beatAudioDir(slug);
   await fs.mkdir(dir, { recursive: true });
   const dest = groupAudioFile(slug, key);
+  // Covering for a length edge case in the renderer: certain durations fail inside it with
+  // an einops shape mismatch ("can't divide axis of length 29640 in chunks of 18"). 6.72s
+  // fails, 6.50s of the same audio succeeds. Half-second lengths have not, so a bite is cut
+  // to one. The real fix is in the plugin's own planner.
+  const asked = Math.max(0.5, end - start);
+  const safe = Math.floor(asked * 2) / 2;
   await run('ffmpeg', [
     '-y',
     '-ss', start.toFixed(3),
-    '-t', Math.max(0.05, end - start).toFixed(3),
+    '-t', safe.toFixed(3),
     '-i', reelVoFile(slug),
     '-ac', '1',
     '-ar', '16000',

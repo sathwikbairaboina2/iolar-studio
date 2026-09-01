@@ -272,10 +272,33 @@ export async function resolveShot(
  * document; three presenter lines in a row is one bite. What separates two requests is a
  * change of picture, not a change of sentence.
  */
+/**
+ * How the reel divides into pictures, whatever has been rendered so far.
+ *
+ * `planGroups` answers "what still needs making", which skips beats that already point at an
+ * asset. Retrying needs the other question — "what belongs together" — because the beat being
+ * retried points at something by definition, and so do its neighbours.
+ */
+export async function pictureGroups(slug: string, reel: Reel, ctx: BuildContext) {
+  const spans = beatSpans(reel);
+  const segments = reel.beats
+    .filter((b) => b.shot.kind !== 'title')
+    .map((b) => {
+      const span = spans.get(b.id);
+      let key = 'presenter';
+      if (providerNameFor(b.shot.kind) === 'webpage') {
+        const link = ctx.script ? resolveLink(ctx.script, ctx.candidates, b.shot.sourceLineId ?? null) : null;
+        key = link ? `page:${link.url}` : `page:none:${b.id}`;
+      }
+      return { beatId: b.id, key, seconds: span ? span.end - span.start : 0, startsAt: span?.start };
+    });
+  return groupAdjacent(segments);
+}
+
 export async function planGroups(slug: string, reel: Reel, ctx: BuildContext, shotSec: [number, number]) {
   const spans = beatSpans(reel);
   const reqs = planShots(reel, shotSec);
-  const segments: { beatId: string; key: string; seconds: number }[] = [];
+  const segments: { beatId: string; key: string; seconds: number; startsAt?: number }[] = [];
   const keyed = new Map<string, ShotRequest>();
 
   for (const req of reqs) {
@@ -286,7 +309,7 @@ export async function planGroups(slug: string, reel: Reel, ctx: BuildContext, sh
       const link = ctx.script ? resolveLink(ctx.script, ctx.candidates, req.sourceLineId) : null;
       key = link ? `page:${link.url}` : `page:none:${req.beatId}`;
     }
-    segments.push({ beatId: req.beatId, key, seconds });
+    segments.push({ beatId: req.beatId, key, seconds, startsAt: span?.start });
     keyed.set(req.beatId, req);
   }
 
@@ -585,17 +608,25 @@ export async function refreshShots(slug: string): Promise<Reel> {
 /** Clears a beat's asset so the next run queues it again, optionally with a new brief. */
 export async function retryShot(slug: string, beatId: string, brief?: string): Promise<Reel> {
   const reel = await loadReel(slug);
+  // What belongs together comes from the plan, not from what the beats currently point at.
+  // After a half-finished retry those pointers disagree — one beat on a new asset, its
+  // neighbours still on the dead one — and grouping by them re-rendered single beats for
+  // ever: a second and a half of a face, the shot length this planner exists to avoid.
+  const ctx = await buildContext(slug, reel);
+  const groups = await pictureGroups(slug, reel, ctx);
+  const together = groups.find((g) => g.beatIds.includes(beatId))?.beatIds ?? [beatId];
+
   await saveReel(slug, {
     ...reel,
     beats: reel.beats.map((b) =>
-      b.id === beatId
-        ? { ...b, shot: { ...b.shot, brief: brief ?? b.shot.brief, assetId: undefined } }
+      together.includes(b.id)
+        ? { ...b, shot: { ...b.shot, brief: b.id === beatId ? brief ?? b.shot.brief : b.shot.brief, assetId: undefined } }
         : b
     ),
   });
-  // One beat was asked for, so one beat is queued: a retry that swept up every other
-  // pending shot spent an hour of GPU nobody had approved.
-  return runShots(slug, [beatId]);
+  // Only what was asked for: a retry that swept up every other pending shot spent an hour of
+  // GPU nobody had approved.
+  return runShots(slug, together);
 }
 
 /**
