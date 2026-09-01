@@ -13,12 +13,20 @@ import { REEL_RATIOS } from './schema';
  * editing, and it is done in an editor.
  *
  * What goes over is a folder anyone can open — the clips named in the order they were made
- * for, the voice, the words, and an MLT project (Shotcut and Kdenlive both read it) that
- * places each recording at the moment it was cut for. Opening it lands on the reel as it
- * stands rather than an empty timeline, and everything after that is the editor's call.
+ * for, the voice, the words, and a project file that places each recording at the moment it
+ * was cut for. Opening it lands on the reel as it stands rather than an empty timeline, and
+ * everything after that is the editor's call.
  */
 
-export type Handoff = { dir: string; clips: { file: string; startsAt: number; seconds: number }[] };
+export type HandoffClip = {
+  file: string;
+  startsAt: number;
+  seconds: number;
+  /** A take of the presenter saying these words, so it carries its own voice. */
+  speaks?: boolean;
+};
+
+export type Handoff = { dir: string; clips: HandoffClip[] };
 
 const pad = (n: number, width = 2) => String(Math.floor(n)).padStart(width, '0');
 
@@ -46,49 +54,223 @@ function placed(reel: Reel) {
   return out.sort((a, b) => a.startsAt - b.startsAt);
 }
 
+/** A stable number for this project, so sending a reel twice does not look like two projects. */
+function documentId(reel: Reel): number {
+  let h = 7;
+  for (const ch of reel.title) h = (h * 31 + ch.charCodeAt(0)) % 1e9;
+  return h;
+}
+
+/**
+ * The same project, in the two shapes the two editors open.
+ *
+ * Shotcut reads plain MLT. Kdenlive does not — twice over. Its open dialog filters to
+ * `*.kdenlive`, so a `.mlt` is invisible there; and renaming alone is not enough, because a
+ * timeline clip that is not also in the project bin is dropped on load, one line of
+ * "without bin reference found and removed" per clip and an empty timeline at the end of it.
+ * So the Kdenlive flavour carries a `main_bin` listing every clip with the `kdenlive:id`
+ * its timeline entry points back at, a black track beneath the rest, and the voice marked
+ * as an audio track rather than a second video one.
+ */
 export function buildProject(
   reel: Reel,
-  clips: { file: string; startsAt: number; seconds: number }[]
+  clips: HandoffClip[],
+  flavour: 'mlt' | 'kdenlive' = 'mlt'
 ): string {
   const [width, height] = REEL_RATIOS[reel.ratio];
+  const kden = flavour === 'kdenlive';
+  const voiceSec = reel.vo.durationSec;
+  const nl = '\n';
+
+  /**
+   * MLT's `out` is the last frame that plays, not the length.
+   *
+   * Handing it the full duration makes every clip one frame too long, so each one overlaps
+   * the next. Kdenlive resolves that by shuffling clips onto a second playlist and, on the
+   * way, dropped the voiceover ten seconds down the timeline.
+   */
+  const lastFrame = (seconds: number) => timecode(Math.max(0, seconds - 1 / reel.fps));
+
+  /** Bin ids start at 2 — Kdenlive keeps the lower ones for itself. */
+  const binId = (i: number) => i + 2;
+  const named = (file: string) => file.split('/').pop() ?? file;
+
+  const producer = (id: string, file: string, seconds: number, bin: number, fades = '') =>
+    `  <producer id="${id}" in="00:00:00.000" out="${lastFrame(seconds)}">` + nl +
+    `    <property name="resource">${escape(file)}</property>` + nl +
+    (kden
+      ? `    <property name="mlt_service">avformat-novalidate</property>` + nl +
+        `    <property name="length">${timecode(seconds)}</property>` + nl +
+        `    <property name="kdenlive:id">${bin}</property>` + nl +
+        `    <property name="kdenlive:clipname">${escape(named(file))}</property>` + nl
+      : '') +
+    fades +
+    `  </producer>`;
+
+  /**
+   * The gaps, made to look deliberate.
+   *
+   * Nothing covers the stretches between takes — the reel opens on two and a half seconds of
+   * narration with no footage, and there are shorter holes between the page visits. Cutting
+   * from picture to black and back reads as a fault; arriving out of black and leaving into
+   * it reads as an edit. A dissolve would mean overlapping the takes, which means dragging
+   * them off the words they were rendered against, so black it is.
+   *
+   * Half the gap on each side, never more than half a second, and nothing at all for a gap
+   * too short to see.
+   */
+  const frames = (seconds: number) => Math.round(seconds * reel.fps);
+  const MAX_FADE = 0.5;
+  const fadeFor = (gap: number, clipSec: number) => {
+    const wanted = Math.min(MAX_FADE, gap / 2, clipSec / 3);
+    return frames(wanted) >= 2 ? frames(wanted) : 0;
+  };
+
+  const fade = (kind: 'from' | 'to', at: number, length: number) => {
+    const to = at + length;
+    const ramp = kind === 'from' ? `${at}=0;${to}=1` : `${at}=1;${to}=0`;
+    return (
+      `    <filter id="${kind}_black_${at}" in="${at}" out="${to}">` + nl +
+      `      <property name="mlt_service">brightness</property>` + nl +
+      `      <property name="level">${ramp}</property>` + nl +
+      `      <property name="kdenlive:id">fade_${kind === 'from' ? 'from' : 'to'}_black</property>` + nl +
+      `    </filter>` + nl
+    );
+  };
+
   const producers = clips
-    .map(
-      (c, i) =>
-        `  <producer id="clip${i}">\n` +
-        `    <property name="resource">${escape(c.file)}</property>\n` +
-        `  </producer>`
-    )
-    .join('\n');
+    .map((c, i) => {
+      const before = c.startsAt - (i === 0 ? 0 : clips[i - 1].startsAt + clips[i - 1].seconds);
+      const ends = c.startsAt + c.seconds;
+      const after = (i === clips.length - 1 ? Math.max(voiceSec, ends) : clips[i + 1].startsAt) - ends;
+      const last = frames(c.seconds) - 1;
+
+      const inFrames = fadeFor(before, c.seconds);
+      const outFrames = fadeFor(after, c.seconds);
+      const fades =
+        (inFrames ? fade('from', 0, inFrames) : '') +
+        (outFrames ? fade('to', Math.max(0, last - outFrames), outFrames) : '');
+
+      return producer(`clip${i}`, c.file, c.seconds, binId(i), fades);
+    })
+    .join(nl);
+
+  const voiceProducer = producer('voice', 'voice.mp3', voiceSec, binId(clips.length));
+
+  /**
+   * The audio half of a take, for the one editor that needs it spelled out.
+   *
+   * Kdenlive plays no audio from a video track — it writes `hide="audio"` onto every video
+   * track it saves — so a lipsync take on the picture track is a presenter miming. The same
+   * recording goes on the voice track as an audio-only producer, sharing the take's bin id so
+   * Kdenlive still treats the two halves as one clip.
+   */
+  const speakingHalves = kden
+    ? clips
+        .map((c, i) => ({ c, i }))
+        .filter(({ c }) => c.speaks)
+        .map(
+          ({ c, i }) =>
+            `  <producer id="clip${i}_audio" in="00:00:00.000" out="${lastFrame(c.seconds)}">` + nl +
+            `    <property name="resource">${escape(c.file)}</property>` + nl +
+            `    <property name="mlt_service">avformat-novalidate</property>` + nl +
+            `    <property name="length">${timecode(c.seconds)}</property>` + nl +
+            `    <property name="video_index">-1</property>` + nl +
+            `    <property name="kdenlive:id">${binId(i)}</property>` + nl +
+            `    <property name="kdenlive:clipname">${escape(named(c.file))}</property>` + nl +
+            `  </producer>`
+        )
+        .join(nl)
+    : '';
+
+  // Every clip on the timeline has to be in the bin as well, or Kdenlive removes it on load.
+  const bin = kden
+    ? `  <playlist id="main_bin">` + nl +
+      `    <property name="kdenlive:docproperties.version">1.1</property>` + nl +
+      `    <property name="kdenlive:docproperties.profile">${width}x${height} ${reel.fps}fps</property>` + nl +
+      `    <property name="kdenlive:docproperties.documentid">${documentId(reel)}</property>` + nl +
+      `    <property name="xml_retain">1</property>` + nl +
+      clips.map((_, i) => `    <entry producer="clip${i}"/>` + nl).join('') +
+      `    <entry producer="voice"/>` + nl +
+      `  </playlist>` + nl
+    : '';
 
   // Gaps are left as gaps. A recording sits where its audio was cut from, and closing the
   // space before it by hand would be this studio making an edit again.
   let at = 0;
   const entries = clips
     .map((c, i) => {
-      const gap = c.startsAt - at > 0.001 ? `    <blank length="${timecode(c.startsAt - at)}"/>\n` : '';
+      const gap = c.startsAt - at > 0.001 ? `    <blank length="${timecode(c.startsAt - at)}"/>` + nl : '';
       at = c.startsAt + c.seconds;
-      return `${gap}    <entry producer="clip${i}" in="00:00:00.000" out="${timecode(c.seconds)}"/>`;
+      return `${gap}    <entry producer="clip${i}" in="00:00:00.000" out="${lastFrame(c.seconds)}"/>`;
     })
-    .join('\n');
+    .join(nl);
+
+  const runs = Math.max(voiceSec, at);
+  const black = kden
+    ? `  <producer id="black_track" in="00:00:00.000" out="${lastFrame(runs)}">` + nl +
+      `    <property name="mlt_service">color</property>` + nl +
+      `    <property name="resource">black</property>` + nl +
+      `    <property name="length">${timecode(runs)}</property>` + nl +
+      `  </producer>` + nl
+    : '';
+
+  /**
+   * The voiceover, out of the presenter's way.
+   *
+   * A lipsync take is the presenter saying that stretch of the script, and it comes back with
+   * that audio on it. Laying the voiceover across it too plays the same line twice, a frame
+   * apart — so the voice track holds a gap wherever a take speaks for itself, and the take is
+   * left alone.
+   */
+  const voiceLine = () => {
+    const rows: string[] = [];
+    let from = 0;
+    const speaking = clips
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => c.speaks)
+      .sort((a, b) => a.c.startsAt - b.c.startsAt);
+    for (const { c, i } of speaking) {
+      const until = Math.min(c.startsAt, voiceSec);
+      if (until - from > 0.001) {
+        rows.push(`    <entry producer="voice" in="${timecode(from)}" out="${lastFrame(until)}"/>`);
+      }
+      const held = Math.min(c.seconds, Math.max(0, voiceSec - c.startsAt));
+      rows.push(
+        kden
+          ? `    <entry producer="clip${i}_audio" in="00:00:00.000" out="${lastFrame(c.seconds)}"/>`
+          : `    <blank length="${timecode(held)}"/>`
+      );
+      from = c.startsAt + c.seconds;
+    }
+    if (voiceSec - from > 0.001) {
+      rows.push(`    <entry producer="voice" in="${timecode(from)}" out="${lastFrame(voiceSec)}"/>`);
+    }
+    return rows.join(nl);
+  };
+
+  const track = (name: string, audio = false) =>
+    kden
+      ? `    <property name="kdenlive:track_name">${name}</property>` + nl +
+        (audio ? `    <property name="kdenlive:audio_track">1</property>` + nl : '')
+      : '';
 
   return `<?xml version="1.0" standalone="no"?>
 <mlt LC_NUMERIC="C" version="7.0.0" title="${escape(reel.title)}" producer="main">
   <profile description="${width}x${height} ${reel.fps}fps" width="${width}" height="${height}" progressive="1"
     sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="9" display_aspect_den="16"
     frame_rate_num="${reel.fps}" frame_rate_den="1" colorspace="709"/>
-${producers}
-  <producer id="voice">
-    <property name="resource">voice.mp3</property>
-  </producer>
-  <playlist id="video">
-${entries}
+${black}${producers}
+${speakingHalves ? speakingHalves + nl : ''}${voiceProducer}
+${bin}  <playlist id="video">
+${track('Shots')}${entries}
   </playlist>
   <playlist id="audio">
-    <entry producer="voice" in="00:00:00.000" out="${timecode(reel.vo.durationSec)}"/>
+${track('Voice', true)}${voiceLine()}
   </playlist>
   <tractor id="main" title="${escape(reel.title)}">
-    <track producer="video"/>
-    <track producer="audio"/>
+${kden ? '    <track producer="black_track"/>\n' : ''}    <track producer="video"/>
+    <track producer="audio" hide="video"/>
   </tractor>
 </mlt>
 `;
@@ -118,19 +300,33 @@ export async function writeHandoff(slug: string): Promise<Handoff> {
   }
 
   const dir = path.join(reelDir(slug), 'edit');
-  await fs.rm(dir, { recursive: true, force: true });
+  // Windows will not delete a file the editor still has open, and half a rebuilt folder is
+  // worse than none — so say which one, rather than leaving a gutted folder behind.
+  try {
+    await fs.rm(dir, { recursive: true, force: true });
+  } catch (err) {
+    const locked = (err as NodeJS.ErrnoException).code;
+    if (locked !== 'EBUSY' && locked !== 'EPERM') throw err;
+    throw new Error('the edit folder is open in an editor — close it and send again');
+  }
   await fs.mkdir(path.join(dir, 'clips'), { recursive: true });
 
   const clips: Handoff['clips'] = [];
   for (const [i, { asset, startsAt }] of pieces.entries()) {
     const name = `${String(i + 1).padStart(2, '0')}-${asset.provider ?? 'clip'}-${asset.id}.mp4`;
     await fs.copyFile(path.join(reelDir(slug), asset.path), path.join(dir, 'clips', name));
-    clips.push({ file: `clips/${name}`, startsAt, seconds: asset.durationSec ?? 0 });
+    clips.push({
+      file: `clips/${name}`,
+      startsAt,
+      seconds: asset.durationSec ?? 0,
+      speaks: asset.provider === 'lipsync',
+    });
   }
 
   await fs.copyFile(reelVoFile(slug), path.join(dir, 'voice.mp3'));
   await fs.writeFile(path.join(dir, 'script.txt'), buildScript(reel), 'utf8');
   await fs.writeFile(path.join(dir, 'project.mlt'), buildProject(reel, clips), 'utf8');
+  await fs.writeFile(path.join(dir, 'project.kdenlive'), buildProject(reel, clips, 'kdenlive'), 'utf8');
 
   return { dir, clips };
 }

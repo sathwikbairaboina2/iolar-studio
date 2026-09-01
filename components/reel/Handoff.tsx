@@ -94,7 +94,8 @@ export default function Handoff({ slug, onReturned }: Props) {
               </Typography.Text>
             </Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              Open <Typography.Text code>project.mlt</Typography.Text> in Shotcut or Kdenlive.
+              Open <Typography.Text code>project.mlt</Typography.Text> in Shotcut,{' '}
+              <Typography.Text code>project.kdenlive</Typography.Text> in Kdenlive.
             </Typography.Text>
           </Space>
         ) : (

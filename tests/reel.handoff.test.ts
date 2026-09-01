@@ -74,6 +74,84 @@ describe('handing the reel to an editor', () => {
     expect(xml).toContain('voice.mp3');
   });
 
+  it('writes a copy Kdenlive will show in its open dialog', async () => {
+    await seed();
+    const { writeHandoff } = await import('@/lib/reel/handoff');
+    const out = await writeHandoff('grok');
+
+    // Kdenlive's file dialog filters to *.kdenlive, so a .mlt is invisible there however
+    // well it parses. Same project, a name the dialog admits.
+    const both = await fs.readdir(out.dir);
+    expect(both).toContain('project.mlt');
+    expect(both).toContain('project.kdenlive');
+
+    const mlt = await fs.readFile(path.join(out.dir, 'project.mlt'), 'utf8');
+    const kden = await fs.readFile(path.join(out.dir, 'project.kdenlive'), 'utf8');
+    expect(kden).toContain('clips/01-lipsync-a1.mp4');
+    // The bin Kdenlive reads its project properties from, which plain MLT XML has no need of.
+    expect(kden).toContain('main_bin');
+    // A timeline clip Kdenlive cannot find in the bin is removed on load, so every clip on
+    // the timeline is listed there with the id its entry points back at.
+    expect(kden).toContain('<entry producer="clip0"/>');
+    expect(kden).toContain('kdenlive:id');
+    expect(kden).toContain('kdenlive:docproperties.version');
+    expect(mlt).not.toContain('main_bin');
+  });
+
+  it('leaves the presenter speaking for himself', async () => {
+    await seed();
+    const { writeHandoff } = await import('@/lib/reel/handoff');
+    const out = await writeHandoff('grok');
+
+    for (const name of ['project.mlt', 'project.kdenlive']) {
+      const xml = await fs.readFile(path.join(out.dir, name), 'utf8');
+      const voiceTrack = xml.split('<playlist id="audio">')[1].split('</playlist>')[0];
+      // The lipsync take carries the same words as the voiceover for its own stretch, so the
+      // voiceover steps aside there — running both is the same line twice, half a frame apart.
+      expect(voiceTrack).toContain('in="00:00:00.000"');
+      expect(voiceTrack).toContain('in="00:00:09.000"');
+      // And nothing mutes the recordings themselves.
+      expect(xml).not.toContain('<track producer="video" hide="audio"/>');
+    }
+
+    // Shotcut plays a video track's own audio, so the take is simply left alone in the gap.
+    const mlt = await fs.readFile(path.join(out.dir, 'project.mlt'), 'utf8');
+    expect(mlt.split('<playlist id="audio">')[1].split('</playlist>')[0]).toContain(
+      '<blank length="00:00:06.500"/>'
+    );
+
+    // Kdenlive never plays a video track's audio — it writes hide="audio" onto every video
+    // track of its own. So the take's audio goes on the audio track as well, or the presenter
+    // is silent however loud the file is.
+    const kden = await fs.readFile(path.join(out.dir, 'project.kdenlive'), 'utf8');
+    expect(kden).toContain('<producer id="clip0_audio"');
+    expect(kden).toContain('<property name="video_index">-1</property>');
+    expect(kden.split('<playlist id="audio">')[1].split('</playlist>')[0]).toContain(
+      '<entry producer="clip0_audio" in="00:00:00.000" out="00:00:06.467"/>'
+    );
+  });
+
+  it('dips to black across a gap instead of cutting into it', async () => {
+    await seed();
+    const { writeHandoff } = await import('@/lib/reel/handoff');
+    const out = await writeHandoff('grok');
+
+    for (const name of ['project.mlt', 'project.kdenlive']) {
+      const xml = await fs.readFile(path.join(out.dir, name), 'utf8');
+      const clip0 = xml.split('<producer id="clip0"')[1].split('</producer>')[0];
+      const clip1 = xml.split('<producer id="clip1"')[1].split('</producer>')[0];
+
+      // Two and a half seconds of nothing open the reel, so the first take arrives out of it
+      // rather than snapping on.
+      expect(clip0).toContain('fade_from_black');
+      // Nothing between the two takes — a cut there is a cut, not a hole to cover.
+      expect(clip1).not.toContain('fade_from_black');
+      // The voiceover outlasts the last take, so it leaves rather than stops.
+      expect(clip1).toContain('fade_to_black');
+      expect(clip0).not.toContain('fade_to_black');
+    }
+  });
+
   it('writes the script as the words, with who says what', async () => {
     await seed();
     const { writeHandoff } = await import('@/lib/reel/handoff');
