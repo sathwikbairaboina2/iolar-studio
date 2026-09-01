@@ -75,7 +75,13 @@ export function traceFromTool(
 ): Omit<TraceEvent, 'at' | 'stage'> | null {
   const s = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '');
   if (name === 'WebSearch' && s('query')) return { kind: 'search', text: s('query') };
-  if (name === 'WebFetch' && s('url')) return { kind: 'read', text: s('prompt') || s('url'), url: s('url') };
+  if (name === 'WebFetch' && s('url')) {
+    // The page first, then what it was asked to find there: a reader scans the log for
+    // where the hunter went before caring about the question it took along.
+    const where = s('url').replace(/^https?:\/\/(www\.)?/, '').slice(0, 80);
+    const asked = s('prompt').replace(/\s+/g, ' ').slice(0, 110);
+    return { kind: 'read', text: asked ? `${where} — ${asked}` : where, url: s('url') };
+  }
   if (name === 'Task') {
     const what = s('description') || s('prompt').slice(0, 120);
     if (what) return { kind: 'dispatch', text: what };

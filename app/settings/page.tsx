@@ -65,6 +65,8 @@ export default function SettingsPage() {
           />
         </Form.Item>
         <Form.Item name="researchUrl" label="Research service URL"><Input /></Form.Item>
+        <Form.Item name="researchOllamaUrl" label="Ollama for the local agents" extra="The planner, critic, writer and judge think here when the provider is local."><Input /></Form.Item>
+        <Form.Item name="researchModel" label="Local model"><Input /></Form.Item>
 
         <Button type="primary" htmlType="submit">Save</Button>
       </Form>

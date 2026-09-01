@@ -38,6 +38,9 @@ export type Settings = {
    */
   researchProvider: 'claude' | 'local';
   researchUrl: string;
+  /** The ollama the local research agents think on. The research service's own, by default. */
+  researchOllamaUrl: string;
+  researchModel: string;
 };
 
 const DEFAULTS: Settings = {
@@ -71,8 +74,12 @@ const DEFAULTS: Settings = {
   // looks like a model that cannot tool-call at all; 1200 answers in 1-2s.
   agentNumPredict: 1200,
   agentMaxRevisions: 3,
-  researchProvider: 'claude',
+  // Local by default: the research runs on qwen through the research service, and
+  // nothing about a reel's topic leaves the machine unless this is turned to claude.
+  researchProvider: 'local',
   researchUrl: 'http://127.0.0.1:25100',
+  researchOllamaUrl: 'http://127.0.0.1:25103',
+  researchModel: 'qwen3.8:27b',
 };
 
 function file() {

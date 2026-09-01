@@ -17,7 +17,15 @@ import type { TraceEvent } from './trace';
  * made of that.
  */
 
-export type LocalRunStep = { at?: string; tool?: string; kind?: string; input?: unknown; text?: string; url?: string; query?: string };
+/** One row of the service's `steps` table: a tool call, its arguments as JSON text. */
+export type LocalRunStep = {
+  seq?: number;
+  kind?: string;
+  tool?: string | null;
+  args_json?: string | null;
+  status?: string;
+  error?: string | null;
+};
 export type LocalRun = {
   research: { status: string; reportMd?: string | null; stopReason?: string | null };
   steps: LocalRunStep[];
@@ -53,18 +61,37 @@ export function composeQuestion(brief: Brief, plan: SearchPlan): string {
 }
 
 /**
- * A step from the service's log as a trace event. The service's step shape is loose —
- * different channels log different fields — so this reads whichever of them is there.
+ * A step from the service's log as a trace event.
+ *
+ * The service names its tools by channel — `search_web`, `youtube_search`, `github_search`
+ * all search; `read_url`, `youtube_transcript`, `github_read` all read — and keeps the
+ * arguments as JSON text. A step that failed says so, because a reader should know the
+ * page the hunter tried to open and could not.
  */
 export function stepToTrace(step: LocalRunStep): Omit<TraceEvent, 'at' | 'stage'> | null {
-  const tool = String(step.tool ?? step.kind ?? '').toLowerCase();
-  const input = (step.input ?? {}) as Record<string, unknown>;
-  const query = step.query ?? (typeof input.query === 'string' ? input.query : undefined);
-  const url = step.url ?? (typeof input.url === 'string' ? input.url : undefined);
-  if (query && /search/.test(tool)) return { kind: 'search', text: query };
-  if (url) return { kind: 'read', text: step.text || url, url };
-  if (query) return { kind: 'search', text: query };
-  if (step.text) return { kind: 'note', text: step.text };
+  const tool = String(step.tool ?? '').toLowerCase();
+  let args: Record<string, unknown> = {};
+  try {
+    args = step.args_json ? (JSON.parse(step.args_json) as Record<string, unknown>) : {};
+  } catch {
+    args = {};
+  }
+  const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : '');
+  const failed = step.status === 'error' ? ` (failed: ${step.error ?? 'unknown'})` : '';
+
+  if (/search/.test(tool) && str('query')) {
+    const where = tool === 'youtube_search' ? 'youtube: ' : tool === 'github_search' ? 'github: ' : '';
+    return { kind: 'search', text: `${where}${str('query')}${failed}` };
+  }
+  if (tool === 'github_read' && str('repo')) {
+    const url = `https://github.com/${str('repo')}/blob/HEAD/${str('path')}`;
+    return { kind: 'read', text: `github.com/${str('repo')}/${str('path')}${failed}`, url };
+  }
+  if (str('url')) {
+    const where = str('url').replace(/^https?:\/\/(www\.)?/, '').slice(0, 90);
+    return { kind: 'read', text: `${where}${failed}`, url: str('url') };
+  }
+  if (tool === 'finish') return { kind: 'note', text: 'wrote the report' };
   return null;
 }
 
@@ -156,10 +183,15 @@ export async function huntLocally(brief: Brief, plan: SearchPlan, opts: LocalOpt
   const health = await localHealth(opts.baseUrl, fetchImpl);
   if (!health.ok) throw new Error(`research service not ready: ${health.detail}`);
 
+  // The plan travels twice: folded into the question for a service that only reads
+  // that, and as its own field for one that turns it into the run's opening directive.
   const { id } = await api<{ id: string }>(opts.baseUrl, fetchImpl, '/api/research', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ query: composeQuestion(brief, plan) }),
+    body: JSON.stringify({
+      query: composeQuestion(brief, plan),
+      plan: { approach: plan.approach, queries: plan.queries },
+    }),
   });
   opts.onStep?.({ kind: 'note', text: `research service run ${id} started` });
 

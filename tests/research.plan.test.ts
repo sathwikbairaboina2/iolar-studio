@@ -61,10 +61,10 @@ describe('the trace', () => {
   it('turns the tools that touch the world into lines a person reads', async () => {
     const { traceFromTool } = await import('@/lib/reel/research/trace');
     expect(traceFromTool('WebSearch', { query: 'ltx license' })).toEqual({ kind: 'search', text: 'ltx license' });
-    expect(traceFromTool('WebFetch', { url: 'https://a.b/c', prompt: 'find the license' })).toEqual({
+    expect(traceFromTool('WebFetch', { url: 'https://www.a.b/c', prompt: 'find the license' })).toEqual({
       kind: 'read',
-      text: 'find the license',
-      url: 'https://a.b/c',
+      text: 'a.b/c — find the license',
+      url: 'https://www.a.b/c',
     });
     expect(traceFromTool('Task', { description: 'hunt github' })).toEqual({ kind: 'dispatch', text: 'hunt github' });
     expect(traceFromTool('Read', { file_path: 'x' })).toBeNull();
@@ -139,8 +139,9 @@ describe('the local research service', () => {
 
   it('polls the run, relays each step once, and returns the sources as a hunt', async () => {
     const { huntLocally } = await import('@/lib/reel/research/local');
-    const search = { tool: 'search', input: { query: 'ltx license' } };
-    const read = { tool: 'read', url: 'https://github.com/Lightricks/LTX-Video' };
+    // The service's own step rows: tool by channel, arguments as JSON text.
+    const search = { seq: 1, kind: 'tool_call', tool: 'search_web', args_json: '{"query":"ltx license"}', status: 'done' };
+    const read = { seq: 2, kind: 'tool_call', tool: 'read_url', args_json: '{"url":"https://github.com/Lightricks/LTX-Video"}', status: 'done' };
     const polls = [
       runDoc('running', [search]),
       runDoc('running', [search, read]),

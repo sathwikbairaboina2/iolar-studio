@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mkdtempSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -12,6 +12,16 @@ import path from 'path';
 beforeEach(() => {
   process.env.IOLAR_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'reel-research-api-'));
   vi.resetModules();
+  // This file covers the stage-by-stage Claude path; the graph on the local model has
+  // its own file. The default provider is local, so pin it here.
+  writeFileSync(path.join(process.env.IOLAR_DATA_DIR, 'settings.json'), JSON.stringify({ researchProvider: 'claude' }));
+});
+
+// `vi.doMock` registrations outlive `resetModules`; a mock of the settings or the graph in
+// one test would otherwise steer every test after it.
+afterEach(() => {
+  vi.doUnmock('@/lib/settings');
+  vi.doUnmock('@/lib/reel/research/graph');
 });
 
 const ctx = (slug: string) => ({ params: Promise.resolve({ slug }) });
@@ -233,22 +243,22 @@ describe('POST /api/reel/[slug]/research/run', () => {
     expect(events.some((e) => e.kind === 'read' && e.url === 'https://github.com/Lightricks/LTX-Video')).toBe(true);
   });
 
-  it('sends the hunt to the local research service when settings say so', async () => {
+  it('hands the whole run to the graph on the local model when settings say so', async () => {
     await seedBrief({ status: 'planned' });
     const hunt = vi.fn();
     vi.doMock('@/lib/reel/research/agents', () => ({ huntSources: hunt, critique: vi.fn() }));
-    const local = vi.fn(async () => [{ url: 'https://example.org/paper' }]);
-    vi.doMock('@/lib/reel/research/local', () => ({ huntLocally: local }));
+    const advance = vi.fn(async () => ({ status: 'hunted', waitingOn: null, done: false, found: 1 }));
+    vi.doMock('@/lib/reel/research/graph', () => ({ advanceResearch: advance }));
     vi.doMock('@/lib/settings', async (orig) => ({
       ...(await (orig() as Promise<Record<string, unknown>>)),
-      getSettings: () => ({ researchProvider: 'local', researchUrl: 'http://127.0.0.1:25100' }),
+      getSettings: () => ({ researchProvider: 'local', researchUrl: 'http://127.0.0.1:25100', researchOllamaUrl: 'http://127.0.0.1:25103', researchModel: 'qwen' }),
     }));
 
     const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
     const body = await (await POST(post({ plan: PLAN }), ctx('grok'))).json();
 
     expect(body.status).toBe('hunted');
-    expect(local).toHaveBeenCalledTimes(1);
+    expect(advance).toHaveBeenCalledTimes(1);
     expect(hunt).not.toHaveBeenCalled();
   });
 

@@ -4,6 +4,7 @@ import { siftCandidates, withStableIds } from '@/lib/reel/research/candidate';
 import { critique, draftScript, huntSources, judgeCoverage, planSearch } from '@/lib/reel/research/agents';
 import { briefWithPlan, parsePlan } from '@/lib/reel/research/plan';
 import { huntLocally } from '@/lib/reel/research/local';
+import { advanceResearch } from '@/lib/reel/research/graph';
 import { appendTrace, clearTrace, traceFromTool } from '@/lib/reel/research/trace';
 import { getSettings } from '@/lib/settings';
 import { gatherEvidence } from '@/lib/reel/research/gatherRun';
@@ -51,6 +52,16 @@ export async function POST(req: Request, ctx: Ctx) {
     }
 
     const brief = await store.readBrief(slug);
+
+    // Local by default: the whole run — planner, hunter, critic, writer, judge — is the
+    // LangGraph graph on the local model, with the same three gates. Claude stays as
+    // the stage-by-stage path below for anyone who turns the provider back.
+    if (getSettings().researchProvider === 'local') {
+      const { qwenRunner } = await import('@/lib/ai/qwen');
+      const s = getSettings();
+      const out = await advanceResearch(slug, { run: qwenRunner(), researchUrl: s.researchUrl }, body);
+      return NextResponse.json(out);
+    }
 
     // The strategy comes first, and it is a gate: the queries the hunt will run are
     // written down, shown, and edited by a person before a single search happens. A
