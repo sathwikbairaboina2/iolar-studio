@@ -88,6 +88,27 @@ describe('reading health', () => {
     );
   });
 
+  it('does not call the worker missing while it is busy rendering', async () => {
+    // Celery's ping times out under a solo-pool render, so the API honestly reports zero
+    // workers at the exact moment one is working. Saying "worker 0" there sends you
+    // restarting a service that is mid-shot.
+    mockFetch({
+      ':8300': { body: { ok: false, checks: { redis: { ok: true }, worker: { ok: false, workers: 0 } } } },
+      ':8080': { body: { ok: true } },
+      ':8189': { body: {} },
+      ':11436': { body: {} },
+    });
+    const { readHealth } = await import('@/lib/plugins/health');
+    const { reconcile } = await import('@/lib/plugins/health');
+
+    const raw = (await readHealth()).find((p) => p.name === 'lipsync')!;
+    expect(raw.checks).toContainEqual({ label: 'worker 0', ok: false });
+
+    const seen = reconcile([raw], [{ plugin: 'lipsync', status: 'running' }]).find((p) => p.name === 'lipsync')!;
+    expect(seen.checks).toContainEqual({ label: 'worker busy', ok: true });
+    expect(seen.ready).toBe(true);
+  });
+
   it('marks a service that will not answer as down', async () => {
     mockFetch({ ':8300': { fail: true }, ':8080': { body: { ok: true } }, ':8189': { body: {} }, ':11436': { body: {} } });
     const { readHealth } = await import('@/lib/plugins/health');

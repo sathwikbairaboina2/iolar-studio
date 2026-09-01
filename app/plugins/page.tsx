@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Badge, Button, Card, Empty, Segmented, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { CaretRightOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
-import type { PluginHealth } from '@/lib/plugins/health';
+import { reconcile, type PluginHealth } from '@/lib/plugins/health';
 import type { JobBoard, JobRow } from '@/lib/plugins/jobs';
 
 /**
@@ -85,6 +85,8 @@ export default function PluginsPage() {
     }
   };
 
+  // A renderer with a job on the GPU has a worker, whatever its own health check says.
+  const cards = reconcile(plugins ?? [], board?.rows ?? []);
   const ACTIVE = new Set(['running', 'queued', 'failed', 'awaiting-manual']);
   const rows = (board?.rows ?? []).filter((r) => scope === 'all' || ACTIVE.has(r.status));
   const onAir = board?.rows.find((r) => r.status === 'running');
@@ -106,7 +108,7 @@ export default function PluginsPage() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 340px) 1fr', gap: 16, alignItems: 'start' }}>
         <Space orientation="vertical" style={{ width: '100%' }} size="middle">
-          {(plugins ?? []).map((p) => (
+          {cards.map((p) => (
             <Card
               key={p.name}
               size="small"
