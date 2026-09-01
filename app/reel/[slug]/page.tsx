@@ -15,6 +15,7 @@ import ShotGate from '@/components/reel/ShotGate';
 import ShotActions from '@/components/reel/ShotActions';
 import InboxPanel from '@/components/reel/InboxPanel';
 import BeatText from '@/components/reel/BeatText';
+import Handoff from '@/components/reel/Handoff';
 import JobsBoard from '@/components/reel/JobsBoard';
 import { useReelEditor } from './useReelEditor';
 import Timeline from '@/components/reel/Timeline';
@@ -320,6 +321,21 @@ export default function ReelStudio() {
               children: (
                 <Card size="small">
                   <AgentPanel slug={slug} onApplied={(next) => setReel(next as Reel)} />
+                </Card>
+              ),
+            },
+            {
+              key: 'editor',
+              label: 'Editor',
+              children: (
+                <Card size="small">
+                  <Handoff
+                    slug={slug}
+                    onReturned={async () => {
+                      const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                      if (r?.reel) setReel(r.reel as Reel);
+                    }}
+                  />
                 </Card>
               ),
             },
