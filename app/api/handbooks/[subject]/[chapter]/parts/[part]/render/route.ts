@@ -22,7 +22,7 @@ async function writeReport(
   for (const r of results) existing[String(r.slide)] = { overflowPx: r.overflowPx, fillPct: r.fillPct };
   await fs.writeFile(reportPath, JSON.stringify(existing, null, 2));
   try {
-    const { syncRenders } = await import('@/lib/graph');
+    const { syncRenders } = await import('@/lib/handbookIndex');
     syncRenders(subject, chapter, part, results);
   } catch (err) {
     console.warn('[instastudio] render index failed', err);

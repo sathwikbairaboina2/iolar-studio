@@ -24,7 +24,7 @@ export async function PUT(req: Request, ctx: Ctx) {
     await fs.mkdir(chapterDir(subject, chapter), { recursive: true });
     await fs.writeFile(referencesFile(subject, chapter), JSON.stringify({ urls: clean }, null, 2));
     try {
-      const { syncReferences } = await import('@/lib/graph');
+      const { syncReferences } = await import('@/lib/handbookIndex');
       syncReferences(subject, chapter, clean);
     } catch (err) {
       console.warn('[instastudio] reference index failed', err);

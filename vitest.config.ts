@@ -9,6 +9,7 @@ export default defineConfig({
     // The reel suite runs real ffmpeg encodes and Playwright renders alongside the fast
     // component tests; 5s is not enough headroom for those to share a machine.
     testTimeout: 20_000,
+    setupFiles: ['./tests/setup.ts'],
   },
   resolve: { alias: { '@': path.resolve(__dirname) } },
 });

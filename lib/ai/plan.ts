@@ -108,8 +108,8 @@ export async function planSlidesFromBook(subject: string, chapter: string, part:
   // Knowledge-graph context: what other posts in this account already teach.
   let covered: string[] = [];
   try {
-    const { coveredElsewhere } = await import('../graph');
-    covered = coveredElsewhere(subject, chapter);
+    const { coveredElsewhere } = await import('../knowledge/spaces/handbooks');
+    covered = await coveredElsewhere(subject, chapter);
   } catch { /* graph optional */ }
 
   const prompt = [

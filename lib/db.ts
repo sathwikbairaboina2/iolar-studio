@@ -61,23 +61,7 @@ CREATE TABLE IF NOT EXISTS renders (
   rendered_at TEXT,
   PRIMARY KEY (subject, chapter, part, slide)
 );
-CREATE TABLE IF NOT EXISTS nodes (
-  id       TEXT PRIMARY KEY,
-  type     TEXT NOT NULL,          -- subject | chapter | topic
-  label    TEXT NOT NULL,
-  subject  TEXT,
-  chapter  TEXT,
-  weight   INTEGER DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS edges (
-  src   TEXT NOT NULL,
-  dst   TEXT NOT NULL,
-  rel   TEXT NOT NULL,             -- has_chapter | covers | shares_topic
-  PRIMARY KEY (src, dst, rel)
-);
-CREATE INDEX IF NOT EXISTS idx_nodes_chapter ON nodes(subject, chapter);
-CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
-CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
+-- The knowledge graph moved to Neo4j on 2 September 2026 (lib/knowledge/).
 `;
 
 /**
@@ -90,8 +74,13 @@ function dropLegacySchema(handle: DatabaseSync) {
     .all() as { name: string }[];
   if (!tables.some((t) => t.name === 'nodes')) return;
 
+  // The graph moved to Neo4j on 2 September 2026. These two tables are dead weight, and
+  // once they are gone this function has nothing left to decide on the next open.
   const cols = handle.prepare(`PRAGMA table_info(nodes)`).all() as { name: string }[];
-  if (cols.some((c) => c.name === 'subject')) return;
+  if (cols.some((c) => c.name === 'subject')) {
+    for (const t of ['nodes', 'edges']) handle.exec(`DROP TABLE IF EXISTS ${t}`);
+    return;
+  }
 
   for (const t of ['posts', 'books', 'refs', 'renders', 'nodes', 'edges', 'chapters', 'parts', 'subjects']) {
     handle.exec(`DROP TABLE IF EXISTS ${t}`);

@@ -48,8 +48,9 @@ export async function saveBook(subject: string, chapter: string, book: Book): Pr
   await fs.mkdir(chapterDir(subject, chapter), { recursive: true });
   await fs.writeFile(bookPath(subject, chapter), JSON.stringify(valid, null, 2));
   try {
-    const { syncBook } = await import('../graph');
-    syncBook(subject, chapter, valid);
+    (await import('../handbookIndex')).indexBook(subject, chapter, valid);
+    const { syncBook } = await import('../knowledge/spaces/handbooks');
+    await syncBook(subject, chapter, valid);
   } catch (err) {
     console.warn('[instastudio] book index failed for', subject, chapter, err);
   }

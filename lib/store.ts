@@ -49,8 +49,9 @@ export async function createSubject(slug: string, init: Partial<Subject> = {}): 
   await fs.mkdir(subjectDir(slug), { recursive: true });
   await fs.writeFile(subjectFile(slug), JSON.stringify(subject, null, 2));
   try {
-    const { syncSubject } = await import('./graph');
-    syncSubject(subject);
+    (await import('./handbookIndex')).indexSubject(subject);
+    const { syncSubject } = await import('./knowledge/spaces/handbooks');
+    await syncSubject(subject);
   } catch (err) {
     console.warn('[instastudio] subject index failed', err);
   }
@@ -208,8 +209,9 @@ export async function partStatus(
 /** Mirrors content into SQLite + the knowledge graph. Never fails a save. */
 async function indexChapter(subject: string, chapter: string, post: Post) {
   try {
-    const { syncChapter } = await import('./graph');
-    syncChapter(subject, chapter, post, 'draft');
+    (await import('./handbookIndex')).indexChapter(subject, chapter, post, 'draft');
+    const { syncChapter } = await import('./knowledge/spaces/handbooks');
+    await syncChapter(subject, chapter, post, 'draft');
   } catch (err) {
     console.warn('[instastudio] index failed for', subject, chapter, err);
   }

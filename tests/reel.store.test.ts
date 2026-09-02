@@ -76,18 +76,20 @@ describe('reel store', () => {
   });
 });
 
-describe('the knowledge graph stays handbooks-only', () => {
-  it('writes nothing to the index when a reel is saved', async () => {
+describe('saving a reel touches no store', () => {
+  it('writes nothing to the graph when a reel is saved; research writes through lib/knowledge, saveReel never', async () => {
     const { createReel, loadReel, saveReel } = await import('@/lib/reel/store');
-    const { graph } = await import('@/lib/graph');
+    const { FakeGraph, FakeVectors, FakeEmbed } = await import('@/lib/knowledge/fake');
+    const { useStoresForTests } = await import('@/lib/knowledge/stores');
+    const fake = new FakeGraph();
+    useStoresForTests({ graph: fake, vectors: new FakeVectors(), embed: new FakeEmbed() });
     await createReel('grok-bot', { title: 'xAI drops Grok Bot' });
     const reel = await loadReel('grok-bot');
     await saveReel('grok-bot', {
       ...reel,
       beats: [{ id: 'b1', role: 'hook', text: 'Grok Bot ships today', shot: { kind: 'title', brief: '', hero: false , alsoAssetIds: [], sourceLineId: null } }],
     });
-    const g = graph();
-    expect(g.nodes.filter((n) => n.id.startsWith('reel:'))).toEqual([]);
-    expect(g.edges.filter((e) => e.src.startsWith('reel:'))).toEqual([]);
+    expect(fake.nodes.size).toBe(0);
+    expect(fake.edges.size).toBe(0);
   });
 });

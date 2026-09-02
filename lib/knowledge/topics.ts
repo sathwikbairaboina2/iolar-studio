@@ -13,6 +13,7 @@ export function topicKey(text: string): string {
 
 /** Pulls the salient topic phrase out of a syllabus point ("Slicing: lst[1:4] ..." -> "slicing"). */
 export function topicFromPoint(point: string): string {
-  const head = point.split(/[:—–\-(]/)[0];
+  // "1. Slicing basics" and "Slicing basics" are one topic; the list number is layout, not meaning.
+  const head = point.replace(/^\s*\d+[.)]\s*/, '').split(/[:—–\-(]/)[0];
   return topicKey(head).split(' ').filter(Boolean).slice(0, 4).join(' ');
 }
