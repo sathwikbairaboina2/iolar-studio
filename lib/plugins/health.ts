@@ -1,4 +1,5 @@
 import { PLUGINS, type PluginName } from './registry';
+import { logPlugin } from './log';
 
 /**
  * What each service says about itself.
@@ -64,6 +65,31 @@ function lipsyncChecks(body: unknown): Check[] {
   return out;
 }
 
+/**
+ * The research service reports its model and each search channel separately. A hunt needs
+ * the model and the search engine; a missing yt-dlp only loses one channel, so readiness is
+ * those two and the rest are shown for what they are.
+ */
+function researchChecks(body: unknown): { checks: Check[]; ready: boolean } {
+  const ollama = rec(rec(body).ollama);
+  const model = String(ollama.model ?? 'ollama');
+  const modelOk = ollama.ok === true;
+  const checks: Check[] = [
+    modelOk
+      ? { label: model, ok: true }
+      : { label: model, ok: false, detail: String(ollama.recovery ?? 'unreachable').slice(0, 80) },
+  ];
+  const channels = Array.isArray(rec(body).channels) ? (rec(body).channels as Rec[]) : [];
+  let searchOk = false;
+  for (const c of channels) {
+    const label = String(c.channel ?? 'channel');
+    const ok = c.ok === true;
+    if (label === 'searxng') searchOk = ok;
+    checks.push(c.detail ? { label, ok, detail: String(c.detail).slice(0, 80) } : { label, ok });
+  }
+  return { checks, ready: modelOk && searchOk };
+}
+
 async function probe(p: (typeof PLUGINS)[number]): Promise<PluginHealth> {
   const base: PluginHealth = {
     name: p.name,
@@ -106,15 +132,74 @@ async function probe(p: (typeof PLUGINS)[number]): Promise<PluginHealth> {
         checks: [{ label: `${models.length} model${models.length === 1 ? '' : 's'}`, ok: models.length > 0 }],
       };
     }
+    if (p.name === 'research') {
+      return { ...base, up: true, ...researchChecks(body) };
+    }
+    if (p.name === 'jobsreel') {
+      const b = rec(body);
+      const weeks = Number(b.weeks ?? 0);
+      return {
+        ...base,
+        up: true,
+        ready: b.ok === true,
+        checks: [{ label: `${weeks} week${weeks === 1 ? '' : 's'} on disk`, ok: b.ok === true }],
+      };
+    }
     return { ...base, up: true, ready: true, checks: [{ label: 'idle', ok: true }] };
   } catch (err) {
     return { ...base, error: String(err instanceof Error ? err.message : err).slice(0, 120) };
   }
 }
 
+// The last settled state of each service, so a change is a line in the log and a repeat
+// is not. A state has to hold for two polls before it counts: the research service's own
+// health check takes seconds and now and then crosses the budget, and one timed-out poll
+// announced as an outage, then retracted three seconds later, is noise nobody can act on.
+type Seen = { up: boolean; ready: boolean };
+const g = globalThis as unknown as { __pluginLast?: Map<PluginName, { settled: Seen; pending: Seen | null }> };
+const last = (g.__pluginLast ??= new Map());
+
+const same = (a: Seen, b: Seen) => a.up === b.up && a.ready === b.ready;
+
+function noteFlips(now: PluginHealth[]): void {
+  for (const p of now) {
+    const seen: Seen = { up: p.up, ready: p.ready };
+    const rec = last.get(p.name);
+    if (!rec) {
+      last.set(p.name, { settled: seen, pending: null });
+      continue;
+    }
+    if (same(rec.settled, seen)) {
+      rec.pending = null;
+      continue;
+    }
+    if (!rec.pending || !same(rec.pending, seen)) {
+      rec.pending = seen;
+      continue;
+    }
+    const prev = rec.settled;
+    rec.settled = seen;
+    rec.pending = null;
+    if (prev.up && !p.up) {
+      logPlugin(p.name, `${p.label} went down on :${p.port}${p.error ? ` (${p.error})` : ''}`, 'error');
+    } else if (!prev.up && p.up) {
+      logPlugin(p.name, `${p.label} is up on :${p.port}${p.ready ? '' : ', not ready yet'}`, 'success');
+    } else if (p.up && prev.ready !== p.ready) {
+      const failing = p.checks.filter((c) => !c.ok).map((c) => c.label).join(', ');
+      logPlugin(
+        p.name,
+        p.ready ? `${p.label} is ready` : `${p.label} is not ready: ${failing || 'a check failed'}`,
+        p.ready ? 'success' : 'warning'
+      );
+    }
+  }
+}
+
 /** Every service, asked at once — a slow one must not hold up the rest of the page. */
 export async function readHealth(): Promise<PluginHealth[]> {
-  return Promise.all(PLUGINS.map(probe));
+  const now = await Promise.all(PLUGINS.map(probe));
+  noteFlips(now);
+  return now;
 }
 
 /**

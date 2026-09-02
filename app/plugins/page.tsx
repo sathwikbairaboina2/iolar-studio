@@ -5,6 +5,7 @@ import { Badge, Button, Card, Empty, Segmented, Space, Table, Tag, Tooltip, Typo
 import { CaretRightOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
 import { reconcile, type PluginHealth } from '@/lib/plugins/health';
 import type { JobBoard, JobRow } from '@/lib/plugins/jobs';
+import type { LogEntry } from '@/lib/plugins/log';
 
 /**
  * The control room.
@@ -24,10 +25,18 @@ const STATUS_COLOUR: Record<JobRow['status'], string> = {
   'awaiting-manual': 'gold',
 };
 
+const ACTIVITY_COLOUR: Record<LogEntry['level'], string> = {
+  info: 'default',
+  success: 'green',
+  warning: 'gold',
+  error: 'red',
+};
+
 export default function PluginsPage() {
   const router = useRouter();
   const [plugins, setPlugins] = useState<PluginHealth[] | null>(null);
   const [board, setBoard] = useState<JobBoard | null>(null);
+  const [activity, setActivity] = useState<LogEntry[]>([]);
   const [starting, setStarting] = useState<string | null>(null);
   // Most rows on this machine are shots that landed weeks ago. The board is for what is
   // moving or stuck, so that is what it opens on.
@@ -35,12 +44,14 @@ export default function PluginsPage() {
   const [retrying, setRetrying] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [h, j] = await Promise.all([
+    const [h, j, l] = await Promise.all([
       fetch('/api/plugins').then((r) => r.json()).catch(() => null),
       fetch('/api/plugins/jobs').then((r) => r.json()).catch(() => null),
+      fetch('/api/plugins/log').then((r) => r.json()).catch(() => null),
     ]);
     if (Array.isArray(h?.plugins)) setPlugins(h.plugins as PluginHealth[]);
     if (Array.isArray(j?.rows)) setBoard(j as JobBoard);
+    if (Array.isArray(l?.entries)) setActivity(l.entries as LogEntry[]);
   }, []);
 
   useEffect(() => {
@@ -280,6 +291,26 @@ export default function PluginsPage() {
                   </div>
                 ))}
               </Space>
+            )}
+          </Card>
+
+          <Card size="small" title="What the plugins are doing" data-testid="activity">
+            {activity.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Nothing yet. Starts, GPU hand-offs and outages land here." />
+            ) : (
+              <div style={{ display: 'grid', gap: 4, maxHeight: 320, overflowY: 'auto', fontSize: 12 }}>
+                {[...activity].reverse().map((e) => (
+                  <div key={e.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                    <Typography.Text type="secondary" style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                      {new Date(e.at).toLocaleTimeString()}
+                    </Typography.Text>
+                    <Tag color={ACTIVITY_COLOUR[e.level]} style={{ marginInlineEnd: 0 }}>
+                      {e.plugin}
+                    </Tag>
+                    <Typography.Text style={{ fontSize: 12 }}>{e.text}</Typography.Text>
+                  </div>
+                ))}
+              </div>
             )}
           </Card>
         </Space>

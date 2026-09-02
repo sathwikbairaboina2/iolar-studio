@@ -23,7 +23,7 @@ function mockFetch(routes: Record<string, { status?: number; body?: unknown; fai
 describe('the plugin registry', () => {
   it('knows every service the studio renders through', async () => {
     const { PLUGINS } = await import('@/lib/plugins/registry');
-    expect(PLUGINS.map((p) => p.name).sort()).toEqual(['comfyui', 'lipsync', 'ollama', 'webpage']);
+    expect(PLUGINS.map((p) => p.name).sort()).toEqual(['comfyui', 'jobsreel', 'lipsync', 'ollama', 'research', 'webpage']);
     for (const p of PLUGINS) {
       expect(p.port).toBeGreaterThan(0);
       expect(p.healthUrl).toContain(String(p.port));
@@ -43,10 +43,22 @@ describe('the plugin registry', () => {
     expect(PLUGINS.find((p) => p.name === 'lipsync')!.start!.hint).toContain('serve.ps1');
   });
 
+  it('starts the research service the one way it runs on this machine', async () => {
+    const { PLUGINS } = await import('@/lib/plugins/registry');
+    const research = PLUGINS.find((p) => p.name === 'research')!;
+    expect(research.port).toBe(25100);
+    expect(research.healthUrl).toBe('http://127.0.0.1:25100/api/health');
+    // Turbopack is the build that works there; --webpack dies on node:crypto in instrumentation.
+    expect(research.start!.hint).toContain('serve.ps1');
+    expect(research.start!.args).toContain('scripts/serve.ps1');
+    expect(research.start!.cwd).toMatch(/research-plugin$/);
+    expect(research.openUrl).toBe('http://127.0.0.1:25100');
+  });
+
   it('only offers to start the services it can start', async () => {
     const { PLUGINS } = await import('@/lib/plugins/registry');
     const startable = PLUGINS.filter((p) => p.start);
-    expect(startable.map((p) => p.name).sort()).toEqual(['lipsync', 'webpage']);
+    expect(startable.map((p) => p.name).sort()).toEqual(['jobsreel', 'lipsync', 'research', 'webpage']);
     // ComfyUI Desktop is an app the user launches; pretending otherwise offers a button that lies.
     expect(PLUGINS.find((p) => p.name === 'comfyui')!.start).toBeUndefined();
   });
@@ -130,6 +142,75 @@ describe('reading health', () => {
 
     expect(all.find((p) => p.name === 'comfyui')).toMatchObject({ up: true, ready: true, version: '0.34.2' });
     expect(all.find((p) => p.name === 'ollama')!.checks).toEqual([{ label: '1 model', ok: true }]);
+  });
+
+  it('reads the research service channel by channel, with its model first', async () => {
+    mockFetch({
+      ':25100': {
+        body: {
+          ollama: { ok: true, baseUrl: 'http://127.0.0.1:25103', model: 'qwen3.8:27b', recovery: 'docker compose up -d research-ollama' },
+          channels: [
+            { channel: 'searxng', ok: true, detail: 'searxng json api on 25180' },
+            { channel: 'web', ok: true, detail: 'jina reader' },
+            { channel: 'youtube', ok: false, detail: 'yt-dlp not on PATH' },
+          ],
+        },
+      },
+      ':8300': { body: { ok: true, checks: {} } },
+      ':8080': { body: { ok: true } },
+      ':8189': { body: {} },
+      ':11436': { body: {} },
+    });
+    const { readHealth } = await import('@/lib/plugins/health');
+    const research = (await readHealth()).find((p) => p.name === 'research')!;
+
+    expect(research.up).toBe(true);
+    expect(research.checks[0]).toEqual({ label: 'qwen3.8:27b', ok: true });
+    expect(research.checks).toContainEqual({ label: 'searxng', ok: true, detail: 'searxng json api on 25180' });
+    expect(research.checks).toContainEqual({ label: 'youtube', ok: false, detail: 'yt-dlp not on PATH' });
+    // A hunt needs the model and the search engine; a missing yt-dlp only loses one channel.
+    expect(research.ready).toBe(true);
+  });
+
+  it('is not ready to hunt when its ollama is down, and says how to bring it back', async () => {
+    mockFetch({
+      ':25100': {
+        body: {
+          ollama: { ok: false, model: 'qwen3.8:27b', recovery: 'docker compose -f docker/compose.yml up -d research-ollama' },
+          channels: [{ channel: 'searxng', ok: false, detail: 'connect ECONNREFUSED 127.0.0.1:25180' }],
+        },
+      },
+      ':8300': { body: { ok: true, checks: {} } },
+      ':8080': { body: { ok: true } },
+      ':8189': { body: {} },
+      ':11436': { body: {} },
+    });
+    const { readHealth } = await import('@/lib/plugins/health');
+    const research = (await readHealth()).find((p) => p.name === 'research')!;
+
+    expect(research).toMatchObject({ up: true, ready: false });
+    expect(research.checks[0]).toEqual({
+      label: 'qwen3.8:27b',
+      ok: false,
+      detail: 'docker compose -f docker/compose.yml up -d research-ollama',
+    });
+  });
+
+  it('reads the jobs-reel board as weeks on disk', async () => {
+    mockFetch({
+      ':26100': { body: { ok: true, service: 'jobs-reel-plugin', weeks: 11 } },
+      ':25100': { body: { ollama: { ok: true }, channels: [] } },
+      ':8300': { body: { ok: true, checks: {} } },
+      ':8080': { body: { ok: true } },
+      ':8189': { body: {} },
+      ':11436': { body: {} },
+    });
+    const { readHealth } = await import('@/lib/plugins/health');
+    const jobs = (await readHealth()).find((p) => p.name === 'jobsreel')!;
+    expect(jobs).toMatchObject({ up: true, ready: true, port: 26100 });
+    expect(jobs.checks).toEqual([{ label: '11 weeks on disk', ok: true }]);
+    expect(jobs.openUrl).toBe('http://127.0.0.1:26100');
+    expect(jobs.startHint).toBe('npm run dev');
   });
 
   it('asks every service at once rather than one after another', async () => {

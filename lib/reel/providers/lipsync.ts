@@ -24,6 +24,12 @@ export type LipsyncOpts = {
   baseUrl?: string;
   preset?: 'square' | 'portrait' | 'landscape';
   fetchImpl?: typeof fetch;
+  /**
+   * Runs before a job is posted. The registered provider hands the GPU to ComfyUI here —
+   * unloading whatever the research ollama holds — because the two do not fit on one card.
+   * Its failures are its own; a render is never refused for it.
+   */
+  yieldGpu?: () => Promise<string[]>;
 };
 
 type Job = { id: string; status: string; error?: string | null };
@@ -52,6 +58,8 @@ export function createLipsyncProvider(opts: LipsyncOpts = {}): VideoProvider {
       if (!req.imagePath) {
         throw new Error('a talking-head shot needs a presenter image — set one in settings');
       }
+
+      if (opts.yieldGpu) await opts.yieldGpu().catch(() => []);
 
       const r = await http(`${base}/jobs`, {
         method: 'POST',

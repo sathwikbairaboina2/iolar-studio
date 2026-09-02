@@ -1,6 +1,8 @@
 import { registerVideoProvider } from '../videoProvider';
 import { createWebpageProvider } from './webpage';
 import { createLipsyncProvider } from './lipsync';
+import { yieldGpuToComfy } from '@/lib/plugins/gpu';
+import { getSettings } from '@/lib/settings';
 
 /**
  * Wires the user's renderers in.
@@ -17,7 +19,11 @@ let wired = false;
 export function wireProviders(): void {
   if (wired) return;
   registerVideoProvider('webpage', createWebpageProvider());
-  registerVideoProvider('lipsync', createLipsyncProvider());
+  // The lipsync queue renders on ComfyUI, on the card the research ollama also wants.
+  registerVideoProvider(
+    'lipsync',
+    createLipsyncProvider({ yieldGpu: () => yieldGpuToComfy({ ollamaUrl: getSettings().researchOllamaUrl }) })
+  );
   wired = true;
 }
 

@@ -7,7 +7,7 @@
  * lets a page say which one is missing, and start the two that can be started from here.
  */
 
-export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama';
+export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama' | 'research' | 'jobsreel';
 
 export type StartRecipe = {
   command: string;
@@ -32,6 +32,8 @@ const lipsyncBase = (process.env.LIPSYNC_URL ?? 'http://127.0.0.1:8300').replace
 const webpageBase = (process.env.WEBPAGE_MP4_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, '');
 const comfyBase = (process.env.COMFY_URL ?? 'http://127.0.0.1:8189').replace(/\/$/, '');
 const ollamaBase = (process.env.OLLAMA_URL ?? 'http://127.0.0.1:11436').replace(/\/$/, '');
+const researchBase = (process.env.RESEARCH_URL ?? 'http://127.0.0.1:25100').replace(/\/$/, '');
+const jobsReelBase = (process.env.JOBS_REEL_URL ?? 'http://127.0.0.1:26100').replace(/\/$/, '');
 
 const port = (url: string) => Number(new URL(url).port || 80);
 
@@ -81,6 +83,36 @@ export const PLUGINS: Plugin[] = [
     port: port(ollamaBase),
     healthUrl: `${ollamaBase}/api/tags`,
     what: 'The local model behind the edit agent. Nothing renders without it; nothing stops either.',
+  },
+  {
+    name: 'research',
+    label: 'research',
+    port: port(researchBase),
+    healthUrl: `${researchBase}/api/health`,
+    what: 'The local researcher behind the Research tab. Hunts sources through searxng, jina, yt-dlp and gh on qwen.',
+    openUrl: researchBase,
+    // The script brings up its docker side (research-ollama, research-searxng) first, then
+    // the service. Turbopack only: --webpack dies on node:crypto in its instrumentation.
+    start: {
+      command: 'powershell.exe',
+      args: ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', 'scripts/serve.ps1'],
+      cwd: `${PLUGIN_ROOT}/research-plugin`,
+      hint: String.raw`.\scripts\serve.ps1`,
+    },
+  },
+  {
+    name: 'jobsreel',
+    label: 'jobs-reel',
+    port: port(jobsReelBase),
+    healthUrl: `${jobsReelBase}/healthz`,
+    what: 'The weekly jobs reel. Turns the sheet of open roles into one sixty-second reel; the Jobs tab reads its board.',
+    openUrl: jobsReelBase,
+    start: {
+      command: 'npm',
+      args: ['run', 'dev'],
+      cwd: `${PLUGIN_ROOT}/plugins/jobs-reel-plugin`,
+      hint: 'npm run dev',
+    },
   },
 ];
 

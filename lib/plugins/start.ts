@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import { pluginByName } from './registry';
+import { logPlugin } from './log';
 
 /**
  * Starts one service, by name only.
@@ -27,6 +28,8 @@ export async function startPlugin(name: string): Promise<{ started: true; hint: 
     windowsHide: true,
   });
   child.unref();
+  logPlugin(plugin.name, `starting ${plugin.label}: ${plugin.start.hint} in ${plugin.start.cwd}`, 'info');
+  child.on('error', (err) => logPlugin(plugin.name, `${plugin.label} would not start: ${err.message}`, 'error'));
 
   return { started: true, hint: plugin.start.hint };
 }
