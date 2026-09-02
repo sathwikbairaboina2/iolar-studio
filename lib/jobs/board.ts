@@ -16,6 +16,10 @@ export type WeekRow = {
   counted: number;
   rejected: number;
   style: string | null;
+  /** The bank track under the voice, style-relative; null when the style has no bank. */
+  music: string | null;
+  /** True when the plugin cut the slides to the voice. */
+  fitted: boolean;
   hasExport: boolean;
 };
 
@@ -55,6 +59,8 @@ export async function listWeeks(opts: BoardOpts = {}): Promise<WeekRow[]> {
       counted: Number(r.counted ?? 0),
       rejected: Number(r.rejected ?? 0),
       style: r.style ?? null,
+      music: r.music ?? null,
+      fitted: r.fitted === true,
       hasExport: r.hasExport === true,
     };
   });

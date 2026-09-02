@@ -30,8 +30,8 @@ describe('listing weeks', () => {
     const rows = await listWeeks({ baseUrl: 'http://127.0.0.1:26100', fetchImpl: f });
     expect(calls[0].url).toBe('http://127.0.0.1:26100/api/weeks');
     expect(rows).toEqual([
-      { week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', hasExport: true },
-      { week: '2026-W45', stage: 'planned', counted: 120, rejected: 3, style: null, hasExport: false },
+      { week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', music: null, fitted: false, hasExport: true },
+      { week: '2026-W45', stage: 'planned', counted: 120, rejected: 3, style: null, music: null, fitted: false, hasExport: false },
     ]);
   });
 

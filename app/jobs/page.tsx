@@ -215,6 +215,20 @@ export default function JobsPage() {
           { title: 'Rejected', dataIndex: 'rejected', width: 100, render: (n: number) => (n ? <Tag color="red">{n}</Tag> : '0') },
           { title: 'Style', dataIndex: 'style', width: 140, render: (s: string | null) => s ?? '—' },
           {
+            title: 'Audio',
+            dataIndex: 'music',
+            width: 200,
+            render: (m: string | null, row) =>
+              row.stage === 'empty' || row.stage === 'imported' || row.stage === 'planned' ? (
+                <Typography.Text type="secondary">not voiced</Typography.Text>
+              ) : (
+                <Space size={4}>
+                  <Tag color={row.fitted ? 'cyan' : 'default'}>{row.fitted ? 'cut to voice' : 'spine'}</Tag>
+                  {m ? <Tag color="purple">{m}</Tag> : <Typography.Text type="secondary">no music</Typography.Text>}
+                </Space>
+              ),
+          },
+          {
             title: 'Reel',
             dataIndex: 'hasExport',
             width: 110,
