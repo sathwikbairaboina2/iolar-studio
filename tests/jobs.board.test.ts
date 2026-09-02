@@ -65,6 +65,19 @@ describe('re-running a stage', () => {
   });
 });
 
+describe('reading one week', () => {
+  it('asks the board for the full week view', async () => {
+    const { readWeek } = await import('@/lib/jobs/board');
+    const { f, calls } = fetchWith(() => ({
+      body: { week: '2026-W46', stage: 'exported', jobs: null, summary: null, reel: null, hasExport: true, hasVoice: true },
+    }));
+    const v = await readWeek('2026-W46', { baseUrl: 'http://127.0.0.1:26100', fetchImpl: f });
+    expect(calls[0].url).toBe('http://127.0.0.1:26100/api/weeks/2026-W46');
+    expect(v.stage).toBe('exported');
+    await expect(readWeek('../x', { fetchImpl: f })).rejects.toThrow(/not a week/);
+  });
+});
+
 describe('links into the board', () => {
   it('point at the board, the reel and the preview for a week', () => {
     expect(boardLinks('2026-W46', 'http://127.0.0.1:26100')).toEqual({

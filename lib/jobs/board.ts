@@ -86,6 +86,49 @@ export async function runStage(
   return { ok: res.ok && body.ok !== false, message: body.message };
 }
 
+export type BoardJob = {
+  id: string;
+  role: string;
+  company: string;
+  function: string;
+  location: string;
+  workMode: string;
+  experienceMin: number;
+  experienceMax: number;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  currency: string;
+  link: string;
+};
+
+export type WeekView = {
+  week: string;
+  stage: WeekStage;
+  hasExport: boolean;
+  hasVoice: boolean;
+  jobs: { jobs: BoardJob[]; rejected: unknown[] } | null;
+  summary: Record<string, unknown> | null;
+  reel: {
+    style?: string | null;
+    world?: string | null;
+    highlights?: { highlight: string; scene: string; score: number }[];
+  } | null;
+};
+
+/** The full week view, the one the board's own week page renders from. */
+export async function readWeek(week: string, opts: BoardOpts = {}): Promise<WeekView> {
+  if (!SAFE_WEEK.test(week)) throw new Error(`"${week}" is not a week like 2026-W36`);
+  const { base, http } = client(opts);
+  let res: Response;
+  try {
+    res = await http(`${base}/api/weeks/${week}`, { cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch (err) {
+    throw new BoardDown(`jobs-reel board is not answering on ${base}: ${String(err instanceof Error ? err.message : err)}`);
+  }
+  if (!res.ok) throw new BoardDown(`jobs-reel board answered ${res.status}`);
+  return (await res.json()) as WeekView;
+}
+
 /** Where the board shows this week, and where its export lives. */
 export const boardLinks = (week: string, base = jobsReelBase()) => ({
   board: `${base}/week/${week}`,
