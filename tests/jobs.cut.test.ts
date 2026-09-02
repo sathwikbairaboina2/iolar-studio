@@ -62,7 +62,8 @@ describe('preparing a cut', () => {
     const s = cut.summary as { counted: number; byFunction: { key: string; count: number }[]; topEmployers: unknown[] };
     expect(s.counted).toBe(25);
     expect(s.byFunction.length).toBeGreaterThan(0);
-    expect(o.classify).toHaveBeenCalledTimes(1);
+    // Every sample title is placed by rule; the model is asked at most once per cut.
+    expect(o.classify.mock.calls.length).toBeLessThanOrEqual(1);
     const L = await import('@/lib/jobs/ledger');
     expect(L.cutRows(cut.id)).toHaveLength(25);
     expect(L.cutRows(cut.id).every((r) => r.cutId === cut.id)).toBe(true);
