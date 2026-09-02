@@ -23,7 +23,7 @@ function mockFetch(routes: Record<string, { status?: number; body?: unknown; fai
 describe('the plugin registry', () => {
   it('knows every service the studio renders through', async () => {
     const { PLUGINS } = await import('@/lib/plugins/registry');
-    expect(PLUGINS.map((p) => p.name).sort()).toEqual(['comfyui', 'jobsreel', 'lipsync', 'ollama', 'research', 'webpage']);
+    expect(PLUGINS.map((p) => p.name).sort()).toEqual(['comfyui', 'jobsreel', 'lipsync', 'neo4j', 'ollama', 'qdrant', 'research', 'webpage']);
     for (const p of PLUGINS) {
       expect(p.port).toBeGreaterThan(0);
       expect(p.healthUrl).toContain(String(p.port));
@@ -58,7 +58,7 @@ describe('the plugin registry', () => {
   it('only offers to start the services it can start', async () => {
     const { PLUGINS } = await import('@/lib/plugins/registry');
     const startable = PLUGINS.filter((p) => p.start);
-    expect(startable.map((p) => p.name).sort()).toEqual(['jobsreel', 'lipsync', 'research', 'webpage']);
+    expect(startable.map((p) => p.name).sort()).toEqual(['jobsreel', 'lipsync', 'neo4j', 'qdrant', 'research', 'webpage']);
     // ComfyUI Desktop is an app the user launches; pretending otherwise offers a button that lies.
     expect(PLUGINS.find((p) => p.name === 'comfyui')!.start).toBeUndefined();
   });
@@ -211,6 +211,25 @@ describe('reading health', () => {
     expect(jobs.checks).toEqual([{ label: '11 weeks on disk', ok: true }]);
     expect(jobs.openUrl).toBe('http://127.0.0.1:26100');
     expect(jobs.startHint).toBe('npm run dev');
+  });
+
+  it('watches the two knowledge stores and can start either with compose', async () => {
+    mockFetch({
+      ':3125': { body: {} },
+      ':3126': { status: 200, body: {} },
+      ':26100': { body: { ok: true, weeks: 1 } },
+      ':25100': { body: { ollama: { ok: true }, channels: [] } },
+      ':8300': { body: { ok: true, checks: {} } },
+      ':8080': { body: { ok: true } },
+      ':8189': { body: {} },
+      ':11436': { body: {} },
+    });
+    const { readHealth } = await import('@/lib/plugins/health');
+    const all = await readHealth();
+    const neo = all.find((p) => p.name === 'neo4j')!;
+    const q = all.find((p) => p.name === 'qdrant')!;
+    expect(neo).toMatchObject({ up: true, ready: true, port: 3125, startHint: 'docker compose -f docker/compose.yml up -d iolar-neo4j' });
+    expect(q).toMatchObject({ up: true, ready: true, port: 3126, openUrl: 'http://127.0.0.1:3126/dashboard' });
   });
 
   it('asks every service at once rather than one after another', async () => {

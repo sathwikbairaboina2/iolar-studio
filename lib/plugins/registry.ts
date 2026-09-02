@@ -7,7 +7,7 @@
  * lets a page say which one is missing, and start the two that can be started from here.
  */
 
-export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama' | 'research' | 'jobsreel';
+export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama' | 'research' | 'jobsreel' | 'neo4j' | 'qdrant';
 
 export type StartRecipe = {
   command: string;
@@ -112,6 +112,34 @@ export const PLUGINS: Plugin[] = [
       args: ['run', 'dev'],
       cwd: `${PLUGIN_ROOT}/plugins/jobs-reel-plugin`,
       hint: 'npm run dev',
+    },
+  },
+  {
+    name: 'neo4j',
+    label: 'Neo4j',
+    port: 3125,
+    healthUrl: 'http://127.0.0.1:3125/',
+    what: 'The knowledge graph: handbooks, reels and jobs, one space each. Rebuildable from data/.',
+    openUrl: 'http://127.0.0.1:3125/',
+    start: {
+      command: 'docker',
+      args: ['compose', '-f', 'docker/compose.yml', 'up', '-d', 'iolar-neo4j'],
+      cwd: process.cwd(),
+      hint: 'docker compose -f docker/compose.yml up -d iolar-neo4j',
+    },
+  },
+  {
+    name: 'qdrant',
+    label: 'Qdrant',
+    port: 3126,
+    healthUrl: 'http://127.0.0.1:3126/healthz',
+    what: 'Passages and verified claims, the research agents’ memory.',
+    openUrl: 'http://127.0.0.1:3126/dashboard',
+    start: {
+      command: 'docker',
+      args: ['compose', '-f', 'docker/compose.yml', 'up', '-d', 'iolar-qdrant'],
+      cwd: process.cwd(),
+      hint: 'docker compose -f docker/compose.yml up -d iolar-qdrant',
     },
   },
 ];

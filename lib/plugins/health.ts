@@ -105,6 +105,12 @@ async function probe(p: (typeof PLUGINS)[number]): Promise<PluginHealth> {
   };
 
   try {
+    // Qdrant's /healthz is plain text, not JSON.
+    if (p.name === 'qdrant') {
+      const res = await fetch(p.healthUrl, { cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT_MS) });
+      if (!res.ok) throw new Error(`answered ${res.status}`);
+      return { ...base, up: true, ready: true, checks: [{ label: 'answering', ok: true }] };
+    }
     const body = await ask(p.healthUrl);
 
     if (p.name === 'lipsync') {
@@ -134,6 +140,9 @@ async function probe(p: (typeof PLUGINS)[number]): Promise<PluginHealth> {
     }
     if (p.name === 'research') {
       return { ...base, up: true, ...researchChecks(body) };
+    }
+    if (p.name === 'neo4j') {
+      return { ...base, up: true, ready: true, checks: [{ label: 'answering', ok: true }] };
     }
     if (p.name === 'jobsreel') {
       const b = rec(body);
