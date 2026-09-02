@@ -34,6 +34,7 @@ describe('AppShell', () => {
     expect(screen.getByText('Knowledge graph')).toBeTruthy();
     expect(screen.getByText('Reels').closest('li')?.className).not.toContain('ant-menu-item-disabled');
     expect(screen.getByText('Jobs').closest('li')?.className).not.toContain('ant-menu-item-disabled');
+    expect(screen.getByText('How it works')).toBeTruthy();
 
     expect(document.documentElement.dataset.theme).toBe('light');
     fireEvent.click(screen.getByLabelText('toggle theme'));
