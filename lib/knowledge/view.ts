@@ -34,7 +34,7 @@ export async function spaceGraph(space: 'handbooks' | 'reels' | 'jobs', limit = 
      WITH n, size([(n)--(x) WHERE x.space = $space OR x.space = 'shared' | 1]) AS degree
      WHERE n.space = $space OR degree > 0
      RETURN ${idOf('n')} AS id, ${labelOf('n')} AS label, labels(n)[0] AS kind, n.space AS space, degree
-     ORDER BY degree DESC LIMIT $limit`,
+     ORDER BY degree DESC LIMIT toInteger($limit)`,
     { space, limit }
   );
   return withEdges(nodes);
@@ -47,7 +47,7 @@ export async function crossLinks(limit = 400) {
      WITH n, collect(DISTINCT m.space) AS spaces, count(m) AS degree
      WHERE size(spaces) > 1
      RETURN ${idOf('n')} AS id, ${labelOf('n')} AS label, labels(n)[0] AS kind, n.space AS space, degree
-     ORDER BY degree DESC LIMIT $limit`,
+     ORDER BY degree DESC LIMIT toInteger($limit)`,
     { limit }
   );
   return withEdges(nodes);
