@@ -55,6 +55,20 @@ describe('salary', () => {
   });
 });
 
+describe('location', () => {
+  it('names a city once whatever the source called it', async () => {
+    const { mapLocation } = await import('@/lib/jobs/map');
+    const at = (location: string, remote = false) => mapLocation({ location, locations: [location], remote });
+    expect(at('BENGALURU, Karnataka, India')).toBe('Bengaluru');
+    expect(at('Bangalore, India')).toBe('Bengaluru');
+    expect(at('Gurgaon, Haryana')).toBe('Gurugram');
+    expect(at('Noida, Uttar Pradesh, India')).toBe('Noida');
+    expect(at('Bengaluru (Hybrid), KA')).toBe('Bengaluru');
+    expect(at('Remote', true)).toBe('Remote');
+    expect(at('', true)).toBe('Remote');
+  });
+});
+
 describe('a row', () => {
   it('maps a real listing into the reel schema with a stable id', async () => {
     const { mapRow } = await import('@/lib/jobs/map');

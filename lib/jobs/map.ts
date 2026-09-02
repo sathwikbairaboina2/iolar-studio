@@ -106,10 +106,40 @@ export function mapSalaryInr(salary: string | null): { min: number | null; max: 
 
 // ---- location ----------------------------------------------------------------------
 
+// One name per city, or the reel's "top cities" tile counts Bengaluru twice.
+const CITY_ALIASES: Record<string, string> = {
+  bangalore: 'Bengaluru',
+  bengaluru: 'Bengaluru',
+  bengalore: 'Bengaluru',
+  gurgaon: 'Gurugram',
+  gurugram: 'Gurugram',
+  bombay: 'Mumbai',
+  mumbai: 'Mumbai',
+  'new delhi': 'Delhi',
+  delhi: 'Delhi',
+  'delhi ncr': 'Delhi',
+  ncr: 'Delhi',
+  calcutta: 'Kolkata',
+  kolkata: 'Kolkata',
+  madras: 'Chennai',
+  chennai: 'Chennai',
+  poona: 'Pune',
+  pune: 'Pune',
+  hyderabad: 'Hyderabad',
+  noida: 'Noida',
+};
+
 export function mapLocation(job: Pick<ResearchJob, 'location' | 'locations' | 'remote'>): string {
   const first = (job.locations?.[0] ?? job.location ?? '').split('/')[0].trim();
-  const city = first.split(',')[0].trim().replace(/\s+/g, ' ');
-  if (city && !/^remote$/i.test(city)) return city.replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\bBENGALURU\b/i, 'Bengaluru');
+  const city = first
+    .split(',')[0]
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*\(.*\)$/, '');
+  if (city && !/^remote$/i.test(city)) {
+    const alias = CITY_ALIASES[city.toLowerCase()];
+    return alias ?? city.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  }
   return job.remote ? 'Remote' : city || 'India';
 }
 
