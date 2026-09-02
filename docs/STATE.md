@@ -126,3 +126,8 @@ and `scriptBoard.ts` have to be applied twice.
 ## Knowledge layer (2 Sep 2026, branch `feat/knowledge-layer`)
 
 Neo4j and Qdrant in `docker/compose.yml`, volumes on `D:\iolar`. Bring up: `npx tsx scripts/knowledge-env.mts && docker compose -f docker/compose.yml up -d`, or Start on the Plugins page. Ports 3124 bolt, 3125 browser, 3126 qdrant http, 3127 grpc. Rebuild everything from disk and the jobs board: `npm run reindex:knowledge -- --wipe` (about 8 minutes, embeds on research-ollama :25103). Tests never touch the real stores (`tests/setup.ts` installs the fakes); `KNOWLEDGE_LIVE=1 npx vitest run tests/live/knowledge.live.test.ts` proves the drivers. `knowledgeMemory: false` in settings turns agent recall off. Graph page: `/graph`, four tabs. Feature list: `/about`.
+
+
+## Jobs bridge (2 Sep 2026)
+
+The Jobs tab runs one loop: **pull** research-plugin's India pool (`POST /api/jobs/pool/pull`, pages of 200 up to its `total`) into `jobs_pool`; **prepare** a cut for the ISO week or the day (`POST /api/jobs/cuts {kind}`) which maps rows with `lib/jobs/map.ts` (rules, then one qwen call for the leftovers), computes the reel's tiles with the ported `summarise`, fetches the brief from `POST /api/jobs/brief`, and flags cuts under 20 rows as thin; **submit** (`POST /api/jobs/cuts/{id}/submit {force}`) posts `jobs.json` + `brief.md` to the board's new `POST /api/weeks/{key}/jobs`, then `summarise` and `plan`. Ledger tables: `pulls`, `jobs_pool`, `cuts`, `cut_rows`, `submissions` in `data/iolar.db`. A period the board already exported needs force. Schema parity with the plugin is a test that runs the plugin's own `tsx` (`tests/jobs.reelSchema.test.ts`). First live cut: 2026-W36, 102 rows, 95 by rule, 7 by qwen, planned on the board.

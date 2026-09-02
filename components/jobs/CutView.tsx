@@ -27,6 +27,9 @@ export default function CutView({
   const last = submissions.at(-1);
   const canSubmit = cut.status !== 'thin' || force;
   const already = ['submitted', 'summarised', 'planned'].includes(cut.status);
+  // Force matters when the cut is thin, when the board already has this period, or when
+  // the last attempt was refused for either reason.
+  const showForce = cut.status === 'thin' || already || cut.status === 'failed';
 
   return (
     <Card
@@ -38,7 +41,7 @@ export default function CutView({
       }
       extra={
         <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-          {(cut.status === 'thin' || already) && (
+          {showForce && (
             <Checkbox checked={force} onChange={(e) => onForce(e.target.checked)} data-testid="force">
               force
             </Checkbox>
