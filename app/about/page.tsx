@@ -3,8 +3,8 @@ import { useEffect, useState } from 'react';
 import { Card, Tag, Typography } from 'antd';
 
 /**
- * The studio explaining itself: one card per feature from docs/implementation.json, then
- * the handbook in full. A card's "in the handbook" jumps the frame to that section.
+ * The studio explaining itself: one card per feature from docs/implementation.json. The
+ * full handbook lives in docs/handbooks/ and at its published link; it is not embedded here.
  */
 
 type Feature = {
@@ -19,7 +19,6 @@ type Feature = {
 };
 
 const COLOUR = { built: 'green', 'in-progress': 'gold', designed: 'default' } as const;
-const FRAME_TITLE = 'Reels Engine Handbook';
 
 export default function AboutPage() {
   const [features, setFeatures] = useState<Feature[]>([]);
@@ -36,13 +35,6 @@ export default function AboutPage() {
       .catch(() => {});
   }, []);
 
-  const jump = (anchor: string) => {
-    const frame = document.querySelector<HTMLIFrameElement>(`iframe[title="${FRAME_TITLE}"]`);
-    if (!frame) return;
-    frame.src = `/api/about?handbook=1${anchor}`;
-    frame.scrollIntoView({ behavior: 'smooth' });
-  };
-
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div>
@@ -50,7 +42,7 @@ export default function AboutPage() {
           How it works
         </Typography.Title>
         <Typography.Text type="secondary">
-          What is implemented, as of {updatedAt || '…'}. The handbook below has the detail.
+          What is implemented, as of {updatedAt || '…'}. Files and tests are listed under each feature.
         </Typography.Text>
       </div>
 
@@ -63,17 +55,6 @@ export default function AboutPage() {
               <span>
                 {f.title} <Tag color={COLOUR[f.status]}>{f.status}</Tag>
               </span>
-            }
-            extra={
-              <a
-                href={`/api/about?handbook=1${f.handbook}`}
-                onClick={(e) => {
-                  e.preventDefault();
-                  jump(f.handbook);
-                }}
-              >
-                in the handbook
-              </a>
             }
           >
             <Typography.Paragraph style={{ marginBottom: 8 }}>{f.summary}</Typography.Paragraph>
@@ -97,13 +78,6 @@ export default function AboutPage() {
           </Card>
         ))}
       </div>
-
-      <iframe
-        id="handbook"
-        title={FRAME_TITLE}
-        src="/api/about?handbook=1"
-        style={{ width: '100%', height: '80vh', border: '1px solid var(--ant-color-border, #ddd)', borderRadius: 8, background: '#fff' }}
-      />
     </div>
   );
 }

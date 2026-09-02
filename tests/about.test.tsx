@@ -30,15 +30,14 @@ beforeEach(() => {
 });
 
 describe('how it works', () => {
-  it('lists every feature with its status, and embeds the handbook', async () => {
+  it('lists every feature with its status, files and tests, and embeds nothing', async () => {
     const Page = (await import('@/app/about/page')).default;
     render(<Page />);
     await waitFor(() => expect(screen.getByText('Research')).toBeTruthy());
     expect(screen.getByText('built')).toBeTruthy();
     expect(screen.getByText('in-progress')).toBeTruthy();
     expect(screen.getByText('lib/reel/research/graph.ts')).toBeTruthy();
-    const frame = screen.getByTitle('Reels Engine Handbook') as HTMLIFrameElement;
-    expect(frame.getAttribute('src')).toBe('/api/about?handbook=1');
+    expect(document.querySelector('iframe')).toBeNull();
   });
 
   it('reads the real manifest: every feature has files, tests and a handbook anchor', async () => {
