@@ -40,6 +40,9 @@ const STAGE_TIMEOUT_MS = 300_000;
  * wrapped in a sentence. What it must never do is half-parse: a truncated reply
  * fails loudly, because a partial candidate list looks exactly like a thin one.
  */
+/** A recall block, under one fixed heading, or nothing. The heading is what the tests and the trace look for. */
+const memoryBlock = (memory: string) => (memory.trim() ? `\nMEMORY\n${memory.trim()}\n` : '');
+
 export function extractJson<T = unknown>(raw: string): T {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(raw);
   const candidates = [fenced?.[1], raw].filter(Boolean) as string[];
@@ -89,7 +92,7 @@ function briefBlock(brief: Brief): string {
  * edit, so it asks for concrete queries — the kind you could paste into a search box —
  * each pinned to one of the brief's claims, each with the reason it should work.
  */
-export async function planSearch(brief: Brief, run: Runner = runClaude): Promise<SearchPlan> {
+export async function planSearch(brief: Brief, run: Runner = runClaude, memory = ''): Promise<SearchPlan> {
   const prompt = `You are planning the research for a short video. Do not search yet — write the plan.
 
 ${briefBlock(brief)}
@@ -101,7 +104,7 @@ person would type — each aimed at ONE of the must-prove claims above, quoted v
 "proves". Prefer queries that would land on primary sources (the paper, the filing, the
 changelog, the talk) over coverage of them. Vary the queries: names, numbers, dates and
 document types beat restating the angle.
-
+${memoryBlock(memory)}${memory.trim() ? 'Prefer domains that worked; do not plan a query against a domain listed under Avoid.\n' : ''}
 Reply with ONLY:
 { "approach": "<two or three sentences: what to look for first, what to distrust>",
   "queries": [ { "class": "<one of the classes>", "query": "...", "proves": "<a must-prove claim, verbatim>", "why": "<one sentence>" } ] }
@@ -160,7 +163,8 @@ Reply with ONLY the concatenated JSON array of every subagent's results. No pros
 export async function critique(
   brief: Brief,
   raw: Record<string, unknown>[],
-  run: Runner = runClaude
+  run: Runner = runClaude,
+  memory = ''
 ): Promise<{ candidates: Candidate[] }> {
   const prompt = `You are the adversarial critic on a video research pack. Be hard to please.
 
@@ -175,7 +179,7 @@ duplicates by setting dupeOf to the id of the one you kept. Ids are rewritten fr
 after you reply, so any stable placeholder will do — dupeOf is remapped with them. Reject anything
 that is SEO filler, is outside the recency window without being foundational, cannot be
 verified, or leans on the framing the brief said to avoid.
-
+${memoryBlock(memory)}${memory.trim() ? 'A page rejected before as a duplicate or a wall is probably still one; say so in the reason if you keep it anyway.\n' : ''}
 Reply with ONLY:
 
 { "candidates": [ <each one matching this schema exactly> ] }
@@ -194,7 +198,8 @@ export async function draftScript(
   evidence: Record<string, Pick<Evidence, 'text'>>,
   run: Runner = runClaude,
   /** A note from the last attempt — what was wrong with it — for a retry. */
-  redo?: string
+  redo?: string,
+  memory = ''
 ): Promise<ScriptLine[]> {
   const sources = candidates
     .map((c) => {
@@ -250,7 +255,7 @@ ${redo ? `
 # About the last attempt
 
 ${redo}
-` : ''}
+` : ''}${memoryBlock(memory)}${memory.trim() ? "Cite a proven claim's source only if it is marked citable; otherwise treat the claim as a lead, not a citation.\n" : ''}
 Reply with ONLY:
 { "lines": [ { "id": "l1", "order": 0, "role": "hook|body|close", "text": "...",
                "citations": ["<id>"], "assetIds": ["<id>"], "note": null, "commentary": false } ] }
@@ -335,7 +340,9 @@ export async function verifyScript(
   lines: ScriptLine[],
   candidates: Candidate[],
   evidence: Record<string, Pick<Evidence, 'text'>>,
-  run: Runner = runClaude
+  run: Runner = runClaude,
+  /** Recalled passages for one line, spliced ahead of the keyword windows. */
+  memoryFor?: (line: ScriptLine) => string
 ): Promise<Flag[]> {
   const cited = lines.filter((l) => !l.commentary && l.citations.length > 0);
   if (cited.length === 0) return [];
@@ -349,7 +356,8 @@ export async function verifyScript(
         return `  [${id}] ${c?.title ?? id}\n  ${excerpt || '(nothing gathered from this source)'}`;
       })
       .join('\n');
-    return `LINE ${l.id}: ${l.text}\nCITED EVIDENCE:\n${sources}`;
+    const recalled = memoryFor?.(l)?.trim() ?? '';
+    return `LINE ${l.id}: ${l.text}\nCITED EVIDENCE:\n${recalled ? recalled + '\n' : ''}${sources}`;
   });
 
   const prompt = `You are checking a short video script against the sources it cites, line by line.
