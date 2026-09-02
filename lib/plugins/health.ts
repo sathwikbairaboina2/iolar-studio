@@ -10,23 +10,9 @@ import { logPlugin } from './log';
  * than collapsed into one dot.
  */
 
-export type Check = { label: string; ok: boolean; detail?: string };
-
-export type PluginHealth = {
-  name: PluginName;
-  label: string;
-  port: number;
-  what: string;
-  up: boolean;
-  ready: boolean;
-  checks: Check[];
-  version?: string;
-  device?: string;
-  error?: string;
-  startable: boolean;
-  startHint?: string;
-  openUrl?: string;
-};
+export type { Check, PluginHealth } from './reconcile';
+export { reconcile } from './reconcile';
+import type { PluginHealth } from './reconcile';
 
 // The lipsync health check pings its Celery worker, which answers slowly while that worker is
 // busy rendering — measured at 3.2s mid-render. A tighter budget reports a service as down
@@ -236,23 +222,3 @@ export async function readHealth(): Promise<PluginHealth[]> {
   return now;
 }
 
-/**
- * Corrects a health report against what the studio can see happening.
- *
- * Celery answers its ping slowly enough under a solo-pool render that the lipsync API
- * reports zero workers while one is mid-shot. A page that believed that would send you to
- * restart a service that is working — so a render in flight is taken as proof of a worker.
- */
-export function reconcile(
-  plugins: PluginHealth[],
-  jobs: { plugin: string; status: string }[]
-): PluginHealth[] {
-  const busy = new Set(jobs.filter((j) => j.status === 'running').map((j) => j.plugin));
-  return plugins.map((p) => {
-    if (!busy.has(p.name) || !p.up) return p;
-    const checks = p.checks.map((c) =>
-      c.label.startsWith('worker') && !c.ok ? { label: 'worker busy', ok: true } : c
-    );
-    return { ...p, checks, ready: checks.every((c) => c.ok) };
-  });
-}

@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Badge, Button, Card, Empty, Segmented, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { CaretRightOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
-import { reconcile, type PluginHealth } from '@/lib/plugins/health';
+import { reconcile, type PluginHealth } from '@/lib/plugins/reconcile';
 import type { JobBoard, JobRow } from '@/lib/plugins/jobs';
 import type { LogEntry } from '@/lib/plugins/log';
 
