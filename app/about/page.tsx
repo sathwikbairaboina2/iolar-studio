@@ -26,7 +26,7 @@ export default function AboutPage() {
   const [updatedAt, setUpdatedAt] = useState('');
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     void fetch('/api/about')
       .then((r) => r.json())
       .then((d) => {

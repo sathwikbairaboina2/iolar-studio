@@ -236,7 +236,7 @@ describe('reading health', () => {
 
   it('shows how much the stores hold, so an empty graph is visible before an agent notices', async () => {
     const { getStores } = await import('@/lib/knowledge/stores');
-    const { graph, vectors } = getStores() as { graph: import('@/lib/knowledge/fake').FakeGraph; vectors: import('@/lib/knowledge/fake').FakeVectors };
+    const { graph, vectors } = getStores() as unknown as { graph: import('@/lib/knowledge/fake').FakeGraph; vectors: import('@/lib/knowledge/fake').FakeVectors };
     graph.answer(/count\(n\)/, [{ n: 1234 }]);
     await vectors.ensure('passages', 8);
     await vectors.ensure('claims', 8);
