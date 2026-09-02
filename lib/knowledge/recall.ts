@@ -27,19 +27,22 @@ const cap = (lines: string[], head: string[] = []): Recall => {
   return n ? { block: out.join('\n'), count: n } : NONE;
 };
 
-const topicsOf = (brief: Brief) => [brief.topic, ...brief.mustProve].map(topicKey).filter((t) => t.length >= 3);
+const STOP = new Set(['that', 'this', 'with', 'from', 'than', 'more', 'most', 'every', 'their', 'into', 'over', 'have', 'been', 'what', 'which', 'when', 'where', 'about']);
+/** The words a brief is about: four letters or more, minus function words. Exact phrases never match twice. */
+const wordsOf = (brief: Brief) =>
+  [...new Set([brief.topic, ...brief.mustProve].flatMap((t) => topicKey(t).split(' ')).filter((w) => w.length >= 4 && !STOP.has(w)))];
 
 export async function recallDomains(brief: Brief): Promise<Recall> {
   return (
     (await safely('recall.domains', async () => {
       const { graph } = getStores();
       const rows = await graph.query<{ host: string; kept: number; rejected: number; walled: number }>(
-        `MATCH (t:Topic) WHERE t.key IN $topics
+        `MATCH (t) WHERE (t:Topic OR t:Claim) AND any(w IN $words WHERE t.key CONTAINS w)
          MATCH (t)<-[:ABOUT|MUST_PROVE|COVERS|HIGHLIGHT]-(x)-[:HUNTED|KEPT|REJECTED]->(s:Source)-[:ON]->(d:Domain)
          WITH DISTINCT d
          RETURN d.host AS host, coalesce(d.kept, 0) AS kept, coalesce(d.rejected, 0) AS rejected, coalesce(d.walled, 0) AS walled
          ORDER BY kept - rejected DESC LIMIT 40`,
-        { topics: topicsOf(brief) }
+        { words: wordsOf(brief) }
       );
       if (!rows.length) return NONE;
       const good = rows

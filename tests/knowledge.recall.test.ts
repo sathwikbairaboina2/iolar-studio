@@ -43,7 +43,7 @@ describe('recallDomains', () => {
     expect(r.block).toContain('What worked before for topics like these:');
     expect(r.block.indexOf('sqlite.org')).toBeLessThan(r.block.indexOf('ccaf.io'));
     expect(r.block).toMatch(/Avoid, they did not read last time:[\s\S]*iea\.org/);
-    expect(graph.queries[0].params).toMatchObject({ topics: expect.arrayContaining(['sqlite runs everything']) });
+    expect(graph.queries[0].params).toMatchObject({ words: expect.arrayContaining(['sqlite', 'runs', 'everything', 'suite']) });
   });
 
   it('is empty when nothing is known, and empty when the store is down', async () => {
