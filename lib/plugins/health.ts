@@ -12,7 +12,7 @@ import { logPlugin } from './log';
 
 export type { Check, PluginHealth } from './reconcile';
 export { reconcile } from './reconcile';
-import type { PluginHealth } from './reconcile';
+import type { Check, PluginHealth } from './reconcile';
 
 // The lipsync health check pings its Celery worker, which answers slowly while that worker is
 // busy rendering — measured at 3.2s mid-render. A tighter budget reports a service as down
