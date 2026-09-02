@@ -1,0 +1,102 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }), usePathname: () => '/jobs' }));
+
+const pool = {
+  filter: { category: 'india', techOnly: false },
+  counts: { total: 1621, open: 1621, closed: 0, newSinceLastPull: 1421 },
+  lastPull: { id: 2, at: '2026-09-02T13:40:00.000Z', fetched: 1621, added: 1421, refreshed: 200, closed: 0, error: null },
+  sources: { enabled: 108, total: 119, lastError: null },
+};
+const cut = {
+  id: 1,
+  periodKey: '2026-W36',
+  kind: 'weekly',
+  windowFrom: '2026-08-31',
+  windowTo: '2026-09-06',
+  filter: {},
+  status: 'thin',
+  counted: 12,
+  rejected: 1,
+  summary: {
+    counted: 12,
+    rejected: 1,
+    byWorkMode: { remote: 3, hybrid: 2, onsite: 7 },
+    closingSoon: { within7Days: 0, nextDeadline: null },
+    salaryCoverage: 0.25,
+    byFunction: [{ key: 'engineering', label: 'Engineering', count: 9, share: 0.75 }],
+    topEmployers: [{ company: 'Swiggy', count: 3 }],
+    topCities: [{ city: 'Bengaluru', count: 8 }],
+  },
+  briefMd: '# The week',
+  createdAt: 'x',
+  updatedAt: '2026-09-02T14:00:00.000Z',
+};
+const detail = {
+  cut,
+  rows: [
+    { cutId: 1, researchId: 1, row: { role: 'SDE II', company: 'Swiggy', function: 'engineering', experienceMin: 5, experienceMax: 9, workMode: 'onsite', location: 'Bengaluru' }, mappedBy: 'rule', rejectReason: null },
+    { cutId: 1, researchId: 2, row: null, mappedBy: 'rejected', rejectReason: 'link: Invalid URL' },
+  ],
+  submissions: [],
+};
+
+let posted: { url: string; body: unknown }[] = [];
+
+afterEach(() => cleanup());
+
+beforeEach(() => {
+  vi.resetModules();
+  posted = [];
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
+    if (init?.method === 'POST') {
+      posted.push({ url: u, body: init.body ? JSON.parse(String(init.body)) : null });
+      if (u.endsWith('/api/jobs/cuts')) return json({ cut });
+      if (u.endsWith('/submit')) return json({ cut: { ...cut, status: 'planned' }, submissions: [] });
+      if (u.endsWith('/pull')) return json({ fetched: 1, added: 1, refreshed: 0, closed: 0, error: null });
+    }
+    if (u.endsWith('/api/jobs/pool')) return json(pool);
+    if (u.endsWith('/api/jobs/cuts')) return json({ cuts: posted.some((p) => p.url.endsWith('/api/jobs/cuts')) ? [cut] : [] });
+    if (u.endsWith('/api/jobs/cuts/1')) return json(detail);
+    if (u.endsWith('/api/jobs/weeks')) return json({ board: 'http://127.0.0.1:26100', weeks: [{ week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', hasExport: true, links: { board: 'b', reel: 'r', preview: 'p' } }] });
+    return json({ error: 'no route' }, 404);
+  });
+});
+
+describe('the jobs page', () => {
+  it('shows the pool, prepares a week, opens the cut, and submits it with force', async () => {
+    const Page = (await import('@/app/jobs/page')).default;
+    render(<Page />);
+    await waitFor(() => expect(screen.getByText('New since last pull')).toBeTruthy());
+    // antd's Statistic groups digits.
+    expect(screen.getByText('1,421')).toBeTruthy();
+    expect(screen.getByText('2026-W46')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('prepare-week'));
+    await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobs/cuts'))).toBe(true));
+    expect(posted.find((p) => p.url.endsWith('/api/jobs/cuts'))?.body).toMatchObject({ kind: 'weekly' });
+    await waitFor(() => expect(screen.getByTestId('tiles')).toBeTruthy());
+    expect(screen.getByText(/Thin cut: 12 rows/)).toBeTruthy();
+    expect(screen.getByText('link: Invalid URL')).toBeTruthy();
+    expect(screen.getByText('Swiggy 3')).toBeTruthy();
+
+    const submit = screen.getByTestId('submit');
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('force'));
+    await waitFor(() => expect((screen.getByTestId('submit') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('submit'));
+    await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobs/cuts/1/submit'))).toBe(true));
+    expect(posted.find((p) => p.url.endsWith('/submit'))?.body).toEqual({ force: true });
+  });
+
+  it('pulls the pool from the button', async () => {
+    const Page = (await import('@/app/jobs/page')).default;
+    render(<Page />);
+    await waitFor(() => expect(screen.getByTestId('pull-now')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('pull-now'));
+    await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobs/pool/pull'))).toBe(true));
+  });
+});

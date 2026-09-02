@@ -4,14 +4,15 @@ import { useRouter } from 'next/navigation';
 import { Alert, Button, Space, Table, Tag, Typography, message } from 'antd';
 import { ExportOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { WeekRow, WeekStage } from '@/lib/jobs/board';
+import type { Cut } from '@/lib/jobs/ledger';
+import PoolPane, { type PoolStatus } from '@/components/jobs/PoolPane';
+import CutsPane from '@/components/jobs/CutsPane';
+import CutView, { type CutDetail } from '@/components/jobs/CutView';
 
 /**
- * The weekly jobs reel, one row per week.
- *
- * The jobs-reel plugin owns the weeks and renders the reel; this page is the studio's
- * window onto its board. It lists what the board lists, re-runs the two stages the board
- * lets anyone re-run, and links into the board for everything else. Voice, render and
- * export are minutes long and belong to `npm run weekly` in a terminal.
+ * The bridge between the research pool and the jobs-reel board, run from one page:
+ * pull the pool, prepare a cut, look at it, submit it, and watch the board's week
+ * appear below. The plugin renders; the studio manages the data and the brief.
  */
 
 type Row = WeekRow & { links: { board: string; reel: string; preview: string } };
@@ -27,12 +28,36 @@ const STAGE_COLOUR: Record<WeekStage, string> = {
 
 export default function JobsPage() {
   const router = useRouter();
+  const [pool, setPool] = useState<PoolStatus | null>(null);
+  const [pulling, setPulling] = useState(false);
+  const [cuts, setCuts] = useState<Cut[]>([]);
+  const [preparing, setPreparing] = useState<'weekly' | 'daily' | null>(null);
+  const [selected, setSelected] = useState<number | null>(null);
+  const [detail, setDetail] = useState<CutDetail | null>(null);
+  const [force, setForce] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [board, setBoard] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refreshPool = useCallback(async () => {
+    const r = await fetch('/api/jobs/pool', { cache: 'no-store' }).catch(() => null);
+    if (r?.ok) setPool((await r.json()) as PoolStatus);
+  }, []);
+  const refreshCuts = useCallback(async () => {
+    const r = await fetch('/api/jobs/cuts', { cache: 'no-store' }).catch(() => null);
+    if (r?.ok) setCuts(((await r.json()) as { cuts: Cut[] }).cuts ?? []);
+  }, []);
+  const refreshDetail = useCallback(async (id: number | null) => {
+    if (id === null) {
+      setDetail(null);
+      return;
+    }
+    const r = await fetch(`/api/jobs/cuts/${id}`, { cache: 'no-store' }).catch(() => null);
+    if (r?.ok) setDetail((await r.json()) as CutDetail);
+  }, []);
+  const refreshBoard = useCallback(async () => {
     try {
       const r = await fetch('/api/jobs/weeks', { cache: 'no-store' });
       const d = await r.json();
@@ -52,8 +77,72 @@ export default function JobsPage() {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh();
-  }, [refresh]);
+    void refreshPool();
+    void refreshCuts();
+    void refreshBoard();
+  }, [refreshPool, refreshCuts, refreshBoard]);
+
+  // Force is a decision about one cut; choosing another cut clears it (see `choose`).
+  const choose = (id: number | null) => {
+    setSelected(id);
+    setForce(false);
+    void refreshDetail(id);
+  };
+
+  const pull = async () => {
+    setPulling(true);
+    try {
+      const r = await fetch('/api/jobs/pool/pull', { method: 'POST' });
+      const d = await r.json();
+      if (d.error) message.error(d.error);
+      else message.success(`pulled ${d.fetched}: ${d.added} new, ${d.refreshed} refreshed, ${d.closed} closed`);
+    } finally {
+      setPulling(false);
+      await refreshPool();
+    }
+  };
+
+  const prepare = async (kind: 'weekly' | 'daily') => {
+    setPreparing(kind);
+    try {
+      const r = await fetch('/api/jobs/cuts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind, force }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error ?? `answered ${r.status}`);
+      const cut = d.cut as Cut;
+      message[cut.status === 'thin' ? 'warning' : 'success'](`${cut.periodKey}: ${cut.counted} rows${cut.status === 'thin' ? ', thin' : ''}`);
+      await refreshCuts();
+      choose(cut.id);
+    } catch (err) {
+      message.error(String(err instanceof Error ? err.message : err));
+    } finally {
+      setPreparing(null);
+    }
+  };
+
+  const submit = async () => {
+    if (selected === null) return;
+    setSubmitting(true);
+    try {
+      const r = await fetch(`/api/jobs/cuts/${selected}/submit`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ force }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      const cut = d.cut as Cut;
+      message[cut.status === 'failed' ? 'error' : 'success'](`${cut.periodKey} is ${cut.status}`);
+    } catch (err) {
+      message.error(String(err instanceof Error ? err.message : err));
+    } finally {
+      setSubmitting(false);
+      await Promise.all([refreshCuts(), refreshDetail(selected), refreshBoard()]);
+    }
+  };
 
   const run = async (week: string, stage: 'summarise' | 'plan') => {
     const key = `${week}:${stage}`;
@@ -66,8 +155,8 @@ export default function JobsPage() {
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? d.message ?? `the board answered ${r.status}`);
-      message.success(`${stage} ran for ${week}${d.message ? ` — ${d.message}` : ''}`);
-      await refresh();
+      message.success(`${stage} ran for ${week}`);
+      await refreshBoard();
     } catch (err) {
       message.error(String(err instanceof Error ? err.message : err));
     } finally {
@@ -76,8 +165,8 @@ export default function JobsPage() {
   };
 
   return (
-    <>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Typography.Title level={3} style={{ margin: 0, flex: 1 }}>
           Jobs
         </Typography.Title>
@@ -86,7 +175,7 @@ export default function JobsPage() {
             Open board
           </Button>
         )}
-        <Button icon={<ReloadOutlined />} onClick={() => void refresh()}>
+        <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([refreshPool(), refreshCuts(), refreshBoard(), refreshDetail(selected)])}>
           Refresh
         </Button>
       </div>
@@ -95,39 +184,35 @@ export default function JobsPage() {
         <Alert
           type="warning"
           showIcon
-          style={{ marginBottom: 16 }}
           title="The jobs-reel board is not answering"
           description={
             <span>
-              {error}. Start it from{' '}
-              <a onClick={() => router.push('/plugins')}>Plugins</a>, or run <code>npm run dev</code> in{' '}
+              {error}. Start it from <a onClick={() => router.push('/plugins')}>Plugins</a>, or run <code>npm run dev</code> in{' '}
               <code>projects/plugins/jobs-reel-plugin</code>.
             </span>
           }
         />
       )}
 
+      <PoolPane pool={pool} pulling={pulling} onPull={() => void pull()} />
+      <CutsPane cuts={cuts} preparing={preparing} selectedId={selected} boardBase={board} onPrepare={(k) => void prepare(k)} onSelect={choose} />
+      {detail && <CutView detail={detail} submitting={submitting} force={force} onForce={setForce} onSubmit={() => void submit()} />}
+
+      <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
+        On the board
+      </Typography.Title>
       <Table<Row>
         rowKey="week"
+        size="small"
         dataSource={rows ?? []}
         loading={rows === null}
         pagination={false}
-        locale={{ emptyText: error ? 'Nothing to show while the board is down.' : 'No weeks yet. Run npm run weekly in the plugin.' }}
+        locale={{ emptyText: error ? 'Nothing to show while the board is down.' : 'No weeks yet.' }}
         columns={[
           { title: 'Week', dataIndex: 'week', width: 120, render: (w: string) => <strong>{w}</strong> },
-          {
-            title: 'Stage',
-            dataIndex: 'stage',
-            width: 120,
-            render: (s: WeekStage) => <Tag color={STAGE_COLOUR[s] ?? 'default'}>{s}</Tag>,
-          },
+          { title: 'Stage', dataIndex: 'stage', width: 120, render: (s: WeekStage) => <Tag color={STAGE_COLOUR[s] ?? 'default'}>{s}</Tag> },
           { title: 'Roles', dataIndex: 'counted', width: 90 },
-          {
-            title: 'Rejected',
-            dataIndex: 'rejected',
-            width: 100,
-            render: (n: number) => (n ? <Tag color="red">{n}</Tag> : '0'),
-          },
+          { title: 'Rejected', dataIndex: 'rejected', width: 100, render: (n: number) => (n ? <Tag color="red">{n}</Tag> : '0') },
           { title: 'Style', dataIndex: 'style', width: 140, render: (s: string | null) => s ?? '—' },
           {
             title: 'Reel',
@@ -147,20 +232,10 @@ export default function JobsPage() {
             key: 'actions',
             render: (_: unknown, row) => (
               <Space size={4}>
-                <Button
-                  size="small"
-                  loading={running === `${row.week}:summarise`}
-                  disabled={row.stage === 'empty'}
-                  onClick={() => void run(row.week, 'summarise')}
-                >
+                <Button size="small" loading={running === `${row.week}:summarise`} disabled={row.stage === 'empty'} onClick={() => void run(row.week, 'summarise')}>
                   summarise
                 </Button>
-                <Button
-                  size="small"
-                  loading={running === `${row.week}:plan`}
-                  disabled={row.stage === 'empty' || row.stage === 'imported'}
-                  onClick={() => void run(row.week, 'plan')}
-                >
+                <Button size="small" loading={running === `${row.week}:plan`} disabled={row.stage === 'empty' || row.stage === 'imported'} onClick={() => void run(row.week, 'plan')}>
                   plan
                 </Button>
                 <Button size="small" type="link" href={row.links.board} target="_blank">
@@ -171,6 +246,6 @@ export default function JobsPage() {
           },
         ]}
       />
-    </>
+    </div>
   );
 }
