@@ -121,3 +121,8 @@ HTTP API the studio uses.
 this was ported from, still on 3100. The two are copies, not a shared library:
 reelscout is on zod 3, instastudio on zod 4. Fixes to `script.ts`, `gather.ts`
 and `scriptBoard.ts` have to be applied twice.
+
+
+## Knowledge layer (2 Sep 2026, branch `feat/knowledge-layer`)
+
+Neo4j and Qdrant in `docker/compose.yml`, volumes on `D:\iolar`. Bring up: `npx tsx scripts/knowledge-env.mts && docker compose -f docker/compose.yml up -d`, or Start on the Plugins page. Ports 3124 bolt, 3125 browser, 3126 qdrant http, 3127 grpc. Rebuild everything from disk and the jobs board: `npm run reindex:knowledge -- --wipe` (about 8 minutes, embeds on research-ollama :25103). Tests never touch the real stores (`tests/setup.ts` installs the fakes); `KNOWLEDGE_LIVE=1 npx vitest run tests/live/knowledge.live.test.ts` proves the drivers. `knowledgeMemory: false` in settings turns agent recall off. Graph page: `/graph`, four tabs. Feature list: `/about`.
