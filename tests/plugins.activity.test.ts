@@ -131,6 +131,15 @@ describe('health flips', () => {
     expect(readLog().entries.at(-1)).toMatchObject({ plugin: 'research', level: 'success' });
   });
 
+  it('survives a flip record left in an older shape by a dev reload', async () => {
+    const up = { ':8300': { body: { ok: true, checks: {} } }, ':8080': { body: { ok: true } }, ':8189': { body: {} }, ':11436': { body: {} }, ':26100': { body: { ok: true, weeks: 1 } }, ':25100': { body: { ollama: { ok: true, model: 'qwen3.8:27b' }, channels: [{ channel: 'searxng', ok: true }] } }, ':3125': { body: {} }, ':3126': { body: {} } };
+    mockFetch(up);
+    const g = globalThis as unknown as { __pluginLast?: Map<string, unknown> };
+    g.__pluginLast = new Map([['research', { up: true, ready: true }]]);
+    const { readHealth } = await import('@/lib/plugins/health');
+    await expect(readHealth()).resolves.toHaveLength(8);
+  });
+
   it('stays quiet through a single timed-out poll', async () => {
     const up = { ':8300': { body: { ok: true, checks: {} } }, ':8080': { body: { ok: true } }, ':8189': { body: {} }, ':11436': { body: {} }, ':26100': { body: { ok: true, weeks: 1 } }, ':25100': { body: { ollama: { ok: true, model: 'qwen3.8:27b' }, channels: [{ channel: 'searxng', ok: true }] } } };
     mockFetch(up);

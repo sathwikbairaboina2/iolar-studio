@@ -185,7 +185,9 @@ function noteFlips(now: PluginHealth[]): void {
   for (const p of now) {
     const seen: Seen = { up: p.up, ready: p.ready };
     const rec = last.get(p.name);
-    if (!rec) {
+    // No record, or one left by an older shape of this module across a dev reload: start
+    // from what we see now rather than throwing the whole health report away.
+    if (!rec || !rec.settled) {
       last.set(p.name, { settled: seen, pending: null });
       continue;
     }
