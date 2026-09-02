@@ -131,3 +131,9 @@ Neo4j and Qdrant in `docker/compose.yml`, volumes on `D:\iolar`. Bring up: `npx 
 ## Jobs bridge (2 Sep 2026)
 
 The Jobs tab runs one loop: **pull** research-plugin's India pool (`POST /api/jobs/pool/pull`, pages of 200 up to its `total`) into `jobs_pool`; **prepare** a cut for the ISO week or the day (`POST /api/jobs/cuts {kind}`) which maps rows with `lib/jobs/map.ts` (rules, then one qwen call for the leftovers), computes the reel's tiles with the ported `summarise`, fetches the brief from `POST /api/jobs/brief`, and flags cuts under 20 rows as thin; **submit** (`POST /api/jobs/cuts/{id}/submit {force}`) posts `jobs.json` + `brief.md` to the board's new `POST /api/weeks/{key}/jobs`, then `summarise` and `plan`. Ledger tables: `pulls`, `jobs_pool`, `cuts`, `cut_rows`, `submissions` in `data/iolar.db`. A period the board already exported needs force. Schema parity with the plugin is a test that runs the plugin's own `tsx` (`tests/jobs.reelSchema.test.ts`). First live cut: 2026-W36, 102 rows, 95 by rule, 7 by qwen, planned on the board.
+
+
+## Audio sync (2 Sep 2026, jobs-reel-plugin `master` ab9cef9)
+
+Slides are cut to the voice: `lib/voice/fit.ts` makes each spoken beat 0.25 s lead + line + 0.6 s pad, floored per role, on the frame grid; the reel is the sum (35–75 s). Per-beat Piper lines in `weeks/<w>/vo/`, laid with `adelay` into `vo.mp3`. Music: `npm run music:bank` generates 70 s instrumentals per style with ComfyUI's ACE-Step 1.5 turbo checkpoint (in the comicgen container on :8188, models under `projects/ComicGen/comfyui/models`); `lib/audio/mix.ts` ducks the bed under the voice and normalises to -14 LUFS into `audio.wav`. Board: `/music`, week audio panel, `/api/weeks/{w}/audio`. Studio: Audio column on the Jobs table. W36 rebuilt at 48.7 s with `paper-doodle/1.mp3`. Only paper-doodle has a bank so far; run the bank for the other ten styles before rotating.
+
