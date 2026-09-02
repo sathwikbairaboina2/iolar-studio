@@ -214,6 +214,8 @@ describe('reading health', () => {
   });
 
   it('watches the two knowledge stores and can start either with compose', async () => {
+    const { getStores } = await import('@/lib/knowledge/stores');
+    (getStores().graph as import('@/lib/knowledge/fake').FakeGraph).answer(/count\(n\)/, [{ n: 7 }]);
     mockFetch({
       ':3125': { body: {} },
       ':3126': { status: 200, body: {} },
@@ -233,7 +235,13 @@ describe('reading health', () => {
   });
 
   it('shows how much the stores hold, so an empty graph is visible before an agent notices', async () => {
-    vi.doMock('@/lib/knowledge/recall', () => ({ storeCounts: async () => ({ nodes: 1234, passages: 5600, claims: 41 }) }));
+    const { getStores } = await import('@/lib/knowledge/stores');
+    const { graph, vectors } = getStores() as { graph: import('@/lib/knowledge/fake').FakeGraph; vectors: import('@/lib/knowledge/fake').FakeVectors };
+    graph.answer(/count\(n\)/, [{ n: 1234 }]);
+    await vectors.ensure('passages', 8);
+    await vectors.ensure('claims', 8);
+    await vectors.upsert('passages', Array.from({ length: 5600 }, (_, i) => ({ id: `p${i}`, vector: [1], payload: {} })));
+    await vectors.upsert('claims', Array.from({ length: 41 }, (_, i) => ({ id: `c${i}`, vector: [1], payload: {} })));
     mockFetch({
       ':3125': { body: {} },
       ':3126': { body: {} },
@@ -248,7 +256,6 @@ describe('reading health', () => {
     const all = await readHealth();
     expect(all.find((p) => p.name === 'neo4j')!.checks).toEqual([{ label: '1,234 nodes', ok: true }]);
     expect(all.find((p) => p.name === 'qdrant')!.checks).toEqual([{ label: '5,600 passages', ok: true }, { label: '41 claims', ok: true }]);
-    vi.doUnmock('@/lib/knowledge/recall');
   });
 
   it('asks every service at once rather than one after another', async () => {
