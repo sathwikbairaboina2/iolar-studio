@@ -1,131 +1,180 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
-import { Card, Col, Empty, Input, Row, Table, Tag, Typography } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Alert, Card, Input, List, Tabs, Tag, Typography } from 'antd';
+import GraphCanvas from '@/components/graph/GraphCanvas';
+import type { ViewEdge, ViewNode } from '@/lib/knowledge/view';
 
-type Node = { id: string; type: 'post' | 'chapter' | 'topic'; label: string; slug: string | null; weight: number };
-type Edge = { src: string; dst: string; rel: string };
+/**
+ * One page, four tabs, one space at a time. The second search box is the meaning search
+ * the research agents use, shown here so what they would see is never a mystery.
+ */
 
-const COLOR = { post: '#7c5cff', chapter: '#3ec5ff', topic: '#3ddc97' } as const;
+type SpaceKey = 'handbooks' | 'reels' | 'jobs' | 'all';
+type Hit = { collection: string; score: number; text: string; payload: Record<string, unknown> };
 
 export default function GraphPage() {
-  const [nodes, setNodes] = useState<Node[]>([]);
-  const [edges, setEdges] = useState<Edge[]>([]);
+  const router = useRouter();
+  const [space, setSpace] = useState<SpaceKey>('handbooks');
+  const [nodes, setNodes] = useState<ViewNode[]>([]);
+  const [edges, setEdges] = useState<ViewEdge[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<ViewNode | null>(null);
   const [q, setQ] = useState('');
-  const [selected, setSelected] = useState<Node | null>(null);
+  const [ask, setAsk] = useState('');
+  const [hits, setHits] = useState<Hit[]>([]);
+  const [found, setFound] = useState<ViewNode[]>([]);
 
-  useEffect(() => {
-    fetch('/api/graph').then((r) => r.json()).then((d) => { setNodes(d.nodes ?? []); setEdges(d.edges ?? []); });
+  const load = useCallback(async (s: SpaceKey) => {
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/graph?space=${s}`, { cache: 'no-store' });
+      const d = await r.json();
+      if (!r.ok) {
+        setError(d.error ?? `answered ${r.status}`);
+        setNodes([]);
+        setEdges([]);
+        return;
+      }
+      setError(null);
+      setNodes(d.nodes ?? []);
+      setEdges(d.edges ?? []);
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // Radial layout: posts on an inner ring, their topics on an outer ring.
-  const layout = useMemo(() => {
-    const posts = nodes.filter((n) => n.type === 'post');
-    const topics = nodes.filter((n) => n.type === 'topic').slice(0, 90);
-    const pos = new Map<string, { x: number; y: number; n: Node }>();
-    posts.forEach((n, i) => {
-      const a = (i / Math.max(posts.length, 1)) * Math.PI * 2 - Math.PI / 2;
-      pos.set(n.id, { x: 500 + Math.cos(a) * 150, y: 360 + Math.sin(a) * 110, n });
-    });
-    topics.forEach((n, i) => {
-      const a = (i / Math.max(topics.length, 1)) * Math.PI * 2 - Math.PI / 2;
-      pos.set(n.id, { x: 500 + Math.cos(a) * 330, y: 360 + Math.sin(a) * 250, n });
-    });
-    return pos;
-  }, [nodes]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load(space);
+  }, [space, load]);
 
-  const visibleEdges = edges.filter((e) => layout.has(e.src) && layout.has(e.dst));
-  const match = (n: Node) => !q || n.label.toLowerCase().includes(q.toLowerCase());
-
-  const topicRows = nodes
-    .filter((n) => n.type === 'topic' && match(n))
-    .map((n) => ({
-      key: n.id,
-      label: n.label,
-      weight: n.weight,
-      posts: edges.filter((e) => e.dst === n.id && e.rel === 'covers').length,
-    }))
-    .sort((a, b) => b.weight - a.weight)
-    .slice(0, 40);
+  const search = async () => {
+    if (!q) {
+      setFound([]);
+      return;
+    }
+    const r = await fetch(`/api/graph?space=${space}&q=${encodeURIComponent(q)}`);
+    const d = await r.json();
+    setFound(d.nodes ?? []);
+  };
+  const askByMeaning = async () => {
+    if (!ask) {
+      setHits([]);
+      return;
+    }
+    const r = await fetch(`/api/graph?space=${space}&ask=${encodeURIComponent(ask)}`);
+    const d = await r.json();
+    setHits(d.hits ?? []);
+  };
 
   return (
     <div>
       <Typography.Title level={4}>Knowledge graph</Typography.Title>
       <Typography.Paragraph type="secondary" style={{ fontSize: 13, marginTop: -6 }}>
-        Every book chapter and slide heading is indexed in SQLite. Shared topics link posts together, so the planner can
-        see what has already been covered.
+        One graph, one space per category, shared topics and sources between them. The research agents read the same
+        stores.
       </Typography.Paragraph>
 
-      <Input.Search
-        placeholder="Search topics…"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        style={{ maxWidth: 360, marginBottom: 14 }}
-        allowClear
+      {error && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          title="The knowledge graph is not answering"
+          description={
+            <span>
+              {error}. Start Neo4j from <a onClick={() => router.push('/plugins')}>Plugins</a>.
+            </span>
+          }
+        />
+      )}
+
+      <Tabs
+        activeKey={space}
+        onChange={(k) => {
+          setSpace(k as SpaceKey);
+          setSelected(null);
+          setFound([]);
+          setHits([]);
+        }}
+        items={[
+          { key: 'handbooks', label: 'Handbooks' },
+          { key: 'reels', label: 'Reels' },
+          { key: 'jobs', label: 'Jobs' },
+          { key: 'all', label: 'All' },
+        ]}
       />
 
-      {nodes.length === 0 ? (
-        <Empty description="Graph is empty — create a post and build its book" />
-      ) : (
-        <Row gutter={16}>
-          <Col span={15}>
-            <Card size="small" styles={{ body: { padding: 0 } }}>
-              <svg viewBox="0 0 1000 720" style={{ width: '100%', height: 560, display: 'block' }}>
-                {visibleEdges.map((e, i) => {
-                  const a = layout.get(e.src)!;
-                  const b = layout.get(e.dst)!;
-                  return (
-                    <line
-                      key={i}
-                      x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                      stroke={e.rel === 'shares_topic' ? '#ff7eb6' : 'rgba(128,128,160,.35)'}
-                      strokeWidth={e.rel === 'shares_topic' ? 1.6 : 0.9}
-                    />
-                  );
-                })}
-                {[...layout.values()].map(({ x, y, n }) => {
-                  const r = n.type === 'post' ? 12 : Math.min(4 + n.weight, 10);
-                  const dim = q && !match(n);
-                  return (
-                    <g key={n.id} onClick={() => setSelected(n)} style={{ cursor: 'pointer', opacity: dim ? 0.15 : 1 }}>
-                      <circle cx={x} cy={y} r={r} fill={COLOR[n.type]} stroke="#0f1016" strokeWidth={1.5} />
-                      {(n.type === 'post' || n.weight > 1 || q) && (
-                        <text x={x} y={y - r - 5} textAnchor="middle" fontSize={n.type === 'post' ? 12 : 9} fill="currentColor">
-                          {n.label.length > 26 ? n.label.slice(0, 26) + '…' : n.label}
-                        </text>
-                      )}
-                    </g>
-                  );
-                })}
-              </svg>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
+        <div>
+          {!loading && !error && nodes.length === 0 && (
+            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+              {space === 'all'
+                ? 'Nothing links two spaces yet. A topic covered by a chapter and a reel, or an employer a reel is about, would appear here.'
+                : 'Nothing indexed in this space yet. Run npm run reindex:knowledge -- --wipe.'}
+            </Typography.Text>
+          )}
+          <GraphCanvas nodes={nodes} edges={edges} onSelect={setSelected} />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {nodes.length} nodes · {edges.length} edges · most connected first, capped at 400
+          </Typography.Text>
+        </div>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <Input.Search placeholder="search labels…" value={q} onChange={(e) => setQ(e.target.value)} onSearch={() => void search()} />
+          {found.length > 0 && (
+            <List
+              size="small"
+              dataSource={found}
+              renderItem={(n) => (
+                <List.Item onClick={() => setSelected(n)} style={{ cursor: 'pointer' }}>
+                  <Tag>{n.kind}</Tag>
+                  {n.label}
+                </List.Item>
+              )}
+            />
+          )}
+          <Input
+            placeholder="ask by meaning…"
+            value={ask}
+            onChange={(e) => setAsk(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void askByMeaning();
+            }}
+          />
+          {hits.length > 0 && (
+            <List
+              size="small"
+              dataSource={hits}
+              renderItem={(h) => (
+                <List.Item>
+                  <Tag>{h.collection}</Tag>
+                  <span style={{ fontVariantNumeric: 'tabular-nums', marginRight: 8 }}>{h.score.toFixed(2)}</span>
+                  {h.text.slice(0, 160)}
+                </List.Item>
+              )}
+            />
+          )}
+          {selected && (
+            <Card
+              size="small"
+              title={
+                <span>
+                  <Tag>{selected.kind}</Tag>
+                  {selected.label}
+                </span>
+              }
+            >
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {selected.id} · degree {selected.degree} · space {selected.space}
+              </Typography.Text>
             </Card>
-            <div style={{ marginTop: 8, fontSize: 12 }}>
-              <Tag color="purple">post</Tag><Tag color="cyan">chapter</Tag><Tag color="green">topic</Tag>
-              <Tag color="magenta">pink line = posts sharing a topic</Tag>
-            </div>
-          </Col>
-
-          <Col span={9}>
-            {selected && (
-              <Card size="small" title={selected.label} style={{ marginBottom: 12 }} extra={<Tag>{selected.type}</Tag>}>
-                {selected.slug && <div style={{ fontSize: 12 }}>post: <b>{selected.slug}</b></div>}
-                <div style={{ fontSize: 12 }}>mentions: {selected.weight}</div>
-              </Card>
-            )}
-            <Card size="small" title={`Topics (${topicRows.length})`} styles={{ body: { padding: 0 } }}>
-              <Table
-                size="small"
-                pagination={false}
-                scroll={{ y: 420 }}
-                dataSource={topicRows}
-                columns={[
-                  { title: 'Topic', dataIndex: 'label' },
-                  { title: 'Mentions', dataIndex: 'weight', width: 90 },
-                ]}
-              />
-            </Card>
-          </Col>
-        </Row>
-      )}
+          )}
+        </div>
+      </div>
     </div>
   );
 }
