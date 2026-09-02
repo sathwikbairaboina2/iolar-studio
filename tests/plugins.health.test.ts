@@ -232,6 +232,25 @@ describe('reading health', () => {
     expect(q).toMatchObject({ up: true, ready: true, port: 3126, openUrl: 'http://127.0.0.1:3126/dashboard' });
   });
 
+  it('shows how much the stores hold, so an empty graph is visible before an agent notices', async () => {
+    vi.doMock('@/lib/knowledge/recall', () => ({ storeCounts: async () => ({ nodes: 1234, passages: 5600, claims: 41 }) }));
+    mockFetch({
+      ':3125': { body: {} },
+      ':3126': { body: {} },
+      ':26100': { body: { ok: true, weeks: 1 } },
+      ':25100': { body: { ollama: { ok: true }, channels: [] } },
+      ':8300': { body: { ok: true, checks: {} } },
+      ':8080': { body: { ok: true } },
+      ':8189': { body: {} },
+      ':11436': { body: {} },
+    });
+    const { readHealth } = await import('@/lib/plugins/health');
+    const all = await readHealth();
+    expect(all.find((p) => p.name === 'neo4j')!.checks).toEqual([{ label: '1,234 nodes', ok: true }]);
+    expect(all.find((p) => p.name === 'qdrant')!.checks).toEqual([{ label: '5,600 passages', ok: true }, { label: '41 claims', ok: true }]);
+    vi.doUnmock('@/lib/knowledge/recall');
+  });
+
   it('asks every service at once rather than one after another', async () => {
     const started: number[] = [];
     vi.stubGlobal('fetch', async () => {

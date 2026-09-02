@@ -105,11 +105,39 @@ async function probe(p: (typeof PLUGINS)[number]): Promise<PluginHealth> {
   };
 
   try {
-    // Qdrant's /healthz is plain text, not JSON.
-    if (p.name === 'qdrant') {
+    // Qdrant's /healthz is plain text, not JSON; Neo4j's root is a discovery document.
+    // Both cards say how much they hold, so an empty graph is visible before an agent notices.
+    if (p.name === 'qdrant' || p.name === 'neo4j') {
       const res = await fetch(p.healthUrl, { cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!res.ok) throw new Error(`answered ${res.status}`);
-      return { ...base, up: true, ready: true, checks: [{ label: 'answering', ok: true }] };
+      let counts: { nodes: number; passages: number; claims: number };
+      try {
+        counts = await (await import('@/lib/knowledge/recall')).storeCounts();
+      } catch {
+        return { ...base, up: true, ready: false, checks: [{ label: 'answering, counts unavailable', ok: false }] };
+      }
+      const fmt = (n: number) => n.toLocaleString('en-GB');
+      if (p.name === 'neo4j') {
+        return {
+          ...base,
+          up: true,
+          ready: counts.nodes > 0,
+          checks: [
+            counts.nodes > 0
+              ? { label: `${fmt(counts.nodes)} nodes`, ok: true }
+              : { label: '0 nodes', ok: false, detail: 'run npm run reindex:knowledge -- --wipe' },
+          ],
+        };
+      }
+      return {
+        ...base,
+        up: true,
+        ready: true,
+        checks: [
+          { label: `${fmt(counts.passages)} passages`, ok: true },
+          { label: `${fmt(counts.claims)} claims`, ok: true },
+        ],
+      };
     }
     const body = await ask(p.healthUrl);
 
@@ -140,9 +168,6 @@ async function probe(p: (typeof PLUGINS)[number]): Promise<PluginHealth> {
     }
     if (p.name === 'research') {
       return { ...base, up: true, ...researchChecks(body) };
-    }
-    if (p.name === 'neo4j') {
-      return { ...base, up: true, ready: true, checks: [{ label: 'answering', ok: true }] };
     }
     if (p.name === 'jobsreel') {
       const b = rec(body);
