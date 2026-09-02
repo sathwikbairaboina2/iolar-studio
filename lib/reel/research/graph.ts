@@ -12,6 +12,7 @@ import type { Brief } from './brief';
 import type { Candidate } from './candidate';
 import type { ScriptLine } from './script';
 import type { Coverage } from './agents';
+import type { recallDomains, recallVerdicts, recallClaims, recallPassages } from '@/lib/knowledge/recall';
 
 /**
  * The research as a graph, on the local model.
@@ -54,12 +55,26 @@ export type GraphDeps = {
   researchUrl: string;
   fetchImpl?: typeof fetch;
   huntPollMs?: number;
+  /** Memory for the agents. Undefined means none: the Claude path, or knowledgeMemory off. */
+  recall?: RecallDeps;
 };
+
+export type RecallDeps = {
+  domains: typeof recallDomains;
+  verdicts: typeof recallVerdicts;
+  claims: typeof recallClaims;
+  passages: typeof recallPassages;
+};
+
+const NO_RECALL = { block: '', count: 0 };
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 export function buildResearchGraph(deps: GraphDeps) {
   const plan = async (s: ResearchStateT) => {
     await clearTrace(s.slug);
-    const plan = await planSearch(s.brief, deps.run);
+    const mem = deps.recall ? await deps.recall.domains(s.brief) : NO_RECALL;
+    if (mem.count) await appendTrace(s.slug, { stage: 'plan', kind: 'note', text: `memory: ${plural(mem.count, 'domain')} known for these topics` });
+    const plan = await planSearch(s.brief, deps.run, mem.block);
     await store.writePlan(s.slug, plan);
     await store.setResearchStatus(s.slug, 'planned');
     await appendTrace(s.slug, { stage: 'plan', kind: 'note', text: `planned ${plan.queries.length} queries on the local model` });
@@ -86,7 +101,10 @@ export function buildResearchGraph(deps: GraphDeps) {
 
   const judgePack = async (s: ResearchStateT) => {
     const raw = s.found.length ? s.found : await store.readHunt(s.slug);
-    const judged = await critique(s.brief, raw, deps.run);
+    const urls = raw.map((r) => String(r.canonicalUrl ?? r.url ?? '')).filter(Boolean);
+    const mem = deps.recall ? await deps.recall.verdicts(urls) : NO_RECALL;
+    if (mem.count) await appendTrace(s.slug, { stage: 'hunt', kind: 'note', text: `memory: ${plural(mem.count, 'prior verdict')} on these urls` });
+    const judged = await critique(s.brief, raw, deps.run, mem.block);
     const { kept, dropped } = siftCandidates(judged.candidates ?? []);
     if (kept.length === 0) {
       throw new Error(
@@ -128,14 +146,16 @@ export function buildResearchGraph(deps: GraphDeps) {
           return candidates.filter((c) => effectiveState(c, selection) === 'keep');
         })();
     const evidence = await store.readAllEvidence(s.slug);
-    let lines = await draftScript(s.brief, kept, evidence, deps.run);
+    const mem = deps.recall ? await deps.recall.claims(s.brief, kept.map((c) => c.canonicalUrl || c.url)) : NO_RECALL;
+    if (mem.count) await appendTrace(s.slug, { stage: 'write', kind: 'note', text: `memory: ${plural(mem.count, 'proven claim')} near the brief` });
+    let lines = await draftScript(s.brief, kept, evidence, deps.run, undefined, mem.block);
     // A local model told "120-160 words" comes back with 80 one time in three. One
     // retry with the shortfall spelled out; after that the draft stands and a person
     // sees the count.
     const words = (ls: ScriptLine[]) => ls.reduce((n, l) => n + l.text.split(/\s+/).filter(Boolean).length, 0);
     if (words(lines) < 110) {
       const shortfall = `The previous draft was ${words(lines)} words — too short. Write 130-150 spoken words this time: more of the evidence, one fact per line.`;
-      const again = await draftScript(s.brief, kept, evidence, deps.run, shortfall).catch(() => lines);
+      const again = await draftScript(s.brief, kept, evidence, deps.run, shortfall, mem.block).catch(() => lines);
       if (words(again) > words(lines)) lines = again;
     }
     return { lines, candidates: kept };
@@ -144,8 +164,19 @@ export function buildResearchGraph(deps: GraphDeps) {
   const verify = async (s: ResearchStateT) => {
     const evidence = await store.readAllEvidence(s.slug);
     let flags: Flag[] = [];
+    // Per-line recall is gathered up front so the prompt builder stays synchronous.
+    const perLine = new Map<string, string>();
+    if (deps.recall) {
+      const keptIds = s.candidates.map((c) => c.id);
+      for (const l of s.lines) {
+        if (l.commentary || !l.citations.length) continue;
+        const r = await deps.recall.passages(l, keptIds);
+        if (r.count) perLine.set(l.id, r.block);
+      }
+      if (perLine.size) await appendTrace(s.slug, { stage: 'verify', kind: 'note', text: `memory: passages for ${plural(perLine.size, 'line')}` });
+    }
     try {
-      flags = await verifyScript(s.lines, s.candidates, evidence, deps.run);
+      flags = await verifyScript(s.lines, s.candidates, evidence, deps.run, (l) => perLine.get(l.id) ?? '');
     } catch {
       // A verifier that cannot answer flags nothing; the script still lands, unmarked,
       // rather than the whole stretch dying on the last agent.

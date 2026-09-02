@@ -18,7 +18,7 @@ import { reelResearchDir } from '@/lib/paths';
 export type TraceEvent = {
   at: string;
   /** Which stage of the research produced it. */
-  stage: 'plan' | 'hunt';
+  stage: 'plan' | 'hunt' | 'write' | 'verify';
   /** `search` ran a query; `read` opened a page; `dispatch` sent a subagent; `note` is prose. */
   kind: 'search' | 'read' | 'dispatch' | 'note';
   text: string;

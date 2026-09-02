@@ -59,7 +59,19 @@ export async function POST(req: Request, ctx: Ctx) {
     if (getSettings().researchProvider === 'local') {
       const { qwenRunner } = await import('@/lib/ai/qwen');
       const s = getSettings();
-      const out = await advanceResearch(slug, { run: qwenRunner(), researchUrl: s.researchUrl }, body);
+      // Memory is the local agents' alone. knowledgeMemory off means the graph runs exactly as before.
+      const recall = s.knowledgeMemory ? await import('@/lib/knowledge/recall') : undefined;
+      const out = await advanceResearch(
+        slug,
+        {
+          run: qwenRunner(),
+          researchUrl: s.researchUrl,
+          recall: recall
+            ? { domains: recall.recallDomains, verdicts: recall.recallVerdicts, claims: recall.recallClaims, passages: recall.recallPassages }
+            : undefined,
+        },
+        body
+      );
       return NextResponse.json(out);
     }
 
