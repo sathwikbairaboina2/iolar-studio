@@ -28,8 +28,8 @@ describe('the research client', () => {
   it('asks for the pool with the parameter names research-plugin reads', async () => {
     const { listPool } = await import('@/lib/jobs/researchApi');
     const { f, calls } = fetchWith(() => ({ body: sample }));
-    const out = await listPool({ category: 'india', techOnly: false }, { limit: 500, offset: 0 }, { baseUrl: 'http://127.0.0.1:25100', fetchImpl: f });
-    expect(calls[0].url).toBe('http://127.0.0.1:25100/api/jobs?category=india&tech=0&group=1&limit=500&offset=0');
+    const out = await listPool({ category: 'india', techOnly: false }, { limit: 200, offset: 0 }, { baseUrl: 'http://127.0.0.1:25100', fetchImpl: f });
+    expect(calls[0].url).toBe('http://127.0.0.1:25100/api/jobs?category=india&tech=0&group=1&limit=200&offset=0');
     expect(out.total).toBe(sample.total);
     expect(out.items).toHaveLength(12);
   });
@@ -62,11 +62,12 @@ describe('a pull', () => {
 
   it('pages when a page is full', async () => {
     const { pullPool } = await import('@/lib/jobs/pool');
-    const big = Array.from({ length: 500 }, (_, i) => ({ ...sample.items[0], id: 1000 + i, familyKey: `f${i}` }));
-    const { f, calls } = fetchWith((url) => (url.includes('offset=0') ? { body: { total: 503, items: big } } : { body: { total: 503, items: sample.items.slice(0, 3) } }));
+    // research-plugin caps a page at 200 whatever limit says; total says when to stop.
+    const big = Array.from({ length: 200 }, (_, i) => ({ ...sample.items[0], id: 1000 + i, familyKey: `f${i}` }));
+    const { f, calls } = fetchWith((url) => (url.includes('offset=0') ? { body: { total: 203, items: big } } : { body: { total: 203, items: sample.items.slice(0, 3) } }));
     const out = await pullPool({ category: 'india', techOnly: false }, { baseUrl: 'http://x', fetchImpl: f });
-    expect(calls.map((c) => c.url.match(/offset=(\d+)/)![1])).toEqual(['0', '500']);
-    expect(out.fetched).toBe(503);
+    expect(calls.map((c) => c.url.match(/offset=(\d+)/)![1])).toEqual(['0', '200']);
+    expect(out.fetched).toBe(203);
   });
 
   it('is a pulls row with an error when research-plugin is down, and throws nothing', async () => {

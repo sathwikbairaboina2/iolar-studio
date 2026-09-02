@@ -7,7 +7,8 @@ import { listPool, ResearchDown, type PoolFilter, type ResearchJob, type Researc
  * with an error, never a throw to the page.
  */
 
-const PAGE = 500;
+// research-plugin caps a page at 200 whatever `limit` says; `total` says when to stop.
+const PAGE = 200;
 
 export type PullResult = { pullId: number; fetched: number; added: number; refreshed: number; closed: number; error: string | null };
 
@@ -30,12 +31,12 @@ export async function pullPool(filter: PoolFilter, opts: ResearchOpts & { now?: 
   let refreshed = 0;
   try {
     for (let offset = 0; ; offset += PAGE) {
-      const { items } = await listPool(filter, { limit: PAGE, offset }, opts);
+      const { items, total } = await listPool(filter, { limit: PAGE, offset }, opts);
       const r = ledger.upsertPool(items.map(toUpsert), now);
       added += r.added;
       refreshed += r.refreshed;
       seen.push(...items.map((i) => i.id));
-      if (items.length < PAGE) break;
+      if (items.length === 0 || seen.length >= total || offset + PAGE > 20_000) break;
     }
     // A category filter that is 'all' returned every open row, so anything missing is closed.
     const closed = filter.category === 'all' ? closeAll(seen, now) : ledger.closeMissing(seen, filter.category, now);
