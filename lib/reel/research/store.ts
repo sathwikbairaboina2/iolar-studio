@@ -45,8 +45,22 @@ export async function readBrief(slug: string): Promise<Brief> {
   }
 }
 
+// The knowledge layer mirrors every research file as it lands. The file is written first
+// and is the truth; a store that is down costs memory, never the run.
+async function mirror(what: string, fn: () => Promise<void>) {
+  try {
+    const { knowledgeEnabled } = await import('@/lib/knowledge');
+    if (!knowledgeEnabled()) return;
+    await fn();
+  } catch (err) {
+    console.warn('[instastudio] knowledge mirror failed:', what, err instanceof Error ? err.message : err);
+  }
+}
+
 export async function writeBrief(slug: string, brief: Brief): Promise<void> {
-  await writeJson(reelBriefFile(slug), parseBrief(brief));
+  const valid = parseBrief(brief);
+  await writeJson(reelBriefFile(slug), valid);
+  await mirror('brief', async () => (await import('@/lib/knowledge/spaces/reels')).recordBrief(slug, valid));
 }
 
 /** Which stage this reel's research reached, or null if it was never researched. */
@@ -102,7 +116,9 @@ export async function readCandidates(slug: string): Promise<CandidatesFile> {
 }
 
 export async function writeCandidates(slug: string, file: CandidatesFile): Promise<void> {
-  await writeJson(reelCandidatesFile(slug), parseCandidates(file));
+  const valid = parseCandidates(file);
+  await writeJson(reelCandidatesFile(slug), valid);
+  await mirror('hunt', async () => (await import('@/lib/knowledge/spaces/reels')).recordHunt(slug, valid));
 }
 
 /** An unreviewed run has no decisions yet, which is a state rather than a failure. */
@@ -116,7 +132,12 @@ export async function readSelection(slug: string): Promise<Selection> {
 }
 
 export async function writeSelection(slug: string, selection: Selection): Promise<void> {
-  await writeJson(reelSelectionFile(slug), parseSelection(selection));
+  const valid = parseSelection(selection);
+  await writeJson(reelSelectionFile(slug), valid);
+  await mirror('review', async () => {
+    const { candidates } = await readCandidates(slug);
+    await (await import('@/lib/knowledge/spaces/reels')).recordReview(slug, candidates, valid);
+  });
 }
 
 export async function readScript(slug: string): Promise<Script> {
@@ -129,11 +150,22 @@ export async function readScript(slug: string): Promise<Script> {
 }
 
 export async function writeScript(slug: string, script: Script): Promise<void> {
-  await writeJson(reelScriptFile(slug), parseScript(script));
+  const valid = parseScript(script);
+  await writeJson(reelScriptFile(slug), valid);
+  await mirror('script', async () => {
+    const [{ candidates }, evidence] = await Promise.all([readCandidates(slug), readAllEvidence(slug)]);
+    await (await import('@/lib/knowledge/spaces/reels')).recordScript(slug, valid, candidates, evidence);
+  });
 }
 
 export async function writeEvidence(slug: string, evidence: Evidence): Promise<void> {
-  await writeJson(path.join(reelEvidenceDir(slug), `${evidence.candidateId}.json`), parseEvidence(evidence));
+  const valid = parseEvidence(evidence);
+  await writeJson(path.join(reelEvidenceDir(slug), `${valid.candidateId}.json`), valid);
+  await mirror('evidence', async () => {
+    const { candidates } = await readCandidates(slug);
+    const c = candidates.find((x) => x.id === valid.candidateId);
+    if (c) await (await import('@/lib/knowledge/spaces/reels')).recordEvidence(slug, c, valid);
+  });
 }
 
 /** Everything gathered so far, by candidate. Nothing gathered is an empty map. */

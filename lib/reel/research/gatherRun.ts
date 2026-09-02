@@ -66,7 +66,10 @@ async function pageText(url: string): Promise<string> {
     .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 20_000);
+    // 200k, not 20k: NIST SP 800-63B is 354 KB and its memorized-secrets section sat past
+    // the old cap, so the verifier flagged true lines. Passages are chunked from all of
+    // this; only the prompt window stays small.
+    .slice(0, 200_000);
 }
 
 export type GatherReport = { transcript: number; pagetext: number; summaryOnly: number };
