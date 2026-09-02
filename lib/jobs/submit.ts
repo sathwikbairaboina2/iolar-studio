@@ -1,17 +1,33 @@
 import * as ledger from './ledger';
-import { runStage, submitJobs, type BoardOpts, BoardDown } from './board';
+import {
+  BoardDown, readLines, runStage, submitJobs, submitScript, type BoardOpts,
+} from './board';
+import { recordLines, type Speaker } from './voice';
+import { getSettings } from '@/lib/settings';
 import type { RejectedRow, ReelJob } from './reelSchema';
 
 /**
- * Submit: post a prepared cut to the jobs-reel board as its jobs.json, then run the two
- * stages the board offers, recording every reply. A thin cut is refused before any call
- * unless forced. The cut's status follows the board: submitted, summarised, planned, or
+ * Submit: the studio's whole job for a cut, in order. Post the prepared list as the
+ * board's jobs.json; summarise; plan for the chosen style; let the plugin write the
+ * lines; record every line with the studio's voice; post the lines with their
+ * recordings (the plugin cuts the slides to them); start the build. Every reply is
+ * recorded. A thin cut is refused before any call unless forced. The cut's status
+ * follows the board: submitted, summarised, planned, scripted, voiced, building, or
  * failed with the message in the last submission.
  */
 
 export class CutNotSubmittable extends Error {}
 
-export type SubmitOpts = BoardOpts & { force?: boolean; now?: Date; record?: (cut: ledger.Cut, pullId: number | null) => Promise<void> };
+export type SubmitOpts = BoardOpts & {
+  force?: boolean;
+  now?: Date;
+  /** The style pack to plan and render in; settings.jobsStyle by default. */
+  style?: string;
+  /** 'studio' records the lines here; 'plugin' leaves the voice to the plugin's Piper. */
+  voice?: 'studio' | 'plugin';
+  speaker?: Speaker;
+  record?: (cut: ledger.Cut, pullId: number | null) => Promise<void>;
+};
 
 export async function submitCut(id: number, opts: SubmitOpts = {}): Promise<{ cut: ledger.Cut; submissions: ledger.Submission[] }> {
   const cut = ledger.getCut(id);
@@ -19,6 +35,9 @@ export async function submitCut(id: number, opts: SubmitOpts = {}): Promise<{ cu
   if (cut.status === 'thin' && !opts.force) {
     throw new CutNotSubmittable(`cut ${cut.periodKey} is thin (${cut.counted} rows); submit with force to send it anyway`);
   }
+  const settings = getSettings();
+  const style = opts.style ?? settings.jobsStyle;
+  const voice = opts.voice ?? settings.jobsVoice;
   const now = (opts.now ?? new Date()).toISOString();
   const rows = ledger.cutRows(id);
   const jobs = rows.filter((r) => r.row).map((r) => r.row as unknown as ReelJob);
@@ -39,46 +58,63 @@ export async function submitCut(id: number, opts: SubmitOpts = {}): Promise<{ cu
 
   const record = (accepted: number, stage: string | null, reply: unknown, error: string | null) =>
     ledger.addSubmission({ cutId: id, at: new Date().toISOString(), accepted, rejected: rejected.length, stage, reply, error });
+  const fail = (stage: string | null, reply: unknown, error: string) => {
+    record(jobs.length, stage, reply, error);
+    ledger.setCutStatus(id, 'failed');
+    return done(id);
+  };
+  const oops = (err: unknown) => (err instanceof BoardDown ? err.message : String(err instanceof Error ? err.message : err));
 
   // 1. the list
   let reply;
   try {
     reply = await submitJobs(cut.periodKey, body, opts);
   } catch (err) {
-    const msg = err instanceof BoardDown ? err.message : String(err instanceof Error ? err.message : err);
-    record(0, null, null, msg);
-    ledger.setCutStatus(id, 'failed');
-    return done(id);
+    return fail(null, null, oops(err));
   }
-  if (!reply.ok) {
-    record(0, null, reply, reply.message ?? `the board answered ${reply.status}`);
-    ledger.setCutStatus(id, 'failed');
-    return done(id);
-  }
+  if (!reply.ok) return fail(null, reply, reply.message ?? `the board answered ${reply.status}`);
   record(reply.counted ?? jobs.length, 'imported', reply, null);
   ledger.setCutStatus(id, 'submitted');
 
-  // 2. summarise, 3. plan — the board's own functions, one call each
+  // 2. summarise, 3. plan for the style, 4. script: the board's own stages, one call each
   for (const [stage, status] of [
     ['summarise', 'summarised'],
     ['plan', 'planned'],
+    ['script', 'scripted'],
   ] as const) {
     let out;
     try {
-      out = await runStage(cut.periodKey, stage, opts);
+      out = await runStage(cut.periodKey, stage, { ...opts, style: stage === 'plan' ? style : undefined });
     } catch (err) {
-      const msg = String(err instanceof Error ? err.message : err);
-      record(jobs.length, stage, null, msg);
-      ledger.setCutStatus(id, 'failed');
-      return done(id);
+      return fail(stage, null, oops(err));
     }
-    if (!out.ok) {
-      record(jobs.length, stage, out, out.message ?? `${stage} refused`);
-      ledger.setCutStatus(id, 'failed');
-      return done(id);
-    }
+    if (!out.ok) return fail(stage, out, out.message ?? `${stage} refused`);
     record(jobs.length, stage, out, null);
     ledger.setCutStatus(id, status);
+  }
+
+  // 5. the voice: the studio reads every line and sends the recordings back
+  if (voice === 'studio') {
+    try {
+      const lines = await readLines(cut.periodKey, opts);
+      const recorded = await recordLines(lines.lines, { speaker: opts.speaker });
+      const out = await submitScript(cut.periodKey, { style, provider: `studio-${recorded.provider ?? 'voice'}`, lines: recorded.lines }, opts);
+      if (!out.ok) return fail('voice', out, out.message ?? 'the board refused the recordings');
+      record(jobs.length, 'voice', { ...out, provider: recorded.provider, lines: recorded.lines.length }, null);
+      ledger.setCutStatus(id, 'voiced');
+    } catch (err) {
+      return fail('voice', null, oops(err));
+    }
+  }
+
+  // 6. the build, detached on the board; the week row reports where it is
+  try {
+    const out = await runStage(cut.periodKey, 'build', opts);
+    if (!out.ok) return fail('build', out, out.message ?? 'the board refused to build');
+    record(jobs.length, 'build', out, null);
+    ledger.setCutStatus(id, 'building');
+  } catch (err) {
+    return fail('build', null, oops(err));
   }
 
   const final = ledger.getCut(id)!;

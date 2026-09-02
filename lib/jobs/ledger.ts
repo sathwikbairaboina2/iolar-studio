@@ -20,7 +20,7 @@ export type PoolRow = {
   raw: Record<string, unknown>;
 };
 
-export type CutStatus = 'prepared' | 'thin' | 'submitted' | 'summarised' | 'planned' | 'failed';
+export type CutStatus = 'prepared' | 'thin' | 'submitted' | 'summarised' | 'planned' | 'scripted' | 'voiced' | 'building' | 'failed';
 export type CutKind = 'weekly' | 'daily';
 
 export type Cut = {

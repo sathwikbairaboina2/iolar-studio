@@ -65,26 +65,57 @@ describe('submitting a cut', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('posts the list with the studio source and the brief, then summarises and plans, recording each reply', async () => {
+  it('posts the list, then summarise, plan for the style, script, records the lines, posts them, and starts the build', async () => {
     const cut = await preparedCut(25);
     const { submitCut } = await import('@/lib/jobs/submit');
     const { f, calls } = board({
       '/api/weeks/2026-W36/jobs': { body: { ok: true, week: '2026-W36', counted: 25, rejected: 0 } },
-      'body:"stage":"summarise"': { body: { ok: true, stage: 'summarised' } },
-      'body:"stage":"plan"': { body: { ok: true, stage: 'planned' } },
+      'body:"stage":"summarise"': { body: { ok: true, message: 'summarised 25 roles' } },
+      'body:"stage":"plan"': { body: { ok: true, message: 'planned 10 beats in chalkboard' } },
+      'body:"stage":"script"': { body: { ok: true, message: 'wrote 8 lines' } },
+      'body:"stage":"build"': { body: { ok: true, message: 'building (pid 1)' } },
+      '/api/weeks/2026-W36/script': { body: { ok: true, style: 'chalkboard', world: 'classic', lines: [{ beatId: 'b2', role: 'hook', text: 'Twenty-five roles.' }, { beatId: 'b3', role: 'promise', text: 'Engineers, this is yours.' }] } },
     });
+    const spoken: string[] = [];
+    const speaker = async (text: string, mp3: string) => {
+      spoken.push(text);
+      (await import('node:fs')).writeFileSync(mp3, 'mp3-bytes');
+      return { provider: 'kokoro' };
+    };
     const record = vi.fn(async () => {});
-    const out = await submitCut(cut.id, { baseUrl: 'http://x', fetchImpl: f, record });
-    expect(calls.map((c) => c.url)).toEqual(['http://x/api/weeks/2026-W36/jobs', 'http://x/api/weeks/2026-W36/run', 'http://x/api/weeks/2026-W36/run']);
+    const out = await submitCut(cut.id, { baseUrl: 'http://x', fetchImpl: f, record, style: 'chalkboard', voice: 'studio', speaker });
+    expect(calls.map((c) => c.url)).toEqual([
+      'http://x/api/weeks/2026-W36/jobs',
+      'http://x/api/weeks/2026-W36/run', 'http://x/api/weeks/2026-W36/run', 'http://x/api/weeks/2026-W36/run',
+      'http://x/api/weeks/2026-W36/script', 'http://x/api/weeks/2026-W36/script',
+      'http://x/api/weeks/2026-W36/run',
+    ]);
     expect(calls[0].body).toMatchObject({ source: { kind: 'studio', cutId: cut.id }, brief: '# brief', force: false });
     expect((calls[0].body!.jobs as unknown[]).length).toBe(25);
-    expect(out.cut.status).toBe('planned');
+    expect(calls[2].body).toEqual({ stage: 'plan', style: 'chalkboard' });
+    expect(spoken).toEqual(['Twenty-five roles.', 'Engineers, this is yours.']);
+    const posted = calls[5].body as { style: string; provider: string; lines: { beatId: string; text: string; audio: { format: string; base64: string } }[] };
+    expect(posted.style).toBe('chalkboard');
+    expect(posted.provider).toBe('studio-kokoro');
+    expect(posted.lines.map((l) => l.beatId)).toEqual(['b2', 'b3']);
+    expect(posted.lines[0].audio).toEqual({ format: 'mp3', base64: Buffer.from('mp3-bytes').toString('base64') });
+    expect(out.cut.status).toBe('building');
     expect(out.submissions.map((s) => [s.stage, s.error])).toEqual([
-      ['imported', null],
-      ['summarise', null],
-      ['plan', null],
+      ['imported', null], ['summarise', null], ['plan', null], ['script', null], ['voice', null], ['build', null],
     ]);
-    expect(record).toHaveBeenCalledWith(expect.objectContaining({ status: 'planned' }), 1);
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ status: 'building' }), 1);
+  });
+
+  it('leaves the voice to the plugin when asked, and still builds', async () => {
+    const cut = await preparedCut(25);
+    const { submitCut } = await import('@/lib/jobs/submit');
+    const { f, calls } = board({
+      '/api/weeks/2026-W36/jobs': { body: { ok: true, week: '2026-W36', counted: 25, rejected: 0 } },
+      '/api/weeks/2026-W36/run': { body: { ok: true } },
+    });
+    const out = await submitCut(cut.id, { baseUrl: 'http://x', fetchImpl: f, voice: 'plugin' });
+    expect(calls.map((c) => c.url).filter((u) => u.endsWith('/script'))).toEqual([]);
+    expect(out.cut.status).toBe('building');
   });
 
   it('records a refusal from the board and marks the cut failed', async () => {

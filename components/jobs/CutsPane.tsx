@@ -9,6 +9,9 @@ const STATUS_COLOUR: Record<Cut['status'], string> = {
   summarised: 'cyan',
   planned: 'green',
   failed: 'red',
+  scripted: 'purple',
+  voiced: 'cyan',
+  building: 'processing',
 };
 
 /** The ledger of cuts, newest period first, and the two prepare buttons. */

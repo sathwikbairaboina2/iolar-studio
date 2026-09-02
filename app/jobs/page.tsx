@@ -1,13 +1,14 @@
 'use client';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Drawer, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { ExportOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { WeekRow, WeekStage } from '@/lib/jobs/board';
 import type { Cut } from '@/lib/jobs/ledger';
 import PoolPane, { type PoolStatus } from '@/components/jobs/PoolPane';
 import CutsPane from '@/components/jobs/CutsPane';
 import CutView, { type CutDetail } from '@/components/jobs/CutView';
+import RequestFormats from '@/components/jobs/RequestFormats';
 
 /**
  * The bridge between the research pool and the jobs-reel board, run from one page:
@@ -40,6 +41,9 @@ export default function JobsPage() {
   const [board, setBoard] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState<string | null>(null);
+  const [styles, setStyles] = useState<{ style: string; world: string; displayName: string }[]>([]);
+  const [style, setStyle] = useState<string>('paper-doodle');
+  const [log, setLog] = useState<{ week: string; text: string; status: string | null } | null>(null);
 
   const refreshPool = useCallback(async () => {
     const r = await fetch('/api/jobs/pool', { cache: 'no-store' }).catch(() => null);
@@ -80,7 +84,17 @@ export default function JobsPage() {
     void refreshPool();
     void refreshCuts();
     void refreshBoard();
+    void fetch('/api/jobs/styles', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d: { styles?: { style: string; world: string; displayName: string }[] }) => setStyles(d.styles ?? []))
+      .catch(() => {});
   }, [refreshPool, refreshCuts, refreshBoard]);
+
+  const openLog = async (week: string) => {
+    const r = await fetch(`/api/jobs/weeks/${week}/build`, { cache: 'no-store' }).catch(() => null);
+    const d = r ? ((await r.json()) as { build?: { status: string } | null; log?: string; error?: string }) : null;
+    setLog({ week, text: d?.log ?? d?.error ?? 'no log yet', status: d?.build?.status ?? null });
+  };
 
   // Force is a decision about one cut; choosing another cut clears it (see `choose`).
   const choose = (id: number | null) => {
@@ -130,7 +144,7 @@ export default function JobsPage() {
       const r = await fetch(`/api/jobs/cuts/${selected}/submit`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ force }),
+        body: JSON.stringify({ force, style }),
       });
       const d = await r.json();
       if (d.error) throw new Error(d.error);
@@ -144,18 +158,18 @@ export default function JobsPage() {
     }
   };
 
-  const run = async (week: string, stage: 'summarise' | 'plan') => {
+  const run = async (week: string, stage: 'summarise' | 'plan' | 'script' | 'build') => {
     const key = `${week}:${stage}`;
     setRunning(key);
     try {
       const r = await fetch(`/api/jobs/weeks/${week}/run`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ stage }),
+        body: JSON.stringify(stage === 'plan' ? { stage, style } : { stage }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? d.message ?? `the board answered ${r.status}`);
-      message.success(`${stage} ran for ${week}`);
+      message.success(d.message ?? `${stage} ran for ${week}`);
       await refreshBoard();
     } catch (err) {
       message.error(String(err instanceof Error ? err.message : err));
@@ -194,9 +208,29 @@ export default function JobsPage() {
         />
       )}
 
+      <Tabs
+        defaultActiveKey="pipeline"
+        items={[
+          { key: 'pipeline', label: 'Pipeline', children: (
+            <div style={{ display: 'grid', gap: 16 }}>
       <PoolPane pool={pool} pulling={pulling} onPull={() => void pull()} />
       <CutsPane cuts={cuts} preparing={preparing} selectedId={selected} boardBase={board} onPrepare={(k) => void prepare(k)} onSelect={choose} />
-      {detail && <CutView detail={detail} submitting={submitting} force={force} onForce={setForce} onSubmit={() => void submit()} />}
+      {detail && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          <Space size={8} data-testid="style-pick">
+            <Typography.Text type="secondary">Style</Typography.Text>
+            <Select
+              size="small"
+              style={{ minWidth: 220 }}
+              value={style}
+              onChange={setStyle}
+              options={(styles.length ? styles : [{ style: 'paper-doodle', world: 'classic', displayName: 'Paper & Doodle' }]).map((s) => ({ value: s.style, label: `${s.displayName} · ${s.world}` }))}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>Submit sends the list, plans in this style, lets the plugin write the lines, records them here, sends the recordings, and starts the build.</Typography.Text>
+          </Space>
+          <CutView detail={detail} submitting={submitting} force={force} onForce={setForce} onSubmit={() => void submit()} />
+        </div>
+      )}
 
       <Typography.Title level={5} style={{ margin: '8px 0 0' }}>
         On the board
@@ -214,6 +248,19 @@ export default function JobsPage() {
           { title: 'Roles', dataIndex: 'counted', width: 90 },
           { title: 'Rejected', dataIndex: 'rejected', width: 100, render: (n: number) => (n ? <Tag color="red">{n}</Tag> : '0') },
           { title: 'Style', dataIndex: 'style', width: 140, render: (s: string | null) => s ?? '—' },
+          {
+            title: 'Build',
+            dataIndex: 'build',
+            width: 120,
+            render: (b: string | null, row) =>
+              b ? (
+                <Button size="small" type="link" onClick={() => void openLog(row.week)} style={{ padding: 0 }}>
+                  <Tag color={b === 'done' ? 'green' : b === 'failed' ? 'red' : 'processing'}>{b}</Tag>
+                </Button>
+              ) : (
+                <Typography.Text type="secondary">—</Typography.Text>
+              ),
+          },
           {
             title: 'Audio',
             dataIndex: 'music',
@@ -252,6 +299,9 @@ export default function JobsPage() {
                 <Button size="small" loading={running === `${row.week}:plan`} disabled={row.stage === 'empty' || row.stage === 'imported'} onClick={() => void run(row.week, 'plan')}>
                   plan
                 </Button>
+                <Button size="small" loading={running === `${row.week}:build`} disabled={row.stage === 'empty' || row.stage === 'imported' || row.build === 'running'} onClick={() => void run(row.week, 'build')}>
+                  build
+                </Button>
                 <Button size="small" type="link" href={row.links.board} target="_blank">
                   open on board
                 </Button>
@@ -260,6 +310,14 @@ export default function JobsPage() {
           },
         ]}
       />
+            </div>
+          ) },
+          { key: 'formats', label: 'Request formats', children: <RequestFormats /> },
+        ]}
+      />
+      <Drawer title={log ? `Build log · ${log.week}${log.status ? ` · ${log.status}` : ''}` : 'Build log'} open={log !== null} onClose={() => setLog(null)} size="large">
+        <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{log?.text}</pre>
+      </Drawer>
     </div>
   );
 }

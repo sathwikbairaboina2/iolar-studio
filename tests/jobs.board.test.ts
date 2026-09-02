@@ -30,8 +30,8 @@ describe('listing weeks', () => {
     const rows = await listWeeks({ baseUrl: 'http://127.0.0.1:26100', fetchImpl: f });
     expect(calls[0].url).toBe('http://127.0.0.1:26100/api/weeks');
     expect(rows).toEqual([
-      { week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', music: null, fitted: false, hasExport: true },
-      { week: '2026-W45', stage: 'planned', counted: 120, rejected: 3, style: null, music: null, fitted: false, hasExport: false },
+      { week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', music: null, fitted: false, build: null, hasExport: true },
+      { week: '2026-W45', stage: 'planned', counted: 120, rejected: 3, style: null, music: null, fitted: false, build: null, hasExport: false },
     ]);
   });
 
@@ -59,7 +59,7 @@ describe('re-running a stage', () => {
 
   it('refuses stages the board does not offer, and weeks that are not weeks, before any call', async () => {
     const { f, calls } = fetchWith(() => ({ body: { ok: true } }));
-    await expect(runStage('2026-W46', 'render' as never, { fetchImpl: f })).rejects.toThrow(/summarise or plan/);
+    await expect(runStage('2026-W46', 'render' as never, { fetchImpl: f })).rejects.toThrow(/summarise, plan, script, build/);
     await expect(runStage('../etc', 'plan', { fetchImpl: f })).rejects.toThrow(/not a week/);
     expect(calls).toEqual([]);
   });
@@ -87,3 +87,33 @@ describe('links into the board', () => {
     });
   });
 });
+
+describe('the request client', () => {
+  it('reads the style catalogue, a week request, the lines, posts recordings, and reads the build', async () => {
+    const { listStyles, weekRequest, readLines, submitScript, buildStatus } = await import('@/lib/jobs/board');
+    const calls: { url: string; body?: unknown }[] = [];
+    const f = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      calls.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
+      if (u.endsWith('/api/styles')) return json([{ style: 'chat', world: 'group-chat' }]);
+      if (u.includes('/request?style=chat')) return json({ week: '2026-W36', style: 'chat', beats: [] });
+      if (u.endsWith('/script') && init?.method === 'POST') return json({ ok: true, recorded: 2, fitted: true, durationSec: 41.2 });
+      if (u.endsWith('/script')) return json({ style: 'chat', world: 'group-chat', lines: [{ beatId: 'b2', role: 'hook', text: 'x' }] });
+      if (u.endsWith('/build')) return json({ week: '2026-W36', build: { status: 'running', pid: 5, startedAt: 't' }, log: 'building' });
+      return json({ error: 'no route' }, 404);
+    }) as unknown as typeof fetch;
+    const o = { baseUrl: 'http://x', fetchImpl: f };
+    expect((await listStyles(o))[0]).toMatchObject({ style: 'chat' });
+    expect((await weekRequest('2026-W36', 'chat', o)).style).toBe('chat');
+    expect((await readLines('2026-W36', o)).lines[0].beatId).toBe('b2');
+    const r = await submitScript('2026-W36', { style: 'chat', lines: [{ beatId: 'b2', text: 'x', audio: { format: 'mp3', base64: 'AA==' } }] }, o);
+    expect(r).toMatchObject({ ok: true, recorded: 2, fitted: true });
+    expect((await buildStatus('2026-W36', o)).build?.status).toBe('running');
+    expect(calls.map((c) => c.url)).toEqual([
+      'http://x/api/styles', 'http://x/api/weeks/2026-W36/request?style=chat', 'http://x/api/weeks/2026-W36/script',
+      'http://x/api/weeks/2026-W36/script', 'http://x/api/weeks/2026-W36/build',
+    ]);
+  });
+});
+

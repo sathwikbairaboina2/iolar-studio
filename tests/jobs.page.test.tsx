@@ -59,9 +59,10 @@ beforeEach(() => {
       if (u.endsWith('/pull')) return json({ fetched: 1, added: 1, refreshed: 0, closed: 0, error: null });
     }
     if (u.endsWith('/api/jobs/pool')) return json(pool);
+    if (u.endsWith('/api/jobs/styles')) return json({ board: 'http://127.0.0.1:26100', styles: [{ style: 'paper-doodle', world: 'classic', displayName: 'Paper & Doodle', captionMode: 'plain', fixed: [], elastic: { slots: '4-5', secondsEach: '6.4-8s', rehook: null }, request: { jobs: { method: 'POST', path: '/api/weeks/{week}/jobs', body: 'JobsFile' }, script: { method: 'POST', path: '/api/weeks/{week}/script', body: {} }, build: { method: 'POST', path: '/api/weeks/{week}/run', body: { stage: 'build' } } } }] });
     if (u.endsWith('/api/jobs/cuts')) return json({ cuts: posted.some((p) => p.url.endsWith('/api/jobs/cuts')) ? [cut] : [] });
     if (u.endsWith('/api/jobs/cuts/1')) return json(detail);
-    if (u.endsWith('/api/jobs/weeks')) return json({ board: 'http://127.0.0.1:26100', weeks: [{ week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', hasExport: true, links: { board: 'b', reel: 'r', preview: 'p' } }] });
+    if (u.endsWith('/api/jobs/weeks')) return json({ board: 'http://127.0.0.1:26100', weeks: [{ week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', build: 'done', hasExport: true, links: { board: 'b', reel: 'r', preview: 'p' } }] });
     return json({ error: 'no route' }, 404);
   });
 });
@@ -89,7 +90,7 @@ describe('the jobs page', () => {
     await waitFor(() => expect((screen.getByTestId('submit') as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByTestId('submit'));
     await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobs/cuts/1/submit'))).toBe(true));
-    expect(posted.find((p) => p.url.endsWith('/submit'))?.body).toEqual({ force: true });
+    expect(posted.find((p) => p.url.endsWith('/submit'))?.body).toEqual({ force: true, style: 'paper-doodle' });
   });
 
   it('pulls the pool from the button', async () => {
@@ -100,3 +101,16 @@ describe('the jobs page', () => {
     await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobs/pool/pull'))).toBe(true));
   });
 });
+
+describe('the request formats tab', () => {
+  it('shows the flow and one card per style from the board', async () => {
+    const Page = (await import('@/app/jobs/page')).default;
+    render(<Page />);
+    await waitFor(() => expect(screen.getByText('Request formats')).toBeTruthy());
+    fireEvent.click(screen.getByText('Request formats'));
+    await waitFor(() => expect(screen.getByTestId('request-formats')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Paper & Doodle')).toBeTruthy());
+    expect(screen.getByText('How a cut becomes a reel')).toBeTruthy();
+  });
+});
+

@@ -9,10 +9,10 @@ export const maxDuration = 300;
 /** Post the cut to the board, then summarise and plan there. Every reply lands in the ledger. */
 export async function POST(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
-  const body = (await req.json().catch(() => ({}))) as { force?: boolean };
+  const body = (await req.json().catch(() => ({}))) as { force?: boolean; style?: string; voice?: 'studio' | 'plugin' };
   try {
     const out = await submitCut(Number(id), {
-      force: body.force === true,
+      force: body.force === true, style: typeof body.style === 'string' ? body.style : undefined, voice: body.voice,
       record: async (cut, pullId) => (await import('@/lib/knowledge/spaces/jobs')).recordCut(cut, pullId),
     });
     const last = out.submissions.at(-1);

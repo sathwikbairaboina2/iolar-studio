@@ -56,6 +56,9 @@ export type Settings = {
   jobsCategory: 'india' | 'global-remote' | 'other' | 'all';
   jobsTechOnly: boolean;
   jobsThinBelow: number;
+  /** The style pack a cut is planned and rendered in, and who records its lines. */
+  jobsStyle: string;
+  jobsVoice: 'studio' | 'plugin';
 };
 
 const DEFAULTS: Settings = {
@@ -105,6 +108,8 @@ const DEFAULTS: Settings = {
   jobsCategory: 'india',
   jobsTechOnly: false,
   jobsThinBelow: 20,
+  jobsStyle: 'paper-doodle',
+  jobsVoice: 'studio',
 };
 
 function file() {

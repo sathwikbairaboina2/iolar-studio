@@ -20,10 +20,13 @@ export type WeekRow = {
   music: string | null;
   /** True when the plugin cut the slides to the voice. */
   fitted: boolean;
+  /** The detached build on the board: running, done, failed, or null when none was started. */
+  build: BuildStatus;
   hasExport: boolean;
 };
 
-export type StageName = 'summarise' | 'plan';
+export type StageName = 'summarise' | 'plan' | 'script' | 'build';
+export type BuildStatus = 'running' | 'done' | 'failed' | null;
 
 export type BoardOpts = { baseUrl?: string; fetchImpl?: typeof fetch };
 
@@ -61,6 +64,7 @@ export async function listWeeks(opts: BoardOpts = {}): Promise<WeekRow[]> {
       style: r.style ?? null,
       music: r.music ?? null,
       fitted: r.fitted === true,
+      build: (r.build ?? null) as BuildStatus,
       hasExport: r.hasExport === true,
     };
   });
@@ -68,22 +72,27 @@ export async function listWeeks(opts: BoardOpts = {}): Promise<WeekRow[]> {
 
 const SAFE_WEEK = /^\d{4}-W\d{2}$/;
 
-/** Re-runs one of the two stages the board itself allows. Voice, render and export stay in the terminal. */
+const STAGES: StageName[] = ['summarise', 'plan', 'script', 'build'];
+
+/**
+ * Runs one of the board's stages. summarise and plan are instant; script asks the
+ * plugin's writer (about a minute); build starts the detached render and returns at once.
+ */
 export async function runStage(
   week: string,
   stage: StageName,
-  opts: BoardOpts = {}
+  opts: BoardOpts & { style?: string } = {}
 ): Promise<{ ok: boolean; message?: string }> {
   if (!SAFE_WEEK.test(week)) throw new Error(`"${week}" is not a week like 2026-W36`);
-  if (stage !== 'summarise' && stage !== 'plan') throw new Error(`the board only re-runs summarise or plan, not "${stage}"`);
+  if (!STAGES.includes(stage)) throw new Error(`the board runs ${STAGES.join(', ')}, not "${stage}"`);
   const { base, http } = client(opts);
   let res: Response;
   try {
     res = await http(`${base}/api/weeks/${week}/run`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ stage }),
-      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify(opts.style ? { stage, style: opts.style } : { stage }),
+      signal: AbortSignal.timeout(stage === 'script' ? 300_000 : 120_000),
     });
   } catch (err) {
     throw new BoardDown(`jobs-reel board is not answering on ${base}: ${String(err instanceof Error ? err.message : err)}`);
@@ -166,3 +175,102 @@ export const boardLinks = (week: string, base = jobsReelBase()) => ({
   reel: `${base}/api/weeks/${week}/reel.mp4`,
   preview: `${base}/preview/${week}`,
 });
+
+// ---- the request, per style ------------------------------------------------------------
+
+export type StyleSpec = {
+  style: string;
+  displayName: string;
+  world: string;
+  captionMode: 'plain' | 'punch';
+  fixed: { role: string; scene: string; seconds: number }[];
+  elastic: { slots: string; secondsEach: string; rehook: string | null };
+  request: {
+    jobs: { method: string; path: string; body: string };
+    script: { method: string; path: string; body: Record<string, unknown> };
+    build: { method: string; path: string; body: Record<string, unknown> };
+  };
+};
+
+async function getJson<T>(path: string, opts: BoardOpts, timeoutMs = TIMEOUT_MS): Promise<{ status: number; body: T }> {
+  const { base, http } = client(opts);
+  let res: Response;
+  try {
+    res = await http(`${base}${path}`, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    throw new BoardDown(`jobs-reel board is not answering on ${base}: ${String(err instanceof Error ? err.message : err)}`);
+  }
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as T };
+}
+
+/** Every style pack the plugin renders, with its world, its beats and the requests it expects. */
+export async function listStyles(opts: BoardOpts = {}): Promise<StyleSpec[]> {
+  const r = await getJson<unknown>('/api/styles', opts);
+  if (r.status !== 200 || !Array.isArray(r.body)) throw new BoardDown(`jobs-reel board answered ${r.status} for the styles`);
+  return r.body as StyleSpec[];
+}
+
+export type WeekRequest = {
+  week: string;
+  style: string;
+  world: string;
+  counted: number;
+  facts: Record<string, unknown>;
+  beats: { id: string; role: string; scene: string; secondsPlanned: number; secondsMin: number; speaks: boolean; maxWords: number; describe: string; shows: string | null; highlight: string | null }[];
+  submit: { method: string; path: string; body: Record<string, unknown> };
+};
+
+/** The concrete template for a submitted week in one style; the plugin plans it while answering. */
+export async function weekRequest(week: string, style: string, opts: BoardOpts = {}): Promise<WeekRequest> {
+  if (!SAFE_WEEK.test(week)) throw new Error(`"${week}" is not a week like 2026-W36`);
+  const r = await getJson<WeekRequest & { error?: string }>(`/api/weeks/${week}/request?style=${encodeURIComponent(style)}`, opts);
+  if (r.status !== 200) throw new BoardDown(r.body.error ?? `jobs-reel board answered ${r.status} for the request`);
+  return r.body;
+}
+
+export type BoardLines = { style: string; world: string; lines: { beatId: string; role: string; text: string }[] };
+
+/** The lines the plugin wrote for a week, ready to record. */
+export async function readLines(week: string, opts: BoardOpts = {}): Promise<BoardLines> {
+  if (!SAFE_WEEK.test(week)) throw new Error(`"${week}" is not a week like 2026-W36`);
+  const r = await getJson<BoardLines & { error?: string }>(`/api/weeks/${week}/script`, opts);
+  if (r.status !== 200) throw new BoardDown(r.body.error ?? `jobs-reel board answered ${r.status} for the lines`);
+  return r.body;
+}
+
+export type ScriptSubmission = {
+  style: string;
+  provider?: string;
+  lines: { beatId: string; text: string; audio?: { format: 'wav' | 'mp3'; base64: string } }[];
+};
+export type ScriptReply = { ok: boolean; status: number; message?: string; recorded?: number; fitted?: boolean; durationSec?: number };
+
+/** The lines with their recordings; the plugin measures them and cuts the timeline to them. */
+export async function submitScript(week: string, body: ScriptSubmission, opts: BoardOpts = {}): Promise<ScriptReply> {
+  if (!SAFE_WEEK.test(week)) throw new Error(`"${week}" is not a week like 2026-W36`);
+  const { base, http } = client(opts);
+  let res: Response;
+  try {
+    res = await http(`${base}/api/weeks/${week}/script`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (err) {
+    throw new BoardDown(`jobs-reel board is not answering on ${base}: ${String(err instanceof Error ? err.message : err)}`);
+  }
+  const reply = (await res.json().catch(() => ({}))) as Omit<ScriptReply, 'status'>;
+  return { ...reply, ok: res.ok && reply.ok !== false, status: res.status };
+}
+
+export type BuildView = { week: string; build: { status: 'running' | 'done' | 'failed'; pid: number; startedAt: string; endedAt?: string; code?: number | null } | null; log: string };
+
+/** Where the detached build is, with the tail of its log. */
+export async function buildStatus(week: string, opts: BoardOpts = {}): Promise<BuildView> {
+  if (!SAFE_WEEK.test(week)) throw new Error(`"${week}" is not a week like 2026-W36`);
+  const r = await getJson<BuildView>(`/api/weeks/${week}/build`, opts);
+  if (r.status !== 200) throw new BoardDown(`jobs-reel board answered ${r.status} for the build`);
+  return r.body;
+}
+
