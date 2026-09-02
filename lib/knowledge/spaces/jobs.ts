@@ -62,6 +62,23 @@ export async function recordWeek(view: WeekView): Promise<void> {
   });
 }
 
+/** A cut the studio prepared and submitted, linked to the week it fed and the pull it came from. */
+export async function recordCut(
+  cut: { id: number; periodKey: string; kind: string; counted: number; rejected: number; status: string },
+  pullId: number | null
+): Promise<void> {
+  await safely('jobs.recordCut', async () => {
+    const { graph } = getStores();
+    await graph.mergeNode(
+      'Cut',
+      { id: cut.id },
+      { space: 'jobs', periodKey: cut.periodKey, kind: cut.kind, counted: cut.counted, rejected: cut.rejected, status: cut.status }
+    );
+    await graph.mergeNode('Week', { week: cut.periodKey }, { space: 'jobs' });
+    await graph.mergeEdge({ label: 'Cut', key: { id: cut.id } }, 'FROM_POOL', weekRef(cut.periodKey), { pullId: pullId ?? null });
+  });
+}
+
 /** The stage a week was last indexed at, or null if the graph has never seen it. */
 export async function indexedStage(week: string): Promise<string | null> {
   const { graph } = getStores();

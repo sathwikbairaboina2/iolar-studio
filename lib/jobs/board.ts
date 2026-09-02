@@ -129,6 +129,31 @@ export async function readWeek(week: string, opts: BoardOpts = {}): Promise<Week
   return (await res.json()) as WeekView;
 }
 
+export type SubmitReply = { ok: boolean; status: number; week?: string; counted?: number; rejected?: number; message?: string };
+
+/** A cut for the board: the sheet import's shape, plus an optional brief and force. */
+export async function submitJobs(
+  key: string,
+  body: Record<string, unknown> & { brief?: string; force?: boolean },
+  opts: BoardOpts = {}
+): Promise<SubmitReply> {
+  if (!/^\d{4}-W\d{2}$|^\d{4}-\d{2}-\d{2}$/.test(key)) throw new Error(`"${key}" is not a period like 2026-W36 or 2026-09-03`);
+  const { base, http } = client(opts);
+  let res: Response;
+  try {
+    res = await http(`${base}/api/weeks/${key}/jobs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (err) {
+    throw new BoardDown(`jobs-reel board is not answering on ${base}: ${String(err instanceof Error ? err.message : err)}`);
+  }
+  const reply = (await res.json().catch(() => ({}))) as Omit<SubmitReply, 'status'>;
+  return { ...reply, ok: res.ok && reply.ok !== false, status: res.status };
+}
+
 /** Where the board shows this week, and where its export lives. */
 export const boardLinks = (week: string, base = jobsReelBase()) => ({
   board: `${base}/week/${week}`,
