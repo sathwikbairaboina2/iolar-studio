@@ -26,6 +26,8 @@ export type Plugin = {
   what: string;
   openUrl?: string;
   start?: StartRecipe;
+  /** A health check that is slow by nature gets its own budget; the default is six seconds. */
+  timeoutMs?: number;
 };
 
 const lipsyncBase = (process.env.LIPSYNC_URL ?? 'http://127.0.0.1:8300').replace(/\/$/, '');
@@ -89,6 +91,8 @@ export const PLUGINS: Plugin[] = [
     label: 'research',
     port: port(researchBase),
     healthUrl: `${researchBase}/api/health`,
+    // Its check spawns yt-dlp and gh and pings its ollama; one to three seconds, sometimes more.
+    timeoutMs: 15_000,
     what: 'The local researcher behind the Research tab. Hunts sources through searxng, jina, yt-dlp and gh on qwen.',
     openUrl: researchBase,
     // The script brings up its docker side (research-ollama, research-searxng) first, then

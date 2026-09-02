@@ -53,6 +53,8 @@ describe('the plugin registry', () => {
     expect(research.start!.args).toContain('scripts/serve.ps1');
     expect(research.start!.cwd).toMatch(/research-plugin$/);
     expect(research.openUrl).toBe('http://127.0.0.1:25100');
+    // Its own health check takes seconds; the default six-second budget made it flap.
+    expect(research.timeoutMs).toBe(15_000);
   });
 
   it('only offers to start the services it can start', async () => {

@@ -19,8 +19,8 @@ import type { Check, PluginHealth } from './reconcile';
 // exactly when it is working hardest.
 const TIMEOUT_MS = 6000;
 
-async function ask(url: string): Promise<unknown> {
-  const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(TIMEOUT_MS) });
+async function ask(url: string, timeoutMs = TIMEOUT_MS): Promise<unknown> {
+  const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`answered ${res.status}`);
   return res.json();
 }
@@ -125,7 +125,7 @@ async function probe(p: (typeof PLUGINS)[number]): Promise<PluginHealth> {
         ],
       };
     }
-    const body = await ask(p.healthUrl);
+    const body = await ask(p.healthUrl, p.timeoutMs ?? TIMEOUT_MS);
 
     if (p.name === 'lipsync') {
       const checks = lipsyncChecks(body);
