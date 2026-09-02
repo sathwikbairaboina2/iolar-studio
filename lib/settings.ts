@@ -52,6 +52,10 @@ export type Settings = {
   embedModel: string;
   /** Off restores the pipeline exactly as it was before the knowledge layer. */
   knowledgeMemory: boolean;
+  /** The jobs bridge: which slice of the research pool feeds the reel, and how small a cut is too small. */
+  jobsCategory: 'india' | 'global-remote' | 'other' | 'all';
+  jobsTechOnly: boolean;
+  jobsThinBelow: number;
 };
 
 const DEFAULTS: Settings = {
@@ -98,6 +102,9 @@ const DEFAULTS: Settings = {
   embedOllamaUrl: 'http://127.0.0.1:25103',
   embedModel: 'nomic-embed-text',
   knowledgeMemory: true,
+  jobsCategory: 'india',
+  jobsTechOnly: false,
+  jobsThinBelow: 20,
 };
 
 function file() {

@@ -62,6 +62,68 @@ CREATE TABLE IF NOT EXISTS renders (
   PRIMARY KEY (subject, chapter, part, slide)
 );
 -- The knowledge graph moved to Neo4j on 2 September 2026 (lib/knowledge/).
+
+-- The jobs bridge: the research pool as the studio saw it, and a ledger of every cut
+-- it prepared and submitted to the jobs-reel board. The pool is rebuildable by pulling
+-- again; the ledger is not, and is never deleted.
+CREATE TABLE IF NOT EXISTS jobs_pool (
+  research_id  INTEGER PRIMARY KEY,
+  family_key   TEXT NOT NULL,
+  company      TEXT NOT NULL,
+  title        TEXT NOT NULL,
+  category     TEXT NOT NULL,
+  remote       INTEGER NOT NULL,
+  posted_at    TEXT,
+  first_seen   TEXT NOT NULL,
+  last_seen    TEXT NOT NULL,
+  closed_at    TEXT,
+  raw_json     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pool_seen ON jobs_pool(last_seen, category);
+CREATE TABLE IF NOT EXISTS pulls (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  at           TEXT NOT NULL,
+  filter_json  TEXT NOT NULL,
+  fetched      INTEGER NOT NULL,
+  added        INTEGER NOT NULL,
+  refreshed    INTEGER NOT NULL,
+  closed       INTEGER NOT NULL,
+  error        TEXT
+);
+CREATE TABLE IF NOT EXISTS cuts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  period_key   TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  window_from  TEXT NOT NULL,
+  window_to    TEXT NOT NULL,
+  filter_json  TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  counted      INTEGER NOT NULL,
+  rejected     INTEGER NOT NULL,
+  summary_json TEXT NOT NULL,
+  brief_md     TEXT,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  UNIQUE(period_key, kind)
+);
+CREATE TABLE IF NOT EXISTS cut_rows (
+  cut_id        INTEGER NOT NULL REFERENCES cuts(id),
+  research_id   INTEGER NOT NULL,
+  row_json      TEXT,
+  mapped_by     TEXT NOT NULL,
+  reject_reason TEXT,
+  PRIMARY KEY (cut_id, research_id)
+);
+CREATE TABLE IF NOT EXISTS submissions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  cut_id       INTEGER NOT NULL REFERENCES cuts(id),
+  at           TEXT NOT NULL,
+  accepted     INTEGER NOT NULL,
+  rejected     INTEGER NOT NULL,
+  stage        TEXT,
+  reply_json   TEXT NOT NULL,
+  error        TEXT
+);
 `;
 
 /**
