@@ -41,6 +41,17 @@ export type Settings = {
   /** The ollama the local research agents think on. The research service's own, by default. */
   researchOllamaUrl: string;
   researchModel: string;
+  /** The knowledge graph. bolt, not http; the browser UI is on the next port. */
+  neo4jUrl: string;
+  neo4jUser: string;
+  neo4jPassword: string;
+  /** Passages and claims, for the agents' memory. */
+  qdrantUrl: string;
+  /** The ollama that embeds. research-ollama by default: it already holds nomic-embed-text. */
+  embedOllamaUrl: string;
+  embedModel: string;
+  /** Off restores the pipeline exactly as it was before the knowledge layer. */
+  knowledgeMemory: boolean;
 };
 
 const DEFAULTS: Settings = {
@@ -80,6 +91,13 @@ const DEFAULTS: Settings = {
   researchUrl: 'http://127.0.0.1:25100',
   researchOllamaUrl: 'http://127.0.0.1:25103',
   researchModel: 'qwen3.8:27b',
+  neo4jUrl: 'bolt://127.0.0.1:3124',
+  neo4jUser: 'neo4j',
+  neo4jPassword: 'iolar-local',
+  qdrantUrl: 'http://127.0.0.1:3126',
+  embedOllamaUrl: 'http://127.0.0.1:25103',
+  embedModel: 'nomic-embed-text',
+  knowledgeMemory: true,
 };
 
 function file() {
