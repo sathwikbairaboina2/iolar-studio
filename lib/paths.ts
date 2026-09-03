@@ -64,5 +64,11 @@ export function reelVoFile(slug: string) { return path.join(reelDir(slug), 'vo.m
 export function reelWordsFile(slug: string) { return path.join(reelDir(slug), 'vo.words.json'); }
 export function reelRendersDir(slug: string) { return path.join(reelDir(slug), 'renders'); }
 export function reelExportDir(slug: string) { return path.join(reelDir(slug), 'export'); }
+/** The hook clip a user dropped for a pattern reel; when present it beats the lipsync render. */
+export function reelPresenterFile(slug: string) { return path.join(reelDir(slug), 'presenter.mp4'); }
+/** Working files of the pattern pipeline: the hook's audio cut, the service's timeline. */
+export function reelPatternDir(slug: string) { return path.join(reelDir(slug), 'pattern'); }
+export function reelPatternHookAudio(slug: string) { return path.join(reelPatternDir(slug), 'hook.wav'); }
+export function reelPatternTimelineFile(slug: string) { return path.join(reelPatternDir(slug), 'timeline.json'); }
 export function stylesRoot() { return path.join(process.cwd(), 'styles'); }
 export function styleDir(name: string) { return path.join(stylesRoot(), name); }

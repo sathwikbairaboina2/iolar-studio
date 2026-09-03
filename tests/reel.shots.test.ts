@@ -79,7 +79,7 @@ function mockLink(link: unknown = { url: 'https://example.com/a', highlight: 'ph
 
 
 describe('shot planning', () => {
-  it('skips title beats and clamps shot length into the pattern range', async () => {
+  it('skips title beats and clamps shot length into the style range', async () => {
     const reel = await seed();
     const { planShots } = await import('@/lib/reel/shots');
     const reqs = planShots(reel, [3, 6]);

@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import { alignExistingVoice, synthesizeVoice } from '@/lib/reel/voice';
-import { voScript, scriptWordCount, voMatchesScript } from '@/lib/reel/script';
+import { voScriptFor, scriptHashFor } from '@/lib/reel/script';
+import * as research from '@/lib/reel/research/store';
 import { loadReel } from '@/lib/reel/store';
 import { reelVoFile } from '@/lib/paths';
 import { WhisperUnavailableError } from '@/lib/reel/align';
@@ -37,17 +38,20 @@ export async function GET(_req: Request, ctx: Ctx) {
       .stat(reelVoFile(slug))
       .then((s) => s.size)
       .catch(() => 0);
+    // A pattern reel voices its approved script lines; a freeform reel its beats.
+    const script = reel.pattern ? await research.readScript(slug).catch(() => null) : null;
+    const text = voScriptFor(reel, script);
     return NextResponse.json({
       hasAudio: bytes > 0,
       bytes,
       aligned: reel.vo.words.length > 0,
       durationSec: reel.vo.durationSec,
       heardWords: reel.vo.words.length,
-      scriptWords: scriptWordCount(reel),
+      scriptWords: text.split(/\s+/).filter(Boolean).length,
       // A take from before takes were fingerprinted cannot be judged either way. Saying
       // "stale" there would cry wolf on every reel already built.
-      matchesScript: reel.vo.scriptHash ? voMatchesScript(reel) : null,
-      script: voScript(reel),
+      matchesScript: reel.vo.scriptHash ? reel.vo.scriptHash === scriptHashFor(reel, script) : null,
+      script: text,
       provider: reel.vo.provider ?? null,
       voiceId: reel.vo.voiceId ?? null,
     });

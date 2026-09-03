@@ -106,4 +106,20 @@ describe('voice stage', () => {
     });
     expect(res.status).toBe(503);
   });
+
+  it('voices a pattern reel from its script lines, not its beats', async () => {
+    const { voScriptFor, scriptHashFor } = await import('@/lib/reel/script');
+    const script = {
+      runId: 'r', createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z', status: 'approved' as const,
+      lines: [
+        { id: 'l2', order: 1, role: 'body' as const, text: 'Second.', citations: [], assetIds: [], note: null, commentary: false },
+        { id: 'l1', order: 0, role: 'hook' as const, text: 'First.', citations: [], assetIds: [], note: null, commentary: false },
+      ],
+      unsupported: [], coverage: [], flags: [],
+    };
+    const reel = { pattern: { name: 'tools' }, beats: [{ text: 'Beat text.' }] };
+    expect(voScriptFor(reel, script)).toBe('First. Second.');
+    expect(voScriptFor({ ...reel, pattern: null }, script)).toBe('Beat text.');
+    expect(scriptHashFor(reel, script)).not.toBe(scriptHashFor({ ...reel, pattern: null }, script));
+  });
 });
