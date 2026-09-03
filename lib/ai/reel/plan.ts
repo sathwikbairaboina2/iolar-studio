@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { runClaude } from '../claude';
 import { extractJson } from '../revise';
-import { Pattern, loadPattern } from '../../reel/patterns';
+import { Style, loadStyle } from '../../reel/styles';
 import { loadReel, saveReel } from '../../reel/store';
 import { Beat, Reel, ShotKind } from '../../reel/schema';
 import { reelRefsDir } from '../../paths';
@@ -37,17 +37,17 @@ export type PlanOpts = {
   kinds?: readonly ShotKind[];
 };
 
-export function beatsPrompt(pattern: Pattern, mode: PlanMode, source: string, opts: PlanOpts = {}): string {
-  const [lo, hi] = pattern.pacing.shotSec;
-  const voice = `Write in the voice of ${pattern.displayName}: direct, fast, second person, present tense, no throat-clearing.`;
+export function beatsPrompt(style: Style, mode: PlanMode, source: string, opts: PlanOpts = {}): string {
+  const [lo, hi] = style.pacing.shotSec;
+  const voice = `Write in the voice of ${style.displayName}: direct, fast, second person, present tense, no throat-clearing.`;
   const pacing =
     `Each beat is one shot lasting ${lo}-${hi} seconds when spoken aloud — roughly ${Math.round(lo * 2.6)}-${Math.round(hi * 2.6)} words. ` +
     `Never split a sentence across two beats: a beat ends where a sentence ends. ` +
-    `Open with a hook of about ${pattern.hook.durationSec} seconds. Aim for 8-14 beats in total.`;
+    `Open with a hook of about ${style.hook.durationSec} seconds. Aim for 8-14 beats in total.`;
   const mix =
-    `Shot mix target: about ${Math.round(pattern.shotMix.screen * 100)}% screen recordings, ` +
-    `${Math.round(pattern.shotMix.talkingHead * 100)}% talking head, ${Math.round(pattern.shotMix.broll * 100)}% b-roll. ` +
-    `Come back to a talking-head beat roughly every ${pattern.shotMix.anchorEverySec} seconds.`;
+    `Shot mix target: about ${Math.round(style.shotMix.screen * 100)}% screen recordings, ` +
+    `${Math.round(style.shotMix.talkingHead * 100)}% talking head, ${Math.round(style.shotMix.broll * 100)}% b-roll. ` +
+    `Come back to a talking-head beat roughly every ${style.shotMix.anchorEverySec} seconds.`;
 
   const task =
     mode === 'paste'
@@ -135,8 +135,8 @@ function checked(mode: PlanMode, source: string, out: PlanOut): PlanOut {
 async function generate(slug: string, mode: PlanMode, source: string, opts: PlanOpts = {}): Promise<Reel> {
   if (!source.trim()) throw new Error(`plan mode "${mode}" needs a source`);
   const reel = await loadReel(slug);
-  const pattern = await loadPattern(reel.pattern);
-  const prompt = beatsPrompt(pattern, mode, source, opts);
+  const style = await loadStyle(reel.style);
+  const prompt = beatsPrompt(style, mode, source, opts);
   const first = await runClaude(prompt, { timeoutMs: 900_000 });
   try {
     return await applyPlan(slug, checked(mode, source, parseBeats(first)));

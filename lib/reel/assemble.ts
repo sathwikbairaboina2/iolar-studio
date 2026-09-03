@@ -1,10 +1,10 @@
 import { mulberry32 } from '../rng';
-import { Pattern } from './patterns';
+import { Style } from './styles';
 import { Clip, Overlay, Reel, Timeline, Word } from './schema';
 import { sortTimeline } from './timeline';
 import { alignScriptWords } from './script-align';
 
-export type AssembleInput = { reel: Reel; pattern: Pattern };
+export type AssembleInput = { reel: Reel; style: Style };
 
 const r3 = (n: number) => Math.round(n * 1e3) / 1e3;
 
@@ -49,7 +49,7 @@ export const HELD: Clip['motion'] = { type: 'hold', strength: 0, origin: [0.5, 0
 
 function pickMotion(
   rand: () => number,
-  pattern: Pattern,
+  style: Style,
   isScreen: boolean,
   isStill: boolean,
   piece: number,
@@ -64,13 +64,13 @@ function pickMotion(
   const originY = piece === 0 ? 0.45 + jitter : PIECE_ORIGINS[(piece - 1) % PIECE_ORIGINS.length];
   return {
     type,
-    strength: Math.round(pattern.motion.strength * gain * (0.8 + rand() * 0.4) * 1e5) / 1e5,
+    strength: Math.round(style.motion.strength * gain * (0.8 + rand() * 0.4) * 1e5) / 1e5,
     origin: [0.5, Math.round(originY * 1e5) / 1e5],
   };
 }
 
 /** Rebuilds the timeline from beats and words, keeping every locked element byte-identical. */
-export function assemble({ reel, pattern }: AssembleInput): Timeline {
+export function assemble({ reel, style }: AssembleInput): Timeline {
   const rand = mulberry32(reel.seed);
   const spans = beatSpans(reel);
   const ready = new Set(reel.assets.filter((a) => a.status === 'ready').map((a) => a.id));
@@ -78,7 +78,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
   const lockedClips = prev.clips.filter((c) => c.locked);
   const lockedCaptions = prev.captions.filter((c) => c.locked);
   const lockedOverlays = prev.overlays.filter((o) => o.locked);
-  const [, maxShot] = pattern.pacing.shotSec;
+  const [, maxShot] = style.pacing.shotSec;
 
   const clips: Clip[] = [];
   let cursor = 0;
@@ -150,7 +150,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
     for (let p = 0; p < pieces; p++) {
       const pieceAsset = pool[p % pool.length];
       const isStill = reel.assets.find((a) => a.id === pieceAsset)?.kind === 'image';
-      const motion = pickMotion(rand, pattern, isScreen, isStill, p, prevMotion);
+      const motion = pickMotion(rand, style, isScreen, isStill, p, prevMotion);
       prevMotion = motion;
       clips.push({
         id: `c${clips.length + 1}`,
@@ -171,7 +171,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
           : r3(p * each),
         fit: 'cover',
         motion,
-        transition: pattern.transitions[clips.length % pattern.transitions.length],
+        transition: style.transitions[clips.length % style.transitions.length],
         locked: false,
       });
     }
@@ -219,7 +219,7 @@ export function assemble({ reel, pattern }: AssembleInput): Timeline {
             id: 'o1',
             kind: 'hook-title',
             start: 0,
-            end: r3(pattern.hook.durationSec),
+            end: r3(style.hook.durationSec),
             props: { title: hookBeat.text },
             locked: false,
           },

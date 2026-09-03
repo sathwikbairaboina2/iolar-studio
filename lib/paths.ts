@@ -40,7 +40,7 @@ export function postFile(s: string, c: string, part: number) { return path.join(
 export function rendersDir(s: string, c: string, part: number) { return path.join(partDir(s, c, part), 'renders'); }
 export function exportDir(s: string, c: string, part: number) { return path.join(partDir(s, c, part), 'export'); }
 
-/** Reels live in a flat per-slug tree; patterns are repo assets, not user data. */
+/** Reels live in a flat per-slug tree; styles are repo assets, not user data. */
 export function reelsRoot() { return path.join(dataRoot(), 'reel'); }
 export function reelDir(slug: string) { return path.join(reelsRoot(), slug); }
 export function reelFile(slug: string) { return path.join(reelDir(slug), 'reel.json'); }
@@ -64,5 +64,5 @@ export function reelVoFile(slug: string) { return path.join(reelDir(slug), 'vo.m
 export function reelWordsFile(slug: string) { return path.join(reelDir(slug), 'vo.words.json'); }
 export function reelRendersDir(slug: string) { return path.join(reelDir(slug), 'renders'); }
 export function reelExportDir(slug: string) { return path.join(reelDir(slug), 'export'); }
-export function patternsRoot() { return path.join(process.cwd(), 'patterns'); }
-export function patternDir(name: string) { return path.join(patternsRoot(), name); }
+export function stylesRoot() { return path.join(process.cwd(), 'styles'); }
+export function styleDir(name: string) { return path.join(stylesRoot(), name); }

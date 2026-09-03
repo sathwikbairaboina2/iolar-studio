@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
 /**
- * The pattern shape and everything derived from it, with no filesystem access.
+ * The style shape and everything derived from it, with no filesystem access.
  *
- * The studio player runs in the browser and needs `patternCssVars`, so this half must
- * stay importable from a client component. Loading a pattern off disk lives in
- * `patterns.ts`, which is server-only.
+ * The studio player runs in the browser and needs `styleCssVars`, so this half must
+ * stay importable from a client component. Loading a style off disk lives in
+ * `styles.ts`, which is server-only.
  */
 
-const PatternSchema = z.object({
+const StyleSchema = z.object({
   name: z.string().min(1),
   displayName: z.string().min(1),
   caption: z.object({
@@ -48,11 +48,11 @@ const PatternSchema = z.object({
   letterbox: z.object({ bg: z.string().default('#ffffff') }).prefault({}),
 });
 
-export type Pattern = z.infer<typeof PatternSchema>;
-export type PatternMeta = { name: string; displayName: string; draft: boolean };
+export type Style = z.infer<typeof StyleSchema>;
+export type StyleMeta = { name: string; displayName: string; draft: boolean };
 
-export function validatePattern(data: unknown): Pattern {
-  return PatternSchema.parse(data);
+export function validateStyle(data: unknown): Style {
+  return StyleSchema.parse(data);
 }
 
 function rgba(hex: string, alpha: number): string {
@@ -62,14 +62,14 @@ function rgba(hex: string, alpha: number): string {
 }
 
 /**
- * The only place pattern.json becomes CSS. Preview and export both call this.
+ * The only place style.json becomes CSS. Preview and export both call this.
  *
  * Lengths are emitted in container-query height units, not vh. The export renders in a
  * viewport the size of the frame, where the two agree, but the studio player is a small
  * box inside a browser window — with vh, a 6vh hook title came out nearly twice its
  * intended size on screen. `cqh` resolves against the stage in both.
  */
-export function patternCssVars(p: Pattern): string {
+export function styleCssVars(p: Style): string {
   const c = p.caption;
   return [
     `--cap-font: ${c.font}`,

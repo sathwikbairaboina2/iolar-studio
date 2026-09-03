@@ -1,7 +1,7 @@
 import { promises as fs } from 'fs';
 import { Reel } from './schema';
 import { loadReel, saveReel } from './store';
-import { loadPattern } from './patterns';
+import { loadStyle } from './styles';
 import { reelVoFile, reelWordsFile } from '../paths';
 import { alignVoice } from './align';
 import { speak } from './tts';

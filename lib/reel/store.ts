@@ -7,7 +7,7 @@ export type ReelStatus = 'draft' | 'voiced' | 'assembled' | 'exported';
 export type ReelMeta = {
   slug: string;
   title: string;
-  pattern: string;
+  style: string;
   beats: number;
   durationSec: number;
   status: ReelStatus;
@@ -66,7 +66,7 @@ export async function listReels(): Promise<ReelMeta[]> {
       out.push({
         slug,
         title: reel.title,
-        pattern: reel.pattern,
+        style: reel.style,
         beats: reel.beats.length,
         durationSec: last ? last.end : reel.vo.durationSec,
         status: reelStatus(reel, exported),

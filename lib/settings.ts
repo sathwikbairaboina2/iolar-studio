@@ -21,7 +21,7 @@ export type Settings = {
   lipsyncFps: number;
   reelFps: number;
   reelRatio: string;
-  reelPattern: string;
+  reelStyle: string;
   agentProvider: 'local' | 'claude';
   agentUrl: string;
   agentOllamaUrl: string;
@@ -59,6 +59,9 @@ export type Settings = {
   /** The style pack a cut is planned and rendered in, and who records its lines. */
   jobsStyle: string;
   jobsVoice: 'studio' | 'plugin';
+  /** The kokoro voice and pace the studio reads a jobs reel in; hf_alpha is Indian English. */
+  jobsKokoroVoice: string;
+  jobsKokoroSpeed: number;
 };
 
 const DEFAULTS: Settings = {
@@ -82,7 +85,7 @@ const DEFAULTS: Settings = {
   lipsyncFps: 0,
   reelFps: 30,
   reelRatio: '9:16',
-  reelPattern: 'armand',
+  reelStyle: 'armand',
   agentProvider: 'local',
   agentUrl: 'http://127.0.0.1:3121',
   // The model lives in the invisible-ollama container, which already holds it.
@@ -110,6 +113,10 @@ const DEFAULTS: Settings = {
   jobsThinBelow: 20,
   jobsStyle: 'paper-doodle',
   jobsVoice: 'studio',
+  jobsKokoroVoice: 'hf_alpha',
+  // The plugin cuts each slide to its line, so a jobs reel can take a presenter's pace
+  // rather than the 1.35 a fixed-length reel needs.
+  jobsKokoroSpeed: 1.1,
 };
 
 function file() {
@@ -118,7 +125,11 @@ function file() {
 
 export function getSettings(): Settings {
   try {
-    return { ...DEFAULTS, ...JSON.parse(readFileSync(file(), 'utf8')) };
+    const raw = JSON.parse(readFileSync(file(), 'utf8')) as Record<string, unknown>;
+    // The preset key was renamed on 3 September 2026; an old settings file still reads.
+    if (typeof raw.reelPattern === 'string' && raw.reelStyle === undefined) raw.reelStyle = raw.reelPattern;
+    delete raw.reelPattern;
+    return { ...DEFAULTS, ...raw } as Settings;
   } catch {
     return { ...DEFAULTS };
   }

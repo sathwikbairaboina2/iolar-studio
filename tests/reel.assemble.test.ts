@@ -27,7 +27,7 @@ const WORDS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', '
 async function baseReel() {
   const { validateReel } = await import('@/lib/reel/schema');
   return validateReel({
-    pattern: 'test',
+    style: 'test',
     title: 'Test',
     seed: 42,
     beats: [
@@ -56,7 +56,7 @@ async function stillReel() {
 describe('assemble', () => {
   it('gives every beat a clip spanning its own words', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await baseReel(), pattern: PATTERN });
+    const tl = assemble({ reel: await baseReel(), style: PATTERN });
     expect(tl.clips).toHaveLength(3);
     expect(tl.clips[0]).toMatchObject({ beatId: 'b1', assetId: 'a1', start: 0 });
     expect(tl.clips[0].end).toBeCloseTo(1.95, 2);
@@ -68,16 +68,16 @@ describe('assemble', () => {
 
   it('leaves no gap and no overlap between clips', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await baseReel(), pattern: PATTERN });
+    const tl = assemble({ reel: await baseReel(), style: PATTERN });
     for (let i = 1; i < tl.clips.length; i++) {
       expect(tl.clips[i].start).toBeCloseTo(tl.clips[i - 1].end, 3);
     }
   });
 
 
-  it('adds a hook overlay for the pattern hook duration', async () => {
+  it('adds a hook overlay for the style hook duration', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await baseReel(), pattern: PATTERN });
+    const tl = assemble({ reel: await baseReel(), style: PATTERN });
     expect(tl.overlays).toHaveLength(1);
     expect(tl.overlays[0]).toMatchObject({ kind: 'hook-title', start: 0 });
     expect(tl.overlays[0].end).toBeCloseTo(1.6, 5);
@@ -87,10 +87,10 @@ describe('assemble', () => {
   it('is deterministic for a seed and varies motion between neighbours', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
     const reel = await stillReel();
-    const a = assemble({ reel, pattern: PATTERN });
-    const b = assemble({ reel, pattern: PATTERN });
+    const a = assemble({ reel, style: PATTERN });
+    const b = assemble({ reel, style: PATTERN });
     expect(b).toEqual(a);
-    const c = assemble({ reel: { ...reel, seed: 99 }, pattern: PATTERN });
+    const c = assemble({ reel: { ...reel, seed: 99 }, style: PATTERN });
     expect(c.clips.map((x) => x.motion)).not.toEqual(a.clips.map((x) => x.motion));
     expect(a.clips[0].motion.type).not.toBe(a.clips[1].motion.type);
   });
@@ -98,7 +98,7 @@ describe('assemble', () => {
   it('preserves locked clips verbatim and reflows the rest around them', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
     const reel = await baseReel();
-    const first = assemble({ reel, pattern: PATTERN });
+    const first = assemble({ reel, style: PATTERN });
     const editedClip = {
       ...first.clips[1],
       end: first.clips[1].end + 1,
@@ -109,7 +109,7 @@ describe('assemble', () => {
       ...reel,
       timeline: { ...first, clips: first.clips.map((c) => (c.id === editedClip.id ? editedClip : c)) },
     };
-    const second = assemble({ reel: withLock, pattern: PATTERN });
+    const second = assemble({ reel: withLock, style: PATTERN });
     const kept = second.clips.find((c) => c.id === editedClip.id)!;
     expect(kept).toEqual(editedClip);
     expect(second.clips.find((c) => c.beatId === 'b3')!.start).toBeCloseTo(editedClip.end, 3);
@@ -119,7 +119,7 @@ describe('assemble', () => {
     const { assemble } = await import('@/lib/reel/assemble');
     const reel = await baseReel();
     const locked = { id: 'kx', text: 'MY WORDS', start: 0, end: 1.2, hidden: false, locked: true };
-    const tl = assemble({ reel: { ...reel, timeline: { ...reel.timeline, captions: [locked] } }, pattern: PATTERN });
+    const tl = assemble({ reel: { ...reel, timeline: { ...reel.timeline, captions: [locked] } }, style: PATTERN });
     expect(tl.captions.find((c) => c.id === 'kx')).toEqual(locked);
     for (const c of tl.captions.filter((c) => c.id !== 'kx')) {
       expect(c.start >= locked.end || c.end <= locked.start).toBe(true);
@@ -135,7 +135,7 @@ describe('assemble', () => {
       assets: reel.assets.map((a) => (a.id === 'a2' ? { ...a, status: 'queued', path: '' } : a)),
     });
 
-    const tl = assemble({ reel: half, pattern: PATTERN });
+    const tl = assemble({ reel: half, style: PATTERN });
     // The beat is left out until its footage lands; the rest of the reel is unaffected.
     expect(tl.clips.some((c) => c.beatId === 'b2')).toBe(false);
     expect(tl.clips.length).toBeGreaterThan(0);
@@ -145,7 +145,7 @@ describe('assemble', () => {
   it('returns an empty timeline when there is no voiceover yet', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
     const reel = await baseReel();
-    const tl = assemble({ reel: { ...reel, vo: { ...reel.vo, words: [] } }, pattern: PATTERN });
+    const tl = assemble({ reel: { ...reel, vo: { ...reel.vo, words: [] } }, style: PATTERN });
     expect(tl.clips).toEqual([]);
     expect(tl.captions).toEqual([]);
   });
@@ -168,7 +168,7 @@ describe('degenerate word timings', () => {
         beats: [...reel.beats.slice(0, 2), { ...reel.beats[2], text: 'nine ten eleven twelve is running.' }],
         vo: { ...reel.vo, words },
       },
-      pattern: PATTERN,
+      style: PATTERN,
     });
     // The schema is the real gate here: it rejects any cue or clip of zero length.
     expect(() => validateReel({ ...reel, timeline: tl })).not.toThrow();
@@ -178,7 +178,7 @@ describe('degenerate word timings', () => {
 describe('screen beats scroll, footage beats drift', () => {
   it('gives a screen beat a vertical pan, and a bigger one', async () => {
     const { assemble, SCREEN_MOTION_GAIN } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await stillReel(), pattern: PATTERN });
+    const tl = assemble({ reel: await stillReel(), style: PATTERN });
     const screen = tl.clips.find((c) => c.beatId === 'b2')!; // the screen beat
     expect(['pan-up', 'pan-down']).toContain(screen.motion.type);
     expect(screen.motion.strength).toBeGreaterThan(PATTERN.motion.strength * (SCREEN_MOTION_GAIN - 1));
@@ -186,7 +186,7 @@ describe('screen beats scroll, footage beats drift', () => {
 
   it('leaves footage beats on the gentler drift', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await stillReel(), pattern: PATTERN });
+    const tl = assemble({ reel: await stillReel(), style: PATTERN });
     for (const c of tl.clips.filter((c) => c.beatId !== 'b2')) {
       expect(['zoom-in', 'zoom-out', 'pan-left', 'pan-right']).toContain(c.motion.type);
       expect(c.motion.strength).toBeLessThan(PATTERN.motion.strength * 1.5);
@@ -200,12 +200,12 @@ describe('a split beat reads as a cut', () => {
     const { validateReel } = await import('@/lib/reel/schema');
     const long = Array.from({ length: 30 }, (_, i) => ({ w: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.35 }));
     const reel = validateReel({
-      pattern: 'test', title: 'Long', seed: 5,
+      style: 'test', title: 'Long', seed: 5,
       beats: [{ id: 'b1', role: 'body', text: long.map((w) => w.w).join(' '), shot: { kind: 'screen', brief: '', assetId: 'a1' } }],
       vo: { words: long, durationSec: 12 },
       assets: [{ id: 'a1', kind: 'image', path: 'assets/a1.png', origin: 'user', status: 'ready' }],
     });
-    const tl = assemble({ reel, pattern: PATTERN });
+    const tl = assemble({ reel, style: PATTERN });
     expect(tl.clips.length).toBeGreaterThanOrEqual(2);
     const origins = tl.clips.map((c) => c.motion.origin[1]);
     // consecutive pieces of one beat must not sit on the same part of the picture
@@ -217,14 +217,14 @@ describe('motion is compensation for a still', () => {
   it('holds footage that already moves, so its edges are not cropped away', async () => {
     const { assemble, HELD } = await import('@/lib/reel/assemble');
     const reel = await baseReel(); // every asset in the fixture is a video
-    for (const clip of assemble({ reel, pattern: PATTERN }).clips) {
+    for (const clip of assemble({ reel, style: PATTERN }).clips) {
       expect(clip.motion).toEqual(HELD);
     }
   });
 
   it('still moves a still', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    for (const clip of assemble({ reel: await stillReel(), pattern: PATTERN }).clips) {
+    for (const clip of assemble({ reel: await stillReel(), style: PATTERN }).clips) {
       expect(clip.motion.type).not.toBe('hold');
       expect(clip.motion.strength).toBeGreaterThan(0);
     }
@@ -237,7 +237,7 @@ describe('a line can cut between several shots', () => {
     const { validateReel } = await import('@/lib/reel/schema');
     const words = Array.from({ length: 24 }, (_, i) => ({ w: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.35 }));
     const reel = validateReel({
-      pattern: 'test', title: 'T', seed: 3,
+      style: 'test', title: 'T', seed: 3,
       beats: [{
         id: 'b1', role: 'body', text: words.map((w) => w.w).join(' '),
         shot: { kind: 'screen', brief: '', assetId: 'a1', alsoAssetIds: ['a2', 'a3'] },
@@ -247,7 +247,7 @@ describe('a line can cut between several shots', () => {
         id, kind: 'video', path: `assets/${id}.mp4`, origin: 'plugin', status: 'ready',
       })),
     });
-    const tl = assemble({ reel, pattern: PATTERN });
+    const tl = assemble({ reel, style: PATTERN });
     expect(tl.clips.length).toBeGreaterThan(1);
     expect(new Set(tl.clips.map((c) => c.assetId)).size).toBeGreaterThan(1);
     // each piece opens its own footage rather than continuing the last one
@@ -259,7 +259,7 @@ describe('a line can cut between several shots', () => {
     const { validateReel } = await import('@/lib/reel/schema');
     const words = Array.from({ length: 24 }, (_, i) => ({ w: `w${i}`, start: i * 0.4, end: i * 0.4 + 0.35 }));
     const reel = validateReel({
-      pattern: 'test', title: 'T', seed: 3,
+      style: 'test', title: 'T', seed: 3,
       beats: [{
         id: 'b1', role: 'body', text: words.map((w) => w.w).join(' '),
         shot: { kind: 'screen', brief: '', assetId: 'a1', alsoAssetIds: ['a2'] },
@@ -270,7 +270,7 @@ describe('a line can cut between several shots', () => {
         { id: 'a2', kind: 'video', path: '', origin: 'plugin', status: 'queued' },
       ],
     });
-    for (const c of assemble({ reel, pattern: PATTERN }).clips) expect(c.assetId).toBe('a1');
+    for (const c of assemble({ reel, style: PATTERN }).clips) expect(c.assetId).toBe('a1');
   });
 });
 
@@ -295,7 +295,7 @@ describe('a padded recording never pushes its neighbour off its words', () => {
       ],
     };
 
-    const t = assemble({ reel: padded as never, pattern: PATTERN as never });
+    const t = assemble({ reel: padded as never, style: PATTERN as never });
     const second = t.clips.find((c) => c.assetId === 'a2')!;
     // Lips in step: the recording plays from the moment it was cut for...
     expect(second.start).toBe(3.0);

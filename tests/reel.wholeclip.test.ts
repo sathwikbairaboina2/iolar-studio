@@ -43,8 +43,8 @@ async function seed() {
 describe('holes between recordings', () => {
   it('leaves no black between them', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
-    const tl = assemble({ reel: await seed(), pattern: await loadPattern('armand') });
+    const { loadStyle } = await import('@/lib/reel/styles');
+    const tl = assemble({ reel: await seed(), style: await loadStyle('armand') });
 
     const sorted = [...tl.clips].sort((a, b) => a.start - b.start);
     for (let i = 1; i < sorted.length; i++) {
@@ -54,9 +54,9 @@ describe('holes between recordings', () => {
 
   it('holds the picture to the end of the voiceover', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
+    const { loadStyle } = await import('@/lib/reel/styles');
     const reel = await seed();
-    const tl = assemble({ reel, pattern: await loadPattern('armand') });
+    const tl = assemble({ reel, style: await loadStyle('armand') });
 
     // A recording shorter than the words spoken over it would otherwise end the picture
     // early and leave the last sentence playing over black.
@@ -66,10 +66,10 @@ describe('holes between recordings', () => {
 
   it('will not pull the first recording back to cover the opening', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
+    const { loadStyle } = await import('@/lib/reel/styles');
     const reel = await seed();
     const late = { ...reel, assets: reel.assets.map((a) => (a.id === 'take' ? { ...a, takeStart: 2.5 } : a)) };
-    const tl = assemble({ reel: late as never, pattern: await loadPattern('armand') });
+    const tl = assemble({ reel: late as never, style: await loadStyle('armand') });
 
     // A face two and a half seconds out of step with its own voice is worse than a moment
     // of black at the top.
@@ -78,8 +78,8 @@ describe('holes between recordings', () => {
 
   it('never moves a recording off the moment it was cut for', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
-    const tl = assemble({ reel: await seed(), pattern: await loadPattern('armand') });
+    const { loadStyle } = await import('@/lib/reel/styles');
+    const tl = assemble({ reel: await seed(), style: await loadStyle('armand') });
 
     // The lips are in step with the words at the moment this was cut from. Sliding it to
     // close a gap is what puts them out again.
@@ -92,16 +92,16 @@ describe('holes between recordings', () => {
 describe('a recording goes in whole', () => {
   it('gives each recording one clip, not one per beat', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
-    const tl = assemble({ reel: await seed(), pattern: await loadPattern('armand') });
+    const { loadStyle } = await import('@/lib/reel/styles');
+    const tl = assemble({ reel: await seed(), style: await loadStyle('armand') });
 
     expect(tl.clips.map((c) => c.assetId)).toEqual(['take', 'page']);
   });
 
   it('plays it from its first frame, at the moment it was cut for', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
-    const tl = assemble({ reel: await seed(), pattern: await loadPattern('armand') });
+    const { loadStyle } = await import('@/lib/reel/styles');
+    const tl = assemble({ reel: await seed(), style: await loadStyle('armand') });
 
     const take = tl.clips.find((c) => c.assetId === 'take')!;
     expect(take.srcIn).toBe(0);
@@ -114,16 +114,16 @@ describe('a recording goes in whole', () => {
 
   it('leaves the picture alone — no camera move over footage that already moves', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
-    const tl = assemble({ reel: await seed(), pattern: await loadPattern('armand') });
+    const { loadStyle } = await import('@/lib/reel/styles');
+    const tl = assemble({ reel: await seed(), style: await loadStyle('armand') });
 
     for (const c of tl.clips) expect(c.motion.type).toBe('hold');
   });
 
   it('writes no captions', async () => {
     const { assemble } = await import('@/lib/reel/assemble');
-    const { loadPattern } = await import('@/lib/reel/patterns');
-    const tl = assemble({ reel: await seed(), pattern: await loadPattern('armand') });
+    const { loadStyle } = await import('@/lib/reel/styles');
+    const tl = assemble({ reel: await seed(), style: await loadStyle('armand') });
     expect(tl.captions).toEqual([]);
   });
 });

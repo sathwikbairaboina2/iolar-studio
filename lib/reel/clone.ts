@@ -2,8 +2,8 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import sharp from 'sharp';
-import { Pattern, validatePattern } from './patterns';
-import { patternDir, patternsRoot, slugify } from '../paths';
+import { Style, validateStyle } from './styles';
+import { styleDir, stylesRoot, slugify } from '../paths';
 import { ffprobeMedia, sampleFrames, sceneCuts } from './probe';
 import { transcribe } from './align';
 import { Word } from './schema';
@@ -204,10 +204,10 @@ export function wordsPerBeatFrom(words: Word[], beatSec: number[]): [number, num
   return [Math.max(1, Math.floor(perBeat * 0.7)), Math.max(2, Math.ceil(perBeat * 1.3))];
 }
 
-export async function clonePattern(
+export async function cloneStyle(
   mediaUrl: string,
   name?: string
-): Promise<{ name: string; pattern: Pattern; report: CloneReport }> {
+): Promise<{ name: string; style: Style; report: CloneReport }> {
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'iolar-clone-'));
   const file = path.join(work, 'reference.mp4');
   const r = await fetch(mediaUrl);
@@ -268,7 +268,7 @@ export async function clonePattern(
   const dirName = slug.endsWith('-draft') ? slug : `${slug}-draft`;
   const firstCut = cuts.find((c) => c > 0.6) ?? 1.6;
 
-  const pattern = validatePattern({
+  const style = validateStyle({
     name: dirName,
     displayName: `${name ?? 'Cloned creator'} (draft)`,
     caption: {
@@ -311,23 +311,23 @@ export async function clonePattern(
     guessed,
     caveats: [
       'pacing.shotSec is a lower bound: screen recordings and fast zooms register as cuts, so shots read shorter than they are.',
-      'Everything here is a starting point — edit pattern.json and caption.css by hand.',
+      'Everything here is a starting point — edit style.json and caption.css by hand.',
     ],
     cuts,
     durationSec: info.durationSec,
     fps: info.fps,
   };
 
-  const dir = patternDir(dirName);
+  const dir = styleDir(dirName);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, 'pattern.json'), JSON.stringify(pattern, null, 2));
+  await fs.writeFile(path.join(dir, 'style.json'), JSON.stringify(style, null, 2));
   await fs.copyFile(
-    path.join(patternsRoot(), 'armand', 'caption.css'),
+    path.join(stylesRoot(), 'armand', 'caption.css'),
     path.join(dir, 'caption.css')
   );
-  await fs.copyFile(path.join(patternsRoot(), 'armand', 'hook.html'), path.join(dir, 'hook.html'));
+  await fs.copyFile(path.join(stylesRoot(), 'armand', 'hook.html'), path.join(dir, 'hook.html'));
   await fs.writeFile(path.join(dir, 'report.json'), JSON.stringify(report, null, 2));
   await fs.rm(work, { recursive: true, force: true });
 
-  return { name: dirName, pattern, report };
+  return { name: dirName, style, report };
 }

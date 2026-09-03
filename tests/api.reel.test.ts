@@ -59,10 +59,10 @@ describe('reel api', () => {
     expect(res.status).toBe(400);
   });
 
-  it('lists patterns', async () => {
-    const { GET } = await import('@/app/api/reel/patterns/route');
-    const out = await (await GET(new Request('http://x/api/reel/patterns'))).json();
-    expect(out.patterns.map((p: { name: string }) => p.name)).toContain('armand');
+  it('lists styles', async () => {
+    const { GET } = await import('@/app/api/reel/styles/route');
+    const out = await (await GET(new Request('http://x/api/reel/styles'))).json();
+    expect(out.styles.map((p: { name: string }) => p.name)).toContain('armand');
   });
 });
 

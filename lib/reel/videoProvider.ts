@@ -77,7 +77,7 @@ export function registeredProviders(): string[] {
 /**
  * Which renderer owns a shot kind.
  *
- * `title` returns null because a title card is drawn by the pattern over
+ * `title` returns null because a title card is drawn by the style over
  * whatever is behind it; it has never been generated and is not missing.
  */
 export function providerNameFor(kind: ShotKind): string | null {

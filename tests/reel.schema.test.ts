@@ -4,7 +4,7 @@ describe('reel schema', () => {
   it('fills defaults for a minimal reel', async () => {
     const { validateReel } = await import('@/lib/reel/schema');
     const r = validateReel({
-      pattern: 'armand',
+      style: 'armand',
       title: 'Grok Bot',
       beats: [{ id: 'b1', role: 'hook', text: 'xAI just dropped Grok Bot.', shot: { kind: 'title', brief: 'stage b-roll' } }],
     });
@@ -20,7 +20,7 @@ describe('reel schema', () => {
     const { validateReel } = await import('@/lib/reel/schema');
     expect(() =>
       validateReel({
-        pattern: 'armand',
+        style: 'armand',
         title: 't',
         beats: [{ id: 'b1', role: 'hook', text: 'x', shot: { kind: 'explosion', brief: '' } }],
       })
@@ -31,7 +31,7 @@ describe('reel schema', () => {
     const { validateReel } = await import('@/lib/reel/schema');
     expect(() =>
       validateReel({
-        pattern: 'armand',
+        style: 'armand',
         title: 't',
         beats: [{ id: 'b1', role: 'hook', text: 'x', shot: { kind: 'broll', brief: '' } }],
         timeline: { clips: [{ id: 'c1', assetId: 'a1', start: 4, end: 4, srcIn: 0 }] },

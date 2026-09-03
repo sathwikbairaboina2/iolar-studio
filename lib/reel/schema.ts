@@ -123,9 +123,44 @@ const TimelineSchema = z.object({
     .prefault({}),
 });
 
+export const PATTERN_JOB_STATES = ['queued', 'preparing', 'rendering', 'done', 'failed'] as const;
+
+/**
+ * A pattern reel: the approved script split into a template's sections and rendered by
+ * the templates service. Sections are pattern-specific and validated by the pattern
+ * definition (`lib/reel/pattern/`), never here, so a new pattern does not touch this file.
+ */
+export const ReelPatternSchema = z.object({
+  /** A template the service lists in GET /templates. */
+  name: z.string().min(1),
+  /** One of that template's themes. */
+  theme: z.string().min(1),
+  /** Where the hook's presenter clip comes from; an uploaded clip flips this to upload. */
+  presenter: z.enum(['lipsync', 'upload']).default('lipsync'),
+  sections: z.array(z.record(z.string(), z.unknown())).default([]),
+  /** Fingerprint of the script lines the sections were made from; absent until sectioned. */
+  scriptHash: z.string().optional(),
+  /** The last render on the service. */
+  job: z
+    .object({
+      id: z.string().min(1),
+      state: z.enum(PATTERN_JOB_STATES),
+      submittedAt: z.string(),
+      /** Fingerprint of the document sent, so an edit after submit is visible. */
+      docHash: z.string(),
+      error: z.string().nullable().default(null),
+    })
+    .nullable()
+    .default(null),
+});
+export type ReelPattern = z.infer<typeof ReelPatternSchema>;
+export type ReelPatternJob = NonNullable<ReelPattern['job']>;
+
 export const ReelSchema = z.object({
   brand: z.string().default('iolar'),
-  pattern: z.string().default('armand'),
+  style: z.string().default('armand'),
+  /** Null for a freeform reel built from beats; set when the reel renders through a template. */
+  pattern: ReelPatternSchema.nullable().default(null),
   ratio: z.enum(['9:16', '4:5', '1:1']).default('9:16'),
   fps: z.number().int().min(24).max(60).default(30),
   seed: z.number().int().default(42),
@@ -159,6 +194,11 @@ export type Overlay = Timeline['overlays'][number];
 export type Word = Reel['vo']['words'][number];
 
 export function validateReel(data: unknown): Reel {
+  // Reels written before 3 September 2026 carried the creator preset as `pattern`.
+  if (data && typeof data === 'object' && typeof (data as { pattern?: unknown }).pattern === 'string') {
+    const d = data as Record<string, unknown>;
+    data = { ...d, style: d.style ?? d.pattern, pattern: null };
+  }
   return ReelSchema.parse(data);
 }
 

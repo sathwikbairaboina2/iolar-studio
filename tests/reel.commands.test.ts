@@ -32,7 +32,7 @@ async function seed() {
   const reel = validateReel({
     ...emptyReel('grok'),
     title: 'Grok',
-    pattern: 'armand',
+    style: 'armand',
     vo: { durationSec: 12 },
     assets: [
       { id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready' },

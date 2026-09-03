@@ -28,9 +28,9 @@ const clip = (id: string, assetId: string, start: number, end: number, over = {}
 
 async function build(over: Record<string, unknown> = {}) {
   const { validateReel } = await import('@/lib/reel/schema');
-  const { loadPattern } = await import('@/lib/reel/patterns');
+  const { loadStyle } = await import('@/lib/reel/styles');
   const reel = validateReel({
-    pattern: 'armand',
+    style: 'armand',
     title: 'Grok',
     beats: [{ id: 'b1', role: 'hook', text: 'x', shot: { kind: 'broll', brief: '' } }],
     vo: { durationSec: 6 },
@@ -46,15 +46,15 @@ async function build(over: Record<string, unknown> = {}) {
     },
     ...over,
   });
-  return { reel, pattern: await loadPattern('armand') };
+  return { reel, style: await loadStyle('armand') };
 }
 
 describe('reel player', () => {
   it('shows the clip, caption and overlay live at that timestamp', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     expect(screen.getByTestId('reel-video').getAttribute('data-asset')).toBe('a1');
     expect(screen.getByTestId('reel-caption').textContent).toBe('just launched');
@@ -64,9 +64,9 @@ describe('reel player', () => {
   it('applies the same motion transform the export computes', async () => {
     const Player = (await import('@/components/reel/Player')).default;
     const { motionCss, motionOriginCss } = await import('@/lib/reel/motion');
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={2} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={2} playing={false} onTimeChange={() => {}} />
     );
     const video = screen.getByTestId('reel-video') as HTMLVideoElement;
     const motion = reel.timeline.clips[0].motion;
@@ -76,13 +76,13 @@ describe('reel player', () => {
 
   it('swaps to the next clip as time moves past the cut', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const { rerender } = render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     expect(screen.getByTestId('reel-video').getAttribute('data-asset')).toBe('a1');
     rerender(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={5} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={5} playing={false} onTimeChange={() => {}} />
     );
     expect(screen.getByTestId('reel-video').getAttribute('data-asset')).toBe('a2');
     expect(screen.queryByTestId('reel-caption')).toBeNull();
@@ -91,13 +91,13 @@ describe('reel player', () => {
   it('shows a placeholder instead of a black frame while a shot is still generating', async () => {
     const { validateReel } = await import('@/lib/reel/schema');
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const pending = validateReel({
       ...reel,
       timeline: { ...reel.timeline, clips: [clip('c1', 'a3', 0, 4)], captions: [], overlays: [] },
     });
     render(
-      <Player reel={pending} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={pending} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     expect(screen.getByTestId('reel-pending').textContent).toMatch(/generating/i);
   });
@@ -105,25 +105,25 @@ describe('reel player', () => {
   it('surfaces the reason a shot needs a hand', async () => {
     const { validateReel } = await import('@/lib/reel/schema');
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const stuck = validateReel({
       ...reel,
       assets: [{ id: 'a3', kind: 'video', path: '', origin: 'plugin', status: 'awaiting-manual', error: 'No video provider is wired' }],
       timeline: { ...reel.timeline, clips: [clip('c1', 'a3', 0, 4)], captions: [], overlays: [] },
     });
     render(
-      <Player reel={stuck} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={stuck} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     expect(screen.getByTestId('reel-pending').textContent).toMatch(/no video provider/i);
   });
 
   it('does not restart the playback run when the studio re-renders with fresh callbacks', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const { rerender } = render(
       <Player
         reel={reel}
-        pattern={pattern}
+        style={style}
         slug="grok"
         currentTime={0}
         playing
@@ -143,7 +143,7 @@ describe('reel player', () => {
     rerender(
       <Player
         reel={reel}
-        pattern={pattern}
+        style={style}
         slug="grok"
         currentTime={0}
         playing
@@ -158,14 +158,14 @@ describe('reel player', () => {
   it('lets a recording speak for itself instead of the voiceover under it', async () => {
     const Player = (await import('@/components/reel/Player')).default;
     const { validateReel } = await import('@/lib/reel/schema');
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const own = validateReel({
       ...reel,
       assets: [{ id: 'a1', kind: 'video', path: 'assets/a1.mp4', origin: 'plugin', status: 'ready', takeStart: 0, durationSec: 4 }],
       timeline: { ...reel.timeline, clips: [clip('c1', 'a1', 0, 4)], captions: [], overlays: [] },
     });
     render(
-      <Player reel={own} pattern={pattern} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
+      <Player reel={own} style={style} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
     );
 
     // The lips were made from the audio inside this file. Hearing the voiceover over the top
@@ -176,19 +176,19 @@ describe('reel player', () => {
 
   it('keeps the voiceover under footage that brought no sound of its own', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
     );
     expect((screen.getByTestId('reel-video') as HTMLVideoElement).muted).toBe(true);
     expect((screen.getByTestId('reel-audio') as HTMLAudioElement).muted).toBe(false);
   });
 
-  it('exposes the pattern custom properties on the stage', async () => {
+  it('exposes the style custom properties on the stage', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     const stage = screen.getByTestId('reel-stage');
     expect(stage.style.getPropertyValue('--cap-y')).toBe('84%');
@@ -196,16 +196,16 @@ describe('reel player', () => {
   });
   it('wraps a clip that outruns its source, the way the export loops the footage', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build({
+    const { reel, style } = await build({
       timeline: { clips: [clip('c1', 'a1', 0, 4, { srcIn: 5 })], captions: [], overlays: [] },
     });
     const { rerender } = render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={0} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={0} playing={false} onTimeChange={() => {}} />
     );
     const video = screen.getByTestId('reel-video') as HTMLVideoElement;
     Object.defineProperty(video, 'duration', { configurable: true, value: 4 });
     rerender(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     // ffmpeg reads these inputs with -stream_loop -1, so second 6 of a 4s source is second 2.
     expect(video.currentTime).toBeCloseTo(2, 3);
@@ -213,11 +213,11 @@ describe('reel player', () => {
 
   it('stops re-seeking a wrapped clip once it is in position', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build({
+    const { reel, style } = await build({
       timeline: { clips: [clip('c1', 'a1', 0, 4, { srcIn: 5 })], captions: [], overlays: [] },
     });
     const { rerender } = render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={0} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={0} playing={false} onTimeChange={() => {}} />
     );
     const video = screen.getByTestId('reel-video') as HTMLVideoElement;
     Object.defineProperty(video, 'duration', { configurable: true, value: 4 });
@@ -235,7 +235,7 @@ describe('reel player', () => {
     });
     for (const t of [1, 1.1, 1.2, 1.3]) {
       rerender(
-        <Player reel={reel} pattern={pattern} slug="grok" currentTime={t} playing={false} onTimeChange={() => {}} />
+        <Player reel={reel} style={style} slug="grok" currentTime={t} playing={false} onTimeChange={() => {}} />
       );
       ct = Math.min(ct + 0.1, 4);
     }
@@ -244,9 +244,9 @@ describe('reel player', () => {
 
   it('holds the next clip loaded off-screen so the cut has something to show', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     const pre = screen.getAllByTestId('reel-preload');
     expect(pre[0].getAttribute('data-asset')).toBe('a2');
@@ -255,16 +255,16 @@ describe('reel player', () => {
 
   it('stops the shot it has cut away from', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const { rerender } = render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing onTimeChange={() => {}} />
     );
     const first = screen.getByTestId('reel-video') as HTMLVideoElement;
     const pause = vi.fn();
     Object.defineProperty(first, 'pause', { configurable: true, value: pause });
 
     rerender(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={5} playing onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={5} playing onTimeChange={() => {}} />
     );
 
     // Left running, it plays on behind the shot you are watching — and with loop on it wraps
@@ -275,7 +275,7 @@ describe('reel player', () => {
   it('keeps several shots loading, not just the next one', async () => {
     const Player = (await import('@/components/reel/Player')).default;
     const { validateReel } = await import('@/lib/reel/schema');
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const many = validateReel({
       ...reel,
       assets: ['a1', 'a2', 'a4', 'a5'].map((id) => ({
@@ -287,7 +287,7 @@ describe('reel player', () => {
       },
     });
     render(
-      <Player reel={many} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={many} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     // A reel cut to speech runs under two seconds a shot; one shot of runway is not enough
     // to have the bytes ready by the time the cut arrives.
@@ -296,13 +296,13 @@ describe('reel player', () => {
 
   it('promotes that same element at the cut instead of mounting a fresh one', async () => {
     const Player = (await import('@/components/reel/Player')).default;
-    const { reel, pattern } = await build();
+    const { reel, style } = await build();
     const { rerender } = render(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={1} playing={false} onTimeChange={() => {}} />
     );
     const preloaded = screen.getAllByTestId('reel-preload')[0];
     rerender(
-      <Player reel={reel} pattern={pattern} slug="grok" currentTime={5} playing={false} onTimeChange={() => {}} />
+      <Player reel={reel} style={style} slug="grok" currentTime={5} playing={false} onTimeChange={() => {}} />
     );
     // A remount means an empty decoder and a black frame for as long as the file takes to load.
     expect(screen.getByTestId('reel-video')).toBe(preloaded);

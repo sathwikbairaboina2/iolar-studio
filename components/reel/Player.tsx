@@ -1,15 +1,15 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
-import type { Pattern } from '@/lib/reel/pattern-schema';
+import type { Style } from '@/lib/reel/style-schema';
 import type { Reel } from '@/lib/reel/schema';
 import { REEL_RATIOS } from '@/lib/reel/schema';
 import { frameAt, timelineDuration } from '@/lib/reel/timeline';
 import { motionCss, motionOriginCss } from '@/lib/reel/motion';
-import { patternCssVars } from '@/lib/reel/pattern-schema';
+import { styleCssVars } from '@/lib/reel/style-schema';
 
 export type PlayerProps = {
   reel: Reel;
-  pattern: Pattern;
+  style: Style;
   slug: string;
   currentTime: number;
   playing: boolean;
@@ -31,7 +31,7 @@ export function assetSrc(slug: string, assetId: string) {
  */
 export default function Player({
   reel,
-  pattern,
+  style,
   slug,
   currentTime,
   playing,
@@ -171,9 +171,9 @@ export default function Player({
         borderRadius: 12,
         // Caption and title sizes are container-relative, so the stage must be the container.
         containerType: 'size',
-        background: frame.clip?.fit === 'contain' ? pattern.letterbox.bg : '#000',
+        background: frame.clip?.fit === 'contain' ? style.letterbox.bg : '#000',
         ...(Object.fromEntries(
-          patternCssVars(pattern)
+          styleCssVars(style)
             .split('; ')
             .map((pair) => pair.split(': ') as [string, string])
         ) as React.CSSProperties),

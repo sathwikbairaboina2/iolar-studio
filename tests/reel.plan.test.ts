@@ -91,10 +91,10 @@ describe('reel plan', () => {
     for (const b of out.beats) expect(b.shot.brief.length).toBeGreaterThan(0);
   });
 
-  it('tells Claude the pattern pacing so beats land near the shot length', async () => {
+  it('tells Claude the style pacing so beats land near the shot length', async () => {
     const { beatsPrompt } = await import('@/lib/ai/reel/plan');
-    const { loadPattern } = await import('@/lib/reel/patterns');
-    const p = await loadPattern('armand');
+    const { loadStyle } = await import('@/lib/reel/styles');
+    const p = await loadStyle('armand');
     const prompt = beatsPrompt(p, 'topic', 'anything');
     expect(prompt).toContain(`${p.pacing.shotSec[0]}-${p.pacing.shotSec[1]} seconds`);
     expect(prompt).toContain('hook');

@@ -7,7 +7,7 @@ import { useRouter } from 'next/navigation';
 type Meta = {
   slug: string;
   title: string;
-  pattern: string;
+  style: string;
   beats: number;
   durationSec: number;
   status: string;
@@ -25,10 +25,10 @@ type Mode = 'topic' | 'paste' | 'reference';
 
 export default function ReelList() {
   const [reels, setReels] = useState<Meta[]>([]);
-  const [patterns, setPatterns] = useState<{ name: string; displayName: string }[]>([]);
+  const [styles, setPatterns] = useState<{ name: string; displayName: string }[]>([]);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
-  const [pattern, setPattern] = useState('armand');
+  const [style, setPattern] = useState('armand');
   const [mode, setMode] = useState<Mode>('topic');
   const [topic, setTopic] = useState('');
   const [script, setScript] = useState('');
@@ -43,9 +43,9 @@ export default function ReelList() {
 
   useEffect(() => {
     load();
-    fetch('/api/reel/patterns')
+    fetch('/api/reel/styles')
       .then((r) => r.json())
-      .then((d) => setPatterns(d.patterns ?? []));
+      .then((d) => setPatterns(d.styles ?? []));
   }, []);
 
   const source = mode === 'topic' ? topic : mode === 'paste' ? script : mediaUrl;
@@ -57,7 +57,7 @@ export default function ReelList() {
       const r = await fetch('/api/reel', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title, pattern }),
+        body: JSON.stringify({ title, style }),
       });
       const created = await r.json();
       if (!r.ok) throw new Error(created.error ?? 'create failed');
@@ -99,7 +99,7 @@ export default function ReelList() {
         onRow={(row) => ({ onClick: () => router.push(`/reel/${row.slug}`), style: { cursor: 'pointer' } })}
         columns={[
           { title: 'Title', dataIndex: 'title' },
-          { title: 'Pattern', dataIndex: 'pattern' },
+          { title: 'Style', dataIndex: 'style' },
           { title: 'Beats', dataIndex: 'beats', width: 90 },
           {
             title: 'Length',
@@ -134,9 +134,9 @@ export default function ReelList() {
         <div style={{ display: 'grid', gap: 12 }}>
           <Input placeholder="Title, e.g. xAI drops Grok Bot" value={title} onChange={(e) => setTitle(e.target.value)} />
           <Select
-            value={pattern}
+            value={style}
             onChange={setPattern}
-            options={patterns.map((p) => ({ value: p.name, label: p.displayName }))}
+            options={styles.map((p) => ({ value: p.name, label: p.displayName }))}
           />
           <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
             <Radio.Button value="topic">From topic</Radio.Button>

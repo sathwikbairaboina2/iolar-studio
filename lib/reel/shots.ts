@@ -3,7 +3,7 @@ import path from 'path';
 import { Beat, REEL_RATIOS, Reel } from './schema';
 import { addAsset, loadReel, saveReel, updateAsset } from './store';
 import { beatSpans } from './assemble';
-import { loadPattern } from './patterns';
+import { loadStyle } from './styles';
 import { reelAssetsDir, reelVoFile } from '../paths';
 import { ffprobeMedia } from './probe';
 import { NO_PROVIDER, providerNameFor, videoProvider } from './videoProvider';
@@ -324,11 +324,11 @@ export async function planGroups(slug: string, reel: Reel, ctx: BuildContext, sh
  */
 export async function previewShots(slug: string): Promise<ResolvedShot[]> {
   const reel = await loadReel(slug);
-  const pattern = await loadPattern(reel.pattern);
+  const style = await loadStyle(reel.style);
   const ctx = await buildContext(slug, reel);
 
   const out: ResolvedShot[] = [];
-  for (const g of await planGroups(slug, reel, ctx, pattern.pacing.shotSec)) {
+  for (const g of await planGroups(slug, reel, ctx, style.pacing.shotSec)) {
     const req = { ...g.first, seconds: g.seconds };
     // The same name `runShots` will cut to — a group of one included — so the gate shows
     // exactly the call that will be made.
@@ -537,11 +537,11 @@ export async function runTake(slug: string): Promise<Reel> {
 export async function runShots(slug: string, beatIds?: string[]): Promise<Reel> {
   await useStillsForScreens(slug);
   const reel = await loadReel(slug);
-  const pattern = await loadPattern(reel.pattern);
+  const style = await loadStyle(reel.style);
   const ctx = await buildContext(slug, reel);
   const wanted = beatIds ? new Set(beatIds) : null;
 
-  for (const g of await planGroups(slug, reel, ctx, pattern.pacing.shotSec)) {
+  for (const g of await planGroups(slug, reel, ctx, style.pacing.shotSec)) {
     if (wanted && !g.beatIds.some((id) => wanted.has(id))) continue;
     // One stretch of voiceover per request, cut before it is sent: the renderer is told
     // what this picture is spoken over, not what one sentence inside it is. Every group

@@ -19,14 +19,14 @@ import Handoff from '@/components/reel/Handoff';
 import JobsBoard from '@/components/reel/JobsBoard';
 import { useReelEditor } from './useReelEditor';
 import Timeline from '@/components/reel/Timeline';
-import type { Pattern } from '@/lib/reel/pattern-schema';
+import type { Style } from '@/lib/reel/style-schema';
 import type { Reel } from '@/lib/reel/schema';
 import { timelineDuration } from '@/lib/reel/timeline';
 
 export default function ReelStudio() {
   const slug = String(useParams().slug ?? '');
   const { reel, setReel, error, setError, undo, redo } = useReelEditor(slug);
-  const [pattern, setPattern] = useState<Pattern | null>(null);
+  const [style, setPattern] = useState<Style | null>(null);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -40,26 +40,26 @@ export default function ReelStudio() {
     setError(null);
   }, [error, setError]);
 
-  // The pattern drives both the player's styling and the export's, so load the whole preset.
-  const patternName = reel?.pattern;
+  // The style drives both the player's styling and the export's, so load the whole preset.
+  const styleName = reel?.style;
   useEffect(() => {
-    if (!patternName) return;
+    if (!styleName) return;
     let alive = true;
-    fetch(`/api/reel/patterns?name=${patternName}`)
+    fetch(`/api/reel/styles?name=${styleName}`)
       .then((r) => r.json())
       .then((d) => {
-        if (alive && d.pattern) setPattern(d.pattern);
+        if (alive && d.style) setPattern(d.style);
       });
     return () => {
       alive = false;
     };
-  }, [patternName]);
+  }, [styleName]);
 
   // Its stylesheet is linked live, so preview captions are styled by the same file
   // the export's Playwright pass loads.
   useEffect(() => {
-    if (!patternName) return;
-    const id = 'reel-pattern-css';
+    if (!styleName) return;
+    const id = 'reel-style-css';
     let link = document.getElementById(id) as HTMLLinkElement | null;
     if (!link) {
       link = document.createElement('link');
@@ -67,8 +67,8 @@ export default function ReelStudio() {
       link.rel = 'stylesheet';
       document.head.appendChild(link);
     }
-    link.href = `/api/reel/patterns/css?name=${patternName}`;
-  }, [patternName]);
+    link.href = `/api/reel/styles/css?name=${styleName}`;
+  }, [styleName]);
 
   // Shots land asynchronously: poll while anything is still generating.
   const pending = reel?.assets.some((a) => a.status === 'queued' || a.status === 'running') ?? false;
@@ -117,7 +117,7 @@ export default function ReelStudio() {
   };
 
 
-  if (!reel || !pattern) return <Spin style={{ marginTop: 64 }} />;
+  if (!reel || !style) return <Spin style={{ marginTop: 64 }} />;
   const duration = timelineDuration(reel.timeline) || reel.vo.durationSec;
 
   return (
@@ -126,7 +126,7 @@ export default function ReelStudio() {
         <Typography.Title level={4} style={{ margin: 0, flex: 1 }}>
           {reel.title}
         </Typography.Title>
-        <Tag>{reel.pattern}</Tag>
+        <Tag>{reel.style}</Tag>
         <Tag>{reel.ratio}</Tag>
         <Tag>{duration ? `${duration.toFixed(1)}s` : 'no timeline yet'}</Tag>
         <Space.Compact>
@@ -147,7 +147,7 @@ export default function ReelStudio() {
         <div>
           <Player
             reel={reel}
-            pattern={pattern}
+            style={style}
             slug={slug}
             currentTime={time}
             playing={playing}

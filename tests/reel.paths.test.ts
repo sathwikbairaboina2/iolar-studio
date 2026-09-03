@@ -18,9 +18,9 @@ describe('reel paths', () => {
     expect(reelWordsFile('grok')).toBe(path.join(root, 'reel', 'grok', 'vo.words.json'));
   });
 
-  it('resolves patterns next to the repo templates, not under the data dir', async () => {
-    const { patternDir, patternsRoot } = await import('@/lib/paths');
-    expect(patternsRoot()).toBe(path.join(process.cwd(), 'patterns'));
-    expect(patternDir('armand')).toBe(path.join(process.cwd(), 'patterns', 'armand'));
+  it('resolves styles next to the repo templates, not under the data dir', async () => {
+    const { styleDir, stylesRoot } = await import('@/lib/paths');
+    expect(stylesRoot()).toBe(path.join(process.cwd(), 'styles'));
+    expect(styleDir('armand')).toBe(path.join(process.cwd(), 'styles', 'armand'));
   });
 });

@@ -74,7 +74,7 @@ describe('planning one take', () => {
 describe('cutting inside a recording that covers several beats', () => {
   it('never reads from before the recording starts', async () => {
     const { loadReel, saveReel } = await import('@/lib/reel/store');
-    const { loadPattern } = await import('@/lib/reel/patterns');
+    const { loadStyle } = await import('@/lib/reel/styles');
     const reel = await seed();
     await saveReel('grok', {
       ...reel,
@@ -84,7 +84,7 @@ describe('cutting inside a recording that covers several beats', () => {
     } as never);
 
     const { assemble } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await loadReel('grok'), pattern: await loadPattern('armand') });
+    const tl = assemble({ reel: await loadReel('grok'), style: await loadStyle('armand') });
 
     // A clip inherits the silence before its own words, so it can begin before the recording
     // made for it. Negative offsets are not a thing, and the schema refuses them.
@@ -95,7 +95,7 @@ describe('cutting inside a recording that covers several beats', () => {
 describe('cutting inside the take', () => {
   it('gives every clip the offset it sits at in the take', async () => {
     const { loadReel, saveReel } = await import('@/lib/reel/store');
-    const { loadPattern } = await import('@/lib/reel/patterns');
+    const { loadStyle } = await import('@/lib/reel/styles');
     const reel = await seed();
     await saveReel('grok', {
       ...reel,
@@ -106,7 +106,7 @@ describe('cutting inside the take', () => {
     } as never);
 
     const { assemble } = await import('@/lib/reel/assemble');
-    const tl = assemble({ reel: await loadReel('grok'), pattern: await loadPattern('armand') });
+    const tl = assemble({ reel: await loadReel('grok'), style: await loadStyle('armand') });
 
     expect(tl.clips.length).toBeGreaterThan(1);
     for (const c of tl.clips) {

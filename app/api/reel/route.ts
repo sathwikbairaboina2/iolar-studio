@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     const s = getSettings();
     const reel = await createReel(slug, {
       title: title || slug,
-      pattern: body.pattern ?? s.reelPattern,
+      style: body.style ?? s.reelStyle,
       fps: s.reelFps,
       ratio: (body.ratio ?? s.reelRatio) as '9:16' | '4:5' | '1:1',
     });

@@ -6,7 +6,7 @@ import { planShotMix, type MixOptions } from '../shotmix';
 import type { Script, ScriptLine } from '../research/script';
 import { readCandidates, readScript } from '../research/store';
 import { beatSpans } from '../assemble';
-import { loadPattern } from '../patterns';
+import { loadStyle } from '../styles';
 
 /**
  * The crossing from an approved script to a reel that can be built.
@@ -208,9 +208,9 @@ export async function buildBeatsFromScript(slug: string, script: Pick<Script, 'l
       return [b.id, { start: 0, end: Math.max(0.4, words / WORDS_PER_SECOND) }] as const;
     })
   );
-  // The pattern's cadence rides along, so a long middle is not left faceless.
-  const pattern = await loadPattern(reel.pattern).catch(() => null);
-  const mixOpts = pattern ? { anchorEverySec: pattern.shotMix.anchorEverySec } : {};
+  // The style's cadence rides along, so a long middle is not left faceless.
+  const style = await loadStyle(reel.style).catch(() => null);
+  const mixOpts = style ? { anchorEverySec: style.shotMix.anchorEverySec } : {};
   const beats = applyShotMix(ordered, showable, new Map(spans), mixOpts, kept);
   await saveReel(slug, { ...reel, beats });
   return loadReel(slug);
@@ -242,8 +242,8 @@ export async function remixFromAudio(slug: string, opts: MixOptions = {}): Promi
   const kept = known.size ? known : undefined;
 
   const spans = beatSpans(reel);
-  const pattern = await loadPattern(reel.pattern).catch(() => null);
-  const mixOpts = { ...(pattern ? { anchorEverySec: pattern.shotMix.anchorEverySec } : {}), ...opts };
+  const style = await loadStyle(reel.style).catch(() => null);
+  const mixOpts = { ...(style ? { anchorEverySec: style.shotMix.anchorEverySec } : {}), ...opts };
   const mixed = applyShotMix(ordered, reel.beats, spans, mixOpts, kept);
   // Only the two kinds the mix deals in move. A researched kind, a title, or anything a
   // person set to something else is not this function's to re-deal.
