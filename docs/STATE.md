@@ -4,6 +4,29 @@ Last worked: 31 Aug 2026. Branch `feat/reel-build-boards` (off `feat/reels-engin
 573 tests green, typecheck and `next build` clean. Lint unchanged at its
 6 pre-existing errors.
 
+## Reel patterns (3 September 2026)
+
+A reel may carry a **pattern**: its approved research script is split into a template's
+sections (`reel.pattern.sections`, script line ids plus on-screen copy), voiced from the
+script lines, given a presenter clip (lipsync over the hook's audio, or an uploaded
+`presenter.mp4`), and rendered by `main-reels-templates-plugin` on **26200** into
+`export/reel.mp4`. Beats are not involved; freeform reels are unchanged. The first pattern
+is `tools`; a second is one `PatternDef` in `lib/reel/pattern/` plus a template in the
+service — names, themes, limits and default seconds are read from `GET /templates`.
+
+The creator preset formerly called `pattern` is now `style` (`reel.style`, `styles/armand/`,
+`/api/reel/styles`, setting `reelStyle`); old files migrate on read.
+
+Stages, derived from disk by `lib/reel/pattern/run.ts`: `unsectioned → sectioned → voiced →
+aligned → presented → rendering → failed | done`. Routes: `GET /api/reel/patterns`,
+`GET|POST /api/reel/[slug]/pattern`, `POST .../pattern/{section,advance,render}`,
+`GET|PUT|DELETE .../presenter`. The Pattern tab (`components/reel/PatternBoard.tsx`) drives
+it and embeds the service's own preview page. The service must be running (Plugins card,
+`reels-templates`).
+
+Opt-in end to end: `RUN_E2E=1 E2E_PRESENTER=C:/x/take.mp4 E2E_VO=C:/x/vo.mp3 npx vitest run tests/reel.pattern.e2e.test.ts`.
+Design: `docs/superpowers/specs/2026-09-03-reel-patterns-design.md`.
+
 ## Run it
 
 ```bash

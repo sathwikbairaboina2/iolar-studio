@@ -99,7 +99,7 @@ topic / pasted script / reference reel
   -> VOICE     local TTS -> vo.mp3, then whisper word timestamps -> vo.words.json
   -> SHOTS     per beat: ComfyUI image-to-video, or a still with a Ken Burns move,
                and your own dropped files override either
-  -> ASSEMBLE  word timings + creator pattern -> clips, karaoke captions, hook overlay (seeded)
+  -> ASSEMBLE  word timings + creator style -> clips, karaoke captions, hook overlay (seeded)
   -> STUDIO    watch and edit it in the browser while shots are still generating
   -> EXPORT    ffmpeg -> export/reel.mp4 + caption.txt
 ```
@@ -133,7 +133,17 @@ deliberately few — trim, split, reorder, delete, four motion presets, caption 
 Anything you touch is marked `locked: true` and survives re-assembly untouched while the rest
 reflows around it.
 
-### Creator patterns
+### Pattern reels
+
+A reel created with a pattern (`tools` today) skips beats and shots: the approved research
+script is split into the pattern's sections by Claude, voiced from the script lines, the
+hook gets a presenter clip (lipsync, or one you upload), and the reel is rendered by
+`main-reels-templates-plugin` on 26200 from one JSON document. Section copy is edited on
+the Pattern tab against the service's own limits; timing is measured from the aligned
+voice, never stored; the service's preview page is embedded before you commit to a render.
+See `docs/superpowers/specs/2026-09-03-reel-patterns-design.md`.
+
+### Creator styles
 
 A pattern is `patterns/<name>/`: `pattern.json` (caption geometry, pacing, hook, shot mix) plus
 `caption.css` (the real styling; the JSON only feeds CSS custom properties) and an optional
