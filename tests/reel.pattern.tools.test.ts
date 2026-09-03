@@ -1,36 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { tools } from '@/lib/reel/pattern/tools';
 import { patternDef, PATTERNS } from '@/lib/reel/pattern';
-import type { Script } from '@/lib/reel/research/script';
 
-const line = (id: string, order: number, role: 'hook' | 'body' | 'close', text: string, citations: string[] = []) => ({
-  id, order, role, text, citations, assetIds: citations, note: null, commentary: false,
-});
-export const script: Script = {
-  runId: 'r', createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:00:00.000Z', status: 'approved',
-  lines: [
-    line('l1', 0, 'hook', 'Three tools nobody told you about.'),
-    line('l2', 1, 'body', 'The first runs offline.', ['aaaaaaaaaaaa']),
-    line('l3', 2, 'body', 'The second costs nothing.', ['bbbbbbbbbbbb']),
-    line('l4', 3, 'body', 'Here is the repo.', ['aaaaaaaaaaaa']),
-    line('l5', 4, 'close', 'Comment tools and I will DM you the links.'),
-  ],
-  unsupported: [], coverage: [], flags: [],
-};
-export const candidates = {
-  aaaaaaaaaaaa: { id: 'aaaaaaaaaaaa', url: 'https://github.com/a', title: 'A', thumbnailUrl: 'https://img/a.png' },
-  bbbbbbbbbbbb: { id: 'bbbbbbbbbbbb', url: 'https://example.com/b', title: 'B', thumbnailUrl: null },
-};
-export const limits = { title: 60, chips: 3, chip: 16, points: 4, point: 40, keyword: 12, topic: 40, secMin: 1, secMax: 30 };
-export const good = [
-  { kind: 'hook', lineIds: ['l1'], title: '3 tools nobody told you about', chips: ['free', 'local'], tease: 'the third is wild' },
-  { kind: 'slides', slides: [
-    { lineIds: ['l2'], topic: 'Runs offline', points: ['zero telemetry'], image: 'https://img/a.png', stats: [] },
-    { lineIds: ['l3'], topic: 'Costs nothing', points: ['MIT licence', 'no signup'], image: null, stats: [] },
-  ] },
-  { kind: 'web', pages: [{ lineIds: ['l4'], url: 'https://github.com/a', label: 'link 1/1' }] },
-  { kind: 'cta', lineIds: ['l5'], keyword: 'TOOLS', line: 'we DM you every link', follow: 'more useful tech, weekly' },
-];
+import { script, candidates, limits, good } from './helpers/pattern';
 
 describe('tools pattern: prompt', () => {
   it('names every line id, every candidate url, the limits and the themes', () => {

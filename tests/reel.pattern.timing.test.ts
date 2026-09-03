@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { lineSpans, unitTimes, defaultTimes, UnitTooLong } from '@/lib/reel/pattern/timing';
-import { script } from './reel.pattern.tools.test';
+import { script } from './helpers/pattern';
 import type { Unit } from '@/lib/reel/pattern/types';
 
 /** Words for the whole script, one every 0.4 s from t=0.5, in script order. */

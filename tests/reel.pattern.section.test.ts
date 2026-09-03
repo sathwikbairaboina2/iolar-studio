@@ -3,7 +3,7 @@ import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { seedPatternReel, fetchTemplates } from './helpers/pattern';
-import { script, good } from './reel.pattern.tools.test';
+import { script, good } from './helpers/pattern';
 
 const opts = { baseUrl: 'http://x', fetchImpl: fetchTemplates };
 
