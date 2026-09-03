@@ -7,7 +7,7 @@
  * lets a page say which one is missing, and start the two that can be started from here.
  */
 
-export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama' | 'research' | 'jobsreel' | 'neo4j' | 'qdrant';
+export type PluginName = 'lipsync' | 'webpage' | 'comfyui' | 'ollama' | 'research' | 'jobsreel' | 'templates' | 'neo4j' | 'qdrant';
 
 export type StartRecipe = {
   command: string;
@@ -36,6 +36,7 @@ const comfyBase = (process.env.COMFY_URL ?? 'http://127.0.0.1:8189').replace(/\/
 const ollamaBase = (process.env.OLLAMA_URL ?? 'http://127.0.0.1:11436').replace(/\/$/, '');
 const researchBase = (process.env.RESEARCH_URL ?? 'http://127.0.0.1:25100').replace(/\/$/, '');
 const jobsReelBase = (process.env.JOBS_REEL_URL ?? 'http://127.0.0.1:26100').replace(/\/$/, '');
+const templatesBase = (process.env.REELS_TEMPLATES_URL ?? 'http://127.0.0.1:26200').replace(/\/$/, '');
 
 const port = (url: string) => Number(new URL(url).port || 80);
 
@@ -116,6 +117,20 @@ export const PLUGINS: Plugin[] = [
       args: ['run', 'dev'],
       cwd: `${PLUGIN_ROOT}/plugins/jobs-reel-plugin`,
       hint: 'npm run dev',
+    },
+  },
+  {
+    name: 'templates',
+    label: 'reels-templates',
+    port: port(templatesBase),
+    healthUrl: `${templatesBase}/health`,
+    what: 'Renders a pattern reel from one document with Remotion; the Pattern tab sends it the sections and takes the mp4 back.',
+    openUrl: `${templatesBase}/docs`,
+    start: {
+      command: 'powershell.exe',
+      args: ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', 'run.ps1'],
+      cwd: `${PLUGIN_ROOT}/plugins/main-reels-templates-plugin`,
+      hint: String.raw`.un.ps1`,
     },
   },
   {

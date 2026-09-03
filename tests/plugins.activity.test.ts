@@ -137,7 +137,7 @@ describe('health flips', () => {
     const g = globalThis as unknown as { __pluginLast?: Map<string, unknown> };
     g.__pluginLast = new Map([['research', { up: true, ready: true }]]);
     const { readHealth } = await import('@/lib/plugins/health');
-    await expect(readHealth()).resolves.toHaveLength(8);
+    await expect(readHealth()).resolves.toHaveLength(9);
   });
 
   it('stays quiet through a single timed-out poll', async () => {

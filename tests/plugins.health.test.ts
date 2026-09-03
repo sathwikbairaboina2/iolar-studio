@@ -23,7 +23,7 @@ function mockFetch(routes: Record<string, { status?: number; body?: unknown; fai
 describe('the plugin registry', () => {
   it('knows every service the studio renders through', async () => {
     const { PLUGINS } = await import('@/lib/plugins/registry');
-    expect(PLUGINS.map((p) => p.name).sort()).toEqual(['comfyui', 'jobsreel', 'lipsync', 'neo4j', 'ollama', 'qdrant', 'research', 'webpage']);
+    expect(PLUGINS.map((p) => p.name).sort()).toEqual(['comfyui', 'jobsreel', 'lipsync', 'neo4j', 'ollama', 'qdrant', 'research', 'templates', 'webpage']);
     for (const p of PLUGINS) {
       expect(p.port).toBeGreaterThan(0);
       expect(p.healthUrl).toContain(String(p.port));
@@ -60,7 +60,7 @@ describe('the plugin registry', () => {
   it('only offers to start the services it can start', async () => {
     const { PLUGINS } = await import('@/lib/plugins/registry');
     const startable = PLUGINS.filter((p) => p.start);
-    expect(startable.map((p) => p.name).sort()).toEqual(['jobsreel', 'lipsync', 'neo4j', 'qdrant', 'research', 'webpage']);
+    expect(startable.map((p) => p.name).sort()).toEqual(['jobsreel', 'lipsync', 'neo4j', 'qdrant', 'research', 'templates', 'webpage']);
     // ComfyUI Desktop is an app the user launches; pretending otherwise offers a button that lies.
     expect(PLUGINS.find((p) => p.name === 'comfyui')!.start).toBeUndefined();
   });
