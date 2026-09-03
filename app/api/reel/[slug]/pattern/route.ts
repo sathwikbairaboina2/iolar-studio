@@ -40,7 +40,15 @@ export async function GET(_req: Request, ctx: Ctx) {
     const reel = await loadReel(slug);
     if (!reel.pattern) return NextResponse.json({ error: 'not a pattern reel' }, { status: 404 });
     const live = reel.pattern.job && ['queued', 'preparing', 'rendering'].includes(reel.pattern.job.state);
-    const state = live ? await pollRender(slug) : await patternState(slug);
+    let state: PatternState;
+    try {
+      state = live ? await pollRender(slug) : await patternState(slug);
+    } catch (err) {
+      // A busy service (capturing pages in Chromium) can miss one poll; the last known
+      // state is still the truth on disk, so the board keeps drawing rather than erroring.
+      if (!(err instanceof ServiceDown) || !live) throw err;
+      state = { ...(await patternState(slug, { provider: null })), blocked: err.message };
+    }
     return NextResponse.json(await view(slug, state));
   } catch (err) {
     return failed(err);

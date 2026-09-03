@@ -82,7 +82,7 @@ const Count = ({ path, value, limit }: { path: string; value: string; limit: num
   <Typography.Text
     type={value.trim().length > limit || value.trim().length === 0 ? 'danger' : 'secondary'}
     data-testid={`count-${path}`}
-    style={{ fontSize: 12 }}
+    style={{ fontSize: 12, whiteSpace: 'nowrap' }}
   >
     {value.trim().length}/{limit}
   </Typography.Text>
@@ -339,11 +339,16 @@ export default function PatternBoard({ slug, onChanged }: { slug: string; patter
             <Tag>{state.job.id} · {state.job.state}</Tag>
             {state.stage === 'rendering' && <Progress percent={Math.round((state.progress ?? 0) * 100)} status="active" />}
             {state.job.error && <Alert type="error" showIcon message={state.job.error} />}
-            {state.previewUrl && (
+            {state.previewUrl && state.job.state !== 'queued' && state.job.state !== 'preparing' && (
               <>
-                <iframe title="preview" src={state.previewUrl} data-testid="preview-frame" style={{ width: '100%', aspectRatio: '9 / 16', maxHeight: 640, border: 0 }} />
+                {/* Keyed on the job state: the player fetches its props once, and before the
+                    service has prepared them it would sit on a 404 for ever. */}
+                <iframe key={state.job.state} title="preview" src={state.previewUrl} data-testid="preview-frame" style={{ width: '100%', aspectRatio: '9 / 16', maxHeight: 640, border: 0 }} />
                 <a href={state.previewUrl} target="_blank" rel="noreferrer">open the preview in a tab</a>
               </>
+            )}
+            {state.previewUrl && (state.job.state === 'queued' || state.job.state === 'preparing') && (
+              <Typography.Text type="secondary">The preview appears once the service has prepared the job.</Typography.Text>
             )}
             {state.exportPath && (
               <Typography.Text>
