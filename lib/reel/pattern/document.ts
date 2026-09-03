@@ -8,6 +8,7 @@ import { textHash } from '../script';
 import { patternDef, templateFor } from './index';
 import { templates, type ServiceOpts } from './service';
 import { defaultTimes, lineSpans, unitTimes } from './timing';
+import { alignScriptWords } from '../script-align';
 import type { Brand, CandidateRef, UnitTime } from './types';
 
 /** The service reads every asset by URL; a local file is `file:///C:/...`, never a bare path. */
@@ -73,13 +74,20 @@ export async function buildDocument(slug: string, opts: { captions?: boolean } &
   const lipsyncAsset = hook?.assetId ? reel.assets.find((a) => a.id === hook.assetId && a.status === 'ready') : undefined;
   const presenterPath = uploaded ? reelPresenterFile(slug) : lipsyncAsset ? path.join(reelDir(slug), lipsyncAsset.path) : null;
 
+  // Captions are spelled by the script and timed by the recogniser: whisper's timings are
+  // trusted, its spelling is not ("FIDO" comes back as anything). A word it never heard
+  // borrows no timing and is left out.
+  const lines = [...script.lines].sort((a, b) => a.order - b.order).map((l) => ({ id: l.id, text: l.text }));
+  const spelled = words.length
+    ? alignScriptWords(lines, words).filter((w) => typeof w.start === 'number' && typeof w.end === 'number').map((w) => ({ w: w.w, start: w.start, end: w.end }))
+    : [];
   const doc = def.doc({
     reel, script, sections: reel.pattern.sections, times, brand: brandFor(),
     captions: opts.captions ?? true,
     assets: {
       vo: hasVo ? fileUrl(voFile) : null,
       presenter: presenterPath ? fileUrl(presenterPath) : null,
-      words: words.map((w) => ({ w: w.w, start: w.start, end: w.end })),
+      words: spelled,
     },
   });
   return { doc, hash: docHash(doc), times, measured, presenter: uploaded ? 'upload' : lipsyncAsset ? 'lipsync' : null };
