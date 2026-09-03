@@ -19,12 +19,18 @@ export async function POST(req: Request) {
     if (exists) return NextResponse.json({ error: `reel ${slug} already exists` }, { status: 409 });
 
     const s = getSettings();
+    // A pattern reel renders through the templates service; null is a freeform reel of beats.
+    const pattern = body.pattern && typeof body.pattern === 'object' && body.pattern.name
+      ? { name: String(body.pattern.name), theme: String(body.pattern.theme ?? '') }
+      : null;
+    if (pattern && !pattern.theme) return NextResponse.json({ error: 'a pattern needs a theme' }, { status: 400 });
     const reel = await createReel(slug, {
       title: title || slug,
       style: body.style ?? s.reelStyle,
+      pattern,
       fps: s.reelFps,
       ratio: (body.ratio ?? s.reelRatio) as '9:16' | '4:5' | '1:1',
-    });
+    } as never);
     return NextResponse.json({ slug, reel });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
