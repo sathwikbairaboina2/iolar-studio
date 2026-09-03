@@ -18,6 +18,7 @@ const STEPS: { step: string; who: string; call: string; what: string }[] = [
   { step: '6', who: 'plugin', call: 'POST /api/weeks/{week}/run {stage: "script"}', what: 'The plugin\'s writer gets the facts and, per beat, what its slide shows; one line per speaking beat inside its word budget.' },
   { step: '7', who: 'studio', call: 'GET /api/weeks/{week}/script', what: 'The lines, ready to record. The studio reads each with its own voice (kokoro, then piper, mastered).' },
   { step: '8', who: 'studio → plugin', call: 'POST /api/weeks/{week}/script {style, lines[{beatId, text, audio}]}', what: 'One recording per speaking beat. The plugin measures each and cuts the slide to it: 0.25 s lead, the line, 0.6 s pad, floored per role, on the frame grid. The reel is the sum.' },
+  { step: '8b', who: 'studio → plugin', call: 'PUT /api/weeks/{week}/voice?format=m4a  (raw bytes)', what: 'Instead of 7 and 8, when you dropped your own recording on the cut: one file for the whole reel. The plugin decodes it, lays it after the lead-in beats, and cuts each slide to where whisper hears its line begin. Nothing is read in the studio.' },
   { step: '9', who: 'plugin', call: 'POST /api/weeks/{week}/run {stage: "build"}', what: 'Detached: render every scene on progress 0..1, captions spelled from the script and timed by whisper, composite. GET /api/weeks/{week}/build for the log; the week row shows running, done or failed.' },
 ];
 

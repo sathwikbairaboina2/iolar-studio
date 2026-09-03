@@ -23,6 +23,16 @@ describe('local text to speech', () => {
     expect(p.voice).toBe('en_US-ryan-high');
   });
 
+  it('lets a caller pick a kokoro voice and pace for one reading, such as a jobs reel', async () => {
+    const { kokoroPaths } = await import('@/lib/reel/tts');
+    const { getSettings } = await import('@/lib/settings');
+    expect(kokoroPaths().voice).toBe('am_michael');
+    expect(getSettings().jobsKokoroVoice).toBe('hf_alpha');
+    const p = kokoroPaths({ voice: 'hf_alpha', speed: 1.1 });
+    expect(p.voice).toBe('hf_alpha');
+    expect(p.speed).toBe(1.1);
+  });
+
   it('reports piper missing rather than throwing', async () => {
     const { saveSettings } = await import('@/lib/settings');
     saveSettings({ piperDataDir: path.join(tmpdir(), 'no-voices-here') });

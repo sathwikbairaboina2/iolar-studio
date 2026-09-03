@@ -1,8 +1,10 @@
 import * as ledger from './ledger';
 import {
-  BoardDown, readLines, runStage, submitJobs, submitScript, type BoardOpts,
+  BoardDown, readLines, runStage, submitJobs, submitScript, submitVoice, type BoardOpts,
 } from './board';
+import { ownVoiceBytes } from './ownVoice';
 import { recordLines, type Speaker } from './voice';
+import { speak } from '@/lib/reel/tts';
 import { getSettings } from '@/lib/settings';
 import type { RejectedRow, ReelJob } from './reelSchema';
 
@@ -23,8 +25,12 @@ export type SubmitOpts = BoardOpts & {
   now?: Date;
   /** The style pack to plan and render in; settings.jobsStyle by default. */
   style?: string;
-  /** 'studio' records the lines here; 'plugin' leaves the voice to the plugin's Piper. */
-  voice?: 'studio' | 'plugin';
+  /**
+   * 'own' sends the recording dropped on the cut; 'studio' records the lines here;
+   * 'plugin' leaves the voice to the plugin's own synthesiser. Unset: 'own' when a
+   * recording was dropped, else settings.jobsVoice.
+   */
+  voice?: 'own' | 'studio' | 'plugin';
   speaker?: Speaker;
   record?: (cut: ledger.Cut, pullId: number | null) => Promise<void>;
 };
@@ -37,7 +43,9 @@ export async function submitCut(id: number, opts: SubmitOpts = {}): Promise<{ cu
   }
   const settings = getSettings();
   const style = opts.style ?? settings.jobsStyle;
-  const voice = opts.voice ?? settings.jobsVoice;
+  const own = ownVoiceBytes(cut.periodKey);
+  const voice = opts.voice ?? (own ? 'own' : settings.jobsVoice);
+  if (voice === 'own' && !own) throw new CutNotSubmittable(`cut ${cut.periodKey} has no recording dropped on it`);
   const now = (opts.now ?? new Date()).toISOString();
   const rows = ledger.cutRows(id);
   const jobs = rows.filter((r) => r.row).map((r) => r.row as unknown as ReelJob);
@@ -93,11 +101,25 @@ export async function submitCut(id: number, opts: SubmitOpts = {}): Promise<{ cu
     ledger.setCutStatus(id, status);
   }
 
-  // 5. the voice: the studio reads every line and sends the recordings back
+  // 5. the voice: the user's own recording of the whole reel, sent as it is...
+  if (voice === 'own' && own) {
+    try {
+      const out = await submitVoice(cut.periodKey, own, opts);
+      if (!out.ok) return fail('voice', out, out.message ?? 'the board refused the recording');
+      record(jobs.length, 'voice', { ...out, provider: 'own', format: own.format, bytes: own.bytes.length }, null);
+      ledger.setCutStatus(id, 'voiced');
+    } catch (err) {
+      return fail('voice', null, oops(err));
+    }
+  }
+
+  // ...or the studio reads every line and sends the recordings back
   if (voice === 'studio') {
     try {
       const lines = await readLines(cut.periodKey, opts);
-      const recorded = await recordLines(lines.lines, { speaker: opts.speaker });
+      const speaker: Speaker = opts.speaker
+        ?? ((text, mp3) => speak(text, mp3, { voice: settings.jobsKokoroVoice, speed: settings.jobsKokoroSpeed }));
+      const recorded = await recordLines(lines.lines, { speaker });
       const out = await submitScript(cut.periodKey, { style, provider: `studio-${recorded.provider ?? 'voice'}`, lines: recorded.lines }, opts);
       if (!out.ok) return fail('voice', out, out.message ?? 'the board refused the recordings');
       record(jobs.length, 'voice', { ...out, provider: recorded.provider, lines: recorded.lines.length }, null);

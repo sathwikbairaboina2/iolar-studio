@@ -3,6 +3,7 @@ import { classifyPrompt, mapRows, parseLabels, type Classifier } from './map';
 import { keyFor, windowFor, type PeriodKind } from './period';
 import { briefFor, defaultFilter, type PoolFilter, type ResearchJob } from './researchApi';
 import { summarise } from './summarise';
+import { readOwnVoice, type OwnVoice } from './ownVoice';
 import { getSettings } from '@/lib/settings';
 
 /**
@@ -77,5 +78,7 @@ export async function prepareCut(kind: PeriodKind, periodKey?: string, opts: Pre
 export async function cutView(id: number) {
   const cut = ledger.getCut(id);
   if (!cut) return null;
-  return { cut, rows: ledger.cutRows(id), submissions: ledger.submissionsFor(id) };
+  const own = readOwnVoice(cut.periodKey);
+  const ownVoice: OwnVoice | null = own ? { format: own.format, bytes: own.bytes, name: own.name, at: own.at } : null;
+  return { cut, rows: ledger.cutRows(id), submissions: ledger.submissionsFor(id), ownVoice };
 }

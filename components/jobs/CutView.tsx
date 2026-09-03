@@ -1,26 +1,36 @@
 'use client';
-import { Alert, Button, Card, Checkbox, Statistic, Table, Tag, Typography } from 'antd';
-import { SendOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Checkbox, Statistic, Table, Tag, Typography, Upload } from 'antd';
+import { AudioOutlined, DeleteOutlined, SendOutlined } from '@ant-design/icons';
 import type { Cut, CutRow, Submission } from '@/lib/jobs/ledger';
+import type { OwnVoice } from '@/lib/jobs/ownVoice';
 import type { SummaryTiles } from '@/lib/jobs/summarise';
 
-export type CutDetail = { cut: Cut; rows: CutRow[]; submissions: Submission[] };
+export type CutDetail = { cut: Cut; rows: CutRow[]; submissions: Submission[]; ownVoice?: OwnVoice | null };
 
-/** One cut: the reel's tiles, the brief, the mapped rows, the rejects, and Submit. */
+const VOICE_ACCEPT = 'audio/*,.wav,.mp3,.m4a,.aac,.ogg,.flac,.webm';
+const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)} MB`;
+
+/** One cut: the reel's tiles, the brief, your own voice if you dropped one, the mapped rows, the rejects, and Submit. */
 export default function CutView({
   detail,
   submitting,
   force,
   onForce,
   onSubmit,
+  onVoice,
+  onClearVoice,
 }: {
   detail: CutDetail;
   submitting: boolean;
   force: boolean;
   onForce: (v: boolean) => void;
   onSubmit: () => void;
+  /** A recording of the whole reel, dropped on the cut; optional. */
+  onVoice?: (file: File) => void;
+  onClearVoice?: () => void;
 }) {
   const { cut, rows, submissions } = detail;
+  const ownVoice = detail.ownVoice ?? null;
   const s = cut.summary as SummaryTiles | null;
   const mapped = rows.filter((r) => r.row);
   const rejects = rows.filter((r) => !r.row);
@@ -56,6 +66,41 @@ export default function CutView({
         <Alert type="warning" showIcon style={{ marginBottom: 12 }} title={`Thin cut: ${cut.counted} rows`} description="Under the threshold. Tick force to send it anyway." />
       )}
       {last?.error && <Alert type="error" showIcon style={{ marginBottom: 12 }} title={`Last submit failed at ${last.stage ?? 'submit'}`} description={last.error} />}
+
+      {onVoice && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }} data-testid="own-voice">
+          <AudioOutlined />
+          <Typography.Text strong>Your voice</Typography.Text>
+          {ownVoice ? (
+            <>
+              <Tag color="cyan" data-testid="own-voice-file">
+                {ownVoice.name} · {mb(ownVoice.bytes)}
+              </Tag>
+              <Typography.Text type="secondary">Submit sends this recording; the plugin cuts the slides to it.</Typography.Text>
+              <Button size="small" icon={<DeleteOutlined />} onClick={onClearVoice} data-testid="own-voice-clear">
+                Use the studio voice instead
+              </Button>
+            </>
+          ) : (
+            <>
+              <Typography.Text type="secondary">Optional. Drop one recording of the whole reel; otherwise the studio reads the lines.</Typography.Text>
+              <Upload
+                accept={VOICE_ACCEPT}
+                showUploadList={false}
+                maxCount={1}
+                beforeUpload={(file) => {
+                  onVoice(file as File);
+                  return false;
+                }}
+              >
+                <Button size="small" icon={<AudioOutlined />} data-testid="own-voice-pick">
+                  Drop audio
+                </Button>
+              </Upload>
+            </>
+          )}
+        </div>
+      )}
 
       {s && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 12, marginBottom: 12 }} data-testid="tiles">

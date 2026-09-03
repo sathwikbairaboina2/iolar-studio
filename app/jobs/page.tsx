@@ -158,6 +158,30 @@ export default function JobsPage() {
     }
   };
 
+  const dropVoice = async (file: File) => {
+    if (selected === null) return;
+    try {
+      const r = await fetch(`/api/jobs/cuts/${selected}/voice?name=${encodeURIComponent(file.name)}`, {
+        method: 'PUT',
+        headers: { 'content-type': file.type || 'application/octet-stream' },
+        body: file,
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      message.success(`${file.name} will be the voice of this cut`);
+    } catch (err) {
+      message.error(String(err instanceof Error ? err.message : err));
+    } finally {
+      await refreshDetail(selected);
+    }
+  };
+
+  const clearVoice = async () => {
+    if (selected === null) return;
+    await fetch(`/api/jobs/cuts/${selected}/voice`, { method: 'DELETE' }).catch(() => null);
+    await refreshDetail(selected);
+  };
+
   const run = async (week: string, stage: 'summarise' | 'plan' | 'script' | 'build') => {
     const key = `${week}:${stage}`;
     setRunning(key);
@@ -228,7 +252,15 @@ export default function JobsPage() {
             />
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>Submit sends the list, plans in this style, lets the plugin write the lines, records them here, sends the recordings, and starts the build.</Typography.Text>
           </Space>
-          <CutView detail={detail} submitting={submitting} force={force} onForce={setForce} onSubmit={() => void submit()} />
+          <CutView
+            detail={detail}
+            submitting={submitting}
+            force={force}
+            onForce={setForce}
+            onSubmit={() => void submit()}
+            onVoice={(f) => void dropVoice(f)}
+            onClearVoice={() => void clearVoice()}
+          />
         </div>
       )}
 

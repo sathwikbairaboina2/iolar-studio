@@ -52,6 +52,14 @@ beforeEach(() => {
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const u = String(url);
     const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
+    if (init?.method === 'PUT') {
+      posted.push({ url: u, body: init.body });
+      if (u.includes('/api/jobs/cuts/1/voice')) return json({ ok: true, ownVoice: { format: 'm4a', bytes: 5, name: 'take.m4a', at: 'now' } });
+    }
+    if (init?.method === 'DELETE') {
+      posted.push({ url: u, body: null });
+      return json({ ok: true, cleared: true });
+    }
     if (init?.method === 'POST') {
       posted.push({ url: u, body: init.body ? JSON.parse(String(init.body)) : null });
       if (u.endsWith('/api/jobs/cuts')) return json({ cut });
@@ -61,7 +69,10 @@ beforeEach(() => {
     if (u.endsWith('/api/jobs/pool')) return json(pool);
     if (u.endsWith('/api/jobs/styles')) return json({ board: 'http://127.0.0.1:26100', styles: [{ style: 'paper-doodle', world: 'classic', displayName: 'Paper & Doodle', captionMode: 'plain', fixed: [], elastic: { slots: '4-5', secondsEach: '6.4-8s', rehook: null }, request: { jobs: { method: 'POST', path: '/api/weeks/{week}/jobs', body: 'JobsFile' }, script: { method: 'POST', path: '/api/weeks/{week}/script', body: {} }, build: { method: 'POST', path: '/api/weeks/{week}/run', body: { stage: 'build' } } } }] });
     if (u.endsWith('/api/jobs/cuts')) return json({ cuts: posted.some((p) => p.url.endsWith('/api/jobs/cuts')) ? [cut] : [] });
-    if (u.endsWith('/api/jobs/cuts/1')) return json(detail);
+    if (u.endsWith('/api/jobs/cuts/1')) {
+      const dropped = posted.some((p) => p.url.includes('/cuts/1/voice') && p.body !== null);
+      return json({ ...detail, ownVoice: dropped ? { format: 'm4a', bytes: 5, name: 'take.m4a', at: 'now' } : null });
+    }
     if (u.endsWith('/api/jobs/weeks')) return json({ board: 'http://127.0.0.1:26100', weeks: [{ week: '2026-W46', stage: 'exported', counted: 150, rejected: 0, style: 'feed', build: 'done', hasExport: true, links: { board: 'b', reel: 'r', preview: 'p' } }] });
     return json({ error: 'no route' }, 404);
   });
@@ -91,6 +102,25 @@ describe('the jobs page', () => {
     fireEvent.click(screen.getByTestId('submit'));
     await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobs/cuts/1/submit'))).toBe(true));
     expect(posted.find((p) => p.url.endsWith('/submit'))?.body).toEqual({ force: true, style: 'paper-doodle' });
+  });
+
+  it('takes a dropped recording for the cut and can hand the voice back to the studio', async () => {
+    const Page = (await import('@/app/jobs/page')).default;
+    render(<Page />);
+    await waitFor(() => expect(screen.getByText('New since last pull')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('prepare-week'));
+    await waitFor(() => expect(screen.getByTestId('own-voice-pick')).toBeTruthy());
+    expect(screen.getByText(/Optional\. Drop one recording/)).toBeTruthy();
+
+    const input = screen.getByTestId('own-voice').querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['audio'], 'take.m4a', { type: 'audio/mp4' });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobs/cuts/1/voice?name=take.m4a'))).toBe(true));
+    await waitFor(() => expect(screen.getByTestId('own-voice-file')).toBeTruthy());
+    expect(screen.getByTestId('own-voice-file').textContent).toContain('take.m4a');
+
+    fireEvent.click(screen.getByTestId('own-voice-clear'));
+    await waitFor(() => expect(posted.filter((p) => p.url.endsWith('/api/jobs/cuts/1/voice')).length).toBe(1));
   });
 
   it('pulls the pool from the button', async () => {

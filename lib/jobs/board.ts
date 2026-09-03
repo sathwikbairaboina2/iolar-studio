@@ -264,6 +264,34 @@ export async function submitScript(week: string, body: ScriptSubmission, opts: B
   return { ...reply, ok: res.ok && reply.ok !== false, status: res.status };
 }
 
+export type VoiceReply = { ok: boolean; status: number; message?: string; seconds?: number; bytes?: number; format?: string };
+
+/**
+ * The user's own recording of the whole reel. The plugin decodes it, lays it after the
+ * lead-in, and cuts the slides to where whisper hears each line; nothing is read here.
+ */
+export async function submitVoice(
+  week: string,
+  voice: { bytes: Buffer; format: string },
+  opts: BoardOpts = {}
+): Promise<VoiceReply> {
+  if (!SAFE_WEEK.test(week)) throw new Error(`"${week}" is not a week like 2026-W36`);
+  const { base, http } = client(opts);
+  let res: Response;
+  try {
+    res = await http(`${base}/api/weeks/${week}/voice?format=${encodeURIComponent(voice.format)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Uint8Array(voice.bytes),
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (err) {
+    throw new BoardDown(`jobs-reel board is not answering on ${base}: ${String(err instanceof Error ? err.message : err)}`);
+  }
+  const reply = (await res.json().catch(() => ({}))) as Omit<VoiceReply, 'status'>;
+  return { ...reply, ok: res.ok && reply.ok !== false, status: res.status };
+}
+
 export type BuildView = { week: string; build: { status: 'running' | 'done' | 'failed'; pid: number; startedAt: string; endedAt?: string; code?: number | null } | null; log: string };
 
 /** Where the detached build is, with the tail of its log. */
