@@ -178,8 +178,10 @@ shows both; nothing is discarded automatically.
 `pattern.presenter = 'upload'`; `DELETE` removes it and returns to `lipsync`. The service
 trims a clip longer than the hook from the start, so nothing is trimmed here.
 
-**Slide images.** Default: the first image-kind evidence asset among the slide's lines'
-`assetIds`, else null. Editable in the board (pick among the lines' evidence, or clear).
+**Slide images.** Research evidence is text only, so the image is a candidate's
+`thumbnailUrl` (an `http(s)://` URL the service downloads) or null; the sectioning prompt
+offers the cited candidates' thumbnails and the model picks or leaves null. Editable in the
+board (any `http(s)://` URL, or clear).
 
 **Web pages.** `url` is copied verbatim from the cited candidate the model picked by id; a
 url the model typed that matches no candidate is a `SectionError`.
