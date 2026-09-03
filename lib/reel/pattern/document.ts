@@ -61,8 +61,11 @@ export async function buildDocument(slug: string, opts: { captions?: boolean } &
   const hasVo = await exists(voFile);
   const words = reel.vo.words;
   const measured = hasVo && words.length > 0 && reel.vo.durationSec > 0;
+  // The service owns the cut of a voiced reel (it fits the words itself); these local times
+  // only feed the hook audio cut and the board's strip when the service cannot be asked, so
+  // the hand-written cap on `sec` does not apply here.
   const times = measured
-    ? unitTimes(units, lineSpans(script, words), reel.vo.durationSec, { fps: reel.fps, secMin: template.limits.secMin ?? 1, secMax: template.limits.secMax ?? 30 })
+    ? unitTimes(units, lineSpans(script, words), reel.vo.durationSec, { fps: reel.fps, secMin: template.limits.secMin ?? 1, secMax: Number.POSITIVE_INFINITY })
     : defaultTimes(units, template.defaults, { fps: reel.fps });
 
   const uploaded = await exists(reelPresenterFile(slug));
@@ -72,7 +75,7 @@ export async function buildDocument(slug: string, opts: { captions?: boolean } &
 
   const doc = def.doc({
     reel, script, sections: reel.pattern.sections, times, brand: brandFor(),
-    captions: opts.captions ?? false,
+    captions: opts.captions ?? true,
     assets: {
       vo: hasVo ? fileUrl(voFile) : null,
       presenter: presenterPath ? fileUrl(presenterPath) : null,

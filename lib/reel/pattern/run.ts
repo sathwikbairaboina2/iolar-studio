@@ -66,12 +66,26 @@ export async function patternState(slug: string, deps: StateDeps = {}): Promise<
   state.sectionsStale = sectioned && p.scriptHash !== sectionsHash(script);
   if (!sectioned) return state;
 
-  // Timing and staleness of the document come from the same build.
+  // Timing and staleness of the document come from the same build. The seconds shown are
+  // the service's own (POST /validate cuts a voiced document to its words); the local
+  // measure stands in when the service cannot be asked.
   try {
     const built = await buildDocument(slug, deps);
     state.units = built.times;
     state.measured = built.measured;
     state.renderStale = Boolean(p.job) && p.job!.docHash !== built.hash;
+    if (built.measured) {
+      try {
+        const tl = (await service.validate(built.doc, deps)) as { sections?: { start: number; end: number }[] };
+        const secs = tl.sections ?? [];
+        if (secs.length === built.times.length) {
+          state.units = built.times.map((u, i) => ({ ...u, start: secs[i].start, end: secs[i].end, sec: Math.round((secs[i].end - secs[i].start) * 1000) / 1000 }));
+        }
+      } catch (err) {
+        if (err instanceof service.ServiceRejected) state.timingError = err.message;
+        else if (!(err instanceof service.ServiceDown)) throw err;
+      }
+    }
   } catch (err) {
     if (err instanceof UnitTooLong) state.timingError = err.message;
     else if (err instanceof service.ServiceDown) state.blocked = err.message;
@@ -124,7 +138,7 @@ export async function advancePattern(slug: string, deps: RunDeps = {}): Promise<
 
 /** Validate, submit, remember the job. Refuses without a presenter: the service would render a fixture face. */
 export async function renderPattern(slug: string, deps: service.ServiceOpts & { captions?: boolean } = {}): Promise<PatternState> {
-  const built = await buildDocument(slug, deps);
+  const built = await buildDocument(slug, { ...deps, captions: deps.captions ?? true });
   if (!built.presenter) throw new Error('no hook clip yet — let lipsync make one, or upload a presenter clip');
   await service.validate(built.doc, deps);
   const { id } = await service.submit(built.doc, deps);
@@ -143,10 +157,14 @@ export async function pollRender(slug: string, deps: service.ServiceOpts = {}): 
   if (!reel.pattern || !job) return patternState(slug, { ...deps, provider: null });
   const remote = await service.job(job.id, deps);
   const next = { ...job, state: remote.state, error: remote.error };
-  if (remote.state === 'done' && !(await exists(exportFile(slug)))) {
+  // The export belongs to one job; a re-render replaces it. The marker says which job it came from.
+  const marker = path.join(reelExportDir(slug), 'reel.job');
+  const fetchedFor = await fs.readFile(marker, 'utf8').then((s) => s.trim()).catch(() => null);
+  if (remote.state === 'done' && (fetchedFor !== job.id || !(await exists(exportFile(slug))))) {
     await fs.mkdir(reelPatternDir(slug), { recursive: true });
     await service.download(job.id, exportFile(slug), deps);
     await fs.writeFile(reelPatternTimelineFile(slug), JSON.stringify(remote.timeline ?? {}, null, 2));
+    await fs.writeFile(marker, job.id);
   }
   await saveReel(slug, { ...reel, pattern: { ...reel.pattern, job: next } });
   const state = await patternState(slug, { ...deps, provider: null });

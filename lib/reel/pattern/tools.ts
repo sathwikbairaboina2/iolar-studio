@@ -20,7 +20,17 @@ export const HookSectionSchema = z.object({
   /** The lipsync render of the hook, once made; an uploaded clip needs none. */
   assetId: z.string().optional(),
 });
-export const SlideSchema = z.object({ lineIds, topic: z.string(), points: z.array(z.string()), image: z.string().nullable().default(null), stats: z.array(StatSchema).default([]) });
+/** A point as the model may write it: the text, or the text with the phrase of the line it should land on. */
+const PointInSchema = z.union([z.string(), z.object({ text: z.string(), anchor: z.string().nullable().default(null) })]);
+export const SlideSchema = z.object({
+  lineIds,
+  topic: z.string(),
+  points: z.array(z.string()),
+  /** One per point, or null: the phrase inside the slide's lines the point lands on. */
+  anchors: z.array(z.string().nullable()).default([]),
+  image: z.string().nullable().default(null),
+  stats: z.array(StatSchema).default([]),
+});
 export const SlidesSectionSchema = z.object({ kind: z.literal('slides'), slides: z.array(SlideSchema) });
 export const PageSchema = z.object({ lineIds, url: z.string(), label: z.string().nullable().default(null) });
 export const WebSectionSchema = z.object({ kind: z.literal('web'), pages: z.array(PageSchema) });
@@ -126,9 +136,27 @@ function check(raw: unknown[], script: Script, candidates: Record<string, Candid
   return errs;
 }
 
+/** Points written as `{ text, anchor }` become `points` plus a parallel `anchors` list. */
+function normalisePoints(sections: unknown[]): unknown[] {
+  return sections.map((s) => {
+    const sec = s as { kind?: string; slides?: Record<string, unknown>[] };
+    if (sec.kind !== 'slides' || !Array.isArray(sec.slides)) return s;
+    return {
+      ...sec,
+      slides: sec.slides.map((sl) => {
+        const raw = Array.isArray(sl.points) ? (sl.points as unknown[]) : [];
+        const parsed = raw.map((p) => PointInSchema.safeParse(p));
+        if (!parsed.every((p) => p.success)) return sl;
+        const items = parsed.map((p) => (typeof p.data === 'string' ? { text: p.data, anchor: null } : p.data!));
+        return { ...sl, points: items.map((p) => p.text), anchors: items.map((p) => p.anchor) };
+      }),
+    };
+  });
+}
+
 function parse(raw: string, script: Script, candidates: Record<string, CandidateRef>, limits: Limits): unknown[] {
   const data = extractJson(raw) as { sections?: unknown[] };
-  const sections = Array.isArray(data.sections) ? data.sections : [];
+  const sections = normalisePoints(Array.isArray(data.sections) ? data.sections : []);
   if (sections.length === 0) throw new SectionError('sections', 'the answer has no sections');
   const errs = check(sections, script, candidates, limits);
   if (errs.length) throw errs[0];
@@ -147,7 +175,7 @@ function prompt(input: PromptInput): string {
   const shape = `Return ONLY JSON (no prose, no markdown fences):
 { "sections": [
   { "kind": "hook",   "lineIds": [...], "title": string, "chips": [string], "tease": string|null },
-  { "kind": "slides", "slides": [ { "lineIds": [...], "topic": string, "points": [string], "image": string|null, "stats": [ { "label": string, "value": number, "prefix": string, "suffix": string } ] } ] },
+  { "kind": "slides", "slides": [ { "lineIds": [...], "topic": string, "points": [ { "text": string, "anchor": string } ], "image": string|null, "stats": [ { "label": string, "value": number, "prefix": string, "suffix": string } ] } ] },
   { "kind": "web",    "pages":  [ { "lineIds": [...], "url": string, "label": string|null } ] },
   { "kind": "cta",    "lineIds": [...], "keyword": string, "line": string, "follow": string }
 ] }`;
@@ -157,6 +185,7 @@ function prompt(input: PromptInput): string {
     `The lineIds decide how long each unit is on screen (the voice reads those lines). Give a slide the lines it illustrates; give a page the line(s) that cite its url.`,
     `Limits, strict: title ≤ ${limits.title} chars; ≤ ${limits.chips} chips of ≤ ${limits.chip} chars; per slide: topic ≤ ${limits.topic} chars, 1–${limits.points} points of ≤ ${limits.point} chars each, ≤ 3 stats; keyword ≤ ${limits.keyword} chars; cta line and follow ≤ ${limits.title} chars; tease ≤ ${limits.title} chars or null; page label ≤ 20 chars. Over the limit is rejected, never truncated.`,
     `A page url must be copied exactly from the sources list; never invent one. A slide image is a source's image url or null. Stats only when a line states a number.`,
+    `Each point lands on screen when its "anchor" is spoken: the anchor is a short phrase (2–5 words) copied exactly from one of that slide's lines, in the order the points appear. Points are shown one at a time as the voice reaches them.`,
     `On-screen copy is written fresh and short; the voice already says the lines, so the screen adds, never repeats. Brand: ${brand.name} (${brand.handle}). Themes available: ${themes.join(', ') || 'default'}.`,
   ].join('\n');
   const errors = input.errors?.length ? `Your previous answer was rejected:\n- ${input.errors.join('\n- ')}\nFix exactly those and answer again.` : '';
@@ -166,16 +195,33 @@ function prompt(input: PromptInput): string {
 }
 
 function doc(input: DocInput): unknown {
-  const { reel, times, brand, captions, assets } = input;
+  const { reel, script, times, brand, captions, assets } = input;
   const sections = input.sections as ToolsSection[];
+  // Voiced: the service cuts every unit to the words it is given, so no `sec` is sent (a
+  // hand-written one is capped at 30 there, and a spoken slide may run longer). Unvoiced:
+  // the measured defaults stand in.
+  const voiced = Boolean(assets.vo) && assets.words.length > 0;
+  const lineText = new Map(script.lines.map((l) => [l.id, l.text.trim()]));
+  const speechOf = (ids: string[]) => ids.map((id) => lineText.get(id) ?? '').filter(Boolean).join(' ');
   const secAt = new Map(times.map((t) => [t.path, t.sec]));
-  const sec = (p: string) => secAt.get(p) ?? 5;
+  const timing = (p: string, ids: string[]) => (voiced ? { speech: speechOf(ids) } : { sec: secAt.get(p) ?? 5 });
   const body = sections.map((s, i) => {
     const at = `sections.${i}`;
-    if (s.kind === 'hook') return { kind: 'hook', sec: sec(at), presenter: assets.presenter ?? 'fixture://presenter.mp4', title: s.title, chips: s.chips, tease: s.tease };
-    if (s.kind === 'slides') return { kind: 'slides', slides: s.slides.map((sl, j) => ({ sec: sec(`${at}.slides.${j}`), topic: sl.topic, points: sl.points, image: sl.image, stats: sl.stats })) };
-    if (s.kind === 'web') return { kind: 'web', pages: s.pages.map((pg, j) => ({ sec: sec(`${at}.pages.${j}`), url: pg.url, label: pg.label })) };
-    return { kind: 'cta', sec: sec(at), keyword: s.keyword, line: s.line, follow: s.follow };
+    if (s.kind === 'hook') return { kind: 'hook', ...timing(at, s.lineIds), presenter: assets.presenter ?? 'fixture://presenter.mp4', title: s.title, chips: s.chips, tease: s.tease };
+    if (s.kind === 'slides') {
+      return {
+        kind: 'slides',
+        slides: s.slides.map((sl, j) => ({
+          ...timing(`${at}.slides.${j}`, sl.lineIds),
+          topic: sl.topic,
+          points: sl.points.map((text, k) => (sl.anchors?.[k] ? { text, anchor: sl.anchors[k] } : text)),
+          image: sl.image,
+          stats: sl.stats,
+        })),
+      };
+    }
+    if (s.kind === 'web') return { kind: 'web', pages: s.pages.map((pg, j) => ({ ...timing(`${at}.pages.${j}`, pg.lineIds), url: pg.url, label: pg.label })) };
+    return { kind: 'cta', ...timing(at, s.lineIds), keyword: s.keyword, line: s.line, follow: s.follow };
   });
   return {
     template: 'tools',

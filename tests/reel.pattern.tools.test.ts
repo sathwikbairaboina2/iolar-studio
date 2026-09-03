@@ -79,24 +79,41 @@ describe('tools pattern: document', () => {
     const doc = tools.doc({
       reel, script, sections: good, times, brand: { handle: '@iolar', name: 'iolar' }, captions: true,
       assets: { vo: 'file:///C:/r/vo.mp3', presenter: 'file:///C:/r/presenter.mp4', words: [{ w: 'three', start: 0, end: 0.3 }] },
-    }) as { template: string; theme: string; sections: { kind: string; sec?: number; slides?: { sec: number }[]; pages?: { sec: number }[]; presenter?: string }[]; vo: { file: string; words: unknown[] }; captions: { enabled: boolean }; music: { file: null } };
+    }) as { template: string; theme: string; sections: { kind: string; sec?: number; speech?: string; slides?: { sec?: number; speech?: string; points: unknown[] }[]; pages?: { sec?: number; speech?: string }[]; presenter?: string }[]; vo: { file: string; words: unknown[] }; captions: { enabled: boolean }; music: { file: null } };
     expect(doc.template).toBe('tools');
     expect(doc.theme).toBe('kinetic');
     expect(doc.sections.map((s) => s.kind)).toEqual(['hook', 'slides', 'web', 'cta']);
-    expect(doc.sections[0]).toMatchObject({ sec: 5, presenter: 'file:///C:/r/presenter.mp4', title: '3 tools nobody told you about' });
-    expect(doc.sections[1].slides!.map((s) => s.sec)).toEqual([5, 5]);
-    expect(doc.sections[2].pages![0].sec).toBe(5);
-    expect(doc.sections[3]).toMatchObject({ kind: 'cta', sec: 5, keyword: 'TOOLS' });
+    // Voiced: the service cuts every unit to its words, so speech travels and no sec does.
+    expect(doc.sections[0]).toMatchObject({ speech: 'Three tools nobody told you about.', presenter: 'file:///C:/r/presenter.mp4', title: '3 tools nobody told you about' });
+    expect(doc.sections[0].sec).toBeUndefined();
+    expect(doc.sections[1].slides!.map((s) => s.speech)).toEqual(['The first runs offline.', 'The second costs nothing.']);
+    expect(doc.sections[1].slides![0].points).toEqual(['zero telemetry']);
+    expect(doc.sections[2].pages![0].speech).toBe('Here is the repo.');
+    expect(doc.sections[3]).toMatchObject({ kind: 'cta', speech: 'Comment tools and I will DM you the links.', keyword: 'TOOLS' });
     expect(doc.vo).toEqual({ file: 'file:///C:/r/vo.mp3', words: [{ w: 'three', start: 0, end: 0.3 }] });
     expect(doc.captions.enabled).toBe(true);
     expect(doc.music.file).toBeNull();
     expect(JSON.stringify(doc)).not.toContain('lineIds');
   });
 
-  it('omits vo when there is no voice yet and falls back to the fixture presenter', () => {
-    const doc = tools.doc({ reel, script, sections: good, times, brand: { handle: '@iolar', name: 'iolar' }, captions: false, assets: { vo: null, presenter: null, words: [] } }) as { vo?: unknown; sections: { presenter?: string }[] };
+  it('omits vo when there is no voice yet, sends the measured seconds instead of speech, and falls back to the fixture presenter', () => {
+    const doc = tools.doc({ reel, script, sections: good, times, brand: { handle: '@iolar', name: 'iolar' }, captions: false, assets: { vo: null, presenter: null, words: [] } }) as { vo?: unknown; sections: { sec?: number; speech?: string; presenter?: string }[] };
     expect(doc.vo).toBeUndefined();
     expect(doc.sections[0].presenter).toBe('fixture://presenter.mp4');
+    expect(doc.sections[0].sec).toBe(5);
+    expect(doc.sections[0].speech).toBeUndefined();
+  });
+
+  it('sends a point with its anchor when the sections carry one, and reads anchored points from the model', () => {
+    const anchored = structuredClone(good);
+    (anchored[1] as { slides: { anchors?: (string | null)[] }[] }).slides[0].anchors = ['runs offline'];
+    const doc = tools.doc({ reel, script, sections: anchored, times, brand: { handle: '@iolar', name: 'iolar' }, captions: true, assets: { vo: 'file:///C:/r/vo.mp3', presenter: null, words: [{ w: 'x', start: 0, end: 1 }] } }) as { sections: { slides?: { points: unknown[] }[] }[] };
+    expect(doc.sections[1].slides![0].points).toEqual([{ text: 'zero telemetry', anchor: 'runs offline' }]);
+    const raw = structuredClone(good);
+    (raw[1] as { slides: { points: unknown[] }[] }).slides[1].points = [{ text: 'MIT licence', anchor: 'costs nothing' }, 'no signup'];
+    const parsed = tools.parse(JSON.stringify({ sections: raw }), script, candidates, limits) as { slides: { points: string[]; anchors: (string | null)[] }[] }[];
+    expect(parsed[1].slides[1].points).toEqual(['MIT licence', 'no signup']);
+    expect(parsed[1].slides[1].anchors).toEqual(['costs nothing', null]);
   });
 });
 

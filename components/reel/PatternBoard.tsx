@@ -94,7 +94,7 @@ export default function PatternBoard({ slug, onChanged }: { slug: string; patter
   const [state, setState] = useState<State | null>(null);
   const [draft, setDraft] = useState<Section[] | null>(null);
   const [voice, setVoice] = useState<'tts' | 'supplied'>('tts');
-  const [captions, setCaptions] = useState(false);
+  const [captions, setCaptions] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);

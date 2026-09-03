@@ -11,7 +11,7 @@ export async function POST(req: Request, ctx: Ctx) {
   if (!isSlug(slug)) return NextResponse.json({ error: 'bad reel id' }, { status: 400 });
   const body = (await req.json().catch(() => ({}))) as { captions?: boolean };
   try {
-    return NextResponse.json(await renderPattern(slug, { captions: body.captions === true }));
+    return NextResponse.json(await renderPattern(slug, { captions: body.captions !== false }));
   } catch (err) {
     if (err instanceof ServiceRejected) return NextResponse.json({ error: err.message, issues: err.issues }, { status: 422 });
     if (err instanceof ServiceDown) return NextResponse.json({ error: err.message }, { status: 503 });
