@@ -10,6 +10,7 @@ import Player from '@/components/reel/Player';
 import AgentPanel from '@/components/reel/AgentPanel';
 import ResearchPanel from '@/components/reel/ResearchPanel';
 import BuildBoard from '@/components/reel/BuildBoard';
+import PatternBoard from '@/components/reel/PatternBoard';
 import VoicePanel from '@/components/reel/VoicePanel';
 import ShotGate from '@/components/reel/ShotGate';
 import ShotActions from '@/components/reel/ShotActions';
@@ -127,6 +128,7 @@ export default function ReelStudio() {
           {reel.title}
         </Typography.Title>
         <Tag>{reel.style}</Tag>
+        {reel.pattern && <Tag color="purple">{reel.pattern.name} · {reel.pattern.theme}</Tag>}
         <Tag>{reel.ratio}</Tag>
         <Tag>{duration ? `${duration.toFixed(1)}s` : 'no timeline yet'}</Tag>
         <Space.Compact>
@@ -202,6 +204,24 @@ export default function ReelStudio() {
                 </Card>
               ),
             },
+            ...(reel.pattern
+              ? [{
+                  key: 'pattern',
+                  label: `Pattern: ${reel.pattern.name}`,
+                  children: (
+                    <Card size="small">
+                      <PatternBoard
+                        slug={slug}
+                        pattern={reel.pattern}
+                        onChanged={async () => {
+                          const r = await fetch(`/api/reel/${slug}`).then((x) => x.json()).catch(() => null);
+                          if (r?.reel) setReel(r.reel as Reel);
+                        }}
+                      />
+                    </Card>
+                  ),
+                }]
+              : []),
             {
               key: 'build',
               label: 'Build',
@@ -414,7 +434,7 @@ export default function ReelStudio() {
                 </Space>
               ),
             },
-          ]}
+          ].filter((t) => !reel.pattern || ['research', 'voice', 'pattern', 'files'].includes(t.key))}
         />
       </div>
 

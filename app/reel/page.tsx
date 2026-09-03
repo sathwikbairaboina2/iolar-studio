@@ -25,10 +25,13 @@ type Mode = 'topic' | 'paste' | 'reference';
 
 export default function ReelList() {
   const [reels, setReels] = useState<Meta[]>([]);
-  const [styles, setPatterns] = useState<{ name: string; displayName: string }[]>([]);
+  const [styles, setStyles] = useState<{ name: string; displayName: string }[]>([]);
+  const [patterns, setPatterns] = useState<{ name: string; displayName: string; themes: string[] }[]>([]);
+  const [patternName, setPatternName] = useState<string>('');
+  const [theme, setTheme] = useState<string>('');
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
-  const [style, setPattern] = useState('armand');
+  const [style, setStyle] = useState('armand');
   const [mode, setMode] = useState<Mode>('topic');
   const [topic, setTopic] = useState('');
   const [script, setScript] = useState('');
@@ -45,11 +48,17 @@ export default function ReelList() {
     load();
     fetch('/api/reel/styles')
       .then((r) => r.json())
-      .then((d) => setPatterns(d.styles ?? []));
+      .then((d) => setStyles(d.styles ?? []));
+    // Patterns appear only while the templates service answers; the list is empty otherwise.
+    fetch('/api/reel/patterns')
+      .then((r) => r.json())
+      .then((d) => setPatterns(d.patterns ?? []))
+      .catch(() => setPatterns([]));
   }, []);
 
   const source = mode === 'topic' ? topic : mode === 'paste' ? script : mediaUrl;
-  const canCreate = !!title.trim() && !!source.trim() && !creating;
+  // A pattern reel gets its script from Research, so the source is not needed to create it.
+  const canCreate = !!title.trim() && (!!patternName || !!source.trim()) && !creating;
 
   const create = async () => {
     setCreating(true);
@@ -57,11 +66,17 @@ export default function ReelList() {
       const r = await fetch('/api/reel', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title, style }),
+        body: JSON.stringify({ title, style, pattern: patternName ? { name: patternName, theme } : null }),
       });
       const created = await r.json();
       if (!r.ok) throw new Error(created.error ?? 'create failed');
 
+      if (patternName) {
+        // The pattern's script comes from the Research tab; nothing to plan here.
+        setOpen(false);
+        router.push(`/reel/${created.slug}`);
+        return;
+      }
       message.info('Claude is writing the script…');
       const plan = await fetch(`/api/reel/${created.slug}/plan`, {
         method: 'POST',
@@ -134,16 +149,36 @@ export default function ReelList() {
         <div style={{ display: 'grid', gap: 12 }}>
           <Input placeholder="Title, e.g. xAI drops Grok Bot" value={title} onChange={(e) => setTitle(e.target.value)} />
           <Select
+            value={patternName}
+            onChange={(v) => {
+              setPatternName(v);
+              setTheme(patterns.find((x) => x.name === v)?.themes[0] ?? '');
+            }}
+            options={[{ value: '', label: 'Freeform (beats)' }, ...patterns.map((x) => ({ value: x.name, label: `Pattern: ${x.displayName}` }))]}
+            data-testid="pattern-pick"
+          />
+          {patternName && (
+            <Select
+              value={theme}
+              onChange={setTheme}
+              options={(patterns.find((x) => x.name === patternName)?.themes ?? []).map((t) => ({ value: t, label: t }))}
+              data-testid="theme-pick"
+            />
+          )}
+          {patterns.length === 0 && (
+            <Typography.Text type="secondary">Patterns appear when reels-templates is running (Plugins).</Typography.Text>
+          )}
+          <Select
             value={style}
-            onChange={setPattern}
+            onChange={setStyle}
             options={styles.map((p) => ({ value: p.name, label: p.displayName }))}
           />
-          <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
+          {!patternName && <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)}>
             <Radio.Button value="topic">From topic</Radio.Button>
             <Radio.Button value="paste">Paste script</Radio.Button>
             <Radio.Button value="reference">From a reel</Radio.Button>
-          </Radio.Group>
-          {mode === 'topic' && (
+          </Radio.Group>}
+          {!patternName && mode === 'topic' && (
             <Input.TextArea
               rows={3}
               placeholder="What is this reel about? Paste a link or a few lines of context."
@@ -151,7 +186,7 @@ export default function ReelList() {
               onChange={(e) => setTopic(e.target.value)}
             />
           )}
-          {mode === 'paste' && (
+          {!patternName && mode === 'paste' && (
             <Input.TextArea
               rows={6}
               placeholder="Your finished script, spoken word for word."
@@ -159,7 +194,7 @@ export default function ReelList() {
               onChange={(e) => setScript(e.target.value)}
             />
           )}
-          {mode === 'reference' && (
+          {!patternName && mode === 'reference' && (
             <Input
               placeholder="http://localhost:3000/api/media/…"
               value={mediaUrl}
