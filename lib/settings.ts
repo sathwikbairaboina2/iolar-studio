@@ -59,6 +59,9 @@ export type Settings = {
   /** The style pack a cut is planned and rendered in, and who records its lines. */
   jobsStyle: string;
   jobsVoice: 'studio' | 'plugin';
+  /** The kokoro voice and pace the studio reads a jobs reel in; hf_alpha is Indian English. */
+  jobsKokoroVoice: string;
+  jobsKokoroSpeed: number;
 };
 
 const DEFAULTS: Settings = {
@@ -110,6 +113,10 @@ const DEFAULTS: Settings = {
   jobsThinBelow: 20,
   jobsStyle: 'paper-doodle',
   jobsVoice: 'studio',
+  jobsKokoroVoice: 'hf_alpha',
+  // The plugin cuts each slide to its line, so a jobs reel can take a presenter's pace
+  // rather than the 1.35 a fixed-length reel needs.
+  jobsKokoroSpeed: 1.1,
 };
 
 function file() {

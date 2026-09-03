@@ -28,15 +28,17 @@ export type TtsProvider = 'kokoro' | 'piper' | 'sapi' | 'manual';
  * Each writes a wav, which ffmpeg turns into the mp3 the reel stores.
  */
 
-export function kokoroPaths() {
+export type SpeakOpts = { voice?: string; speed?: number };
+
+export function kokoroPaths(opts: SpeakOpts = {}) {
   const s = getSettings();
   const dir = path.isAbsolute(s.kokoroDir) ? s.kokoroDir : path.join(process.cwd(), s.kokoroDir);
   return {
     python: s.whisperPython,
     model: path.join(dir, 'kokoro-v1.0.onnx'),
     voices: path.join(dir, 'voices-v1.0.bin'),
-    voice: s.kokoroVoice,
-    speed: s.kokoroSpeed,
+    voice: opts.voice ?? s.kokoroVoice,
+    speed: opts.speed ?? s.kokoroSpeed,
   };
 }
 
@@ -53,8 +55,8 @@ export async function kokoroAvailable(): Promise<boolean> {
   }
 }
 
-async function synthKokoro(text: string, wavPath: string): Promise<void> {
-  const { python, model, voices, voice, speed } = kokoroPaths();
+async function synthKokoro(text: string, wavPath: string, opts: SpeakOpts): Promise<void> {
+  const { python, model, voices, voice, speed } = kokoroPaths(opts);
   const script = path.join(process.cwd(), 'scripts', 'kokoro_tts.py');
   const { spawn } = await import('child_process');
   const child = spawn(python, [script, wavPath, model, voices, voice, String(speed)], {
@@ -153,7 +155,7 @@ async function toMp3(wavPath: string, mp3Path: string): Promise<void> {
 }
 
 /** Speaks the script to `mp3Path`, returning which engine actually produced it. */
-export async function speak(text: string, mp3Path: string): Promise<{ provider: TtsProvider }> {
+export async function speak(text: string, mp3Path: string, opts: SpeakOpts = {}): Promise<{ provider: TtsProvider }> {
   if (!text.trim()) throw new TtsUnavailableError('the script is empty');
   const configured = getSettings().voiceProvider as TtsProvider;
   const wav = mp3Path.replace(/\.mp3$/i, '.wav');
@@ -173,7 +175,7 @@ export async function speak(text: string, mp3Path: string): Promise<{ provider: 
           problems.push('kokoro: model files missing (npm run setup:voice)');
           continue;
         }
-        await synthKokoro(text, wav);
+        await synthKokoro(text, wav, opts);
       } else if (provider === 'piper') {
         if (!(await piperAvailable())) {
           problems.push('piper: not installed (npm run setup:voice)');

@@ -3,6 +3,7 @@ import {
   BoardDown, readLines, runStage, submitJobs, submitScript, type BoardOpts,
 } from './board';
 import { recordLines, type Speaker } from './voice';
+import { speak } from '@/lib/reel/tts';
 import { getSettings } from '@/lib/settings';
 import type { RejectedRow, ReelJob } from './reelSchema';
 
@@ -97,7 +98,9 @@ export async function submitCut(id: number, opts: SubmitOpts = {}): Promise<{ cu
   if (voice === 'studio') {
     try {
       const lines = await readLines(cut.periodKey, opts);
-      const recorded = await recordLines(lines.lines, { speaker: opts.speaker });
+      const speaker: Speaker = opts.speaker
+        ?? ((text, mp3) => speak(text, mp3, { voice: settings.jobsKokoroVoice, speed: settings.jobsKokoroSpeed }));
+      const recorded = await recordLines(lines.lines, { speaker });
       const out = await submitScript(cut.periodKey, { style, provider: `studio-${recorded.provider ?? 'voice'}`, lines: recorded.lines }, opts);
       if (!out.ok) return fail('voice', out, out.message ?? 'the board refused the recordings');
       record(jobs.length, 'voice', { ...out, provider: recorded.provider, lines: recorded.lines.length }, null);
