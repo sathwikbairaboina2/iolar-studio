@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { runClaude } from '@/lib/ai/claude';
+import { thinker } from '@/lib/ai/runner';
 import type { Brief } from './brief';
 import { CandidateSchema, type Candidate } from './candidate';
 import type { Evidence } from './gather';
@@ -92,7 +92,7 @@ function briefBlock(brief: Brief): string {
  * edit, so it asks for concrete queries — the kind you could paste into a search box —
  * each pinned to one of the brief's claims, each with the reason it should work.
  */
-export async function planSearch(brief: Brief, run: Runner = runClaude, memory = ''): Promise<SearchPlan> {
+export async function planSearch(brief: Brief, run: Runner = thinker(), memory = ''): Promise<SearchPlan> {
   const prompt = `You are planning the research for a short video. Do not search yet — write the plan.
 
 ${briefBlock(brief)}
@@ -125,7 +125,7 @@ No prose, no fence.`;
 /** Stage 2 — one subagent per source class, dispatched together. */
 export async function huntSources(
   brief: Brief,
-  run: Runner = runClaude,
+  run: Runner = thinker(),
   onTool?: Parameters<Runner>[1] extends { onTool?: infer T } | undefined ? T : never
 ): Promise<Record<string, unknown>[]> {
   const perClass = brief.searchQueries
@@ -163,7 +163,7 @@ Reply with ONLY the concatenated JSON array of every subagent's results. No pros
 export async function critique(
   brief: Brief,
   raw: Record<string, unknown>[],
-  run: Runner = runClaude,
+  run: Runner = thinker(),
   memory = ''
 ): Promise<{ candidates: Candidate[] }> {
   const prompt = `You are the adversarial critic on a video research pack. Be hard to please.
@@ -196,7 +196,7 @@ export async function draftScript(
   brief: Brief,
   candidates: Candidate[],
   evidence: Record<string, Pick<Evidence, 'text'>>,
-  run: Runner = runClaude,
+  run: Runner = thinker(),
   /** A note from the last attempt — what was wrong with it — for a retry. */
   redo?: string,
   memory = ''
@@ -340,7 +340,7 @@ export async function verifyScript(
   lines: ScriptLine[],
   candidates: Candidate[],
   evidence: Record<string, Pick<Evidence, 'text'>>,
-  run: Runner = runClaude,
+  run: Runner = thinker(),
   /** Recalled passages for one line, spliced ahead of the keyword windows. */
   memoryFor?: (line: ScriptLine) => string
 ): Promise<Flag[]> {
@@ -398,7 +398,7 @@ Only the lines that fail. An empty list means every cited line is true to its so
 export async function judgeCoverage(
   mustProve: string[],
   lines: ScriptLine[],
-  run: Runner = runClaude
+  run: Runner = thinker()
 ): Promise<Coverage[]> {
   const factual = lines.filter((l) => !l.commentary && l.citations.length > 0);
   if (mustProve.length === 0) return [];

@@ -25,8 +25,11 @@ export function scoreFamilies(card: JobCard): Score[] {
   const hasDeadline = card.dates.some((d) => d.kind === 'deadline');
   const isDrive = card.dates.some((d) => d.kind === 'walk-in' || d.kind === 'drive');
   const steps = card.selectionProcess.length;
+  // A tile is a small box: one long sentence in the experience line is enough to burst it.
   const shortFacts =
-    card.role.skills.every((s) => s.length <= 24) && card.eligibility.every((e) => e.length <= 90);
+    card.role.skills.every((s) => s.length <= 24) &&
+    card.eligibility.every((e) => e.length <= 90) &&
+    card.experience.label.length <= 30;
 
   const scores: Score[] = [
     {

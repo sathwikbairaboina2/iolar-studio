@@ -1,4 +1,4 @@
-import { getSettings } from '@/lib/settings';
+import { provider } from '@/lib/ai/runner';
 import { localBackend } from './local';
 import { claudeBackend } from './claude';
 import type { AgentBackend } from './types';
@@ -8,7 +8,7 @@ export { agentTools, opToToolName, toolNameToOp } from './tools';
 export { normaliseToolCalls } from './normalize';
 export { reelSummary } from './summary';
 
-/** Which brain is driving. One setting, one interface, no other difference. */
+/** Which brain is driving. The studio's one provider switch, one interface, no other difference. */
 export function getAgentBackend(): AgentBackend {
-  return getSettings().agentProvider === 'claude' ? claudeBackend() : localBackend();
+  return provider() === 'claude' ? claudeBackend() : localBackend();
 }

@@ -51,21 +51,21 @@ export default function SettingsPage() {
           <InputNumber min={0} max={30} style={{ width: 160 }} />
         </Form.Item>
 
-        <Typography.Title level={5} style={{ marginTop: 24 }}>Research</Typography.Title>
+        <Typography.Title level={5} style={{ marginTop: 24 }}>Who does the thinking</Typography.Title>
         <Form.Item
-          name="researchProvider"
-          label="Who hunts the sources"
-          extra="Claude dispatches headless subagents with web search. Local sends the approved plan to the research service on this machine — nothing leaves it, nothing is paid for. The critic and the writer stay on Claude either way."
+          name="llmProvider"
+          label="Every model call in the studio"
+          extra="One switch for the whole studio: the handbook planner, the reel writer, the research hunt, the reel agent and the job card reader all go the same way. Claude runs headless and can search the web; local runs the model below on this machine — nothing leaves it, nothing is paid for, and it has no web. Moving to Claude unloads the local model, so the card is free; moving back loads it again on the first call."
         >
           <Select
             options={[
-              { value: 'claude', label: 'Claude — headless subagents' },
-              { value: 'local', label: 'Local — research service' },
+              { value: 'claude', label: 'Claude — headless, with web search' },
+              { value: 'local', label: 'Local — the model on this machine' },
             ]}
           />
         </Form.Item>
         <Form.Item name="researchUrl" label="Research service URL"><Input /></Form.Item>
-        <Form.Item name="researchOllamaUrl" label="Ollama for the local agents" extra="The planner, critic, writer and judge think here when the provider is local."><Input /></Form.Item>
+        <Form.Item name="researchOllamaUrl" label="Ollama for the local model" extra="Every stage thinks here while the provider is local; this is also the ollama that is unloaded when it is not."><Input /></Form.Item>
         <Form.Item name="researchModel" label="Local model"><Input /></Form.Item>
 
         <Button type="primary" htmlType="submit">Save</Button>

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdtempSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { extractJson } from '@/lib/ai/revise';
@@ -43,6 +43,9 @@ describe('diffPosts', () => {
 describe('revise route', () => {
   beforeEach(() => {
     process.env.IOLAR_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'iolar-ai-'));
+    // These mock the Claude CLI, so the studio's provider switch is pinned to Claude here;
+    // the local model has its own tests.
+    writeFileSync(path.join(process.env.IOLAR_DATA_DIR, 'settings.json'), JSON.stringify({ llmProvider: 'claude' }));
     vi.resetModules();
   });
 

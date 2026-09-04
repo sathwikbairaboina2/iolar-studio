@@ -24,8 +24,8 @@ export type PrepareOpts = {
 /** qwen labels the titles no rule placed, one prompt per cut. */
 export async function qwenClassify(titles: string[]): Promise<string[]> {
   if (!titles.length) return [];
-  const { qwenRunner } = await import('@/lib/ai/qwen');
-  const raw = await qwenRunner()(classifyPrompt(titles), { timeoutMs: 180_000 });
+  const { thinker } = await import('@/lib/ai/runner');
+  const raw = await thinker()(classifyPrompt(titles), { timeoutMs: 180_000 });
   return parseLabels(raw, titles.length);
 }
 

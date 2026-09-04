@@ -1,4 +1,4 @@
-import { runClaude } from '@/lib/ai/claude';
+import { thinker } from '@/lib/ai/runner';
 import { loadReel, saveReel } from '../store';
 import * as research from '../research/store';
 import type { Script } from '../research/script';
@@ -31,7 +31,7 @@ export async function sectionReel(slug: string, deps: SectionDeps = {}): Promise
   const def = patternDef(reel.pattern.name);
   const template = templateFor(reel.pattern.name, await templates(deps));
   const candidates = await candidateRefs(slug);
-  const ask = deps.ask ?? ((p: string) => runClaude(p, { timeoutMs: 600_000 }));
+  const ask = deps.ask ?? ((p: string) => thinker()(p, { timeoutMs: 600_000 }));
 
   const input = { script, candidates, brand: brandFor(), limits: template.limits, themes: template.themes };
   let sections: unknown[];

@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { z } from 'zod';
 import { bookFile, chapterDir } from '../paths';
-import { runClaude } from './claude';
+import { thinker } from './runner';
 import { extractJson } from './revise';
 
 export const BookSchema = z.object({
@@ -74,11 +74,11 @@ const BOOK_SHAPE = `Return ONLY this JSON object, no prose and no markdown fence
 Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Aim for 6-12 points per chapter so a chapter fills a dense handwritten page.`;
 
 async function generateBook(prompt: string, allowedTools?: string[]): Promise<Book> {
-  const first = await runClaude(prompt, { timeoutMs: 900_000, allowedTools });
+  const first = await thinker()(prompt, { timeoutMs: 900_000, allowedTools });
   try {
     return BookSchema.parse(extractJson(first));
   } catch (err) {
-    const retry = await runClaude(
+    const retry = await thinker()(
       `${prompt}\n\nYour previous output failed validation: ${String(err).slice(0, 500)}. Return corrected JSON only.`,
       { timeoutMs: 900_000, allowedTools }
     );

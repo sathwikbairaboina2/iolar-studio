@@ -17,7 +17,11 @@ type Loaded = { name: string; size_vram?: number };
 
 const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 
-export async function yieldGpuToComfy(opts: GpuOpts): Promise<string[]> {
+/**
+ * Unload every model the research ollama is holding. `reason` is what the log says the
+ * VRAM is wanted for — a ComfyUI render, or the thinking moving to Claude.
+ */
+export async function freeOllama(opts: GpuOpts, reason: string): Promise<string[]> {
   const base = opts.ollamaUrl.replace(/\/$/, '');
   const http = opts.fetchImpl ?? fetch;
   const timeout = () => AbortSignal.timeout(8000);
@@ -29,19 +33,19 @@ export async function yieldGpuToComfy(opts: GpuOpts): Promise<string[]> {
     const body = (await r.json()) as { models?: Loaded[] };
     loaded = Array.isArray(body.models) ? body.models : [];
   } catch (err) {
-    logPlugin('research', `ComfyUI render coming; research-ollama not answering (${String(err instanceof Error ? err.message : err).slice(0, 60)}), so it holds no VRAM`, 'warning');
+    logPlugin('research', `${reason}; ollama at ${base} not answering (${String(err instanceof Error ? err.message : err).slice(0, 60)}), so it holds no VRAM`, 'warning');
     return [];
   }
 
   if (loaded.length === 0) {
-    logPlugin('research', 'ComfyUI render coming; research-ollama has nothing loaded, GPU is free', 'info');
+    logPlugin('research', `${reason}; ollama at ${base} has nothing loaded, GPU is free`, 'info');
     return [];
   }
 
   const freed: string[] = [];
   for (const m of loaded) {
     const held = m.size_vram ? ` (${gb(m.size_vram)})` : '';
-    logPlugin('research', `ComfyUI render coming: unloading ${m.name}${held} from research-ollama`, 'warning');
+    logPlugin('research', `${reason}: unloading ${m.name}${held} from ollama at ${base}`, 'warning');
     try {
       const r = await http(`${base}/api/generate`, {
         method: 'POST',
@@ -51,10 +55,15 @@ export async function yieldGpuToComfy(opts: GpuOpts): Promise<string[]> {
       });
       if (!r.ok) throw new Error(`answered ${r.status}`);
       freed.push(m.name);
-      logPlugin('research', `freed ${m.name}; it reloads on the next research call`, 'success');
+      logPlugin('research', `freed ${m.name}; it reloads on the next local call`, 'success');
     } catch (err) {
       logPlugin('research', `could not unload ${m.name}: ${String(err instanceof Error ? err.message : err).slice(0, 80)}`, 'error');
     }
   }
   return freed;
+}
+
+/** Before any ComfyUI job: the card is one card, and a render needs most of it back. */
+export async function yieldGpuToComfy(opts: GpuOpts): Promise<string[]> {
+  return freeOllama(opts, 'ComfyUI render coming');
 }

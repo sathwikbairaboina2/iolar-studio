@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { qwenRunner } from '@/lib/ai/qwen';
+import { thinker } from '@/lib/ai/runner';
 import { poolRowById } from '@/lib/jobs/ledger';
 import type { ResearchJob } from '@/lib/jobs/researchApi';
 import { fromPoolRow, fromUrl, type Runner } from '@/lib/jobcard/extract';
@@ -19,7 +19,7 @@ export async function GET() {
 
 const runner = (): Runner | undefined => {
   try {
-    return qwenRunner();
+    return thinker();
   } catch {
     return undefined;
   }

@@ -1,5 +1,5 @@
 import { Post, validatePost, MAX_SLIDES } from '../schema';
-import { runClaude } from './claude';
+import { thinker } from './runner';
 
 export function extractJson(s: string): unknown {
   // Strip markdown fences and any prose around the outermost JSON object.
@@ -43,12 +43,12 @@ export async function revisePost(
   scope: 'slide' | 'post' | 'caption',
   slideIndex?: number
 ): Promise<Post> {
-  const first = await runClaude(buildPrompt(post, request, scope, slideIndex));
+  const first = await thinker()(buildPrompt(post, request, scope, slideIndex));
   try {
     return validatePost(extractJson(first));
   } catch (err) {
     // One retry with the validation error appended.
-    const retry = await runClaude(buildPrompt(post, request, scope, slideIndex, String(err).slice(0, 500)));
+    const retry = await thinker()(buildPrompt(post, request, scope, slideIndex, String(err).slice(0, 500)));
     return validatePost(extractJson(retry));
   }
 }

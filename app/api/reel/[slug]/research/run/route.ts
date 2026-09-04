@@ -6,6 +6,7 @@ import { briefWithPlan, parsePlan } from '@/lib/reel/research/plan';
 import { huntLocally } from '@/lib/reel/research/local';
 import { advanceResearch } from '@/lib/reel/research/graph';
 import { appendTrace, clearTrace, traceFromTool } from '@/lib/reel/research/trace';
+import { provider } from '@/lib/ai/runner';
 import { getSettings } from '@/lib/settings';
 import { gatherEvidence } from '@/lib/reel/research/gatherRun';
 import { parseBrief } from '@/lib/reel/research/brief';
@@ -56,7 +57,7 @@ export async function POST(req: Request, ctx: Ctx) {
     // Local by default: the whole run — planner, hunter, critic, writer, judge — is the
     // LangGraph graph on the local model, with the same three gates. Claude stays as
     // the stage-by-stage path below for anyone who turns the provider back.
-    if (getSettings().researchProvider === 'local') {
+    if (provider(getSettings()) === 'local') {
       const { qwenRunner } = await import('@/lib/ai/qwen');
       const s = getSettings();
       // Memory is the local agents' alone. knowledgeMemory off means the graph runs exactly as before.

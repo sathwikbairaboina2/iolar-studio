@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { runClaude } from '../claude';
+import { thinker } from '../runner';
 import { extractJson } from '../revise';
 import { Style, loadStyle } from '../../reel/styles';
 import { loadReel, saveReel } from '../../reel/store';
@@ -137,11 +137,11 @@ async function generate(slug: string, mode: PlanMode, source: string, opts: Plan
   const reel = await loadReel(slug);
   const style = await loadStyle(reel.style);
   const prompt = beatsPrompt(style, mode, source, opts);
-  const first = await runClaude(prompt, { timeoutMs: 900_000 });
+  const first = await thinker()(prompt, { timeoutMs: 900_000 });
   try {
     return await applyPlan(slug, checked(mode, source, parseBeats(first)));
   } catch (err) {
-    const retry = await runClaude(
+    const retry = await thinker()(
       `${prompt}\n\nYour previous output failed validation: ${String(err).slice(0, 400)}. Return corrected JSON only.`,
       { timeoutMs: 900_000 }
     );

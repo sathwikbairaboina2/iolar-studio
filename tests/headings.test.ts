@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { validatePost, Post } from '@/lib/schema';
@@ -16,6 +16,9 @@ const base = (): Post => validatePost({
 
 beforeEach(() => {
   process.env.IOLAR_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'iolar-head-'));
+  // These mock the Claude CLI, so the studio's provider switch is pinned to Claude here;
+  // the local model has its own tests.
+  writeFileSync(path.join(process.env.IOLAR_DATA_DIR, 'settings.json'), JSON.stringify({ llmProvider: 'claude' }));
   vi.resetModules();
 });
 

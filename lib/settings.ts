@@ -37,6 +37,17 @@ export type Settings = {
    * Claude either way; only the hunt moves.
    */
   researchProvider: 'claude' | 'local';
+  /**
+   * The one switch. Every LLM call in the studio — the handbook planner, the reel
+   * writer, the research hunt, the reel agent, the job card reader — goes to headless
+   * Claude when this is `claude`, and to the local model on `researchOllamaUrl` when it
+   * is `local`. Switching to `claude` unloads the local model, so the card is free;
+   * switching back loads it again on the first call.
+   *
+   * `researchProvider` and `agentProvider` are kept in step with it, so an older
+   * settings file and the tests that write those keys still say the same thing.
+   */
+  llmProvider: 'claude' | 'local';
   researchUrl: string;
   /** The ollama the local research agents think on. The research service's own, by default. */
   researchOllamaUrl: string;
@@ -98,6 +109,7 @@ const DEFAULTS: Settings = {
   // Local by default: the research runs on qwen through the research service, and
   // nothing about a reel's topic leaves the machine unless this is turned to claude.
   researchProvider: 'local',
+  llmProvider: 'local',
   researchUrl: 'http://127.0.0.1:25100',
   researchOllamaUrl: 'http://127.0.0.1:25103',
   researchModel: 'qwen3.8:27b',
@@ -123,13 +135,33 @@ function file() {
   return path.join(process.env.IOLAR_DATA_DIR ?? path.join(process.cwd(), 'data'), 'settings.json');
 }
 
+/**
+ * The three provider keys are one decision. A settings file written before the switch
+ * existed says it through `researchProvider` (or `agentProvider`); a client that sets
+ * either one means the whole studio. Whichever arrives, all three end up agreeing.
+ */
+const PROVIDER_KEYS = ['llmProvider', 'researchProvider', 'agentProvider'] as const;
+
+function agreeOnProvider(raw: Record<string, unknown>, previous?: Settings): Record<string, unknown> {
+  const named = (k: (typeof PROVIDER_KEYS)[number]) => raw[k] === 'claude' || raw[k] === 'local';
+  // A save that moves one of the three keys is the ask, whichever key it was; a save that
+  // moves none (or a file being read) is answered by the switch itself.
+  const moved = previous && PROVIDER_KEYS.find((k) => named(k) && raw[k] !== previous[k]);
+  const provider = (moved ? raw[moved] : (raw.llmProvider ?? raw.researchProvider ?? raw.agentProvider)) as
+    | 'claude'
+    | 'local'
+    | undefined;
+  if (provider !== 'claude' && provider !== 'local') return raw;
+  return { ...raw, llmProvider: provider, researchProvider: provider, agentProvider: provider };
+}
+
 export function getSettings(): Settings {
   try {
     const raw = JSON.parse(readFileSync(file(), 'utf8')) as Record<string, unknown>;
     // The preset key was renamed on 3 September 2026; an old settings file still reads.
     if (typeof raw.reelPattern === 'string' && raw.reelStyle === undefined) raw.reelStyle = raw.reelPattern;
     delete raw.reelPattern;
-    return { ...DEFAULTS, ...raw } as Settings;
+    return { ...DEFAULTS, ...agreeOnProvider(raw) } as Settings;
   } catch {
     return { ...DEFAULTS };
   }
@@ -137,7 +169,8 @@ export function getSettings(): Settings {
 
 export function saveSettings(s: Partial<Settings>): Settings {
   mkdirSync(path.dirname(file()), { recursive: true });
-  const merged = { ...getSettings(), ...s };
+  const previous = getSettings();
+  const merged = { ...previous, ...agreeOnProvider(s as Record<string, unknown>, previous) } as Settings;
   writeFileSync(file(), JSON.stringify(merged, null, 2));
   return merged;
 }

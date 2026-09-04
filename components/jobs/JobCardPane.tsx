@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Divider, Empty, Input, InputNumber, List, Segmented, Select, Space, Tag, Typography, message,
+  Alert, Button, Card, Divider, Empty, Input, InputNumber, Segmented, Select, Space, Tag, Typography, message,
 } from 'antd';
 import { FileImageOutlined, PictureOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { Family, JobCardDraft } from '@/lib/jobcard/schema';
@@ -168,28 +168,28 @@ export default function JobCardPane() {
         {cards.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="no cards yet" />
         ) : (
-          <List
-            size="small"
-            dataSource={cards}
-            renderItem={(c) => (
-              <List.Item
+          <div>
+            {cards.map((c) => (
+              <div
+                key={c.id}
                 onClick={() => open(c.id)}
-                style={{ cursor: 'pointer', background: c.id === id ? 'rgba(22,80,224,.06)' : undefined }}
+                style={{
+                  cursor: 'pointer',
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  background: c.id === id ? 'rgba(22,80,224,.06)' : undefined,
+                }}
                 data-testid={`jobcard-row-${c.id}`}
               >
-                <List.Item.Meta
-                  title={<span>{c.role || 'untitled role'}</span>}
-                  description={
-                    <span style={{ fontSize: 12 }}>
-                      {c.company || 'unknown company'}
-                      {c.missing.length ? <Tag color="gold" style={{ marginLeft: 6 }}>{c.missing.length} missing</Tag> : null}
-                      {c.family ? <Tag style={{ marginLeft: 6 }}>{c.family}</Tag> : null}
-                    </span>
-                  }
-                />
-              </List.Item>
-            )}
-          />
+                <div style={{ fontWeight: 600 }}>{c.role || 'untitled role'}</div>
+                <div style={{ fontSize: 12, color: '#7b8798' }}>
+                  {c.company || 'unknown company'}
+                  {c.missing.length ? <Tag color="gold" style={{ marginLeft: 6 }}>{c.missing.length} missing</Tag> : null}
+                  {c.family ? <Tag style={{ marginLeft: 6 }}>{c.family}</Tag> : null}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </Card>
 
@@ -226,7 +226,7 @@ export default function JobCardPane() {
           ) : null
         }
       >
-        {error && <Alert type="error" showIcon closable onClose={() => setError(null)} message={error} style={{ marginBottom: 12 }} />}
+        {error && <Alert type="error" showIcon closable onClose={() => setError(null)} title={error} style={{ marginBottom: 12 }} />}
         {!detail || !draft ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="read a listing, or pick a card" />
         ) : (
@@ -236,7 +236,7 @@ export default function JobCardPane() {
                 type="warning"
                 showIcon
                 style={{ marginBottom: 12 }}
-                message="This card is not ready"
+                title="This card is not ready"
                 description={`the listing did not say: ${missing.join(', ')}`}
                 data-testid="jobcard-missing"
               />
@@ -371,7 +371,7 @@ export default function JobCardPane() {
                 type="info"
                 showIcon
                 style={{ marginTop: 12 }}
-                message={`the picked family could not hold this job — it rendered as ${detail.row.family}`}
+                title={`the picked family could not hold this job — it rendered as ${detail.row.family}`}
               />
             )}
 

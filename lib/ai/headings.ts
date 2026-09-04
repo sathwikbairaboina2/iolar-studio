@@ -1,6 +1,6 @@
 import { Post, validatePost } from '../schema';
 import { loadPost } from '../store';
-import { runClaude } from './claude';
+import { thinker } from './runner';
 import { extractJson } from './revise';
 
 /**
@@ -22,7 +22,7 @@ export async function fixHeadings(subject: string, chapter: string, part: number
     'Return ONLY the complete updated post JSON, no prose and no markdown fences.',
   ].join('\n\n');
 
-  const out = await runClaude(prompt, { timeoutMs: 300_000 });
+  const out = await thinker()(prompt, { timeoutMs: 300_000 });
   const proposal = validatePost(extractJson(out));
   if (proposal.slides.length !== post.slides.length) {
     throw new Error('heading pass changed the slide count — rejected');

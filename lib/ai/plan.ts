@@ -4,7 +4,7 @@ import { Post, validatePost, MAX_SLIDES } from '../schema';
 import { getSettings } from '../settings';
 import { savePost, loadPost } from '../store';
 import { refsDir } from '../paths';
-import { runClaude } from './claude';
+import { thinker } from './runner';
 import { extractJson } from './revise';
 import { Book, bookFromReferences, bookFromTopic, loadBook } from './book';
 
@@ -57,11 +57,11 @@ function envelope(brand: string, template: string, ratio: string) {
 }
 
 async function generate(prompt: string, allowedTools?: string[]): Promise<Post> {
-  const first = await runClaude(prompt, { timeoutMs: 900_000, allowedTools });
+  const first = await thinker()(prompt, { timeoutMs: 900_000, allowedTools });
   try {
     return validatePost(extractJson(first));
   } catch (err) {
-    const retry = await runClaude(
+    const retry = await thinker()(
       `${prompt}\n\nYour previous output failed validation: ${String(err).slice(0, 500)}. Return corrected JSON only.`,
       { timeoutMs: 900_000, allowedTools }
     );

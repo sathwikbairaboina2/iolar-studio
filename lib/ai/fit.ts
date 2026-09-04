@@ -4,7 +4,7 @@ import { Post, validatePost } from '../schema';
 import { loadPost } from '../store';
 import { renderSlide, mergeContinuations } from '../renderer/capture';
 import { Book, loadBook } from './book';
-import { runClaude } from './claude';
+import { thinker } from './runner';
 import { extractJson } from './revise';
 
 export type SlideFit = { slide: number; neededPct: number };
@@ -99,7 +99,7 @@ export async function fitToPages(
     'Return ONLY the complete updated post JSON, no prose and no markdown fences.',
   ].filter(Boolean).join('\n\n');
 
-  const out = await runClaude(prompt, { timeoutMs: 900_000 });
+  const out = await thinker()(prompt, { timeoutMs: 900_000 });
   const proposal = validatePost(extractJson(out));
 
   if (proposal.slides.length !== post.slides.length) {
