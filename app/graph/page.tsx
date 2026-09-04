@@ -1,9 +1,16 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Card, Input, List, Tabs, Tag, Typography } from 'antd';
+import { Alert, Card, Input, List, Segmented, Tabs, Tag, Typography } from 'antd';
+import dynamic from 'next/dynamic';
 import GraphCanvas from '@/components/graph/GraphCanvas';
 import type { ViewEdge, ViewNode } from '@/lib/knowledge/view';
+
+/** three.js and a force layout are loaded the first time the deep view is opened, not before. */
+const GraphCanvas3D = dynamic(() => import('@/components/graph/GraphCanvas3D'), {
+  ssr: false,
+  loading: () => <div style={{ height: 560, display: 'grid', placeItems: 'center', color: '#7b8798' }}>building the space…</div>,
+});
 
 /**
  * One page, four tabs, one space at a time. The second search box is the meaning search
@@ -25,6 +32,13 @@ export default function GraphPage() {
   const [ask, setAsk] = useState('');
   const [hits, setHits] = useState<Hit[]>([]);
   const [found, setFound] = useState<ViewNode[]>([]);
+  // Flat or deep. The choice is remembered, because it is a way of working rather than a mood.
+  const [view, setView] = useState<'flat' | 'deep'>('flat');
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (localStorage.getItem('iolar.graphView') === 'deep') setView('deep');
+  }, []);
 
   const load = useCallback(async (s: SpaceKey) => {
     setLoading(true);
@@ -118,10 +132,30 @@ export default function GraphPage() {
                 : 'Nothing indexed in this space yet. Run npm run reindex:knowledge -- --wipe.'}
             </Typography.Text>
           )}
-          <GraphCanvas nodes={nodes} edges={edges} onSelect={setSelected} />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {nodes.length} nodes · {edges.length} edges · most connected first, capped at 400
-          </Typography.Text>
+          {view === 'deep' ? (
+            <GraphCanvas3D nodes={nodes} edges={edges} onSelect={setSelected} />
+          ) : (
+            <GraphCanvas nodes={nodes} edges={edges} onSelect={setSelected} />
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 6 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {nodes.length} nodes · {edges.length} edges · most connected first, capped at 400
+            </Typography.Text>
+            <Segmented
+              size="small"
+              value={view}
+              onChange={(v) => {
+                const next = v as 'flat' | 'deep';
+                setView(next);
+                localStorage.setItem('iolar.graphView', next);
+              }}
+              options={[
+                { label: 'Flat', value: 'flat' },
+                { label: '3D', value: 'deep' },
+              ]}
+              data-testid="graph-view"
+            />
+          </div>
         </div>
         <div style={{ display: 'grid', gap: 12 }}>
           <Input.Search placeholder="search labels…" value={q} onChange={(e) => setQ(e.target.value)} onSearch={() => void search()} />

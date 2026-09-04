@@ -3,24 +3,10 @@ import { useEffect, useRef } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import type { ViewEdge, ViewNode } from '@/lib/knowledge/view';
+import { COLOUR } from './colours';
 
 cytoscape.use(fcose);
 
-const COLOUR: Record<string, string> = {
-  Subject: '#c02a58',
-  Chapter: '#3ec5ff',
-  Topic: '#3ddc97',
-  Source: '#f2a93b',
-  Domain: '#b58900',
-  Claim: '#9d7cff',
-  Reel: '#ff6f94',
-  ScriptLine: '#8fb3ff',
-  Week: '#2fb7a1',
-  Employer: '#e0b34a',
-  Function: '#7ab0ff',
-  City: '#a0d468',
-  WorkMode: '#c9c9c9',
-};
 
 /** cytoscape owns the DOM inside the div; React only hands it data. */
 export default function GraphCanvas({
