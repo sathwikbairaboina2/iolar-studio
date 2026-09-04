@@ -147,7 +147,17 @@ export function viewOf(card: JobCard, brand: string) {
     city: esc(card.location.city),
     cityRegion: esc([card.location.city, card.location.region].filter(Boolean).join(', ')),
     mode: MODE[card.location.workMode],
-    locLine: `${esc(card.location.city)} &middot; ${MODE[card.location.workMode]}`,
+    /**
+     * A remote job in the city "Remote" says the same word twice; the second one is
+     * dropped so no card reads "Remote / Remote".
+     */
+    modeNote: card.location.city.trim().toLowerCase() === MODE[card.location.workMode].toLowerCase()
+      ? null
+      : MODE[card.location.workMode],
+    locLine:
+      card.location.city.trim().toLowerCase() === MODE[card.location.workMode].toLowerCase()
+        ? esc(card.location.city)
+        : `${esc(card.location.city)} &middot; ${MODE[card.location.workMode]}`,
     money: `${sym} ${num(card.salary.min)} &ndash; ${sym} ${num(card.salary.max)} ${unit}`,
     moneyShort: `${sym}${num(card.salary.min)} &ndash; ${sym}${num(card.salary.max)} ${unit}`,
     moneyNote: card.salary.note ? esc(card.salary.note) : null,
@@ -213,7 +223,7 @@ function splitHero(v: CardView): string {
     `<div style="margin-top:14px">` +
     fact('case', 0, 'Skill', v.skillLine) +
     fact('user', 1, 'Experience', v.exp) +
-    fact('pin', 2, 'Location', `${v.cityRegion} &middot; ${v.mode}`) +
+    fact('pin', 2, 'Location', v.modeNote ? `${v.cityRegion} &middot; ${v.modeNote}` : v.cityRegion) +
     fact('rupee', 3, 'Salary Range', v.money) +
     `</div>` +
     `<div class="box" style="margin-top:26px">` +
@@ -227,7 +237,7 @@ function splitHero(v: CardView): string {
 function infographic(v: CardView): string {
   const cells = [
     { id: 'user', lab: 'Experience', val: v.exp },
-    { id: 'pin', lab: 'Location', val: `${v.city}<br>${v.mode}` },
+    { id: 'pin', lab: 'Location', val: v.modeNote ? `${v.city}<br>${v.modeNote}` : v.city },
     { id: 'rupee', lab: 'Salary', val: v.moneyShort },
     v.deadline
       ? { id: 'cal', lab: 'Apply before', val: v.deadline }
@@ -324,7 +334,7 @@ function campaign(v: CardView): string {
     logoBlock(v, false) +
     `<div class="head">${headWord}<br>Drive${year ? ` <span class="alt">${year}</span>` : ''}</div>` +
     `<div class="tag">${v.role}</div>` +
-    `<div class="lede">${v.company} &middot; ${v.cityRegion} &middot; ${v.mode} &middot; ${v.exp}</div>` +
+    `<div class="lede">${v.company} &middot; ${v.cityRegion}${v.modeNote ? ` &middot; ${v.modeNote}` : ''} &middot; ${v.exp}</div>` +
     // The rounds are already spelled out in the panel below; the corner card only
     // earns its space when there is no panel to print them in.
     (!v.steps.length && v.skills.length
@@ -364,7 +374,7 @@ function bento(v: CardView): string {
     `<div class="grid">` +
     `<div class="t hero"><div class="r">${v.role}</div><div class="c">${v.company} &middot; hiring now</div></div>` +
     `<div class="t">${coin('user', 2)}<div class="lab">Experience</div><div class="val">${v.exp}</div></div>` +
-    `<div class="t">${coin('pin', 0)}<div class="lab">Location</div><div class="val">${v.city}<br>${v.mode}</div></div>` +
+    `<div class="t">${coin('pin', 0)}<div class="lab">Location</div><div class="val">${v.city}${v.modeNote ? `<br>${v.modeNote}` : ''}</div></div>` +
     `<div class="t">${coin('rupee', 1)}<div class="lab">Salary</div><div class="val">${v.moneyShort}</div></div>` +
     `<div class="t wide"><div class="lab">Skills</div><div class="chips">${v.skills
       .map((s) => `<span class="chip">${s}</span>`)
@@ -422,7 +432,7 @@ function bandStack(v: CardView): string {
     `</div>` +
     band('Skill', v.skills.slice(0, 4).join(', '), v.skills.slice(4).join(', ') || null) +
     band('Experience', v.exp) +
-    band('Location', v.cityRegion, v.mode) +
+    band('Location', v.cityRegion, v.modeNote) +
     band('Salary range', v.money, v.moneyNote, 'b-tint b-money') +
     band('Eligibility', v.eligibility[0] ?? '', v.eligibility.slice(1).join(' &middot; ') || null) +
     (v.steps.length

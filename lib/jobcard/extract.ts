@@ -67,6 +67,22 @@ export function jsonLdBlocks(html: string): JsonLd[] {
 }
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+/**
+ * The listing's own words, wherever they are.
+ *
+ * A modern applicant tracking system serves a JavaScript shell — Ashby's page is twelve
+ * hundred characters of "you need to enable JavaScript" — and puts the whole posting in
+ * the JobPosting markup's `description` as escaped HTML. Read that first, and fall back to
+ * the page's own text for the sites that still render one.
+ */
+export function postingText(blocks: JsonLd[], html: string): string {
+  const post = blocks.find((b) => String(b['@type'] ?? '').includes('JobPosting'));
+  const described = stripTags(str(post?.description) ?? '');
+  const page = stripTags(html);
+  return described.length > page.length ? described : page;
+}
+
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
 /** A schema.org JobPosting as far as it goes; everything it does not say stays undefined. */
@@ -220,8 +236,9 @@ export async function fromUrl(
   opts: { run?: Runner; page?: PageFetch } = {}
 ): Promise<{ draft: JobCardDraft; logoUrl: string | null }> {
   const { html, url: finalUrl } = await (opts.page ?? defaultFetch)(url);
-  const text = stripTags(html);
-  const marked = fromJobPosting(jsonLdBlocks(html));
+  const blocks = jsonLdBlocks(html);
+  const text = postingText(blocks, html);
+  const marked = fromJobPosting(blocks);
   const facts = opts.run ? await factsFromText(text, opts.run) : null;
 
   const title = marked.role?.title ?? text.slice(0, 120);

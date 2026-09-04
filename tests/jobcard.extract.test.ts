@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
-import { findLogo, fromJobPosting, fromPoolRow, fromUrl, jsonLdBlocks } from '@/lib/jobcard/extract';
+import { findLogo, fromJobPosting, fromPoolRow, fromUrl, jsonLdBlocks, postingText } from '@/lib/jobcard/extract';
 import { missingMandatory } from '@/lib/jobcard/schema';
 import type { ResearchJob } from '@/lib/jobs/researchApi';
 
 const html = readFileSync(path.join(process.cwd(), 'tests/fixtures/jobpage.html'), 'utf8');
 const page = async () => ({ html, url: 'https://careers.zohocorp.com/jobs/sde' });
+
+/** What an applicant tracking system actually serves: a shell, with the posting in its markup. */
+const shell = readFileSync(path.join(process.cwd(), 'tests/fixtures/jobpage-shell.html'), 'utf8');
 
 /** The model, standing still: the same JSON a listing's prose would produce. */
 const run = async () =>
@@ -57,6 +60,26 @@ describe('reading a listing', () => {
     // A yearly rupee figure is said in lakhs on a card.
     expect(marked.salary).toMatchObject({ min: 8, max: 18, currency: 'INR', unit: 'LPA' });
     expect(marked.dates?.[0]).toMatchObject({ kind: 'deadline', date: '2026-09-12' });
+  });
+
+  it('reads the posting out of the markup when the page is a JavaScript shell', () => {
+    const text = postingText(jsonLdBlocks(shell), shell);
+    expect(text).toContain('CUDA and PTX kernels');
+    expect(text).not.toContain('enable JavaScript');
+  });
+
+  it('hands the model the posting, not the shell', async () => {
+    const seen: string[] = [];
+    const spy = async (p: string) => {
+      seen.push(p);
+      return JSON.stringify({ skills: ['CUDA', 'Triton'], eligibility: ['5+ years in ML systems'] });
+    };
+    const { draft } = await fromUrl('https://jobs.example.com/x', {
+      run: spy,
+      page: async () => ({ html: shell, url: 'https://jobs.example.com/x' }),
+    });
+    expect(seen[0]).toContain('Nsight Compute');
+    expect(draft.role?.skills).toEqual(['CUDA', 'Triton']);
   });
 
   it('resolves the mark against the page it came from', () => {
