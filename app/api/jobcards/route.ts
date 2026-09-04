@@ -5,7 +5,7 @@ import type { ResearchJob } from '@/lib/jobs/researchApi';
 import { fromPoolRow, fromUrl, marksForUrl, type Runner } from '@/lib/jobcard/extract';
 import { isUsableMark, searxngSearch, type FoundMark } from '@/lib/jobcard/logo';
 import { getSettings } from '@/lib/settings';
-import { cardId, listRows, saveCard, saveLogo } from '@/lib/jobcard/store';
+import { cardId, listPage, saveCard, saveLogo } from '@/lib/jobcard/store';
 import { missingMandatory, type JobCardDraft } from '@/lib/jobcard/schema';
 
 /**
@@ -15,8 +15,10 @@ import { missingMandatory, type JobCardDraft } from '@/lib/jobcard/schema';
  * eligibility and the rounds, not the whole card.
  */
 
-export async function GET() {
-  return NextResponse.json({ cards: listRows() });
+/** The history, newest first, one page at a time. */
+export async function GET(req: Request) {
+  const q = new URL(req.url).searchParams;
+  return NextResponse.json(listPage({ limit: Number(q.get('limit') ?? 12), offset: Number(q.get('offset') ?? 0) }));
 }
 
 const runner = (): Runner | undefined => {

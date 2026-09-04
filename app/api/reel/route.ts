@@ -1,11 +1,17 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
-import { createReel, listReels } from '@/lib/reel/store';
+import { createReel, listReelsPage } from '@/lib/reel/store';
 import { reelDir, slugify } from '@/lib/paths';
 import { getSettings } from '@/lib/settings';
 
-export async function GET() {
-  return NextResponse.json({ reels: await listReels() });
+/** The list, newest first, one page at a time; `total` is what the pager counts. */
+export async function GET(req: Request) {
+  const q = new URL(req.url).searchParams;
+  const page = await listReelsPage({
+    limit: Number(q.get('limit') ?? 20),
+    offset: Number(q.get('offset') ?? 0),
+  });
+  return NextResponse.json(page);
 }
 
 export async function POST(req: Request) {

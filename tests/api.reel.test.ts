@@ -17,7 +17,8 @@ describe('reel api', () => {
     const res = await POST(post({ title: 'xAI drops Grok Bot' }));
     expect(res.status).toBe(200);
     expect((await res.json()).slug).toBe('xai-drops-grok-bot');
-    const list = await (await GET()).json();
+    const list = await (await GET(new Request('http://x/api/reel'))).json();
+    expect(list).toMatchObject({ total: 1 });
     expect(list.reels).toHaveLength(1);
     expect(list.reels[0]).toMatchObject({ title: 'xAI drops Grok Bot', status: 'draft' });
   });

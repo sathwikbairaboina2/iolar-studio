@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Button, Input, Modal, Radio, Select, Table, Tag, Typography, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
@@ -25,6 +25,10 @@ type Mode = 'topic' | 'paste' | 'reference';
 
 export default function ReelList() {
   const [reels, setReels] = useState<Meta[]>([]);
+  // The list only grows; the table asks for the page it draws and nothing more.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 20;
   const [styles, setStyles] = useState<{ name: string; displayName: string }[]>([]);
   const [patterns, setPatterns] = useState<{ name: string; displayName: string; themes: string[] }[]>([]);
   const [patternName, setPatternName] = useState<string>('');
@@ -39,13 +43,23 @@ export default function ReelList() {
   const [creating, setCreating] = useState(false);
   const router = useRouter();
 
-  const load = () =>
-    fetch('/api/reel')
-      .then((r) => r.json())
-      .then((d) => setReels(d.reels ?? []));
+  const load = useCallback(
+    () =>
+      fetch(`/api/reel?limit=${pageSize}&offset=${(page - 1) * pageSize}`)
+        .then((r) => r.json())
+        .then((d) => {
+          setReels(d.reels ?? []);
+          setTotal(d.total ?? 0);
+        }),
+    [page]
+  );
+
+  // The page the pager moved to is the page that is fetched.
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   useEffect(() => {
-    load();
     fetch('/api/reel/styles')
       .then((r) => r.json())
       .then((d) => setStyles(d.styles ?? []));
@@ -110,7 +124,15 @@ export default function ReelList() {
       <Table<Meta>
         rowKey="slug"
         dataSource={reels}
-        pagination={false}
+        pagination={{
+          current: page,
+          pageSize,
+          total,
+          onChange: setPage,
+          showSizeChanger: false,
+          hideOnSinglePage: true,
+          size: 'small',
+        }}
         onRow={(row) => ({ onClick: () => router.push(`/reel/${row.slug}`), style: { cursor: 'pointer' } })}
         columns={[
           { title: 'Title', dataIndex: 'title' },

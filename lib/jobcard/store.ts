@@ -106,6 +106,21 @@ export function listRows(): CardRow[] {
   return (getDb().prepare(`SELECT * FROM jobcards ORDER BY created_at DESC`).all() as Row[]).map(rowOf);
 }
 
+/**
+ * One page of the history, newest first. Cards are never deleted by anything here, so the
+ * list only grows; the page asks for the twelve it draws and the count it needs for a pager.
+ */
+export function listPage(opts: { limit?: number; offset?: number } = {}): { cards: CardRow[]; total: number } {
+  const limit = Math.max(1, Math.min(opts.limit ?? 12, 200));
+  const offset = Math.max(0, opts.offset ?? 0);
+  const db = getDb();
+  const total = Number((db.prepare(`SELECT count(*) AS n FROM jobcards`).get() as Row).n);
+  const rows = db
+    .prepare(`SELECT * FROM jobcards ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(limit, offset) as Row[];
+  return { cards: rows.map(rowOf), total };
+}
+
 /** The document as it was stored: a draft, which is only a JobCard once nothing is missing. */
 export async function readDraft(id: string): Promise<JobCardDraft | null> {
   try {

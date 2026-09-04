@@ -93,3 +93,23 @@ describe('saving a reel touches no store', () => {
     expect(fake.edges.size).toBe(0);
   });
 });
+
+describe('the list is paged', () => {
+  it('gives a page of the newest, and counts the rest', async () => {
+    const { createReel, listReelsPage } = await import('@/lib/reel/store');
+    for (const n of [1, 2, 3, 4, 5]) await createReel(`reel-${n}`, { title: `Reel ${n}` } as never);
+
+    const first = await listReelsPage({ limit: 2 });
+    expect(first.total).toBe(5);
+    expect(first.reels).toHaveLength(2);
+
+    const second = await listReelsPage({ limit: 2, offset: 2 });
+    expect(second.reels).toHaveLength(2);
+    // No reel appears on two pages.
+    expect(second.reels.every((r) => !first.reels.some((f) => f.slug === r.slug))).toBe(true);
+
+    const last = await listReelsPage({ limit: 2, offset: 4 });
+    expect(last.reels).toHaveLength(1);
+    expect((await listReelsPage({ limit: 2, offset: 99 })).reels).toEqual([]);
+  });
+});

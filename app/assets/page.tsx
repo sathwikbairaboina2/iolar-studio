@@ -1,9 +1,12 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Card, Col, Empty, Row, Typography } from 'antd';
+import { Card, Col, Empty, Pagination, Row, Typography } from 'antd';
 
 export default function AssetsPage() {
   const [files, setFiles] = useState<string[]>([]);
+  // A doodle library grows by dropping files into a folder, so the wall is paged.
+  const [page, setPage] = useState(1);
+  const perPage = 24;
 
   useEffect(() => {
     fetch('/api/assets').then((r) => r.json()).then((d) => setFiles(d.files ?? []));
@@ -20,7 +23,7 @@ export default function AssetsPage() {
         <Empty description="No doodles yet" />
       ) : (
         <Row gutter={[12, 12]}>
-          {files.map((f) => (
+          {files.slice((page - 1) * perPage, page * perPage).map((f) => (
             <Col key={f} span={4}>
               <Card size="small" cover={
                 /* eslint-disable-next-line @next/next/no-img-element */
@@ -31,6 +34,18 @@ export default function AssetsPage() {
             </Col>
           ))}
         </Row>
+      )}
+      {files.length > perPage && (
+        <Pagination
+          align="center"
+          style={{ marginTop: 16 }}
+          current={page}
+          pageSize={perPage}
+          total={files.length}
+          onChange={setPage}
+          showSizeChanger={false}
+          data-testid="assets-pager"
+        />
       )}
     </div>
   );

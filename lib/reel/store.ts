@@ -44,39 +44,74 @@ export async function deleteReel(slug: string): Promise<void> {
   await fs.rm(reelDir(slug), { recursive: true, force: true });
 }
 
-export async function listReels(): Promise<ReelMeta[]> {
-  let names: string[] = [];
+/** One reel's row in the list. Kept apart so a page can build only the rows it shows. */
+async function metaOf(slug: string): Promise<ReelMeta | null> {
   try {
-    names = (await fs.readdir(reelsRoot(), { withFileTypes: true }))
+    const reel = await loadReel(slug);
+    const stat = await fs.stat(reelFile(slug));
+    const exported = await fs
+      .access(path.join(reelExportDir(slug), 'reel.mp4'))
+      .then(() => true)
+      .catch(() => false);
+    const last = reel.timeline.clips.at(-1);
+    return {
+      slug,
+      title: reel.title,
+      style: reel.style,
+      beats: reel.beats.length,
+      durationSec: last ? last.end : reel.vo.durationSec,
+      status: reelStatus(reel, exported),
+      updatedAt: stat.mtime.toISOString(),
+    };
+  } catch {
+    // A half-written reel folder never breaks the list.
+    return null;
+  }
+}
+
+async function reelSlugs(): Promise<string[]> {
+  try {
+    return (await fs.readdir(reelsRoot(), { withFileTypes: true }))
       .filter((d) => d.isDirectory())
       .map((d) => d.name);
   } catch {
     return [];
   }
-  const out: ReelMeta[] = [];
-  for (const slug of names) {
-    try {
-      const reel = await loadReel(slug);
-      const stat = await fs.stat(reelFile(slug));
-      const exported = await fs
-        .access(path.join(reelExportDir(slug), 'reel.mp4'))
-        .then(() => true)
-        .catch(() => false);
-      const last = reel.timeline.clips.at(-1);
-      out.push({
-        slug,
-        title: reel.title,
-        style: reel.style,
-        beats: reel.beats.length,
-        durationSec: last ? last.end : reel.vo.durationSec,
-        status: reelStatus(reel, exported),
-        updatedAt: stat.mtime.toISOString(),
-      });
-    } catch {
-      // A half-written reel folder never breaks the list.
-    }
-  }
-  return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export async function listReels(): Promise<ReelMeta[]> {
+  const metas = await Promise.all((await reelSlugs()).map(metaOf));
+  return metas.filter((m): m is ReelMeta => m !== null).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export type ReelPage = { reels: ReelMeta[]; total: number };
+
+/**
+ * One page of the list, newest first.
+ *
+ * The order comes from the file times, which are one `stat` each, and only the page being
+ * shown is opened and parsed. A studio with five hundred reels therefore reads twenty
+ * documents to draw a page of twenty, not five hundred.
+ */
+export async function listReelsPage(opts: { limit?: number; offset?: number } = {}): Promise<ReelPage> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 20, 200));
+  const offset = Math.max(0, opts.offset ?? 0);
+
+  const stamped = await Promise.all(
+    (await reelSlugs()).map(async (slug) => {
+      const at = await fs
+        .stat(reelFile(slug))
+        .then((st) => st.mtime.toISOString())
+        .catch(() => null);
+      return at ? { slug, at } : null;
+    })
+  );
+  const ordered = stamped
+    .filter((s): s is { slug: string; at: string } => s !== null)
+    .sort((a, b) => b.at.localeCompare(a.at));
+
+  const metas = await Promise.all(ordered.slice(offset, offset + limit).map((s) => metaOf(s.slug)));
+  return { reels: metas.filter((m): m is ReelMeta => m !== null), total: ordered.length };
 }
 
 export type NewAsset = Omit<ReelAsset, 'id' | 'status' | 'brief'> &

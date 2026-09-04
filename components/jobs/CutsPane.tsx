@@ -49,7 +49,7 @@ export default function CutsPane({
         rowKey="id"
         size="small"
         dataSource={cuts}
-        pagination={false}
+        pagination={{ pageSize: 10, size: 'small', hideOnSinglePage: true, showSizeChanger: false }}
         locale={{ emptyText: 'No cuts yet. Pull the pool, then prepare a week.' }}
         onRow={(row) => ({ onClick: () => onSelect(row.id), style: { cursor: 'pointer', background: row.id === selectedId ? 'rgba(192, 42, 88, 0.06)' : undefined } })}
         columns={[

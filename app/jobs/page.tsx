@@ -273,7 +273,7 @@ export default function JobsPage() {
         size="small"
         dataSource={rows ?? []}
         loading={rows === null}
-        pagination={false}
+        pagination={{ pageSize: 12, size: 'small', hideOnSinglePage: true, showSizeChanger: false }}
         locale={{ emptyText: error ? 'Nothing to show while the board is down.' : 'No weeks yet.' }}
         columns={[
           { title: 'Week', dataIndex: 'week', width: 120, render: (w: string) => <strong>{w}</strong> },

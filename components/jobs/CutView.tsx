@@ -162,7 +162,7 @@ export default function CutView({
             size="small"
             rowKey="researchId"
             dataSource={rejects}
-            pagination={false}
+            pagination={{ pageSize: 10, size: 'small', hideOnSinglePage: true, showSizeChanger: false }}
             columns={[
               { title: 'Pool id', dataIndex: 'researchId', width: 100 },
               { title: 'Reason', dataIndex: 'rejectReason' },

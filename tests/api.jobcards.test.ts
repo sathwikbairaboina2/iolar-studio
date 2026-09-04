@@ -53,7 +53,8 @@ describe('the job cards api', () => {
     expect(png.headers.get('content-type')).toBe('image/png');
     expect((await png.arrayBuffer()).byteLength).toBeGreaterThan(1000);
 
-    const all = await (await list.GET()).json();
+    const all = await (await list.GET(req('GET'))).json();
+    expect(all).toMatchObject({ total: 1 });
     expect(all.cards).toHaveLength(1);
     expect(all.cards[0]).toMatchObject({ family: 'band-stack', fellBack: false });
   }, 180_000);
@@ -106,6 +107,27 @@ describe('the job cards api', () => {
     expect(made.draft.company.name).toBe('Zoho Corporation');
     expect(made.draft.source).toMatchObject({ kind: 'pool', poolId: 412 });
     expect(made.missing).toEqual(['skill', 'eligibility']);
+  });
+
+  it('hands back the history a page at a time, newest first', async () => {
+    const list = await import('@/app/api/jobcards/route');
+    const page = (limit: number, offset: number) =>
+      new Request(`http://t/api/jobcards?limit=${limit}&offset=${offset}`, { method: 'GET' });
+
+    for (const name of ['Alpha', 'Beta', 'Gamma']) {
+      const draft = fixture();
+      (draft.company as Record<string, unknown>).name = name;
+      await list.POST(req('POST', { draft }));
+    }
+
+    const first = await (await list.GET(page(2, 0))).json();
+    expect(first.total).toBe(3);
+    expect(first.cards).toHaveLength(2);
+
+    const second = await (await list.GET(page(2, 2))).json();
+    expect(second.cards).toHaveLength(1);
+    expect(second.cards[0].id).not.toBe(first.cards[0].id);
+    expect((await (await list.GET(page(2, 99))).json()).cards).toEqual([]);
   });
 
   it('answers 404 for a row the ledger does not hold', async () => {

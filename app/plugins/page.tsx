@@ -1,7 +1,7 @@
 'use client';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Badge, Button, Card, Empty, Segmented, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Badge, Button, Card, Empty, Pagination, Segmented, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { CaretRightOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
 import { reconcile, type PluginHealth } from '@/lib/plugins/reconcile';
 import type { JobBoard, JobRow } from '@/lib/plugins/jobs';
@@ -32,9 +32,13 @@ const ACTIVITY_COLOUR: Record<LogEntry['level'], string> = {
   error: 'red',
 };
 
+const BLOCKED_PER_PAGE = 12;
+
 export default function PluginsPage() {
   const router = useRouter();
   const [plugins, setPlugins] = useState<PluginHealth[] | null>(null);
+  // Everything stuck is reachable, a page at a time; it used to stop at twelve.
+  const [blockedPage, setBlockedPage] = useState(1);
   const [board, setBoard] = useState<JobBoard | null>(null);
   const [activity, setActivity] = useState<LogEntry[]>([]);
   const [starting, setStarting] = useState<string | null>(null);
@@ -278,18 +282,32 @@ export default function PluginsPage() {
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Nothing is stuck." />
             ) : (
               <Space orientation="vertical" style={{ width: '100%' }} size={8}>
-                {(board?.blocked ?? []).slice(0, 12).map((b) => (
-                  <div
-                    key={`${b.slug}:${b.beatId}`}
-                    style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}
-                  >
-                    <Tag>{b.beatId}</Tag>
-                    <Typography.Text style={{ fontSize: 13, flex: 1, minWidth: 200 }}>{b.why}</Typography.Text>
-                    <Button size="small" onClick={() => router.push(`/reel/${b.slug}`)}>
-                      Open {b.reel.slice(0, 28)}
-                    </Button>
-                  </div>
-                ))}
+                {(board?.blocked ?? [])
+                  .slice((blockedPage - 1) * BLOCKED_PER_PAGE, blockedPage * BLOCKED_PER_PAGE)
+                  .map((b) => (
+                    <div
+                      key={`${b.slug}:${b.beatId}`}
+                      style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}
+                    >
+                      <Tag>{b.beatId}</Tag>
+                      <Typography.Text style={{ fontSize: 13, flex: 1, minWidth: 200 }}>{b.why}</Typography.Text>
+                      <Button size="small" onClick={() => router.push(`/reel/${b.slug}`)}>
+                        Open {b.reel.slice(0, 28)}
+                      </Button>
+                    </div>
+                  ))}
+                {(board?.blocked.length ?? 0) > BLOCKED_PER_PAGE && (
+                  <Pagination
+                    simple
+                    size="small"
+                    align="center"
+                    current={blockedPage}
+                    pageSize={BLOCKED_PER_PAGE}
+                    total={board?.blocked.length ?? 0}
+                    onChange={setBlockedPage}
+                    data-testid="blocked-pager"
+                  />
+                )}
               </Space>
             )}
           </Card>

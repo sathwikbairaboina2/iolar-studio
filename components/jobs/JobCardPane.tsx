@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Divider, Empty, Input, InputNumber, Segmented, Select, Space, Tag, Typography, message,
+  Alert, Button, Card, Divider, Empty, Input, InputNumber, Pagination, Segmented, Select, Space, Tag, Typography, message,
 } from 'antd';
 import { FileImageOutlined, PictureOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { Family, JobCardDraft } from '@/lib/jobcard/schema';
@@ -23,6 +23,10 @@ const lines = (v: string) => v.split('\n').map((s) => s.trim()).filter(Boolean);
 
 export default function JobCardPane() {
   const [cards, setCards] = useState<CardRow[]>([]);
+  // Cards are never deleted, so the history only grows; the pane holds one page of it.
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const pageSize = 8;
   const [id, setId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [draft, setDraft] = useState<JobCardDraft | null>(null);
@@ -37,9 +41,14 @@ export default function JobCardPane() {
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const r = await fetch('/api/jobcards', { cache: 'no-store' }).catch(() => null);
-    if (r?.ok) setCards(((await r.json()) as { cards: CardRow[] }).cards ?? []);
-  }, []);
+    const r = await fetch(`/api/jobcards?limit=${pageSize}&offset=${(page - 1) * pageSize}`, {
+      cache: 'no-store',
+    }).catch(() => null);
+    if (!r?.ok) return;
+    const body = (await r.json()) as { cards?: CardRow[]; total?: number };
+    setCards(body.cards ?? []);
+    setTotal(body.total ?? 0);
+  }, [page]);
 
   const open = useCallback(async (cardId: string) => {
     setId(cardId);
@@ -72,6 +81,7 @@ export default function JobCardPane() {
       return;
     }
     const made = (await r.json()) as { id: string };
+    setPage(1);
     await refresh();
     await open(made.id);
   };
@@ -189,6 +199,19 @@ export default function JobCardPane() {
                 </div>
               </div>
             ))}
+            {total > pageSize && (
+              <Pagination
+                simple
+                size="small"
+                align="center"
+                style={{ marginTop: 10 }}
+                current={page}
+                pageSize={pageSize}
+                total={total}
+                onChange={setPage}
+                data-testid="jobcards-pager"
+              />
+            )}
           </div>
         )}
       </Card>
