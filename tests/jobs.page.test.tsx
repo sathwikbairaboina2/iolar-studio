@@ -144,3 +144,13 @@ describe('the request formats tab', () => {
   });
 });
 
+
+describe('the job card tab', () => {
+  it('opens the pane that will hold a card for one job', async () => {
+    const Page = (await import('@/app/jobs/page')).default;
+    render(<Page />);
+    await waitFor(() => expect(screen.getByText('Job card')).toBeTruthy());
+    fireEvent.click(screen.getByText('Job card'));
+    await waitFor(() => expect(screen.getByTestId('job-card')).toBeTruthy());
+  });
+});

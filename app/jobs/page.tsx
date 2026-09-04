@@ -9,6 +9,7 @@ import PoolPane, { type PoolStatus } from '@/components/jobs/PoolPane';
 import CutsPane from '@/components/jobs/CutsPane';
 import CutView, { type CutDetail } from '@/components/jobs/CutView';
 import RequestFormats from '@/components/jobs/RequestFormats';
+import JobCardPane from '@/components/jobs/JobCardPane';
 
 /**
  * The bridge between the research pool and the jobs-reel board, run from one page:
@@ -344,6 +345,7 @@ export default function JobsPage() {
       />
             </div>
           ) },
+          { key: 'card', label: 'Job card', children: <JobCardPane /> },
           { key: 'formats', label: 'Request formats', children: <RequestFormats /> },
         ]}
       />
