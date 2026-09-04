@@ -72,3 +72,10 @@ export function reelPatternHookAudio(slug: string) { return path.join(reelPatter
 export function reelPatternTimelineFile(slug: string) { return path.join(reelPatternDir(slug), 'timeline.json'); }
 export function stylesRoot() { return path.join(process.cwd(), 'styles'); }
 export function styleDir(name: string) { return path.join(stylesRoot(), name); }
+
+/** One job card, one folder: the document, the mark it found, and the card it rendered. */
+export function jobcardsRoot() { return path.join(dataRoot(), 'jobcard'); }
+export function jobcardDir(id: string) { return path.join(jobcardsRoot(), id); }
+export function jobcardFile(id: string) { return path.join(jobcardDir(id), 'card.json'); }
+export function jobcardImage(id: string) { return path.join(jobcardDir(id), 'card.png'); }
+export function jobcardLogo(id: string, ext: string) { return path.join(jobcardDir(id), `logo.${ext}`); }

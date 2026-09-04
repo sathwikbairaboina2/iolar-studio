@@ -36,7 +36,8 @@ export function scoreFamilies(card: JobCard): Score[] {
     },
     {
       family: 'infographic',
-      score: (hasLogo ? -1 : 2) + (card.eligibility.length + card.role.skills.length >= 5 ? 3 : 0) + (steps ? 1 : 0),
+      // Its rows and bullets are generous, not endless: past a dozen facts they run off the card.
+      score: (hasLogo ? -1 : 2) + (card.eligibility.length + card.role.skills.length >= 5 ? 3 : 0) + (steps ? 1 : 0) + (facts > 12 ? -2 : 0),
       why: 'several requirements to list and no image worth showing',
     },
     {
@@ -54,7 +55,8 @@ export function scoreFamilies(card: JobCard): Score[] {
       score: (hasDeadline ? 5 : -2) + (facts <= 10 ? 1 : -2) + (isDrive ? -1 : 0),
       why: hasDeadline ? 'one role with a deadline; the shape is the scroll-stopper' : 'no deadline to print on the stub',
     },
-    { family: FALLBACK, score: 1, why: 'nothing may be cut' },
+    // The denser the job, the stronger the case for the family that cannot run out of room.
+    { family: FALLBACK, score: 1 + (facts >= 13 ? 4 : 0), why: 'nothing may be cut' },
   ];
 
   return scores.sort((a, b) => b.score - a.score || a.family.localeCompare(b.family));

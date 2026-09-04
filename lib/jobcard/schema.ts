@@ -100,7 +100,11 @@ export function parseJobCard(data: unknown): JobCard {
  * What must be there before a card renders. Named the way the page says them, so
  * the message a user reads is this list and nothing is translated on the way out.
  */
-export type JobCardDraft = { [K in keyof JobCard]?: Partial<JobCard[K]> };
+/** A card on its way in: any field may be absent, and a half-typed object is still a draft.
+ *  Lists stay whole — half an eligibility line is not a thing. */
+export type JobCardDraft = {
+  [K in keyof JobCard]?: JobCard[K] extends readonly unknown[] ? JobCard[K] : Partial<JobCard[K]>;
+};
 
 export const MANDATORY: { label: string; has: (d: JobCardDraft) => boolean }[] = [
   { label: 'company', has: (d) => !!d.company?.name },

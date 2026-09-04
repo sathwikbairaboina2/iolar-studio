@@ -114,6 +114,23 @@ CREATE TABLE IF NOT EXISTS cut_rows (
   reject_reason TEXT,
   PRIMARY KEY (cut_id, research_id)
 );
+CREATE TABLE IF NOT EXISTS jobcards (
+  id           TEXT PRIMARY KEY,
+  created_at   TEXT NOT NULL,
+  updated_at   TEXT NOT NULL,
+  company      TEXT NOT NULL,
+  role         TEXT NOT NULL,
+  source_url   TEXT NOT NULL,
+  source_kind  TEXT NOT NULL,
+  pool_id      INTEGER,
+  family       TEXT,
+  card_json    TEXT NOT NULL,
+  missing_json TEXT NOT NULL,
+  rendered_at  TEXT,
+  overflow_px  INTEGER,
+  fell_back    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_jobcards_made ON jobcards(created_at DESC);
 CREATE TABLE IF NOT EXISTS submissions (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   cut_id       INTEGER NOT NULL REFERENCES cuts(id),

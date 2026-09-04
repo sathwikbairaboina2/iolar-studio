@@ -42,6 +42,39 @@ const detail = {
   submissions: [],
 };
 
+const cardDraft = {
+  company: { name: 'Zoho Corporation', logo: null, accent: null },
+  role: { title: 'Software Development Engineer', skills: ['Java 17', 'Spring Boot'], team: null },
+  experience: { min: 2, max: 5, label: '2 – 5 Years' },
+  location: { city: 'Chennai', region: 'Tamil Nadu', workMode: 'hybrid' },
+  salary: { min: 8, max: 18, currency: 'INR', unit: 'LPA', note: null },
+  eligibility: ['B.E. / B.Tech / MCA, 60% throughout'],
+  selectionProcess: [{ step: 1, label: 'Online assessment', detail: null }],
+  dates: [],
+  cta: { channel: 'whatsapp', keyword: 'ZOHO' },
+  source: { url: 'https://careers.zohocorp.com/jobs/sde', kind: 'job-url', poolId: null },
+};
+const cardRow = {
+  id: 'zoho-sde-1',
+  createdAt: 'x',
+  updatedAt: 'y',
+  company: 'Zoho Corporation',
+  role: 'Software Development Engineer',
+  sourceUrl: 'https://careers.zohocorp.com/jobs/sde',
+  sourceKind: 'job-url',
+  poolId: null,
+  family: null,
+  missing: [],
+  renderedAt: null,
+  overflowPx: null,
+  fellBack: null,
+};
+const cardFamilies = [
+  { family: 'band-stack', score: 5, why: 'nothing may be cut' },
+  { family: 'bento', score: 2, why: 'facts short and of equal weight, one tile each' },
+];
+let made = false;
+
 let posted: { url: string; body: unknown }[] = [];
 
 afterEach(() => cleanup());
@@ -49,6 +82,7 @@ afterEach(() => cleanup());
 beforeEach(() => {
   vi.resetModules();
   posted = [];
+  made = false;
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const u = String(url);
     const json = (body: unknown, status = 200) => ({ ok: status < 400, status, json: async () => body }) as Response;
@@ -65,7 +99,12 @@ beforeEach(() => {
       if (u.endsWith('/api/jobs/cuts')) return json({ cut });
       if (u.endsWith('/submit')) return json({ cut: { ...cut, status: 'planned' }, submissions: [] });
       if (u.endsWith('/pull')) return json({ fetched: 1, added: 1, refreshed: 0, closed: 0, error: null });
+      if (u.endsWith('/api/jobcards')) { made = true; return json({ id: 'zoho-sde-1', row: cardRow, draft: cardDraft, missing: [] }, 201); }
+      if (u.endsWith('/api/jobcards/zoho-sde-1/render')) return json({ family: 'band-stack', overflowPx: 0, fellBack: false, row: cardRow });
     }
+    if (u.endsWith('/api/jobcards')) return json({ cards: made ? [cardRow] : [] });
+    if (u.endsWith('/api/jobcards/zoho-sde-1')) return json({ row: cardRow, draft: cardDraft, missing: [], families: cardFamilies });
+    if (u.endsWith('/api/jobcards/zoho-sde-1/render')) return json({ family: 'band-stack', overflowPx: 0, fellBack: false, row: cardRow });
     if (u.endsWith('/api/jobs/pool')) return json(pool);
     if (u.endsWith('/api/jobs/styles')) return json({ board: 'http://127.0.0.1:26100', styles: [{ style: 'paper-doodle', world: 'classic', displayName: 'Paper & Doodle', captionMode: 'plain', fixed: [], elastic: { slots: '4-5', secondsEach: '6.4-8s', rehook: null }, request: { jobs: { method: 'POST', path: '/api/weeks/{week}/jobs', body: 'JobsFile' }, script: { method: 'POST', path: '/api/weeks/{week}/script', body: {} }, build: { method: 'POST', path: '/api/weeks/{week}/run', body: { stage: 'build' } } } }] });
     if (u.endsWith('/api/jobs/cuts')) return json({ cuts: posted.some((p) => p.url.endsWith('/api/jobs/cuts')) ? [cut] : [] });
@@ -146,11 +185,40 @@ describe('the request formats tab', () => {
 
 
 describe('the job card tab', () => {
-  it('opens the pane that will hold a card for one job', async () => {
+  const openTab = async () => {
     const Page = (await import('@/app/jobs/page')).default;
     render(<Page />);
     await waitFor(() => expect(screen.getByText('Job card')).toBeTruthy());
     fireEvent.click(screen.getByText('Job card'));
     await waitFor(() => expect(screen.getByTestId('job-card')).toBeTruthy());
+  };
+
+  it('opens the pane that holds a card for one job', async () => {
+    await openTab();
+    expect(screen.getByTestId('jobcard-url')).toBeTruthy();
+    expect(screen.getByText(/A reference post decides the look/)).toBeTruthy();
+  });
+
+  it('reads a listing, shows the document it read, and renders the card', async () => {
+    await openTab();
+
+    fireEvent.change(screen.getByTestId('jobcard-url'), {
+      target: { value: 'https://careers.zohocorp.com/jobs/sde' },
+    });
+    fireEvent.click(screen.getByTestId('jobcard-read'));
+    await waitFor(() => expect(posted.some((p) => p.url.endsWith('/api/jobcards'))).toBe(true));
+    expect(posted.find((p) => p.url.endsWith('/api/jobcards'))?.body).toMatchObject({
+      url: 'https://careers.zohocorp.com/jobs/sde',
+    });
+
+    await waitFor(() =>
+      expect((screen.getByTestId('jobcard-company') as HTMLInputElement).value).toBe('Zoho Corporation')
+    );
+    expect((screen.getByTestId('jobcard-salary-min') as HTMLInputElement).value).toBe('8');
+
+    fireEvent.click(screen.getByTestId('jobcard-render'));
+    await waitFor(() => expect(posted.some((p) => p.url.endsWith('/render'))).toBe(true));
+    await waitFor(() => expect(screen.getByTestId('jobcard-image')).toBeTruthy());
+    expect(screen.getByTestId('jobcard-image').getAttribute('src')).toContain('/api/jobcards/zoho-sde-1/image');
   });
 });

@@ -166,6 +166,12 @@ const poolOf = (r: Row): PoolRow => ({
   raw: p(r.raw_json, {}),
 });
 
+/** One pool row by the research id the page names. */
+export function poolRowById(researchId: number): PoolRow | null {
+  const r = getDb().prepare(`SELECT * FROM jobs_pool WHERE research_id = ?`).get(researchId) as Row | undefined;
+  return r ? poolOf(r) : null;
+}
+
 /** Open rows posted (or first seen, when the source gave no date) inside [from, to], dates inclusive. */
 export function poolInWindow(from: string, to: string, category: string): PoolRow[] {
   const rows = getDb()
