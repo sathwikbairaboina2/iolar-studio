@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
-import { findLogo, fromJobPosting, fromPoolRow, fromUrl, jsonLdBlocks, postingText } from '@/lib/jobcard/extract';
+import { fromJobPosting, fromPoolRow, fromUrl, jsonLdBlocks, postingText } from '@/lib/jobcard/extract';
 import { missingMandatory } from '@/lib/jobcard/schema';
 import type { ResearchJob } from '@/lib/jobs/researchApi';
 
@@ -82,19 +82,21 @@ describe('reading a listing', () => {
     expect(draft.role?.skills).toEqual(['CUDA', 'Triton']);
   });
 
-  it('resolves the mark against the page it came from', () => {
-    expect(findLogo(html, 'https://careers.zohocorp.com/jobs/sde')).toBe('https://careers.zohocorp.com/assets/zoho-mark.png');
+  it('resolves the mark against the page it came from', async () => {
+    const { marks } = await fromUrl('https://careers.zohocorp.com/jobs/sde', { page });
+    // Zoho's careers page is Zoho's own site, so its icons are Zoho's to take.
+    expect(marks.map((m) => m.url)).toContain('https://careers.zohocorp.com/assets/zoho-mark.png');
   });
 
   it('reads a URL into a complete document with the model filling only prose', async () => {
-    const { draft, logoUrl } = await fromUrl('https://careers.zohocorp.com/jobs/sde', { run, page });
+    const { draft, marks } = await fromUrl('https://careers.zohocorp.com/jobs/sde', { run, page });
     expect(missingMandatory(draft)).toEqual([]);
     expect(draft.role?.skills).toContain('Spring Boot');
     expect(draft.eligibility).toHaveLength(2);
     expect(draft.selectionProcess?.map((s) => s.step)).toEqual([1, 2, 3]);
     expect(draft.experience?.label).toBe('2 – 5 Years');
     expect(draft.source).toMatchObject({ kind: 'job-url' });
-    expect(logoUrl).toContain('zoho-mark.png');
+    expect(marks.some((m) => m.url.includes('zoho-mark.png'))).toBe(true);
   });
 
   it('reads a URL without a model, and says what is still missing', async () => {

@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import { thinker } from '@/lib/ai/runner';
 import { poolRowById } from '@/lib/jobs/ledger';
 import type { ResearchJob } from '@/lib/jobs/researchApi';
-import { fromPoolRow, fromUrl, type Runner } from '@/lib/jobcard/extract';
+import { fromPoolRow, fromUrl, marksForUrl, type Runner } from '@/lib/jobcard/extract';
+import { isUsableMark, searxngSearch, type FoundMark } from '@/lib/jobcard/logo';
+import { getSettings } from '@/lib/settings';
 import { cardId, listRows, saveCard, saveLogo } from '@/lib/jobcard/store';
 import { missingMandatory, type JobCardDraft } from '@/lib/jobcard/schema';
 
@@ -25,19 +27,30 @@ const runner = (): Runner | undefined => {
   }
 };
 
-/** A mark is downloaded once, beside the document; a fetch that fails leaves a wordmark. */
-async function pullLogo(id: string, url: string | null): Promise<{ src: string; kind: 'page' } | null> {
-  if (!url) return null;
-  try {
-    const r = await fetch(url, { headers: { 'user-agent': 'iolar-jobcard/1.0' } });
-    if (!r.ok) return null;
-    const type = r.headers.get('content-type') ?? '';
-    const ext = /svg/.test(type) ? 'svg' : /jpe?g/.test(type) ? 'jpg' : /webp/.test(type) ? 'webp' : 'png';
-    const src = await saveLogo(id, new Uint8Array(await r.arrayBuffer()), ext);
-    return { src, kind: 'page' };
-  } catch {
-    return null;
+/**
+ * The candidates are tried in order and the first that is actually a mark is kept: square
+ * enough for a tile, big enough to set. A social banner or a sixteen-pixel favicon is
+ * skipped rather than stretched, and running out of candidates leaves a wordmark, which is
+ * a real fallback and not a placeholder.
+ */
+async function pullLogo(id: string, marks: FoundMark[]): Promise<{ src: string; kind: 'page' | 'search' } | null> {
+  for (const mark of marks.slice(0, 6)) {
+    try {
+      const r = await fetch(mark.url, { headers: { 'user-agent': 'iolar-jobcard/1.0' }, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      if (!(await isUsableMark(bytes))) continue;
+      const type = r.headers.get('content-type') ?? '';
+      const ext = /svg/.test(type) ? 'svg' : /jpe?g/.test(type) ? 'jpg' : /webp/.test(type) ? 'webp' : 'png';
+      const src = await saveLogo(id, bytes, ext);
+      // A mark on the listing's own page is one the page published; anything reached by
+      // following a link or a search is a find, and the document says which it was.
+      return { src, kind: mark.from === 'markup' || mark.from === 'job-page' ? 'page' : 'search' };
+    } catch {
+      // Try the next candidate; a mark that will not download is not a mark.
+    }
   }
+  return null;
 }
 
 export async function POST(req: Request) {
@@ -48,21 +61,25 @@ export async function POST(req: Request) {
     useModel?: boolean;
   };
   const run = body.useModel === false ? undefined : runner();
+  const search = searxngSearch(getSettings().searxngUrl);
 
   let draft: JobCardDraft;
-  let logoUrl: string | null = null;
+  let marks: FoundMark[] = [];
 
   if (body.draft) {
     draft = body.draft;
   } else if (typeof body.poolId === 'number') {
     const row = poolRowById(body.poolId);
     if (!row) return NextResponse.json({ error: `no pool row ${body.poolId}` }, { status: 404 });
-    draft = await fromPoolRow(row.raw as unknown as ResearchJob, run);
+    const job = row.raw as unknown as ResearchJob;
+    draft = await fromPoolRow(job, run);
+    // The row says where the listing lives; the mark is looked for there.
+    marks = job.url ? await marksForUrl(job.url, { company: job.company, search }) : [];
   } else if (body.url) {
     try {
-      const read = await fromUrl(body.url, { run });
+      const read = await fromUrl(body.url, { run, search });
       draft = read.draft;
-      logoUrl = read.logoUrl;
+      marks = read.marks;
     } catch (err) {
       return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
     }
@@ -71,7 +88,7 @@ export async function POST(req: Request) {
   }
 
   const id = cardId(draft);
-  const logo = await pullLogo(id, logoUrl);
+  const logo = await pullLogo(id, marks);
   if (logo && draft.company) draft = { ...draft, company: { ...draft.company, logo, accent: draft.company.accent ?? null } };
 
   const row = await saveCard(id, draft);

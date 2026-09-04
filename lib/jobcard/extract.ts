@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { extractJson } from '@/lib/ai/revise';
 import { mapExperience, mapLocation, mapSalaryInr, mapWorkMode } from '@/lib/jobs/map';
 import type { ResearchJob } from '@/lib/jobs/researchApi';
+import { markCandidates, type FoundMark, type SearchFn } from './logo';
 import { JobCardDraft } from './schema';
 
 /**
@@ -28,19 +29,6 @@ const stripTags = (html: string) =>
     .replace(/&amp;/g, '&')
     .replace(/\s+/g, ' ')
     .trim();
-
-/** The og:image or a large icon: the first place a real mark is looked for. */
-export function findLogo(html: string, base: string): string | null {
-  const meta = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)
-    ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)
-    ?? html.match(/<link[^>]+rel=["'](?:apple-touch-icon|icon)["'][^>]+href=["']([^"']+)["']/i);
-  if (!meta) return null;
-  try {
-    return new URL(meta[1], base).toString();
-  } catch {
-    return null;
-  }
-}
 
 type JsonLd = Record<string, unknown>;
 
@@ -233,9 +221,10 @@ const defaultFetch: PageFetch = async (url) => {
 /** A job URL read into a document: the page's own markup, the model, then the rules. */
 export async function fromUrl(
   url: string,
-  opts: { run?: Runner; page?: PageFetch } = {}
-): Promise<{ draft: JobCardDraft; logoUrl: string | null }> {
-  const { html, url: finalUrl } = await (opts.page ?? defaultFetch)(url);
+  opts: { run?: Runner; page?: PageFetch; search?: SearchFn } = {}
+): Promise<{ draft: JobCardDraft; marks: FoundMark[] }> {
+  const read = opts.page ?? defaultFetch;
+  const { html, url: finalUrl } = await read(url);
   const blocks = jsonLdBlocks(html);
   const text = postingText(blocks, html);
   const marked = fromJobPosting(blocks);
@@ -278,5 +267,31 @@ export async function fromUrl(
     source: { url: finalUrl, kind: 'job-url', poolId: null },
   });
 
-  return { draft, logoUrl: findLogo(html, finalUrl) };
+  return {
+    draft,
+    marks: await markCandidates(blocks, finalUrl, html, read, {
+      company: draft.company?.name ?? null,
+      search: opts.search,
+    }),
+  };
+}
+
+/**
+ * A pool row carries the listing's URL but nothing of its page, so the mark is looked for
+ * the same way — by reading that page now. A page that will not answer costs the mark,
+ * never the card.
+ */
+export async function marksForUrl(
+  url: string,
+  opts: { page?: PageFetch; company?: string | null; search?: SearchFn } = {}
+): Promise<FoundMark[]> {
+  const read = opts.page ?? defaultFetch;
+  const hunt = { company: opts.company ?? null, search: opts.search };
+  try {
+    const { html, url: finalUrl } = await read(url);
+    return await markCandidates(jsonLdBlocks(html), finalUrl, html, read, hunt);
+  } catch {
+    // A listing behind a bot check still has a company with a website; the search finds it.
+    return markCandidates([], url, '', read, hunt);
+  }
 }

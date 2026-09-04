@@ -49,6 +49,8 @@ export type Settings = {
    */
   llmProvider: 'claude' | 'local';
   researchUrl: string;
+  /** The SearXNG the research stack runs. A job card searches it for a company's own site. */
+  searxngUrl: string;
   /** The ollama the local research agents think on. The research service's own, by default. */
   researchOllamaUrl: string;
   researchModel: string;
@@ -111,6 +113,7 @@ const DEFAULTS: Settings = {
   researchProvider: 'local',
   llmProvider: 'local',
   researchUrl: 'http://127.0.0.1:25100',
+  searxngUrl: 'http://127.0.0.1:25180',
   researchOllamaUrl: 'http://127.0.0.1:25103',
   researchModel: 'qwen3.8:27b',
   neo4jUrl: 'bolt://127.0.0.1:3124',
