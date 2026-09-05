@@ -65,7 +65,7 @@ describe('local agent backend', () => {
     const body = sent.body as { prompt: string; tools: unknown[]; model: string };
     expect(body.prompt).toBe('tighten the hook');
     expect(body.tools.length).toBeGreaterThan(0);
-    expect(body.model).toBe('lfm2.5');
+    expect(body.model).toBe('qwen3.8:27b');
     expect(out.commands).toEqual([{ op: 'beat.text', args: { clipId: 'c1' }, actor: 'agent' }]);
   });
 

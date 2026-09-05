@@ -15,7 +15,7 @@ from graph import build_graph
 app = FastAPI(title="iolar reel agent")
 GRAPH = build_graph()
 
-DEFAULT_OLLAMA = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11436")
+DEFAULT_OLLAMA = os.environ.get("OLLAMA_URL", "http://host.docker.internal:11434")
 STUDIO_URL = os.environ.get("STUDIO_URL", "http://host.docker.internal:3120")
 
 
@@ -24,7 +24,7 @@ class ProposeIn(BaseModel):
     prompt: str
     reel: dict[str, Any]
     tools: list[dict[str, Any]]
-    model: str = "lfm2.5"
+    model: str = "qwen3.8:27b"
     ollamaUrl: str | None = None
     numPredict: int = 1200
     maxRevisions: int = Field(default=3, ge=0, le=10)

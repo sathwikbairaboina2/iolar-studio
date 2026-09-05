@@ -83,7 +83,7 @@ describe('reading health', () => {
       },
       ':8080': { body: { ok: true } },
       ':8189': { body: { system: {} } },
-      ':11436': { body: { models: [] } },
+      ':11434': { body: { models: [] } },
     });
     const { readHealth } = await import('@/lib/plugins/health');
 
@@ -110,7 +110,7 @@ describe('reading health', () => {
       ':8300': { body: { ok: false, checks: { redis: { ok: true }, worker: { ok: false, workers: 0 } } } },
       ':8080': { body: { ok: true } },
       ':8189': { body: {} },
-      ':11436': { body: {} },
+      ':11434': { body: {} },
     });
     const { readHealth } = await import('@/lib/plugins/health');
     const { reconcile } = await import('@/lib/plugins/health');
@@ -124,7 +124,7 @@ describe('reading health', () => {
   });
 
   it('marks a service that will not answer as down', async () => {
-    mockFetch({ ':8300': { fail: true }, ':8080': { body: { ok: true } }, ':8189': { body: {} }, ':11436': { body: {} } });
+    mockFetch({ ':8300': { fail: true }, ':8080': { body: { ok: true } }, ':8189': { body: {} }, ':11434': { body: {} } });
     const { readHealth } = await import('@/lib/plugins/health');
 
     const lip = (await readHealth()).find((p) => p.name === 'lipsync')!;
@@ -137,7 +137,7 @@ describe('reading health', () => {
       ':8189': { body: { system: { comfyui_version: '0.34.2' }, devices: [{ name: 'cuda:0 RTX 4090' }] } },
       ':8300': { body: { ok: true, checks: {} } },
       ':8080': { body: { ok: true } },
-      ':11436': { body: { models: [{ name: 'lfm2.5:latest' }] } },
+      ':11434': { body: { models: [{ name: 'lfm2.5:latest' }] } },
     });
     const { readHealth } = await import('@/lib/plugins/health');
     const all = await readHealth();
@@ -161,7 +161,7 @@ describe('reading health', () => {
       ':8300': { body: { ok: true, checks: {} } },
       ':8080': { body: { ok: true } },
       ':8189': { body: {} },
-      ':11436': { body: {} },
+      ':11434': { body: {} },
     });
     const { readHealth } = await import('@/lib/plugins/health');
     const research = (await readHealth()).find((p) => p.name === 'research')!;
@@ -185,7 +185,7 @@ describe('reading health', () => {
       ':8300': { body: { ok: true, checks: {} } },
       ':8080': { body: { ok: true } },
       ':8189': { body: {} },
-      ':11436': { body: {} },
+      ':11434': { body: {} },
     });
     const { readHealth } = await import('@/lib/plugins/health');
     const research = (await readHealth()).find((p) => p.name === 'research')!;
@@ -205,7 +205,7 @@ describe('reading health', () => {
       ':8300': { body: { ok: true, checks: {} } },
       ':8080': { body: { ok: true } },
       ':8189': { body: {} },
-      ':11436': { body: {} },
+      ':11434': { body: {} },
     });
     const { readHealth } = await import('@/lib/plugins/health');
     const jobs = (await readHealth()).find((p) => p.name === 'jobsreel')!;
@@ -226,7 +226,7 @@ describe('reading health', () => {
       ':8300': { body: { ok: true, checks: {} } },
       ':8080': { body: { ok: true } },
       ':8189': { body: {} },
-      ':11436': { body: {} },
+      ':11434': { body: {} },
     });
     const { readHealth } = await import('@/lib/plugins/health');
     const all = await readHealth();
@@ -252,7 +252,7 @@ describe('reading health', () => {
       ':8300': { body: { ok: true, checks: {} } },
       ':8080': { body: { ok: true } },
       ':8189': { body: {} },
-      ':11436': { body: {} },
+      ':11434': { body: {} },
     });
     const { readHealth } = await import('@/lib/plugins/health');
     const all = await readHealth();

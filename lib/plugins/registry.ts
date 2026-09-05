@@ -33,7 +33,7 @@ export type Plugin = {
 const lipsyncBase = (process.env.LIPSYNC_URL ?? 'http://127.0.0.1:8300').replace(/\/$/, '');
 const webpageBase = (process.env.WEBPAGE_MP4_URL ?? 'http://127.0.0.1:8080').replace(/\/$/, '');
 const comfyBase = (process.env.COMFY_URL ?? 'http://127.0.0.1:8189').replace(/\/$/, '');
-const ollamaBase = (process.env.OLLAMA_URL ?? 'http://127.0.0.1:11436').replace(/\/$/, '');
+const ollamaBase = (process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
 const researchBase = (process.env.RESEARCH_URL ?? 'http://127.0.0.1:25100').replace(/\/$/, '');
 const jobsReelBase = (process.env.JOBS_REEL_URL ?? 'http://127.0.0.1:26100').replace(/\/$/, '');
 const templatesBase = (process.env.REELS_TEMPLATES_URL ?? 'http://127.0.0.1:26200').replace(/\/$/, '');
@@ -96,7 +96,7 @@ export const PLUGINS: Plugin[] = [
     timeoutMs: 15_000,
     what: 'The local researcher behind the Research tab. Hunts sources through searxng, jina, yt-dlp and gh on qwen.',
     openUrl: researchBase,
-    // The script brings up its docker side (research-ollama, research-searxng) first, then
+    // The script brings up its docker side (research-searxng) first, then
     // the service. Turbopack only: --webpack dies on node:crypto in its instrumentation.
     start: {
       command: 'powershell.exe',
@@ -130,7 +130,8 @@ export const PLUGINS: Plugin[] = [
       command: 'powershell.exe',
       args: ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', 'run.ps1'],
       cwd: `${PLUGIN_ROOT}/plugins/main-reels-templates-plugin`,
-      hint: String.raw`.un.ps1`,
+      hint: String.raw`.
+un.ps1`,
     },
   },
   {

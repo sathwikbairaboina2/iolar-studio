@@ -62,12 +62,13 @@ describe('the provider switch', () => {
     const calls: { url: string; body: unknown }[] = [];
     vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
       calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
-      // Two ollamas hold two different models: the stages think on one, the reel agent on the other.
+      // One host ollama holds both models: the stages think on one, the reel agent on the other.
       if (String(url).endsWith('/api/ps')) {
-        const model = String(url).includes('25103')
-          ? { name: 'qwen3.8:27b', size_vram: 17_399_734_598 }
-          : { name: 'lfm2.5', size_vram: 2_100_000_000 };
-        return { ok: true, json: async () => ({ models: [model] }) } as Response;
+        const models = [
+          { name: 'qwen3.8:27b', size_vram: 17_399_734_598 },
+          { name: 'lfm2.5', size_vram: 2_100_000_000 },
+        ];
+        return { ok: true, json: async () => ({ models }) } as Response;
       }
       if (String(url).endsWith('/api/llm')) return { ok: true, json: async () => ({ residency: 'transient', freed: [] }) } as Response;
       return { ok: true, json: async () => ({}) } as Response;

@@ -60,7 +60,7 @@ export type Settings = {
   neo4jPassword: string;
   /** Passages and claims, for the agents' memory. */
   qdrantUrl: string;
-  /** The ollama that embeds. research-ollama by default: it already holds nomic-embed-text. */
+  /** The ollama that embeds. The host Ollama by default, like everything else here. */
   embedOllamaUrl: string;
   embedModel: string;
   /** Off restores the pipeline exactly as it was before the knowledge layer. */
@@ -101,11 +101,12 @@ const DEFAULTS: Settings = {
   reelStyle: 'armand',
   agentProvider: 'local',
   agentUrl: 'http://127.0.0.1:3121',
-  // The model lives in the invisible-ollama container, which already holds it.
-  agentOllamaUrl: 'http://127.0.0.1:11436',
-  agentModel: 'lfm2.5',
-  // lfm2.5 thinks before it calls. At 200 it never reaches the tool call and
-  // looks like a model that cannot tool-call at all; 1200 answers in 1-2s.
+  // The Ollama installed on the host, shared by every project on this machine.
+  agentOllamaUrl: 'http://127.0.0.1:11434',
+  // The one generative model the host Ollama serves for every project.
+  agentModel: 'qwen3.8:27b',
+  // A thinking model spends tokens before it calls. At 200 it never reaches the
+  // tool call and looks like a model that cannot tool-call at all.
   agentNumPredict: 1200,
   agentMaxRevisions: 3,
   // Local by default: the research runs on qwen through the research service, and
@@ -114,13 +115,13 @@ const DEFAULTS: Settings = {
   llmProvider: 'local',
   researchUrl: 'http://127.0.0.1:25100',
   searxngUrl: 'http://127.0.0.1:25180',
-  researchOllamaUrl: 'http://127.0.0.1:25103',
+  researchOllamaUrl: 'http://127.0.0.1:11434',
   researchModel: 'qwen3.8:27b',
   neo4jUrl: 'bolt://127.0.0.1:3124',
   neo4jUser: 'neo4j',
   neo4jPassword: 'iolar-local',
   qdrantUrl: 'http://127.0.0.1:3126',
-  embedOllamaUrl: 'http://127.0.0.1:25103',
+  embedOllamaUrl: 'http://127.0.0.1:11434',
   embedModel: 'nomic-embed-text',
   knowledgeMemory: true,
   jobsCategory: 'india',
