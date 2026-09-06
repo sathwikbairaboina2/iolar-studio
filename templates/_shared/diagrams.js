@@ -79,7 +79,7 @@
           var leftToRight = b.cx > a.cx;
           var x1 = leftToRight ? a.x + a.w : a.x, x2 = leftToRight ? b.x : b.x + b.w;
           points = [[x1, a.cy], [x2, b.cy]];
-          lx = (x1 + x2) / 2; ly = a.cy - 6;
+          lx = (x1 + x2) / 2; ly = a.cy - 14;
         } else if (b.cy > a.cy) {
           var y1 = a.y + a.h, y2 = b.y;
           if (Math.abs(a.cx - b.cx) < 4) {

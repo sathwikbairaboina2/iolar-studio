@@ -9,7 +9,7 @@ const base = {
 
 describe('hero, subtitle and cover', () => {
   it('injects the hero logo into the page chrome and passes the subtitle', () => {
-    const post = validatePost({ ...base, slides: [{ page_title: 'IAM', hero: 'aws', subtitle: 'Identity', blocks: [{ type: 'heading', text: 'x' }] }] });
+    const post = validatePost({ ...base, slides: [{ page_title: 'IAM', hero: 'iam', subtitle: 'Identity', blocks: [{ type: 'heading', text: 'x' }] }] });
     const html = buildSlideHtml(post, 0);
     expect(html).toContain('id="v-hero"');
     expect(html).toContain('ic-aws');

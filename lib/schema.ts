@@ -11,7 +11,7 @@ export const RATIOS: Record<string, [number, number]> = {
 
 export const TEMPLATES = [
   'spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel',
-  'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet',
+  'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet', 'sketchnote', 'marker-notes',
 ] as const;
 
 export const INKS = ['blue', 'red', 'green', 'black', 'accent', 'purple', 'orange', 'pink'] as const;

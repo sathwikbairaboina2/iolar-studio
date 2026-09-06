@@ -10,9 +10,10 @@ describe('iconSvg', () => {
     expect(h).not.toContain('<title');
     expect(h).not.toContain('<?xml');
   });
-  it('the bare aws name is the AWS cloud mark', () => {
-    expect(resolveIcon('aws')?.file).toMatch(/AWSCloud\.svg$/);
-    expect(iconSvg('aws')).toContain('ic-aws');
+  it('the bare aws name is the AWS wordmark, aws-cloud the architecture cloud', () => {
+    expect(resolveIcon('aws')?.file).toBe('builtin:aws');
+    expect(iconSvg('aws')).toContain('#ff9900');
+    expect(resolveIcon('aws-cloud')?.file).toMatch(/AWSCloud\.svg$/);
   });
   it('explicit prefixes reach every source', () => {
     expect(resolveIcon('aws:AmazonRDS')?.source).toBe('aws');
@@ -30,6 +31,13 @@ describe('iconSvg', () => {
     const h = iconSvg('lock');
     expect(h).toContain('ic-ui');
     expect(h).toContain('currentColor');
+  });
+  it('generic words beat brand names of the same spelling, and aws is the wordmark', () => {
+    expect(resolveIcon('box')?.source).toBe('ui');
+    expect(resolveIcon('cloud')?.source).toBe('ui');
+    expect(iconSvg('aws')).toContain('#ff9900');
+    expect(iconSvg('aws-cloud')).toContain('ic-aws');
+    expect(resolveIcon('brand:box')?.source).toBe('brand');
   });
   it('unknown names render nothing and never throw', () => {
     expect(iconSvg('nope-nothing')).toBe('');

@@ -56,7 +56,15 @@ export const ICON_VOCAB: string[] = [
   ...UI_NAMES,
 ];
 
-const SPECIAL: Record<string, string> = { aws: 'group:AWSCloud', windows: 'ui:monitor', oracle: 'ui:database', azure: 'ui:cloud' };
+const SPECIAL: Record<string, string> = { aws: 'builtin:aws', 'aws-cloud': 'group:AWSCloud', windows: 'ui:monitor', oracle: 'ui:database', azure: 'ui:cloud' };
+
+/**
+ * Marks no package ships. The AWS wordmark: "aws" in a heavy sans plus the orange smile
+ * arrow, drawn as paths so it needs no font. Close to the real mark, as the reference draws it.
+ */
+const BUILTIN: Record<string, string> = {
+  aws: '<svg viewBox="0 0 120 72" xmlns="http://www.w3.org/2000/svg"><text x="60" y="44" text-anchor="middle" font-family="Arial Black, Arial, Helvetica, sans-serif" font-weight="900" font-size="46" letter-spacing="-1" fill="#232f3e">aws</text><path d="M14 56 C 40 74, 84 74, 108 54" fill="none" stroke="#ff9900" stroke-width="6" stroke-linecap="round"/><path d="M100 46 L 110 53 L 98 58" fill="none" stroke="#ff9900" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
 
 type SimpleIcon = { title: string; slug: string; hex: string };
 const SIMPLE = simple as unknown as Record<string, SimpleIcon | undefined>;
@@ -145,10 +153,11 @@ export function resolveIcon(name: string): ResolvedIcon | null {
   const special = SPECIAL[n.toLowerCase()];
   if (special) return resolveIcon(special);
 
-  const m = /^(aws|brand|ui|group):(?:(res):)?(.+)$/.exec(n);
+  const m = /^(aws|brand|ui|group|builtin):(?:(res):)?(.+)$/.exec(n);
   if (m) {
     const [, src, res, rest] = m;
     if (!safe(rest)) return null;
+    if (src === 'builtin') return BUILTIN[rest] ? { source: 'ui', file: `builtin:${rest}` } : null;
     if (src === 'aws') {
       const file = path.join(AWS, res ? 'resource' : 'architecture-service', `${AWS_SERVICE[rest.toLowerCase()] ?? rest}.svg`);
       return existsSync(file) ? { source: 'aws', file } : null;
@@ -167,6 +176,8 @@ export function resolveIcon(name: string): ResolvedIcon | null {
 
   const lower = n.toLowerCase();
   if (AWS_SERVICE[lower]) return resolveIcon(`aws:${lower}`);
+  // A generic word that is also some company's name (box, cloud, shield) means the generic icon.
+  if (UI_NAMES.includes(lower)) return resolveIcon(`ui:${lower}`);
   if (safe(n)) {
     const direct = resolveIcon(`aws:${n}`) ?? resolveIcon(`brand:${lower}`) ?? resolveIcon(`ui:${lower}`);
     if (direct) return direct;
@@ -195,7 +206,7 @@ export function iconSvg(name: string): string {
   let out = '';
   if (r) {
     try {
-      let svg = clean(readFileSync(r.file, 'utf8'));
+      let svg = r.file.startsWith('builtin:') ? BUILTIN[r.file.slice(8)] : clean(readFileSync(r.file, 'utf8'));
       const attrs = ` class="ic ic-${r.source}" width="1em" height="1em"`;
       svg = svg.replace(/<svg([^>]*)>/, (_, a: string) => {
         let head = a.replace(/\s(width|height|class)="[^"]*"/g, '');

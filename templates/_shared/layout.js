@@ -34,6 +34,15 @@
     var pageEl = document.getElementById('page');
     if (!container || !pageEl) return;
 
+    // A cover page is one flowing block, not packed units: report it as full and stop.
+    if (pageEl.classList.contains('cover-page')) {
+      var coverUsable = pageEl.clientHeight - parseFloat(getComputedStyle(pageEl).paddingBottom) - container.offsetTop;
+      container.style.height = Math.round(coverUsable) + 'px';
+      window.LAYOUT = { spillIndexes: [], usedPx: Math.round(coverUsable), usablePx: Math.round(coverUsable), neededPct: 100 };
+      document.body.dataset.layoutDone = '1';
+      return;
+    }
+
     var els = [].slice.call(container.querySelectorAll('.pk-unit'));
 
     // Bind each heading to the block that follows it so the pair never splits.

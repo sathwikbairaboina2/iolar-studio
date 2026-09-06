@@ -25,7 +25,7 @@ function makePost(template: string): Post {
 afterAll(async () => { await closeBrowser(); });
 
 describe('renderSlide', () => {
-  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet'])('%s produces a 1080x1440 png with no overflow', async (template) => {
+  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet', 'sketchnote', 'marker-notes'])('%s produces a 1080x1440 png with no overflow', async (template) => {
     const out = path.join(tmpdir(), `iolar-test-${template}-${Date.now()}.png`);
     const r = await renderSlide(makePost(template), 0, out);
     expect(existsSync(out)).toBe(true);
@@ -71,7 +71,7 @@ describe('renderSlide', () => {
     expect(again.slides.length).toBe(slides.length);
   }, 480_000);
 
-  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet'])(
+  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet', 'sketchnote', 'marker-notes'])(
     '%s fills a dense page without overflowing',
     async (template) => {
       const dense = makePost(template);

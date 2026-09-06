@@ -62,6 +62,8 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     // Templates render their own "Page N" prefix; drop any the author typed.
     page_title: isCover ? slide.cover!.title : slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, ''),
     subtitle: slide.subtitle ?? '',
+    // The Instagram glyph for handle badges; families that want it read PAGE.brandIcon.
+    brandIcon: iconSvg('instagram'),
     kind: slide.kind ?? 'page',
     pageNum: slideIndex + 1,
     pageCount: post.slides.length,
