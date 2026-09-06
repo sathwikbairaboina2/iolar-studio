@@ -49,6 +49,12 @@
     tx.setAttribute('text-anchor', anchor || 'middle');
     tx.setAttribute('class', cls || 'fc-label');
     tx.setAttribute('fill', color || 'var(--ink-black)');
+    // A halo in the page's own paper colour: an edge label often sits on its connector, and
+    // without this the line runs straight through the text like a strike-through.
+    tx.setAttribute('stroke', getComputedStyle(ctx.svg).getPropertyValue('--paper').trim() || '#fff');
+    tx.setAttribute('stroke-width', '5');
+    tx.setAttribute('paint-order', 'stroke fill');
+    tx.setAttribute('stroke-linejoin', 'round');
     tx.textContent = text;
     ctx.svg.appendChild(tx);
   }
@@ -70,6 +76,7 @@
       var nodes = {};
       chart.querySelectorAll('.fc-node').forEach(function (n) { nodes[n.getAttribute('data-id')] = box(n, chart); });
       var labelsAt = {}; // labels already stacked above a target, so two never overlap
+      var pending = []; // labels to draw once every line is down
 
       edges.forEach(function (edge) {
         var a = nodes[edge.from], b = nodes[edge.to];
@@ -92,10 +99,11 @@
           } else {
             var ym = (y1 + y2) / 2;
             points = [[a.cx, y1], [a.cx, ym], [b.cx, ym], [b.cx, y2]];
-            // Label above the target's own drop, so two branches from one node never share a spot;
-            // a second label aimed at the same target stacks above the first.
+            // The label sits over the target's own drop, its baseline just clear of the crossbar —
+            // any lower and the crossbar runs through the text. A second label aimed at the same
+            // target stacks above the first.
             var n = (labelsAt[edge.to] = (labelsAt[edge.to] || 0) + 1);
-            lx = b.cx; ly = y2 - 6 - (n - 1) * 14;
+            lx = b.cx; ly = ym - 4 - (n - 1) * 14;
           }
         } else {
           // Back-edge: leave the bottom of a, run down the left margin, come in at b's side.
@@ -105,8 +113,11 @@
           lx = margin + 6; ly = (yd + b.cy) / 2; anchor = 'start';
         }
         line(ctx, points, { arrow: true });
-        if (edge.label) label(ctx, lx, ly, edge.label, 'fc-label', labelColor(edge.label), anchor);
+        // Labels wait until every line is down: drawn inline, the next edge's connector paints
+        // straight over the label before it and reads as a line struck through the text.
+        if (edge.label) pending.push([lx, ly, edge.label, anchor]);
       });
+      pending.forEach(function (l) { label(ctx, l[0], l[1], l[2], 'fc-label', labelColor(l[2]), l[3]); });
     });
   };
 

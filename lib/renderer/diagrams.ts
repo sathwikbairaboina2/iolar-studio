@@ -8,13 +8,16 @@ const ink = (name?: string) => `var(--ink-${name ?? 'blue'})`;
 const e = escapeHtml;
 
 function flow(spec: Extract<D, { kind: 'flow' }>['spec']): string {
+  const node = (n: Extract<D, { kind: 'flow' }>['spec']['nodes'][number]) => {
+    if (typeof n === 'string') return `<span class="dg-node" data-rough="${ink()}" data-jitter>${t(n)}</span>`;
+    const sub = n.sub ? `<div class="dg-sub">${t(n.sub)}</div>` : '';
+    return `<span class="dg-node dg-node-rich" data-rough="${ink(n.ink)}" data-jitter><div class="dg-title">${t(n.text)}</div>${sub}</span>`;
+  };
+  // Each arrow travels with the node it points at. Joining them the other way leaves an arrow
+  // pointing at nothing whenever the row wraps.
   const inner = spec.nodes
-    .map((n) => {
-      if (typeof n === 'string') return `<span class="dg-node" data-rough="${ink()}" data-jitter>${t(n)}</span>`;
-      const sub = n.sub ? `<div class="dg-sub">${t(n.sub)}</div>` : '';
-      return `<span class="dg-node dg-node-rich" data-rough="${ink(n.ink)}" data-jitter><div class="dg-title">${t(n.text)}</div>${sub}</span>`;
-    })
-    .join('<span class="dg-arrow">→</span>');
+    .map((n, i) => (i === 0 ? node(n) : `<span class="dg-link"><span class="dg-arrow">→</span>${node(n)}</span>`))
+    .join('');
   return `<div class="b-diagram"><div class="dg-flow">${inner}</div></div>`;
 }
 

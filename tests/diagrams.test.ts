@@ -4,6 +4,15 @@ import type { Block } from '@/lib/schema';
 
 type D = Extract<Block, { type: 'diagram' }>;
 
+describe('flow wrapping', () => {
+  it('pairs every arrow with the node it points at so a wrapped row cannot end in an arrow', () => {
+    const html = renderDiagram({ type: 'diagram', kind: 'flow', spec: { nodes: ['a', 'b', 'c'] } } as never);
+    expect(html.match(/dg-link/g)?.length).toBe(2);
+    expect(html).not.toMatch(/<\/span><span class="dg-arrow">→<\/span><span class="dg-node"/);
+    expect(html.indexOf('dg-arrow')).toBeLessThan(html.indexOf('>b<'));
+  });
+});
+
 describe('renderDiagram', () => {
   it('flow: string and object nodes, arrows between', () => {
     const h = renderDiagram({ type: 'diagram', kind: 'flow', spec: { nodes: ['a', { text: 'b', sub: 'why', ink: 'green' }] } } as D);
