@@ -40,7 +40,8 @@ export async function splitIntoFollowUp(
     series: `${post.series.replace(/ — PART \d+$/i, '')} — PART ${next}`,
     slides,
     caption: {
-      text: `Part ${next} of ${post.series.replace(/ — PART \d+$/i, '')}. ${post.caption.text}`.trim(),
+      // Strip the prefix an earlier spill added, or part 3 reads "Part 3 of X. Part 2 of X. …".
+      text: `Part ${next} of ${post.series.replace(/ — PART \d+$/i, '')}. ${post.caption.text.replace(/^(Part \d+ of [^.]+\.\s*)+/i, '')}`.trim(),
       hashtags: post.caption.hashtags,
     },
     spilledFrom: part,

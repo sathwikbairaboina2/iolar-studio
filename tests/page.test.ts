@@ -8,6 +8,12 @@ const base = {
 };
 
 describe('hero, subtitle and cover', () => {
+  it('strips planner-typed parens from the subtitle (templates add their own)', () => {
+    const post = validatePost({ ...base, slides: [{ page_title: 'IAM', subtitle: '(Identity, Access)', blocks: [{ type: 'heading', text: 'x' }] }] });
+    const html = buildSlideHtml(post, 0);
+    expect(html).toContain('"subtitle":"Identity, Access"');
+  });
+
   it('injects the hero logo into the page chrome and passes the subtitle', () => {
     const post = validatePost({ ...base, slides: [{ page_title: 'IAM', hero: 'iam', subtitle: 'Identity', blocks: [{ type: 'heading', text: 'x' }] }] });
     const html = buildSlideHtml(post, 0);

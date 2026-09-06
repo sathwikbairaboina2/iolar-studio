@@ -66,6 +66,16 @@ async function renderWhole(subject: string, chapter: string, part: number, spill
 /** Golden rule: pages must use their space. Pages under this fill (except the last) get densified. */
 const POLISH_MIN_FILL = 85;
 
+/** Re-enters this route for a follow-up part with polish on; returns its polish notes prefixed by part. */
+async function polishChain(req: Request, subject: string, chapter: string, part: number): Promise<string[]> {
+  const url = new URL(req.url);
+  url.pathname = url.pathname.replace(/\/parts\/\d+\/render$/, `/parts/${part}/render`);
+  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ polish: true }) });
+  if (!res.ok) return [`part ${part}: polish failed (${res.status})`];
+  const body = (await res.json()) as { polish?: string[] };
+  return (body.polish ?? []).map((p) => `part ${part}: ${p}`);
+}
+
 export async function POST(req: Request, ctx: Ctx) {
   const { subject, chapter, part: partParam } = await ctx.params;
   const part = Number(partParam);
@@ -110,6 +120,12 @@ export async function POST(req: Request, ctx: Ctx) {
           polish.push('continuation titles rewritten');
         }
         await writeReport(subject, chapter, part, results);
+        // A spill during this render minted a follow-up part; polish it the same way so the
+        // whole chain (every part, every "(cont.)" title) comes out finished from one click.
+        if (followUp && body.polishFollowUps !== false) {
+          const chain = await polishChain(req, subject, chapter, followUp.part);
+          polish.push(...chain);
+        }
         return NextResponse.json({ results, slides: results.length, split, followUp, polish });
       }
     }

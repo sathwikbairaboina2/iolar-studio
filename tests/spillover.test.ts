@@ -60,6 +60,18 @@ describe('splitIntoFollowUp', () => {
     expect((await loadPost('s', 'c', 2)).slides.map((x) => x.page_title)).toEqual(['P11', 'P12', 'P13']);
   });
 
+  it('does not stack part prefixes on the caption when a follow-up spills again', async () => {
+    const { createSubject, createChapter, createPart, loadPost } = await import('@/lib/store');
+    const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
+    await createSubject('s', { name: 'S' });
+    await createChapter('s', 'c', 'C');
+    await createPart('s', 'c', 1, { ...post(25), caption: { text: 'Hook.', hashtags: [] } } as never);
+    await splitIntoFollowUp('s', 'c', 1); // part 2 holds 15
+    await splitIntoFollowUp('s', 'c', 2); // part 3 holds 5
+    expect((await loadPost('s', 'c', 2)).caption.text).toBe('Part 2 of S. Hook.');
+    expect((await loadPost('s', 'c', 3)).caption.text).toBe('Part 3 of S. Hook.');
+  });
+
   it('never overwrites a part the user planned themselves', async () => {
     const { createSubject, createChapter, createPart, listParts } = await import('@/lib/store');
     const { splitIntoFollowUp } = await import('@/lib/ai/spillover');

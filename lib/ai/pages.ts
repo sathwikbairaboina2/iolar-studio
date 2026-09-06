@@ -20,7 +20,8 @@ export const SLIDE_SHAPE = `Return ONLY ONE Slide object for THIS chapter (not a
 {"page_title":string,"subtitle"?:string,"hero"?:IconName,"blocks":[Block,...]}
 or, for a cover chapter:
 {"kind":"cover","page_title":string,"hero"?:IconName,"blocks":[],"cover":{"title":string,"subtitle"?:string,"tagline"?:string,"icons"?:[{"icon":IconName,"label":string,"sub"?:string}],"pills"?:[string]}}
-Ignore the post envelope and slide-count rules in the vocabulary below; the block vocabulary, inline markup, icons, per-block ceilings and the PER-SLIDE TARGET all apply to this one page.`;
+Ignore the post envelope and slide-count rules in the vocabulary below; the block vocabulary, inline markup, icons and per-block ceilings apply to this one page.
+ONE PAGE ONLY: this chapter must fit one handwritten page. With an icon-card strip or a flowchart on the page, write 8-11 blocks; with text, tables and code only, 12-16. Never write more than a page; a second page is a separate chapter.`;
 
 export type PriorPage = { index: number; title: string; taught: string[] };
 
