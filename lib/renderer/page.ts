@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { Post, RATIOS } from '../schema';
 import type { Frame } from '../schema';
@@ -30,6 +30,16 @@ export function builtTemplates(): string[] {
   );
 }
 
+/** Newest mtime under templates/_shared: appended to script/style URLs so a long-lived Chromium never serves a stale file. */
+function assetStamp(): string {
+  const dir = path.join(templatesRoot(), '_shared');
+  let newest = 0;
+  for (const f of readdirSync(dir)) {
+    try { newest = Math.max(newest, statSync(path.join(dir, f)).mtimeMs); } catch { /* ignore */ }
+  }
+  return String(Math.round(newest));
+}
+
 export function buildSlideHtml(post: Post, slideIndex: number): string {
   const slide = post.slides[slideIndex];
   const [width, height] = RATIOS[post.ratio];
@@ -39,9 +49,10 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
   const columns = manifest.maxColumns ?? 2;
   const columnGap = manifest.columnGap ?? '2.2vw';
 
+  const v = assetStamp();
   const head =
-    `<link rel="stylesheet" href="../_shared/fonts.css">` +
-    `<link rel="stylesheet" href="../_shared/base.css">` +
+    `<link rel="stylesheet" href="../_shared/fonts.css?v=${v}">` +
+    `<link rel="stylesheet" href="../_shared/base.css?v=${v}">` +
     `<style>#content{--pk-cols:${columns};--pk-col-gap:${columnGap}}</style>`;
 
   const pageTitle = slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, '').replace(/ \(cont\.\)$/, '');
@@ -75,6 +86,7 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
   })};</script>`;
 
   return tpl
+    .replace(/src="\.\.\/_shared\/([a-z.]+\.js)"/g, `src="../_shared/$1?v=${v}"`)
     .replace('<!--HEAD-->', head)
     .replace('<!--CONTENT-->', content)
     .replace('<!--PAGEVARS-->', pageVars)

@@ -9,10 +9,10 @@ function mulberry32(seed) {
   };
 }
 
-window.applyJitter = function (seed) {
-  const r = mulberry32(seed);
-
-  document.querySelectorAll('[data-jitter]').forEach((el) => {
+// Wraps every character of a [data-jitter] element in its own inline-block span (words stay
+// unbreakable). `r` is the seeded RNG for rotation; null wraps without transforms — used by
+// the layout measurer so measured heights match the jittered page exactly.
+window.wrapForJitter = function (el, r) {
     const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
       acceptNode: (n) => (n.parentElement && n.parentElement.closest('mark.hl') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
     });
@@ -40,7 +40,7 @@ window.applyJitter = function (seed) {
             s.style.textDecoration = deco;
             s.style.textUnderlineOffset = cs.textUnderlineOffset;
           }
-          s.style.transform =
+          if (r) s.style.transform =
             'rotate(' + ((r() * 2 - 1) * 1.6).toFixed(2) + 'deg) translateY(' + ((r() * 2 - 1) * 0.8).toFixed(2) + 'px)';
           word.append(s);
         }
@@ -48,13 +48,21 @@ window.applyJitter = function (seed) {
       }
       n.replaceWith(frag);
     });
-  });
+};
+
+window.applyJitter = function (seed) {
+  const r = mulberry32(seed);
+
+  document.querySelectorAll('[data-jitter]').forEach((el) => window.wrapForJitter(el, r));
 
   // Sticky notes lean a little. Drawn from the same stream, after character jitter and before
   // rough frames, so a page without stickies keeps its exact pixels.
   document.querySelectorAll('.co-sticky').forEach((el) => {
     el.style.transform = 'rotate(' + ((r() * 2 - 1) * 2).toFixed(2) + 'deg)';
   });
+
+  // Text may have grown a line: re-stack the columns before frames are measured.
+  if (window.reflowLayout) window.reflowLayout();
 
   document.querySelectorAll('[data-rough]').forEach((el) => {
     const rect = el.getBoundingClientRect();

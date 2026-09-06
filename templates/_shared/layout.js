@@ -14,8 +14,10 @@
       var clone = u.el.cloneNode(true);
       clone.classList.remove('span-half', 'span-full');
       clone.style.gridColumn = '';
-      clone.style.display = 'block';
+      clone.style.display = 'flow-root'; // same as the placed unit, so child margins count in both
       probe.appendChild(clone);
+      // Measure the text the way it will be drawn: jitter wraps characters and text grows a little.
+      if (window.wrapForJitter) clone.querySelectorAll('[data-jitter]').forEach(function (j) { window.wrapForJitter(j, null); });
 
       probe.style.width = width + 'px';
       u.fullH = clone.getBoundingClientRect().height;
@@ -25,6 +27,29 @@
 
     probe.parentNode.removeChild(probe);
   }
+
+  window.reflowLayout = function () {
+    var placed = window.__placed, meta = window.__layoutMeta, container = document.getElementById('content');
+    if (!placed || !meta || !container) return;
+    var colY = [];
+    for (var c = 0; c < meta.columns; c++) colY.push(0);
+    var used = 0;
+    for (var i = 0; i < placed.length; i++) {
+      var item = placed[i], el = item.unit.el;
+      var h = el.offsetHeight;
+      var top = 0;
+      if (item.span === 'full') { for (var a = 0; a < meta.columns; a++) if (colY[a] > top) top = colY[a]; }
+      else top = colY[item.col];
+      var y = top + (top > 0 ? meta.rowGapPx : 0);
+      el.style.top = y + 'px';
+      if (item.span === 'full') { for (var d = 0; d < meta.columns; d++) colY[d] = y + h; }
+      else colY[item.col] = y + h;
+      if (y + h > used) used = y + h;
+    }
+    container.style.height = Math.round(used) + 'px';
+    if (window.LAYOUT) window.LAYOUT.usedPx = Math.round(used);
+    if (window.drawDiagramOverlays) window.drawDiagramOverlays(document);
+  };
 
   window.applyLayout = function (opts) {
     opts = opts || {};
@@ -96,7 +121,8 @@
 
     // Fill each column to capacity and let the remainder spill forward. Content is never
     // trimmed and never spread thin: a full page beats two half-empty ones.
-    var packed = window.packUnits(units, { columns: columns, pageHeight: usable, rowGap: rowGapPx });
+    // A few pixels of slack: rough frames and sub-pixel rounding after jitter must never spill over.
+    var packed = window.packUnits(units, { columns: columns, pageHeight: usable - 8, rowGap: rowGapPx });
 
     var spillIndexes = [];
     for (var s = 0; s < packed.spill.length; s++) {
@@ -124,6 +150,11 @@
     }
     container.style.height = Math.round(packed.usedPx) + 'px';
     var used = packed.usedPx;
+
+    // Jitter wraps characters in spans and text can reflow a line taller than measured.
+    // reflowLayout re-stacks every column from the real heights, same order, same columns.
+    window.__placed = packed.placed;
+    window.__layoutMeta = { columns: columns, rowGapPx: rowGapPx };
 
     if (window.drawDiagramOverlays) window.drawDiagramOverlays(document);
     else if (window.drawFlowchartEdges) window.drawFlowchartEdges(document);

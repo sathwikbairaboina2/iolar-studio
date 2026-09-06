@@ -143,7 +143,7 @@ export function forcesFullWidth(block: Block): boolean {
   if (block.type === 'table') {
     // Five columns always need the width; four do only when a cell is long enough to wrap badly.
     const longest = Math.max(...block.headers.map((h) => h.length), ...block.rows.flat().map((c) => c.length));
-    return block.headers.length >= 5 || (block.headers.length === 4 && longest > 12);
+    return block.headers.length >= 5 || (block.headers.length === 4 && longest > 12) || (block.headers.length === 3 && longest > 18);
   }
   if (block.type === 'code') return longestLine(block.lines) > CODE_FULL_AT;
   if (block.type === 'diagram') {
