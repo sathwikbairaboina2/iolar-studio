@@ -33,6 +33,39 @@ async function writeReport(
 
 export const maxDuration = 900;
 
+type Results = { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[];
+
+/** Render every page of a part, reflow, spill past the carousel limit, drop stale PNGs. */
+async function renderWhole(subject: string, chapter: string, part: number, spill: boolean) {
+  const post = await loadPost(subject, chapter, part);
+  const outDir = rendersDir(subject, chapter, part);
+  const out = await renderAll(post, outDir);
+  let results: Results = out.results;
+  let split = false;
+  let followUp: { moved: number; part: number } | null = null;
+  if (out.slides.length !== post.slides.length) {
+    await savePost(subject, chapter, part, { ...post, slides: out.slides });
+    split = true;
+  }
+  // Content is never trimmed: pages past the carousel limit become the next part.
+  if (spill && out.slides.length > MAX_SLIDES) {
+    const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
+    followUp = await splitIntoFollowUp(subject, chapter, part);
+    if (followUp) {
+      const trimmed = await loadPost(subject, chapter, part);
+      results = (await renderAll(trimmed, outDir)).results;
+    }
+  }
+  for (const f of await fs.readdir(outDir)) {
+    const n = Number(f.match(/^slide-(\d+)\.png$/)?.[1] ?? 0);
+    if (n > results.length) await fs.unlink(path.join(outDir, f)).catch(() => {});
+  }
+  return { results, split, followUp };
+}
+
+/** Golden rule: pages must use their space. Pages under this fill (except the last) get densified. */
+const POLISH_MIN_FILL = 85;
+
 export async function POST(req: Request, ctx: Ctx) {
   const { subject, chapter, part: partParam } = await ctx.params;
   const part = Number(partParam);
@@ -41,7 +74,7 @@ export async function POST(req: Request, ctx: Ctx) {
     const post = await loadPost(subject, chapter, part);
     const outDir = rendersDir(subject, chapter, part);
 
-    let results;
+    let results: Results;
     let split = false;
     let followUp: { moved: number; part: number } | null = null;
 
@@ -54,25 +87,30 @@ export async function POST(req: Request, ctx: Ctx) {
       const r = await renderSlide(post, i, file);
       results = [{ slide: body.slide, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings }];
     } else {
-      const out = await renderAll(post, outDir);
-      results = out.results;
-      if (out.slides.length !== post.slides.length) {
-        await savePost(subject, chapter, part, { ...post, slides: out.slides });
-        split = true;
-      }
-      // Content is never trimmed: pages past the carousel limit become the next part.
-      if (body.spillToFollowUp !== false && out.slides.length > MAX_SLIDES) {
-        const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
-        followUp = await splitIntoFollowUp(subject, chapter, part);
-        if (followUp) {
-          const trimmed = await loadPost(subject, chapter, part);
-          const rerun = await renderAll(trimmed, outDir);
-          results = rerun.results;
-          for (const f of await fs.readdir(outDir)) {
-            const n = Number(f.match(/^slide-(\d+)\.png$/)?.[1] ?? 0);
-            if (n > results.length) await fs.unlink(path.join(outDir, f)).catch(() => {});
-          }
+      ({ results, split, followUp } = await renderWhole(subject, chapter, part, body.spillToFollowUp !== false));
+
+      // Opt-in polish: densify the pages that came out thin, then rename any "(cont.)" pages.
+      // Each step is an AI proposal applied and re-rendered; the golden rule is checked by pixels.
+      if (body.polish) {
+        const polish: string[] = [];
+        const under = results
+          .filter((r, i) => i < results.length - 1 && r.fillPct < POLISH_MIN_FILL)
+          .map((r) => ({ slide: r.slide, fillPct: r.fillPct }));
+        if (under.length) {
+          const { densifySlides } = await import('@/lib/ai/plan');
+          await savePost(subject, chapter, part, await densifySlides(subject, chapter, part, under));
+          ({ results, split, followUp } = await renderWhole(subject, chapter, part, body.spillToFollowUp !== false));
+          polish.push(`densified ${under.length} page(s)`);
         }
+        const now = await loadPost(subject, chapter, part);
+        if (now.slides.some((s) => / \(cont\.\)$/.test(s.page_title))) {
+          const { fixHeadings } = await import('@/lib/ai/headings');
+          await savePost(subject, chapter, part, await fixHeadings(subject, chapter, part));
+          ({ results } = await renderWhole(subject, chapter, part, false));
+          polish.push('continuation titles rewritten');
+        }
+        await writeReport(subject, chapter, part, results);
+        return NextResponse.json({ results, slides: results.length, split, followUp, polish });
       }
     }
 

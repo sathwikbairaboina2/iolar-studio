@@ -66,7 +66,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     saveTimer.current = setTimeout(() => save(p), 800);
   }, [save]);
 
-  const render = async (which?: number) => {
+  const render = async (which?: number, polish = false) => {
     if (!post) return;
     setRendering(true);
     if (dirty) await save(post);
@@ -74,7 +74,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(which !== undefined ? { slide: which } : {}),
+        body: JSON.stringify(which !== undefined ? { slide: which } : polish ? { polish: true } : {}),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error);
@@ -87,6 +87,8 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       setOverflow(ovf);
       setFill(fl);
       setVersion(Date.now());
+      if (Array.isArray(body.polish) && body.polish.length) message.success(`Polished: ${body.polish.join(', ')}`);
+      else if (polish) message.info('Every page already full; nothing to polish');
       if (body.split) {
         const fresh = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((r) => r.json());
         setPost(fresh);
@@ -176,6 +178,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
         )}
         <Button icon={<PictureOutlined />} onClick={() => render(slide + 1)} loading={rendering}>Render slide</Button>
         <Button icon={<ThunderboltOutlined />} onClick={() => render()} loading={rendering}>Render all</Button>
+        <Button icon={<ThunderboltOutlined />} onClick={() => render(undefined, true)} loading={rendering} title="Render, densify pages under 85%, rename continuation pages, render again">Render &amp; polish</Button>
         <BookPanel subject={subject} chapter={chapter} part={part} onSlidesPlanned={reloadAndRender} />
         <ReferencePanel
           subject={subject}

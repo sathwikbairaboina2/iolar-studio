@@ -1,5 +1,5 @@
 'use client';
-import { Button, Dropdown, Input } from 'antd';
+import { Button, Dropdown, Input, Space, Switch } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Block, Slide } from '@/lib/schema';
 import BlockForm from './BlockForm';
@@ -39,8 +39,57 @@ export default function BlockEditor({
         addonBefore="Page title"
         value={slide.page_title}
         onChange={(e) => onChange({ ...slide, page_title: e.target.value })}
-        style={{ marginBottom: 12 }}
+        style={{ marginBottom: 8 }}
       />
+      <Space style={{ marginBottom: 8, width: '100%' }} styles={{ item: { flex: 1 } }}>
+        <Input
+          addonBefore="Subtitle"
+          placeholder="(Identity and Access Management)"
+          value={slide.subtitle ?? ''}
+          onChange={(e) => onChange({ ...slide, subtitle: e.target.value || undefined })}
+        />
+        <Input
+          addonBefore="Hero icon"
+          placeholder="aws, iam, docker, database…"
+          value={slide.hero ?? ''}
+          onChange={(e) => onChange({ ...slide, hero: e.target.value || undefined })}
+        />
+      </Space>
+      <Space style={{ marginBottom: 12 }}>
+        <Switch
+          checked={slide.kind === 'cover'}
+          onChange={(on) =>
+            onChange(
+              on
+                ? { ...slide, kind: 'cover', cover: slide.cover ?? { title: slide.page_title, icons: [], pills: [] } }
+                : { ...slide, kind: undefined, cover: undefined, blocks: slide.blocks.length ? slide.blocks : [structuredClone(NEW_BLOCK.heading)] }
+            )
+          }
+        />
+        <span style={{ fontSize: 12 }}>Cover page</span>
+      </Space>
+      {slide.kind === 'cover' && slide.cover && (
+        <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
+          <Input addonBefore="Cover title" value={slide.cover.title} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, title: e.target.value } })} />
+          <Input addonBefore="Cover subtitle" value={slide.cover.subtitle ?? ''} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, subtitle: e.target.value || undefined } })} />
+          <Input addonBefore="Tagline" value={slide.cover.tagline ?? ''} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, tagline: e.target.value || undefined } })} />
+          <Input
+            addonBefore="Pills"
+            placeholder="EC2, S3, RDS"
+            value={slide.cover.pills.join(', ')}
+            onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, pills: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) } })}
+          />
+          <Input.TextArea
+            rows={2}
+            defaultValue={JSON.stringify(slide.cover.icons)}
+            placeholder='[{"icon":"ec2","label":"Compute","sub":"EC2, Lambda"}]'
+            style={{ fontFamily: 'monospace' }}
+            onBlur={(e) => {
+              try { onChange({ ...slide, cover: { ...slide.cover!, icons: JSON.parse(e.target.value) } }); } catch { /* keep old icons on bad JSON */ }
+            }}
+          />
+        </div>
+      )}
       {slide.blocks.map((b, i) => (
         <BlockForm
           key={i}
