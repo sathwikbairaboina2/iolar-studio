@@ -420,3 +420,35 @@ boxes, schema/table diagrams, comparison table, quick-notes cloud).
 
 Editor forms for the new fields; hand-drawn roughening of logo SVGs (they render clean, as the
 reference's logos do); Windows/Azure/Oracle marks (not in any package).
+
+## 15. Addendum: the planner keeps up (6 Sep, evening)
+
+The renderer grew faster than the prompts. Audit and fixes:
+
+- **One rules module.** `lib/ai/rules.ts` holds `SCHEMA_RULES`, `RECIPE_GUIDANCE` and
+  `PRESERVE_RULE`; plan, densify, fit, headings and revise all import it. Revise used to list
+  the nine original block types and fit sent no rules at all, so either could silently drop
+  `hero`, `icon`, `frame`, `style` or a diagram spec. The preserve rule names every such field.
+- **Coverage reads diagrams.** `postText()` in `fit.ts` flattens every string in a diagram spec,
+  so a point taught in cards, a chain, a schema or an ER diagram is no longer "dropped".
+- **Family recipes.** Every manifest carries a `recipe` paragraph; `familyRecipe(template)` puts
+  it in the slide prompt as `FAMILY "<name>": …`. The planner now knows study-sheet frames every
+  section, sketchnote wants a hero and icon cards, marker-notes wants pink example boxes.
+- **Reference layouts are hints.** The prompt asks for the reference page's density and section
+  order but lets the model pick the best block per point (array, cards, schema, flowchart).
+- **Topic mode has a shape.** The book stage gives each chapter a `shape` (ordered section roles:
+  definition, mechanism, example, comparison, mistakes, summary, cheatsheet, cover); the slide
+  prompt builds a page from it when there is no layout. The studio's Book drawer gained a
+  "Build from topic" entry.
+- **Refusals and warnings.** Reference reading passes `needsTools`, so the local model refuses
+  instead of hallucinating pages it cannot see. The render report lists icon names that resolve
+  to nothing (markers, card and node icons, hero, cover).
+- **Editor.** The add-block menu offers a starter for every diagram kind and a sticky. Settings
+  picks the default template from the built families.
+- **Spillover merges.** A re-spill from part N into its own follow-up keeps the chapters the
+  follow-up already held that N no longer covers (an overwrite lost nine AWS pages once).
+
+Still open: per-page planning (one prompt per chapter with a running summary, which also makes
+the 32k-context local model viable), an automatic densify/headings pass after render for pages
+under ~85% and "(cont.)" titles, editor forms for cover/hero/subtitle, and documenting that the
+reference downloader needs the media server on port 3000.
