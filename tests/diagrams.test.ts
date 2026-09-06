@@ -72,3 +72,63 @@ describe('renderDiagram', () => {
     expect(h).toContain('&lt;b&gt;');
   });
 });
+
+describe('set 2/3 diagram kinds', () => {
+  it('chain: title, boxes with notes, arrows between', () => {
+    const h = renderDiagram({ type: 'diagram', kind: 'chain', spec: { title: 'Key hierarchy', steps: [{ text: 'Super Key', note: 'any set' }, { text: 'Candidate Key', note: 'minimal', ink: 'orange' }] } } as D);
+    expect(h).toContain('dg-chain');
+    expect(h).toContain('ch-title');
+    expect((h.match(/ch-box/g) ?? []).length).toBe(2);
+    expect((h.match(/ch-arrow/g) ?? []).length).toBe(1);
+    expect(h).toContain('var(--ink-orange)');
+  });
+  it('tables: side-by-side tables with captions and an arrow', () => {
+    const h = renderDiagram({ type: 'diagram', kind: 'tables', spec: { arrow: true, tables: [{ title: 'Before', headers: ['a'], rows: [['1']], caption: 'not 1NF' }, { title: 'After', headers: ['a', 'b'], rows: [['1', '2']] }] } } as D);
+    expect(h).toContain('dg-tables');
+    expect((h.match(/class="tb"/g) ?? []).length).toBe(2);
+    expect(h).toContain('tb-arrow');
+    expect(h).toContain('not 1NF');
+  });
+  it('schema: table boxes and a link list for the browser', () => {
+    const h = renderDiagram({ type: 'diagram', kind: 'schema', spec: { tables: [{ name: 'DEPARTMENT', columns: ['ID (PK)', 'Dept_Name'] }, { name: 'STUDENT', columns: ['Roll_No (PK)', 'Dept_ID (FK)'] }], links: [{ from: 'DEPARTMENT', to: 'STUDENT', fromLabel: '1', toLabel: 'N', arrow: true }] } } as D);
+    expect(h).toContain('dg-schema');
+    expect((h.match(/sc-table/g) ?? []).length).toBe(2);
+    expect(h).toContain('data-id="DEPARTMENT"');
+    expect(h).toContain('sc-links');
+    expect(h).toContain('&quot;fromLabel&quot;:&quot;1&quot;');
+  });
+  it('er: entities with attribute ovals, key underlined, a diamond between neighbours', () => {
+    const h = renderDiagram({ type: 'diagram', kind: 'er', spec: { entities: [{ name: 'STUDENT', attrs: ['Roll_No', 'Name', 'Email'], key: 'Roll_No' }, { name: 'COURSE', attrs: ['Course_ID', 'Title'], key: 'Course_ID' }], relations: [{ from: 'STUDENT', to: 'COURSE', name: 'ENROLLS', labels: ['M', 'N'] }] } } as D);
+    expect(h).toContain('dg-er');
+    expect((h.match(/er-ent"/g) ?? []).length).toBe(2);
+    expect((h.match(/er-attr /g) ?? []).length + (h.match(/er-attr"/g) ?? []).length).toBe(5);
+    expect(h).toContain('er-key');
+    expect(h).toContain('er-rel');
+    expect(h).toContain('data-rough-shape="diamond"');
+    expect(h).toContain('er-lines');
+  });
+  it('flowchart: title box, icon nodes and icons inside boxes', () => {
+    const h = renderDiagram({ type: 'diagram', kind: 'flowchart', spec: { title: 'RDS Architecture', rows: [['app', 'rds'], ['r1']], nodes: { app: { text: 'Application', shape: 'icon', icon: 'laptop' }, rds: { text: 'RDS', shape: 'box', icon: 'rds' }, r1: { text: 'Read Replica', shape: 'icon', icon: 'database' } }, edges: [{ from: 'app', to: 'rds' }, { from: 'rds', to: 'r1' }] } } as D);
+    expect(h).toContain('dg-titled');
+    expect(h).toContain('fc-title');
+    expect((h.match(/fc-icon/g) ?? []).length).toBe(2);
+    expect(h).toContain('fc-node-icon');
+    expect(h.toLowerCase()).toContain('#c925d1'.toLowerCase().slice(0, 1));
+  });
+  it('cards: icon, text, code and chain bodies, up to six', () => {
+    const h = renderDiagram({ type: 'diagram', kind: 'cards', spec: { cards: [
+      { title: 'Users', icon: 'user', text: 'An individual identity' },
+      { title: 'DDL', code: ['CREATE TABLE Student (', '  id INT', ');'] },
+      { title: '2-Tier', chain: ['Client', 'Database Server'] },
+      { title: 'Roles', icon: 'ec2', lines: ['assume'] },
+      { title: 'E', lines: ['x'] }, { title: 'F', lines: ['y'] },
+    ] } } as D);
+    expect(h).toContain('--card-cols:6');
+    expect(h).toContain('card-icon');
+    expect(h).toContain('card-text');
+    expect(h).toContain('card-code');
+    expect((h.match(/cc-box/g) ?? []).length).toBe(2);
+    expect(h).toContain('cc-arrow');
+    expect(h).toContain('ic-aws');
+  });
+});

@@ -116,7 +116,8 @@
     container.style.height = Math.round(packed.usedPx) + 'px';
     var used = packed.usedPx;
 
-    if (window.drawFlowchartEdges) window.drawFlowchartEdges(document);
+    if (window.drawDiagramOverlays) window.drawDiagramOverlays(document);
+    else if (window.drawFlowchartEdges) window.drawFlowchartEdges(document);
 
     window.LAYOUT = {
       spillIndexes: spillIndexes,

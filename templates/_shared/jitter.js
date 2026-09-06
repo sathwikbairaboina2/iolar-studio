@@ -85,7 +85,7 @@ window.applyJitter = function (seed) {
     }
     if (shape === 'cloud') {
       // Scalloped thought cloud: bumps around the box, drawn as one rough path.
-      var pad = 6, bump = Math.max(14, Math.min(26, h / 3));
+      var pad = 3, bump = Math.max(12, Math.min(20, h / 4));
       var x0 = 2 - pad, y0 = 2 - pad, x1 = 2 + w + pad, y1 = 2 + h + pad;
       var d = 'M ' + x0 + ' ' + (y0 + bump / 2);
       for (var x = x0; x < x1 - bump / 2; x += bump) d += ' A ' + (bump / 2) + ' ' + (bump / 2) + ' 0 0 1 ' + Math.min(x + bump, x1) + ' ' + y0;

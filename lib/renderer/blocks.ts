@@ -144,11 +144,13 @@ export function forcesFullWidth(block: Block): boolean {
   if (block.type === 'diagram') {
     switch (block.kind) {
       // A flowchart is a narrow column and an array up to ten cells fits beside other content.
-      case 'cards': return true;
-      case 'flowchart': return false;
+      case 'cards': case 'er': return true;
+      case 'flowchart': case 'chain': return false;
       case 'array': return block.spec.cells.length > 10;
       case 'flow': return block.spec.nodes.length >= 4;
       case 'matrix': return block.spec.rows.some((r) => r.length > 4);
+      case 'tables': return block.spec.tables.length > 2 || block.spec.tables.reduce((n, t) => n + t.headers.length, 0) > 6;
+      case 'schema': return block.spec.tables.length > 2;
     }
   }
   return false;

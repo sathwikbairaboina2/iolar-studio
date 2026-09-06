@@ -200,3 +200,17 @@ describe('set 2/3 primitives', () => {
     expect(h).toContain('var(--ink-pink)');
   });
 });
+
+describe('tables and schema widths', () => {
+  const dg = (kind: string, spec: unknown) => ({ type: 'diagram', kind, spec }) as Block;
+  it('tables go full past two tables or six columns; schema past two tables; chain never; er always', () => {
+    const tb = (n: number) => ({ headers: Array.from({ length: n }, (_, i) => `c${i}`), rows: [['1']] });
+    expect(forcesFullWidth(dg('tables', { tables: [tb(2), tb(2)], arrow: false }))).toBe(false);
+    expect(forcesFullWidth(dg('tables', { tables: [tb(2), tb(2), tb(2)], arrow: false }))).toBe(true);
+    expect(forcesFullWidth(dg('tables', { tables: [tb(4), tb(3)], arrow: false }))).toBe(true);
+    expect(forcesFullWidth(dg('schema', { tables: [{ name: 'a', columns: ['x'] }, { name: 'b', columns: ['y'] }], links: [] }))).toBe(false);
+    expect(forcesFullWidth(dg('schema', { tables: [{ name: 'a', columns: ['x'] }, { name: 'b', columns: ['y'] }, { name: 'c', columns: ['z'] }], links: [] }))).toBe(true);
+    expect(forcesFullWidth(dg('chain', { steps: [{ text: 'a' }] }))).toBe(false);
+    expect(forcesFullWidth(dg('er', { entities: [{ name: 'a', attrs: [] }], relations: [] }))).toBe(true);
+  });
+});

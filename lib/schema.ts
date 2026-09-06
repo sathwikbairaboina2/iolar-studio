@@ -17,7 +17,7 @@ export const TEMPLATES = [
 export const INKS = ['blue', 'red', 'green', 'black', 'accent', 'purple', 'orange', 'pink'] as const;
 export const FRAMES = ['none', 'solid', 'dashed'] as const;
 export const BULLET_STYLES = ['dot', 'number', 'check', 'cross', 'checkbox', 'star'] as const;
-export const DIAGRAM_KINDS = ['flow', 'array', 'flowchart', 'matrix', 'cards'] as const;
+export const DIAGRAM_KINDS = ['flow', 'array', 'flowchart', 'matrix', 'cards', 'chain', 'tables', 'schema', 'er'] as const;
 
 const Ink = z.enum(INKS);
 const Frame = z.enum(FRAMES);
@@ -39,8 +39,9 @@ export const DiagramSpecs = {
   }),
   flowchart: z
     .object({
-      rows: z.array(z.array(z.string().min(1)).min(1).max(3)).min(2).max(7),
-      nodes: z.record(z.string(), z.object({ text: z.string().min(1), shape: z.enum(['box', 'diamond', 'pill']).default('box'), ink: Ink.optional() })),
+      title: z.string().optional(),
+      rows: z.array(z.array(z.string().min(1)).min(1).max(4)).min(1).max(7),
+      nodes: z.record(z.string(), z.object({ text: z.string().min(1), shape: z.enum(['box', 'diamond', 'pill', 'icon']).default('box'), icon: z.string().optional(), ink: Ink.optional() })),
       edges: z.array(z.object({ from: z.string(), to: z.string(), label: z.string().optional() })),
     })
     .superRefine((s, ctx) => {
@@ -55,8 +56,47 @@ export const DiagramSpecs = {
     caption: z.string().optional(),
   }),
   cards: z.object({
-    cards: z.array(z.object({ title: z.string().min(1), lines: z.array(z.string()).min(1), ink: Ink.optional() })).min(2).max(4),
+    cards: z
+      .array(
+        z.object({
+          title: z.string().min(1),
+          lines: z.array(z.string()).default([]),
+          text: z.string().optional(),
+          code: z.array(z.string()).optional(),
+          chain: z.array(z.string().min(1)).optional(),
+          icon: z.string().optional(),
+          ink: Ink.optional(),
+        })
+      )
+      .min(2)
+      .max(6),
   }),
+  chain: z.object({
+    title: z.string().optional(),
+    steps: z.array(z.object({ text: z.string().min(1), note: z.string().optional(), ink: Ink.optional() })).min(1).max(8),
+  }),
+  tables: z.object({
+    tables: z.array(z.object({ title: z.string().optional(), headers: z.array(z.string()).min(1), rows: z.array(z.array(z.string())).min(1), caption: z.string().optional() })).min(1).max(3),
+    arrow: z.boolean().default(false),
+  }),
+  schema: z
+    .object({
+      tables: z.array(z.object({ name: z.string().min(1), columns: z.array(z.string().min(1)).min(1) })).min(1).max(4),
+      links: z.array(z.object({ from: z.string(), to: z.string(), fromLabel: z.string().optional(), toLabel: z.string().optional(), arrow: z.boolean().default(false) })).default([]),
+    })
+    .superRefine((s, ctx) => {
+      const names = new Set(s.tables.map((t) => t.name));
+      for (const l of s.links) for (const id of [l.from, l.to]) if (!names.has(id)) ctx.addIssue({ code: 'custom', message: `schema: link references unknown table "${id}"` });
+    }),
+  er: z
+    .object({
+      entities: z.array(z.object({ name: z.string().min(1), attrs: z.array(z.string()).default([]), key: z.string().optional() })).min(1).max(3),
+      relations: z.array(z.object({ from: z.string(), to: z.string(), name: z.string().min(1), labels: z.tuple([z.string(), z.string()]).optional() })).default([]),
+    })
+    .superRefine((s, ctx) => {
+      const names = new Set(s.entities.map((e) => e.name));
+      for (const r of s.relations) for (const id of [r.from, r.to]) if (!names.has(id)) ctx.addIssue({ code: 'custom', message: `er: relation references unknown entity "${id}"` });
+    }),
 } as const;
 
 export type DiagramSpec = { [K in keyof typeof DiagramSpecs]: { kind: K; spec: z.infer<(typeof DiagramSpecs)[K]> } }[keyof typeof DiagramSpecs];
@@ -67,6 +107,10 @@ const DiagramSchema = z.discriminatedUnion('kind', [
   z.object({ type: z.literal('diagram'), kind: z.literal('flowchart'), spec: DiagramSpecs.flowchart }),
   z.object({ type: z.literal('diagram'), kind: z.literal('matrix'), spec: DiagramSpecs.matrix }),
   z.object({ type: z.literal('diagram'), kind: z.literal('cards'), spec: DiagramSpecs.cards }),
+  z.object({ type: z.literal('diagram'), kind: z.literal('chain'), spec: DiagramSpecs.chain }),
+  z.object({ type: z.literal('diagram'), kind: z.literal('tables'), spec: DiagramSpecs.tables }),
+  z.object({ type: z.literal('diagram'), kind: z.literal('schema'), spec: DiagramSpecs.schema }),
+  z.object({ type: z.literal('diagram'), kind: z.literal('er'), spec: DiagramSpecs.er }),
 ]);
 
 const BlockSchema = z.union([

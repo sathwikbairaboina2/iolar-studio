@@ -76,6 +76,21 @@ describe('block additions', () => {
     validatePost(withBlock({ type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'A', lines: ['x'] }, { title: 'B', lines: ['y'], ink: 'blue' }] } }));
   });
 
+  it('accepts the set 2/3 diagram kinds and card bodies', () => {
+    validatePost(withBlock({ type: 'diagram', kind: 'chain', spec: { steps: [{ text: 'a', note: 'n' }] } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'tables', spec: { tables: [{ headers: ['a'], rows: [['1']] }], arrow: true } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'schema', spec: { tables: [{ name: 'A', columns: ['id'] }, { name: 'B', columns: ['a_id'] }], links: [{ from: 'A', to: 'B', fromLabel: '1', toLabel: 'N' }] } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'er', spec: { entities: [{ name: 'S', attrs: ['id'], key: 'id' }, { name: 'C', attrs: [] }], relations: [{ from: 'S', to: 'C', name: 'takes', labels: ['M', 'N'] }] } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'flowchart', spec: { title: 't', rows: [['a']], nodes: { a: { text: 'A', shape: 'icon', icon: 'ec2' } }, edges: [] } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'a', icon: 'user', text: 't' }, { title: 'b', code: ['x'] }, { title: 'c', chain: ['1', '2'] }, { title: 'd' }, { title: 'e' }, { title: 'f' }] } }));
+  });
+
+  it('rejects schema links and er relations that name unknown tables', () => {
+    expect(() => validatePost(withBlock({ type: 'diagram', kind: 'schema', spec: { tables: [{ name: 'A', columns: ['id'] }], links: [{ from: 'A', to: 'Z' }] } }))).toThrow();
+    expect(() => validatePost(withBlock({ type: 'diagram', kind: 'er', spec: { entities: [{ name: 'S' }], relations: [{ from: 'S', to: 'Z', name: 'r' }] } }))).toThrow();
+    expect(() => validatePost(withBlock({ type: 'diagram', kind: 'cards', spec: { cards: Array.from({ length: 7 }, (_, i) => ({ title: String(i) })) } }))).toThrow();
+  });
+
   it('rejects removed diagram kinds and wrong specs', () => {
     expect(() => validatePost(withBlock({ type: 'diagram', kind: 'memory-cells', spec: {} }))).toThrow();
     expect(() => validatePost(withBlock({ type: 'diagram', kind: 'array', spec: { nodes: ['a'] } }))).toThrow();
