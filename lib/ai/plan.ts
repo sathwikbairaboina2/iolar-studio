@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { Post, validatePost, MAX_SLIDES } from '../schema';
+import { Post, validatePost, MAX_SLIDES, TEMPLATES } from '../schema';
 import { getSettings } from '../settings';
 import { savePost, loadPost } from '../store';
 import { refsDir } from '../paths';
@@ -8,25 +8,45 @@ import { thinker } from './runner';
 import { extractJson } from './revise';
 import { Book, bookFromReferences, bookFromTopic, loadBook } from './book';
 
-const SCHEMA_RULES = `Return ONLY a complete post JSON object (no prose, no markdown fences) with this exact shape:
+export const SCHEMA_RULES = `Return ONLY a complete post JSON object (no prose, no markdown fences) with this exact shape:
 {
-  "brand": string, "template": one of ["spiral-notes","margin-qa","blackboard","studygram-pastel","engineer-grid","terminal-dark","legal-pad","sticky-wall"],
+  "brand": string, "template": one of [${TEMPLATES.map((t) => `"${t}"`).join(',')}],
   "ratio": "3:4", "seed": integer,
   "series": string (short series title, uppercase),
   "date": string (DD/MM/YYYY),
   "slides": [ { "page_title": string, "blocks": [Block, ...] }, ... ],
   "caption": { "text": string, "hashtags": [string, ...] }
 }
+Ink = "blue"|"red"|"green"|"black"|"accent"|"purple"|"orange". Frame = "none"|"solid"|"dashed".
 Block types (discriminated by "type"):
-- {"type":"heading","text":string,"ink"?:"blue"|"red"|"green"|"black"|"accent"}
-- {"type":"paragraph","text":string}
-- {"type":"bullets","items":[string,...]}
-- {"type":"sidebox","title":string,"items":[string,...],"ink"?:string}
-- {"type":"table","headers":[string,...],"rows":[[string,...],...]}
-- {"type":"code","lang":string,"lines":[string,...]}
-- {"type":"diagram","kind":"flow","spec":{"nodes":[string,...]}}
-- {"type":"callout","style":"tip"|"takeaway"|"cloud","title":string,"text":string}
+- {"type":"heading","text":string,"ink"?:Ink}
+- {"type":"paragraph","text":string,"frame"?:Frame,"ink"?:Ink}
+- {"type":"bullets","items":[string,...],"style"?:"dot"|"number"|"check"|"cross","frame"?:Frame,"ink"?:Ink}
+- {"type":"sidebox","title":string,"items":[string,...],"ink"?:Ink}
+- {"type":"table","headers":[string,...],"rows":[[string,...],...],"highlightRow"?:integer,"frame"?:Frame}
+- {"type":"code","lang":string,"lines":[string,...],"note"?:string}
+- {"type":"callout","style":"tip"|"takeaway"|"cloud"|"sticky"|"sticky-pink","title":string,"text":string}
 - {"type":"qa","q":string,"a_bullets":[string,...],"example_code"?:[string,...]}
+- {"type":"diagram","kind":"flow","spec":{"nodes":[string | {"text":string,"sub"?:string,"ink"?:Ink},...]}}
+- {"type":"diagram","kind":"array","spec":{"cells":[string,...],"indices"?:boolean,"pointers"?:[{"index":integer,"label":string,"ink"?:Ink}],"highlight"?:[integer],"dim"?:[integer],"caption"?:string}}
+- {"type":"diagram","kind":"flowchart","spec":{"rows":[[nodeId,...],...],"nodes":{nodeId:{"text":string,"shape"?:"box"|"diamond"|"pill","ink"?:Ink}},"edges":[{"from":nodeId,"to":nodeId,"label"?:string}]}}
+  rows are top to bottom, 1-3 node ids per row, 2-7 rows; every edge endpoint must appear in rows.
+- {"type":"diagram","kind":"matrix","spec":{"rows":[[string,...],...],"highlight"?:[[row,col],...],"caption"?:string}}
+- {"type":"diagram","kind":"cards","spec":{"cards":[{"title":string,"lines":[string,...],"ink"?:Ink},...]}} (2-4 cards)
+
+INLINE MARKUP inside any text, item, cell or label (not in headings or code lines):
+==term== yellow highlighter, **word** red emphasis, __word__ underline, \`x\` monospace, {green:word} / {blue:...} / {red:...} / {purple:...} / {orange:...} coloured ink.
+Use them the way a student does: highlight 1-3 key terms per block, put **...** on the one decisive word
+(RIGHT, LEFT, sorted), underline the answer in a dry run. Never mark up whole sentences.
+
+VOCABULARY RULES:
+- "style":"number" for procedures and algorithm steps; "check" for prerequisites and "when to use"; "cross" for mistakes and anti-patterns.
+- "frame":"dashed" boxes a section body; give the box an "ink" that matches its meaning (green definition, red mistakes, blue complexity, purple template).
+- "note" on code: the one gotcha next to the snippet, at most 8 words ("works only on SORTED arrays").
+- "sticky" callouts for a pinned aside; "tip" and "takeaway" stay for boxed advice.
+- "array" wherever indices or pointers are walked (low / mid / high); "flowchart" for any decision procedure; "cards" for an end-of-page summary strip; "matrix" for 2-D data; "flow" for a left-to-right pipeline.
+- Dry runs are tables shaped Step | low | high | mid | arr[mid] | action, with "highlightRow" on the answer row.
+- Code lines at most 34 characters so a snippet can sit inside a column; a longer line forces the block full width and a line over 80 is cut.
 
 "page_title" is the section name ONLY — never write "Page 3:" or a page number in it; the template adds that.
 
@@ -38,19 +58,27 @@ Per-block ceilings — treat these as hard:
 - bullets: 3-5 items, each ONE line (max 12 words). Never a paragraph inside a bullet.
 - paragraph: at most 2 short sentences. Prefer bullets; use paragraph sparingly.
 - table: 3-5 rows, 2-4 columns, cells of 1-3 words. Terse ("O(1) avg", not "on average constant time").
-- code: 3-5 lines, each under 45 characters, with a short trailing # comment where it teaches something.
+- code: 3-6 lines, each under 34 characters, with a short trailing comment where it teaches something.
 - sidebox / callout: title plus 2-4 one-line items.
 - heading: a 2-5 word section label; number them (1., 2., 3. ...).
+- array: at most 12 cells; flowchart: at most 12 nodes; cards: 2-4 cards of 2-3 lines.
 
 Each block should render in about 4-6 lines. A block that runs past ~8 lines is too long —
 split it into two blocks or cut words.
 
 PER-SLIDE TARGET: 12-16 blocks, i.e. 4-6 numbered sections each followed by its bullets,
-table, or code. Fewer than 10 blocks means the page will render half empty.
+table, code or diagram. Fewer than 10 blocks means the page will render half empty.
 
 SLIDE COUNT: exactly ${MAX_SLIDES} slides unless the book truly cannot fit. Divide the book's
 points evenly — with N points that is about N/${MAX_SLIDES} points per slide, and each point
 should become one short bullet, one table row, or one code line, NOT a paragraph.`;
+
+export const RECIPE_GUIDANCE = `If the subject is an algorithm or coding pattern family, shape it the way an interview study sheet is shaped:
+every pattern page carries, in order, a definition ("what is it"), the template code with a "note", a condition/action
+table, a dry run table with the answer row highlighted, a visual walkthrough ("array" diagram with low/mid/high pointers),
+and a "cross" list of common mistakes. The LAST slide is a revision sheet: a numbered list of the most-asked questions, a
+decision "flowchart", a quick-reference table (pattern | goal | key update | return), a complexity table, and a "check"
+list of when to use it. For other subjects, keep the same spirit: definition, mechanism, example, mistakes, summary.`;
 
 function envelope(brand: string, template: string, ratio: string) {
   return `Use "brand": "${brand}", "template": "${template}", "ratio": "${ratio}", "seed": 42, today's date ${new Date().toLocaleDateString('en-GB')}. Write an engaging caption (2-3 sentences, hook first) and 8-12 relevant hashtags.`;
@@ -120,6 +148,7 @@ export async function planSlidesFromBook(subject: string, chapter: string, part:
       ? `Each chapter was read from one reference page and carries a "layout": the exact block sequence that page used. Write ONE SLIDE PER CHAPTER, in order, emitting those block types in that order — if the layout says heading, bullets, sidebox, table, code, callout, then produce exactly that sequence, filled with this chapter's own points. Mirror the reference page's shape; write original wording.`
       : `That is ${book.chapters.length} chapters and ${totalPoints} points. Choose the slide count that covers them all at full page density; keep the book's order.`,
     'Write original prose — teach each point concretely with real examples, tables and code, the way dense study notes do.',
+    RECIPE_GUIDANCE,
     covered.length
       ? `Other posts on this account already cover these topics — do not rehash them at length; reference them briefly if needed and spend the space on this book's own material:\n${covered.join(', ')}`
       : '',

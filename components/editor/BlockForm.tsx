@@ -4,12 +4,13 @@ import {
   ArrowUpOutlined, ArrowDownOutlined, CopyOutlined, DeleteOutlined,
 } from '@ant-design/icons';
 import type { Block } from '@/lib/schema';
+import { INKS, DIAGRAM_KINDS } from '@/lib/schema';
 
 const { TextArea } = Input;
 
-const INK_OPTS = ['blue', 'red', 'green', 'black', 'accent'].map((v) => ({ value: v }));
-const CALLOUT_OPTS = ['tip', 'takeaway', 'cloud'].map((v) => ({ value: v }));
-const DIAGRAM_OPTS = ['flow', 'memory-cells', 'tree', 'compare'].map((v) => ({ value: v }));
+const INK_OPTS = INKS.map((v) => ({ value: v }));
+const CALLOUT_OPTS = ['tip', 'takeaway', 'cloud', 'sticky', 'sticky-pink'].map((v) => ({ value: v }));
+const DIAGRAM_OPTS = DIAGRAM_KINDS.map((v) => ({ value: v }));
 
 function lines(s: string): string[] {
   return s.split('\n').filter((l) => l.trim().length > 0);
@@ -157,7 +158,7 @@ export default function BlockForm({
               try { set({ spec: JSON.parse(e.target.value) }); } catch { /* keep old spec on bad JSON */ }
             }}
             style={{ fontFamily: 'monospace' }}
-            placeholder='{"nodes": ["a", "b"]}'
+            placeholder='{"nodes": ["a", "b"]}  |  array: {"cells": [...], "pointers": [...]}'
           />
         </>
       );
