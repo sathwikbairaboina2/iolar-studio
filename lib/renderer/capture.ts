@@ -140,12 +140,16 @@ export async function renderAll(
     const isCont = started.has(source);
     started.add(source);
 
+    const src = authored[source];
     const candidate: Post['slides'][number] = {
       page_title: isCont ? `${base} (cont.)` : base,
       blocks: queue.map((q) => q.block),
       // Only a page continuing the SAME chapter is a continuation. Marking every page
       // after the first would make mergeContinuations collapse the whole post into one.
       ...(isCont ? { cont: true } : {}),
+      // The chapter's hero logo and subtitle belong to every page cut from it.
+      ...(src.hero ? { hero: src.hero } : {}),
+      ...(src.subtitle ? { subtitle: src.subtitle } : {}),
     };
 
     const file = path.join(outDir, `slide-${String(page + 1).padStart(2, '0')}.png`);

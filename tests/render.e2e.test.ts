@@ -219,5 +219,8 @@ describe('set 2/3 blocks render', () => {
     expect(results[0].slide).toBe(1);
     expect(results.length).toBeGreaterThanOrEqual(2);
     expect(results.every((r) => r.overflowPx === 0)).toBe(true);
+    // Auto-flow rebuilds pages from the block stream; the chapter's hero and subtitle must survive.
+    expect(slides[1].hero).toBe('iam');
+    expect(slides[1].subtitle).toBe('Identity and Access Management');
   }, 300_000);
 });
