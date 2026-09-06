@@ -1,4 +1,5 @@
-import type { Block, Frame } from '../schema';
+import type { Block, Frame, Cover } from '../schema';
+import { iconSvg } from './icons';
 import { escapeHtml } from './inline';
 import { t } from './text';
 import { highlightLine } from './syntax';
@@ -154,6 +155,26 @@ export function forcesFullWidth(block: Block): boolean {
     }
   }
   return false;
+}
+
+/** The cover page: giant title, logo, tagline, an icon strip and a pill list. Families style `.cover-*`. */
+export function renderCover(cover: Cover, hero?: string): string {
+  const logo = hero ? `<div class="cover-logo">${iconSvg(hero)}</div>` : '';
+  const icons = cover.icons.length
+    ? `<div class="cover-icons" style="--cover-cols:${cover.icons.length}">${cover.icons
+        .map((i) => `<div class="cover-icon">${iconSvg(i.icon)}<div class="cover-icon-label" data-jitter>${t(i.label)}</div>${i.sub ? `<div class="cover-icon-sub" data-jitter>${t(i.sub)}</div>` : ''}</div>`)
+        .join('')}</div>`
+    : '';
+  const pills = cover.pills.length ? `<div class="cover-pills" data-rough="var(--ink-purple)" data-jitter>${cover.pills.map((p) => `<span>${t(p)}</span>`).join('<span class="cover-dot">•</span>')}</div>` : '';
+  return (
+    `<div class="cover">` +
+    `<div class="cover-title" data-jitter>${t(cover.title)}</div>` +
+    (cover.subtitle ? `<div class="cover-sub" data-jitter>${t(cover.subtitle)}</div>` : '') +
+    logo +
+    (cover.tagline ? `<div class="cover-tagline" data-rough="var(--ink-blue)" data-jitter>${t(cover.tagline)}</div>` : '') +
+    icons + pills +
+    `</div>`
+  );
 }
 
 /** Render-time warnings that do not block a render but the report should carry. */

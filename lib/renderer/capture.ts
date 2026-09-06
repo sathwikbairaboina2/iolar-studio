@@ -87,7 +87,7 @@ export function mergeContinuations(input: Post['slides']): Post['slides'] {
   const slides: Post['slides'] = [];
   for (const s of input) {
     const prev = slides[slides.length - 1];
-    if (prev && s.cont) {
+    if (prev && s.cont && prev.kind !== 'cover') {
       prev.blocks.push(...s.blocks);
       continue;
     }
@@ -107,15 +107,34 @@ export async function renderAll(
 
   // Blocks flow as one stream across chapter boundaries: a chapter that ends halfway down
   // a page is followed by the next chapter on the same page. Nothing is trimmed, and no
-  // page is left half empty just because a chapter ended there.
+  // page is left half empty just because a chapter ended there. A cover slide is the one
+  // exception: it is its own page, and the stream drains before it and restarts after it.
   type Item = { block: Post['slides'][number]['blocks'][number]; from: number };
-  let queue: Item[] = authored.flatMap((s, i) => s.blocks.map((block) => ({ block, from: i })));
-
   const results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[] = [];
   const slides: Post['slides'] = [];
   const started = new Set<number>();
+  let page = 0;
 
-  for (let page = 0; queue.length && page < MAX_AUTOFLOW_PAGES; page++) {
+  const renderCoverPage = async (cover: Post['slides'][number]) => {
+    const file = path.join(outDir, `slide-${String(page + 1).padStart(2, '0')}.png`);
+    const working: Post = { ...post, slides: [...slides, cover] };
+    const r = await renderSlide(working, page, file);
+    slides.push(cover);
+    results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
+    page++;
+  };
+
+  const segments: { cover?: Post['slides'][number]; queue: Item[] }[] = [];
+  authored.forEach((s, i) => {
+    if (s.kind === 'cover') { segments.push({ cover: s, queue: [] }); return; }
+    if (!segments.length || segments[segments.length - 1].cover) segments.push({ queue: [] });
+    segments[segments.length - 1].queue.push(...s.blocks.map((block) => ({ block, from: i })));
+  });
+
+  for (const seg of segments) {
+  if (seg.cover) { await renderCoverPage(seg.cover); continue; }
+  let queue = seg.queue;
+  for (; queue.length && page < MAX_AUTOFLOW_PAGES; page++) {
     const source = queue[0].from;
     const base = authored[source].page_title.replace(/ \(cont\.\)$/, '');
     const isCont = started.has(source);
@@ -142,6 +161,7 @@ export async function renderAll(
     slides.push({ ...candidate, blocks: kept.map((k) => k.block) });
     results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
     queue = queue.filter((q) => !keptSet.has(q.block));
+  }
   }
 
   return { results, slides };

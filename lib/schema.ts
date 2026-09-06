@@ -125,6 +125,15 @@ const BlockSchema = z.union([
   z.object({ type: z.literal('qa'), q: z.string(), a_bullets: z.array(z.string()).min(1), example_code: z.array(z.string()).optional() }),
 ]);
 
+export const CoverSchema = z.object({
+  title: z.string().min(1),
+  subtitle: z.string().optional(),
+  tagline: z.string().optional(),
+  icons: z.array(z.object({ icon: z.string().min(1), label: z.string().min(1), sub: z.string().optional() })).max(8).default([]),
+  pills: z.array(z.string().min(1)).max(12).default([]),
+});
+export type Cover = z.infer<typeof CoverSchema>;
+
 export const PostSchema = z.object({
   brand: z.string().default('iolar'),
   template: z.enum(TEMPLATES).default('spiral-notes'),
@@ -134,13 +143,25 @@ export const PostSchema = z.object({
   date: z.string(),
   slides: z
     .array(
-      z.object({
-        page_title: z.string(),
-        blocks: z.array(BlockSchema).min(1),
-        /** Set by auto-flow: this page holds content spilled from the page before it.
-         *  Survives title rewrites, so a re-render can merge the chain and re-split evenly. */
-        cont: z.boolean().optional(),
-      })
+      z
+        .object({
+          page_title: z.string(),
+          blocks: z.array(BlockSchema),
+          /** Set by auto-flow: this page holds content spilled from the page before it.
+           *  Survives title rewrites, so a re-render can merge the chain and re-split evenly. */
+          cont: z.boolean().optional(),
+          /** A logo or icon drawn in the page chrome, top right (the AWS cloud, a bucket). */
+          hero: z.string().optional(),
+          /** Smaller line after the title: "(Identity and Access Management)". */
+          subtitle: z.string().optional(),
+          /** A cover is its own page: no blocks, never merged into or spilled from. */
+          kind: z.enum(['page', 'cover']).optional(),
+          cover: CoverSchema.optional(),
+        })
+        .superRefine((s, ctx) => {
+          if (s.kind === 'cover' && !s.cover) ctx.addIssue({ code: 'custom', message: 'a cover slide needs a "cover" object' });
+          if (s.kind !== 'cover' && s.blocks.length === 0) ctx.addIssue({ code: 'custom', message: 'a page needs at least one block' });
+        })
     )
     .min(1),
   caption: z.object({ text: z.string(), hashtags: z.array(z.string()) }).default({ text: '', hashtags: [] }),

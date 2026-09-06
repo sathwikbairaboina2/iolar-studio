@@ -2,7 +2,8 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { Post, RATIOS } from '../schema';
 import type { Frame } from '../schema';
-import { renderSlideBlocks } from './blocks';
+import { renderSlideBlocks, renderCover } from './blocks';
+import { iconSvg } from './icons';
 
 export function templatesRoot() {
   return path.join(process.cwd(), 'templates');
@@ -44,15 +45,24 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     `<style>#content{--pk-cols:${columns};--pk-col-gap:${columnGap}}</style>`;
 
   const pageTitle = slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, '').replace(/ \(cont\.\)$/, '');
-  const content = renderSlideBlocks(slide.blocks, { defaults: manifest.defaults, pageTitle });
+  const isCover = slide.kind === 'cover' && slide.cover;
+  const content = isCover
+    ? renderCover(slide.cover!, slide.hero)
+    : renderSlideBlocks(slide.blocks, { defaults: manifest.defaults, pageTitle });
   const codeClass = manifest.codeFont === 'hand' ? 'code-hand' : 'code-mono';
+  const pageClass = `${codeClass}${isCover ? ' cover-page' : ''}${slide.hero ? ' has-hero' : ''}`;
+  // The hero sits in the chrome, not the content flow: injected right inside #page so every
+  // family gets it; families place it with CSS (#v-hero) or leave the base default.
+  const heroHtml = slide.hero && !isCover ? `<div id="v-hero" class="hero">${iconSvg(slide.hero)}</div>` : '';
 
   const pageVars = `<script>window.PAGE = ${JSON.stringify({
     brand: post.brand,
     date: post.date,
     series: post.series,
     // Templates render their own "Page N" prefix; drop any the author typed.
-    page_title: slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, ''),
+    page_title: isCover ? slide.cover!.title : slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, ''),
+    subtitle: slide.subtitle ?? '',
+    kind: slide.kind ?? 'page',
     pageNum: slideIndex + 1,
     pageCount: post.slides.length,
     seed: post.seed,
@@ -66,5 +76,5 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     .replace('<!--HEAD-->', head)
     .replace('<!--CONTENT-->', content)
     .replace('<!--PAGEVARS-->', pageVars)
-    .replace('<div id="page">', `<div id="page" class="${codeClass}">`);
+    .replace('<div id="page">', `<div id="page" class="${pageClass}">${heroHtml}`);
 }

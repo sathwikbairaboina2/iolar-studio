@@ -25,6 +25,18 @@ beforeEach(() => {
 });
 
 describe('mergeContinuations', () => {
+  it('never merges into a cover page', () => {
+    const merged = mergeContinuations(validatePost({
+      brand: 'iolar', template: 'spiral-notes', ratio: '3:4', seed: 1, series: 'S', date: 'd', caption: { text: '', hashtags: [] },
+      slides: [
+        { page_title: 'c', kind: 'cover', blocks: [], cover: { title: 'C' } },
+        { page_title: 'A (cont.)', cont: true, blocks: [{ type: 'paragraph', text: 'x' }] },
+      ],
+    }).slides);
+    expect(merged.length).toBe(2);
+    expect(merged[0].kind).toBe('cover');
+  });
+
   it('merges only pages continuing the same chapter', () => {
     const merged = mergeContinuations(base().slides);
     expect(merged.map((s) => s.page_title)).toEqual(['Lists', 'Sets']);

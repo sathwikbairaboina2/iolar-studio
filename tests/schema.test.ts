@@ -98,6 +98,19 @@ describe('block additions', () => {
     expect(() => validatePost(withBlock({ type: 'diagram', kind: 'flowchart', spec: { rows: [['a']], nodes: { a: { text: 'a' } }, edges: [{ from: 'a', to: 'zzz' }] } }))).toThrow();
   });
 
+  it('accepts a cover slide without blocks, and hero and subtitle on a page', () => {
+    const p = validatePost({ ...minimal, slides: [
+      { page_title: 'AWS', kind: 'cover', blocks: [], cover: { title: 'AWS', subtitle: 'Complete notes', tagline: 'All services in one place', icons: [{ icon: 'ec2', label: 'Compute', sub: 'EC2' }], pills: ['EC2', 'S3'] } },
+      { page_title: 'IAM', hero: 'aws', subtitle: 'Identity and Access Management', blocks: [{ type: 'heading', text: 'x' }] },
+    ] });
+    expect(p.slides[0].kind).toBe('cover');
+    expect(p.slides[1].hero).toBe('aws');
+  });
+  it('rejects a cover without its object and a page without blocks', () => {
+    expect(() => validatePost({ ...minimal, slides: [{ page_title: 'x', kind: 'cover', blocks: [] }] })).toThrow();
+    expect(() => validatePost({ ...minimal, slides: [{ page_title: 'x', blocks: [] }] })).toThrow();
+  });
+
   it('accepts study-sheet as a template', () => {
     validatePost({ ...minimal, template: 'study-sheet' });
   });
