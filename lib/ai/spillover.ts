@@ -17,7 +17,11 @@ export async function splitIntoFollowUp(
 
   const kept = post.slides.slice(0, limit);
   const moved = post.slides.slice(limit);
-  const next = await nextPartNumber(subject, chapter);
+
+  // The surplus always lands in this part's own follow-up. A re-render must not mint a new
+  // part each time: reuse the follow-up when it was created by an earlier spill from here.
+  const following = await loadPost(subject, chapter, part + 1).catch(() => null);
+  const next = following?.spilledFrom === part ? part + 1 : await nextPartNumber(subject, chapter);
 
   await createPart(subject, chapter, next, validatePost({
     ...post,
@@ -27,6 +31,7 @@ export async function splitIntoFollowUp(
       text: `Part ${next} of ${post.series.replace(/ — PART \d+$/i, '')}. ${post.caption.text}`.trim(),
       hashtags: post.caption.hashtags,
     },
+    spilledFrom: part,
   } satisfies Post));
 
   await savePost(subject, chapter, part, { ...post, slides: kept });

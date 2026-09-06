@@ -89,7 +89,8 @@
           } else {
             var ym = (y1 + y2) / 2;
             points = [[a.cx, y1], [a.cx, ym], [b.cx, ym], [b.cx, y2]];
-            lx = (a.cx + b.cx) / 2; ly = ym - 4;
+            // Label above the target's own drop, so two branches from one node never share a spot.
+            lx = b.cx; ly = y2 - 6;
           }
         } else {
           // Back-edge: leave the bottom of a, run down the left margin, come in at b's side.

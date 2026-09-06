@@ -165,6 +165,8 @@ export const PostSchema = z.object({
     )
     .min(1),
   caption: z.object({ text: z.string(), hashtags: z.array(z.string()) }).default({ text: '', hashtags: [] }),
+  /** Set on a part created by spillover: the part whose surplus pages it holds. A later spill from that part overwrites it. */
+  spilledFrom: z.number().int().positive().optional(),
 });
 
 export type Post = z.infer<typeof PostSchema>;
