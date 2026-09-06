@@ -146,9 +146,8 @@ describe('code rules', () => {
     expect(renderBlockHtml(code(['a'.repeat(61)]))).toContain('code-small');
     expect(renderBlockHtml(code(['a'.repeat(60)]))).not.toContain('code-small');
   });
-  it('a note lowers the full-width threshold to 20 chars', () => {
-    expect(forcesFullWidth(code(['a'.repeat(21)], { note: 'n' }))).toBe(true);
-    expect(forcesFullWidth(code(['a'.repeat(20)], { note: 'n' }))).toBe(false);
+  it('a note does not widen the block', () => {
+    expect(forcesFullWidth(code(['a'.repeat(30)], { note: 'n' }))).toBe(false);
   });
   it('truncates past 80 chars and reports a warning', () => {
     const long = 'b'.repeat(90);
@@ -161,13 +160,26 @@ describe('code rules', () => {
 
 describe('forcesFullWidth for diagrams', () => {
   const dg = (kind: string, spec: unknown) => ({ type: 'diagram', kind, spec }) as Block;
-  it('array, flowchart and cards always; flow from 4 nodes; matrix past 4 columns', () => {
-    expect(forcesFullWidth(dg('array', { cells: ['1'], indices: true, pointers: [], highlight: [], dim: [] }))).toBe(true);
-    expect(forcesFullWidth(dg('flowchart', { rows: [['a'], ['b']], nodes: { a: { text: 'a', shape: 'box' }, b: { text: 'b', shape: 'box' } }, edges: [] }))).toBe(true);
+  it('cards always; array past 10 cells; flowchart never; flow from 4 nodes; matrix past 4 columns', () => {
+    expect(forcesFullWidth(dg('array', { cells: ['1'], indices: true, pointers: [], highlight: [], dim: [] }))).toBe(false);
+    expect(forcesFullWidth(dg('array', { cells: Array.from({ length: 11 }, (_, i) => String(i)), indices: true, pointers: [], highlight: [], dim: [] }))).toBe(true);
+    expect(forcesFullWidth(dg('flowchart', { rows: [['a'], ['b']], nodes: { a: { text: 'a', shape: 'box' }, b: { text: 'b', shape: 'box' } }, edges: [] }))).toBe(false);
     expect(forcesFullWidth(dg('cards', { cards: [{ title: 'a', lines: ['x'] }, { title: 'b', lines: ['y'] }] }))).toBe(true);
     expect(forcesFullWidth(dg('flow', { nodes: ['a', 'b', 'c'] }))).toBe(false);
     expect(forcesFullWidth(dg('flow', { nodes: ['a', 'b', 'c', 'd'] }))).toBe(true);
     expect(forcesFullWidth(dg('matrix', { rows: [['1', '2', '3', '4']], highlight: [] }))).toBe(false);
     expect(forcesFullWidth(dg('matrix', { rows: [['1', '2', '3', '4', '5']], highlight: [] }))).toBe(true);
+  });
+});
+
+describe('title-duplicate heading', () => {
+  it('hides a first heading that repeats the page title, keeping its index', () => {
+    const h = renderSlideBlocks([{ type: 'heading', text: '1. Binary Search Fundamentals' }, { type: 'paragraph', text: 'p' }] as Block[], { pageTitle: 'Binary Search Fundamentals' });
+    expect(h).toContain('class="pk-unit pk-hidden" data-block-index="0"');
+    expect(h).toContain('data-block-index="1"');
+  });
+  it('keeps a first heading that says something else, and any later heading', () => {
+    expect(renderSlideBlocks([{ type: 'heading', text: '1. What is it?' }] as Block[], { pageTitle: 'Binary Search Fundamentals' })).not.toContain('pk-hidden');
+    expect(renderSlideBlocks([{ type: 'paragraph', text: 'p' }, { type: 'heading', text: 'Binary Search Fundamentals' }] as Block[], { pageTitle: 'Binary Search Fundamentals' })).not.toContain('pk-hidden');
   });
 });

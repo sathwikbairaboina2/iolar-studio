@@ -303,3 +303,26 @@ Render e2e (`render.e2e.test.ts`):
   do it on all styles").
 - `flow` extended instead of adding a `steps` kind: same object, more fields.
 - Flowchart grid is authored by the planner, not laid out by the renderer.
+
+## 13. Addendum (6 Sep, after the first end-to-end run): column-flow packing
+
+The first planned handbook rendered at 83-94% "fill" yet wasted a third of every page: row
+packing pairs a short block with a tall one and leaves the difference empty, diagrams were
+forced full width and centred, and a code note reserved a quarter of the box. Changes:
+
+- `templates/_shared/pack.js` is now **column flow**: each half-width unit drops into the
+  shorter column, a full-width unit closes both columns. When a unit no longer fits, the packer
+  looks up to six units ahead for one that does; everything never placed spills in original
+  order. Result shape: `{ placed: [{unit, span, col, y, height}], spill, usedPx, shortestPx }`.
+- `templates/_shared/layout.js` positions every unit absolutely from the measured heights
+  (the container becomes a relative box of `usedPx` height) instead of CSS grid rows. Reading
+  order is left column down, then right, as in the reference.
+- `flowchart` is never forced full width; `array` only past 10 cells. The code note is a chip
+  under the last line, so a short snippet keeps its column.
+- A first heading that repeats the page title renders as a hidden unit (`pk-hidden`) so the
+  block indexes still line up with the post.
+- study-sheet: tighter line-height (1.5), smaller frame padding and heading margins, titles
+  step down in size instead of wrapping.
+
+Measured on `algorithms/binary-search-patterns` (same post, re-rendered): 10+2 slides at
+83-94% became 7+1 slides at 97-100% (last page of each part excepted).

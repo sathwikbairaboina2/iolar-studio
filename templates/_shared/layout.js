@@ -1,4 +1,5 @@
-// DOM side of the grid engine: measure every unit at both widths, pack, place, publish spill.
+// DOM side of the layout engine: measure every unit at both widths, pack into column flow,
+// place each unit absolutely from the measured heights, publish spill.
 (function () {
   function measure(container, units, columns, colGapPx) {
     var width = container.clientWidth;
@@ -82,12 +83,9 @@
     var unconstrained = window.packUnits(units, {
       columns: columns, pageHeight: Number.MAX_SAFE_INTEGER, rowGap: rowGapPx
     });
-    var neededPx = 0;
-    for (var q = 0; q < unconstrained.rows.length; q++) {
-      neededPx += unconstrained.rows[q].height + (q ? rowGapPx : 0);
-    }
+    var neededPx = unconstrained.usedPx;
 
-    // Fill each page to capacity and let the remainder spill forward. Content is never
+    // Fill each column to capacity and let the remainder spill forward. Content is never
     // trimmed and never spread thin: a full page beats two half-empty ones.
     var packed = window.packUnits(units, { columns: columns, pageHeight: usable, rowGap: rowGapPx });
 
@@ -99,17 +97,24 @@
     }
     spillIndexes.sort(function (a, b) { return a - b; });
 
-    var used = 0;
-    for (var r = 0; r < packed.rows.length; r++) {
-      var row = packed.rows[r];
-      for (var c = 0; c < row.items.length; c++) {
-        var item = row.items[c];
-        item.unit.el.classList.add(item.span === 'full' ? 'span-full' : 'span-half');
-        item.unit.el.style.gridColumnStart = String(item.col + 1);
-        container.appendChild(item.unit.el); // reorder DOM to packed order
-      }
-      used += row.height + (r ? rowGapPx : 0);
+    // Column flow cannot be expressed as grid rows: position every unit from its measured
+    // height. The container becomes a plain relatively-positioned box of the used height.
+    var width = container.clientWidth;
+    var halfW = (width - colGapPx * (columns - 1)) / columns;
+    container.style.display = 'block';
+    container.style.position = 'relative';
+    for (var r = 0; r < packed.placed.length; r++) {
+      var item = packed.placed[r];
+      var el = item.unit.el;
+      el.classList.add(item.span === 'full' ? 'span-full' : 'span-half');
+      el.style.position = 'absolute';
+      el.style.top = item.y + 'px';
+      el.style.left = (item.span === 'full' ? 0 : item.col * (halfW + colGapPx)) + 'px';
+      el.style.width = (item.span === 'full' ? width : halfW) + 'px';
+      container.appendChild(el); // DOM order = placement order (left column first)
     }
+    container.style.height = Math.round(packed.usedPx) + 'px';
+    var used = packed.usedPx;
 
     if (window.drawFlowchartEdges) window.drawFlowchartEdges(document);
 

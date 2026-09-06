@@ -43,7 +43,8 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     `<link rel="stylesheet" href="../_shared/base.css">` +
     `<style>#content{--pk-cols:${columns};--pk-col-gap:${columnGap}}</style>`;
 
-  const content = renderSlideBlocks(slide.blocks, { defaults: manifest.defaults });
+  const pageTitle = slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, '').replace(/ \(cont\.\)$/, '');
+  const content = renderSlideBlocks(slide.blocks, { defaults: manifest.defaults, pageTitle });
   const codeClass = manifest.codeFont === 'hand' ? 'code-hand' : 'code-mono';
 
   const pageVars = `<script>window.PAGE = ${JSON.stringify({

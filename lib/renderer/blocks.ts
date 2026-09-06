@@ -7,11 +7,15 @@ export { escapeHtml };
 const e = escapeHtml;
 const t = renderInline;
 
-export type RenderOpts = { defaults?: { frame?: Frame } };
+export type RenderOpts = { defaults?: { frame?: Frame }; pageTitle?: string };
+
+/** "1. Binary Search Fundamentals" and "Binary Search Fundamentals" are the same title. */
+function sameTitle(a: string, b: string): boolean {
+  const norm = (x: string) => x.toLowerCase().replace(/^\s*\d+[.):\-\s]*/, '').replace(/[^a-z0-9]+/g, ' ').trim();
+  return norm(a) === norm(b) && norm(a).length > 0;
+}
 
 export const CODE_FULL_AT = 34;
-/** With a sticky note taking the right quarter of the box, a shorter line already needs the full width. */
-export const CODE_FULL_WITH_NOTE_AT = 20;
 export const CODE_SMALL_AT = 60;
 export const CODE_TRUNCATE_AT = 80;
 
@@ -65,8 +69,9 @@ function code(b: Extract<Block, { type: 'code' }>) {
   // No jitter on code: legibility beats realism. Lines never wrap; long ones step down or truncate.
   const lines = b.lines.map((l) => (l.length > CODE_TRUNCATE_AT ? l.slice(0, CODE_TRUNCATE_AT) + '…' : l));
   const cls = ['b-code', longestLine(lines) > CODE_SMALL_AT ? 'code-small' : '', b.note ? 'has-note' : ''].filter(Boolean).join(' ');
+  // The note is a chip under the last line, so a short snippet keeps its column.
   const note = b.note ? `<div class="code-note co-sticky"><span class="co-pin">📌</span>${t(b.note)}</div>` : '';
-  return `<div class="${cls}" data-lang="${e(b.lang)}">${note}<pre>${lines.map((l) => highlightLine(b.lang, l)).join('\n')}</pre></div>`;
+  return `<div class="${cls}" data-lang="${e(b.lang)}"><pre>${lines.map((l) => highlightLine(b.lang, l)).join('\n')}</pre>${note}</div>`;
 }
 
 function callout(b: Extract<Block, { type: 'callout' }>) {
@@ -134,10 +139,13 @@ export function renderBlockHtml(block: Block, opts?: RenderOpts): string {
 
 export function forcesFullWidth(block: Block): boolean {
   if (block.type === 'table') return block.headers.length >= 4;
-  if (block.type === 'code') return longestLine(block.lines) > (block.note ? CODE_FULL_WITH_NOTE_AT : CODE_FULL_AT);
+  if (block.type === 'code') return longestLine(block.lines) > CODE_FULL_AT;
   if (block.type === 'diagram') {
     switch (block.kind) {
-      case 'array': case 'flowchart': case 'cards': return true;
+      // A flowchart is a narrow column and an array up to ten cells fits beside other content.
+      case 'cards': return true;
+      case 'flowchart': return false;
+      case 'array': return block.spec.cells.length > 10;
       case 'flow': return block.spec.nodes.length >= 4;
       case 'matrix': return block.spec.rows.some((r) => r.length > 4);
     }
@@ -163,7 +171,10 @@ export function renderSlideBlocks(blocks: Block[], opts?: RenderOpts): string {
   return blocks
     .map((b, i) => {
       const full = forcesFullWidth(b) ? ' data-force-full="1"' : '';
-      return `<div class="pk-unit" data-block-index="${i}" data-block-type="${b.type}"${full}>${renderBlockHtml(b, opts)}</div>`;
+      // A first heading that only repeats the page title is dead weight on the page. It stays
+      // in the DOM (block indexes must line up with the post) but renders nothing.
+      const hidden = i === 0 && b.type === 'heading' && opts?.pageTitle && sameTitle(b.text, opts.pageTitle) ? ' pk-hidden' : '';
+      return `<div class="pk-unit${hidden}" data-block-index="${i}" data-block-type="${b.type}"${full}>${renderBlockHtml(b, opts)}</div>`;
     })
     .join('\n');
 }

@@ -1,5 +1,6 @@
-// Pure block packer: decides span + column for each unit and reports what did not fit.
-// Loaded as a classic script in templates and required directly by Node tests.
+// Pure block packer: column flow. Each half-width unit drops into the shorter column, a
+// full-width unit closes both. Reports what did not fit. Loaded as a classic script in
+// templates and required directly by Node tests.
 (function (root) {
   // Half-width wins on area while halfH < 2 x fullH, so the break-even is 2.0.
   // Sit just under it: a unit that more than doubles when squeezed goes full width.
@@ -18,49 +19,58 @@
   function packUnits(units, opts) {
     var columns = opts.columns || 2;
     var pageHeight = opts.pageHeight;
-    var rowGap = opts.rowGap || 0;
+    var gap = opts.rowGap || 0;
 
-    var queue = units.slice();
-    var rows = [];
-    var used = 0;
+    var colY = [];
+    for (var c = 0; c < columns; c++) colY.push(0);
+    var placed = [];
 
-    while (queue.length) {
-      var first = queue.shift();
-      var firstSpan = spanOf(first);
-      var row = { items: [{ unit: first, span: firstSpan, col: 0 }], height: heightOf(first, firstSpan) };
+    // Once a unit fails to fit, later units may still fill the gap left under the shorter
+    // column. Look a few units ahead for one that fits; whatever is never placed spills in
+    // its original order, so the next page starts with the first thing that did not fit.
+    var LOOKAHEAD = 6;
+    var spill = [];
+    var blocked = false;
+    var skipped = 0;
 
-      if (firstSpan === 'half') {
-        var col = 1;
-        while (col < columns && queue.length) {
-          var pickIndex = -1;
-          if (spanOf(queue[0]) === 'half') {
-            pickIndex = 0;
-          } else if (queue.length > 1 && spanOf(queue[1]) === 'half') {
-            // Adjacent local swap: the next unit cannot pair, the one after it can.
-            pickIndex = 1;
-          }
-          if (pickIndex === -1) break;
-          var picked = queue.splice(pickIndex, 1)[0];
-          row.items.push({ unit: picked, span: 'half', col: col });
-          row.height = Math.max(row.height, heightOf(picked, 'half'));
-          col++;
-        }
+    for (var i = 0; i < units.length; i++) {
+      var unit = units[i];
+      if (blocked && skipped >= LOOKAHEAD) { spill.push(unit); continue; }
+      var span = spanOf(unit);
+      var h = heightOf(unit, span);
+      var col = 0;
+      var top;
+
+      if (span === 'full') {
+        top = 0;
+        for (var a = 0; a < columns; a++) if (colY[a] > top) top = colY[a];
+      } else {
+        for (var b = 1; b < columns; b++) if (colY[b] < colY[col]) col = b;
+        top = colY[col];
+      }
+      var y = top + (top > 0 ? gap : 0);
+
+      if (y + h > pageHeight && placed.length) {
+        spill.push(unit);
+        blocked = true;
+        skipped++;
+        continue;
       }
 
-      var cost = row.height + (rows.length ? rowGap : 0);
-      if (used + cost > pageHeight && rows.length) {
-        // Row does not fit: this row's units and everything after it spill, in original order.
-        var spill = row.items
-          .map(function (i) { return i.unit; })
-          .concat(queue)
-          .sort(function (a, b) { return a.index - b.index; });
-        return { rows: rows, spill: spill };
+      placed.push({ unit: unit, span: span, col: col, y: y, height: h });
+      if (span === 'full') {
+        for (var d = 0; d < columns; d++) colY[d] = y + h;
+      } else {
+        colY[col] = y + h;
       }
-      used += cost;
-      rows.push(row);
     }
+    return finish(placed, spill, colY);
+  }
 
-    return { rows: rows, spill: [] };
+  function finish(placed, spill, colY) {
+    var used = 0, min = Infinity;
+    for (var i = 0; i < colY.length; i++) { if (colY[i] > used) used = colY[i]; if (colY[i] < min) min = colY[i]; }
+    return { placed: placed, spill: spill, usedPx: used, shortestPx: min === Infinity ? 0 : min };
   }
 
   root.packUnits = packUnits;
