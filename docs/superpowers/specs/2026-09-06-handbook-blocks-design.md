@@ -97,7 +97,7 @@ Rendering of the new fields:
 
 - `bullets.style`: `number` renders ①②③ (U+2460…, falls back to `1.` past ⑳); `check` ✓ in
   green; `cross` ✗ in red; `dot` unchanged.
-- `frame`: wraps the block body in a `div.b-frame` with `data-rough` (ink) and
+- `frame`: wraps the block body in a `div.b-frame` (manifest `defaults.frame` applies to bullets and paragraph only; a table draws its own rules and takes a frame only when set explicitly) with `data-rough` (ink) and
   `data-rough-dash="1"` for dashed. `jitter.js` passes `strokeLineDash: [9, 7]` to
   rough.js when the attribute is present. Frames count as part of the unit height, so the
   packer measures them.
@@ -134,7 +134,7 @@ takes the manifest defaults as a parameter. `codeFont: 'hand'` adds `class="code
   `--ink-orange`, functions `--ink-blue`. Line-by-line, no multi-line state; a block
   comment opener colours to end of line only.
 - Never wraps: `.b-code { white-space: pre; overflow: hidden }`. `forcesFullWidth()` returns
-  true when the longest line exceeds 34 characters. Longest line over 60 characters adds
+  true when the longest line exceeds 34 characters (20 when the block carries a `note`, since the note takes the right quarter of the box). Longest line over 60 characters adds
   `class="code-small"` (one font step down, ~85%). Over 80 characters the line is
   truncated with `…` at 80 and the render report gains a `warnings` entry naming the block.
 - Handwriting mode (`codeFont: 'hand'`): `#page.code-hand .b-code` uses `'Patrick Hand'`

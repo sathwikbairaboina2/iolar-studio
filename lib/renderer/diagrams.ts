@@ -43,7 +43,10 @@ function flowchart(spec: Extract<D, { kind: 'flowchart' }>['spec']): string {
       const nodes = ids
         .map((id) => {
           const nd = spec.nodes[id];
-          return `<div class="fc-node fc-${nd.shape}" data-id="${escapeHtml(id)}" data-rough="${ink(nd.ink)}" data-rough-shape="${nd.shape}" data-jitter><span>${t(nd.text)}</span></div>`;
+          // A diamond drawn at the box's edge midpoints contains the text only when the box is
+          // about twice the text: pad it by the text's estimated width and one line height.
+          const pad = nd.shape === 'diamond' ? ` style="padding:.85em ${(nd.text.length * 0.3).toFixed(1)}em"` : '';
+          return `<div class="fc-node fc-${nd.shape}" data-id="${escapeHtml(id)}" data-rough="${ink(nd.ink)}" data-rough-shape="${nd.shape}"${pad} data-jitter><span>${t(nd.text)}</span></div>`;
         })
         .join('');
       return `<div class="fc-row">${nodes}</div>`;

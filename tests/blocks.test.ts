@@ -100,6 +100,8 @@ describe('list styles and frames', () => {
     expect(renderBlockHtml({ type: 'bullets', items: ['a'], frame: 'none' } as Block, d)).not.toContain('b-frame');
     expect(renderBlockHtml({ type: 'heading', text: 'h' } as Block, d)).not.toContain('b-frame');
     expect(renderBlockHtml({ type: 'code', lang: 'py', lines: ['x'] } as Block, d)).not.toContain('b-frame');
+    expect(renderBlockHtml({ type: 'table', headers: ['a'], rows: [['1']] } as Block, d)).not.toContain('b-frame');
+    expect(renderBlockHtml({ type: 'table', headers: ['a'], rows: [['1']], frame: 'solid' } as Block, d)).toContain('b-frame');
   });
   it('bullet items carry inline markup', () => {
     expect(renderBlockHtml({ type: 'bullets', items: ['==a=='] } as Block)).toContain('<mark class="hl">a</mark>');
@@ -143,6 +145,10 @@ describe('code rules', () => {
     expect(forcesFullWidth(code(['a'.repeat(35)]))).toBe(true);
     expect(renderBlockHtml(code(['a'.repeat(61)]))).toContain('code-small');
     expect(renderBlockHtml(code(['a'.repeat(60)]))).not.toContain('code-small');
+  });
+  it('a note lowers the full-width threshold to 20 chars', () => {
+    expect(forcesFullWidth(code(['a'.repeat(21)], { note: 'n' }))).toBe(true);
+    expect(forcesFullWidth(code(['a'.repeat(20)], { note: 'n' }))).toBe(false);
   });
   it('truncates past 80 chars and reports a warning', () => {
     const long = 'b'.repeat(90);

@@ -10,6 +10,8 @@ const t = renderInline;
 export type RenderOpts = { defaults?: { frame?: Frame } };
 
 export const CODE_FULL_AT = 34;
+/** With a sticky note taking the right quarter of the box, a shorter line already needs the full width. */
+export const CODE_FULL_WITH_NOTE_AT = 20;
 export const CODE_SMALL_AT = 60;
 export const CODE_TRUNCATE_AT = 80;
 
@@ -100,7 +102,9 @@ function qa(b: Extract<Block, { type: 'qa' }>) {
 }
 
 function frameOf(block: Block, opts?: RenderOpts): Frame {
-  if (block.type !== 'bullets' && block.type !== 'paragraph' && block.type !== 'table') return 'none';
+  // A table draws its own rules, so it takes a frame only when asked for one.
+  if (block.type === 'table') return block.frame ?? 'none';
+  if (block.type !== 'bullets' && block.type !== 'paragraph') return 'none';
   return block.frame ?? opts?.defaults?.frame ?? 'none';
 }
 
@@ -130,7 +134,7 @@ export function renderBlockHtml(block: Block, opts?: RenderOpts): string {
 
 export function forcesFullWidth(block: Block): boolean {
   if (block.type === 'table') return block.headers.length >= 4;
-  if (block.type === 'code') return longestLine(block.lines) > CODE_FULL_AT;
+  if (block.type === 'code') return longestLine(block.lines) > (block.note ? CODE_FULL_WITH_NOTE_AT : CODE_FULL_AT);
   if (block.type === 'diagram') {
     switch (block.kind) {
       case 'array': case 'flowchart': case 'cards': return true;

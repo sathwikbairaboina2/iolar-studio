@@ -74,6 +74,15 @@ window.applyJitter = function (seed) {
     if (el.dataset.roughDash) opts.strokeLineDash = [9, 7];
     const w = rect.width + 4, h = rect.height + 4;
     const shape = el.dataset.roughShape || 'box';
+    if (shape !== 'box') {
+      // A non-rectangular outline runs inside the element's box, where its background would
+      // cover the stroke. Move the paper onto the shape itself and clear the element.
+      const bg = getComputedStyle(el).backgroundColor;
+      if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') {
+        opts.fill = bg; opts.fillStyle = 'solid';
+        el.style.background = 'transparent';
+      }
+    }
     if (shape === 'diamond') {
       svg.appendChild(rc.polygon([[2 + w / 2, 2], [2 + w, 2 + h / 2], [2 + w / 2, 2 + h], [2, 2 + h / 2]], opts));
     } else if (shape === 'pill') {
