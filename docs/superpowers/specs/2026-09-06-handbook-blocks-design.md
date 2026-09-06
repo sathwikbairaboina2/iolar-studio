@@ -501,3 +501,24 @@ It exposed a convergence bug and four layout defects, all fixed in `a985218`:
   worst fill on the part is rolled back. The tail page went 34% to 99%.
 
 Long titles also got a third size step, and long series ribbons step down rather than wrap.
+
+### 15.6 Five-family batch and the diagram defects it surfaced (7 Sep 2026)
+
+Five topic-mode runs, one per family the per-page planner had never rendered: terminal-dark
+(git bisect), engineer-grid (load balancing), legal-pad (SQL transactions), margin-qa (JWT and
+OAuth), studygram-pastel (React state). All five reached packaged pages: ten pages each on part
+1, worst fill 84-92%, zero overflow, spill chains up to three parts with polish cascading the
+whole way.
+
+Reading the pages found three rendering defects, fixed in `492e57f`:
+
+- **A flowchart edge label sat on its own crossbar**, so the connector ran through the text
+  like a strike-through. Labels are drawn in a second pass once every line is down, carry a
+  halo in the page's paper colour, and sit with their baseline just above the bar.
+- **A wrapped flow row ended in an arrow pointing at nothing.** Each arrow now lives in a
+  nowrap span with the node it points at, so the pair wraps together.
+- **A long page title ran under the hero logo.** The header reserves the hero's width.
+
+Polish's floor for a final page also rose from 60% to 80% fill. The rollback guard makes that
+safe: a densify pass that lowers the worst fill on the part is undone, which is exactly what
+happened on the React chapter, where the tail is content-bound at 74%.
