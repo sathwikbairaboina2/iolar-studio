@@ -185,8 +185,22 @@ export function renderCover(cover: Cover, hero?: string): string {
   );
 }
 
+function iconNamesIn(v: unknown, out: string[] = []): string[] {
+  if (typeof v === 'string') {
+    for (const m of v.matchAll(/\{icon:([^{}\n]+?)\}/g)) out.push(m[1].trim());
+  } else if (Array.isArray(v)) {
+    v.forEach((x) => iconNamesIn(x, out));
+  } else if (v && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+      if (k === 'icon' && typeof x === 'string') out.push(x);
+      else iconNamesIn(x, out);
+    }
+  }
+  return out;
+}
+
 /** Render-time warnings that do not block a render but the report should carry. */
-export function collectWarnings(blocks: Block[]): string[] {
+export function collectWarnings(blocks: Block[], slide?: { hero?: string; cover?: unknown }): string[] {
   const out: string[] = [];
   blocks.forEach((b, i) => {
     if (b.type === 'code') {
@@ -194,7 +208,10 @@ export function collectWarnings(blocks: Block[]): string[] {
         if (l.length > CODE_TRUNCATE_AT) out.push(`block ${i}: code line ${li + 1} truncated at ${CODE_TRUNCATE_AT} chars`);
       });
     }
+    for (const name of iconNamesIn(b)) if (!iconSvg(name)) out.push(`block ${i}: icon "${name}" not found`);
   });
+  if (slide?.hero && !iconSvg(slide.hero)) out.push(`hero icon "${slide.hero}" not found`);
+  if (slide?.cover) for (const name of iconNamesIn(slide.cover)) if (!iconSvg(name)) out.push(`cover icon "${name}" not found`);
   return out;
 }
 

@@ -44,6 +44,17 @@ export default function BookPanel({
     }
   };
 
+  const [topic, setTopic] = useState('');
+  const generateTopic = async () => {
+    if (!topic.trim()) return;
+    message.info('Building the book from the topic… (a minute or two)');
+    try {
+      const d = await call({ action: 'generate', mode: 'topic', topic: topic.trim() }, 'generate');
+      setBook(d.book);
+      message.success(`Book built: ${d.book.chapters.length} chapters`);
+    } catch (err) { message.error(String(err)); }
+  };
+
   const generate = async () => {
     message.info('Reading references and building the book… (a few minutes)');
     try {
@@ -102,10 +113,20 @@ export default function BookPanel({
 
       <Drawer title="Handbook — topic coverage" open={open} onClose={() => setOpen(false)} width={520}>
         {!book && (
-          <Empty description="No book yet — build one from the reference images">
-            <Button loading={busy === 'generate'} onClick={generate}>
-              ✦ Build book from references
-            </Button>
+          <Empty description="No book yet — build one from reference images, or from a topic">
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Button loading={busy === 'generate'} onClick={generate}>
+                ✦ Build book from references
+              </Button>
+              <Input.Search
+                placeholder="or a topic: Docker Complete Notes, Python decorators, TCP handshake…"
+                enterButton="✦ Build from topic"
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                onSearch={generateTopic}
+                loading={busy === 'generate'}
+              />
+            </Space>
           </Empty>
         )}
 

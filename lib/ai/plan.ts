@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { Post, validatePost, MAX_SLIDES } from '../schema';
 import { SCHEMA_RULES, RECIPE_GUIDANCE } from './rules';
+import { templateManifest } from '../renderer/page';
 export { SCHEMA_RULES, RECIPE_GUIDANCE } from './rules';
 import { getSettings } from '../settings';
 import { savePost, loadPost } from '../store';
@@ -53,6 +54,16 @@ export async function planBook(
   return bookFromTopic(subject, chapter, input as string);
 }
 
+/** The family's own page recipe, read from its manifest; empty when a template has none. */
+export function familyRecipe(template: string): string {
+  try {
+    const r = templateManifest(template).recipe;
+    return r ? `FAMILY "${template}": ${r}` : '';
+  } catch {
+    return '';
+  }
+}
+
 /** Step 2: turn the approved book into slides — every point must be covered somewhere. */
 export async function planSlidesFromBook(subject: string, chapter: string, part: number): Promise<Post> {
   const book = await loadBook(subject, chapter);
@@ -75,8 +86,9 @@ export async function planSlidesFromBook(subject: string, chapter: string, part:
     'Here is the approved book (syllabus). EVERY point in it must be taught somewhere in the slides — nothing may be dropped:',
     JSON.stringify(book),
     hasLayout
-      ? `Each chapter was read from one reference page and carries a "layout": the exact block sequence that page used. Write ONE SLIDE PER CHAPTER, in order, emitting those block types in that order — if the layout says heading, bullets, sidebox, table, code, callout, then produce exactly that sequence, filled with this chapter's own points. Mirror the reference page's shape; write original wording.`
-      : `That is ${book.chapters.length} chapters and ${totalPoints} points. Choose the slide count that covers them all at full page density; keep the book's order.`,
+      ? `Each chapter was read from one reference page and carries a "layout": the block sequence that page used, with a note per block. Treat it as a HINT about density and section order, not an order: write one slide per chapter, keep the reference's section order and its density, but choose the best block for each point — an "array" where the page drew cells, "cards" with icons where it drew a strip of concepts, "schema" or "tables" where it drew example tables, a titled icon "flowchart" where it drew a service diagram. Write original wording.`
+      : `That is ${book.chapters.length} chapters and ${totalPoints} points. Each chapter carries a "shape": the section roles that page should have, in order (definition, mechanism, example, comparison, mistakes, summary, cheatsheet, cover). Give every chapter one slide built from its shape, at full page density; keep the book's order.`,
+    familyRecipe(existing?.template ?? s.defaultTemplate),
     'Write original prose — teach each point concretely with real examples, tables and code, the way dense study notes do.',
     RECIPE_GUIDANCE,
     covered.length

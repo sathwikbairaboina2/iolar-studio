@@ -67,7 +67,7 @@ export async function renderSlide(post: Post, slideIndex: number, outPath: strin
       await fs.mkdir(path.dirname(outPath), { recursive: true });
       await sharp(shot).resize(w, h, { kernel: 'lanczos3' }).png().toFile(outPath);
 
-      const warnings = collectWarnings(post.slides[slideIndex].blocks);
+      const warnings = collectWarnings(post.slides[slideIndex].blocks, post.slides[slideIndex]);
       return { overflowPx, fillPct, spillIndexes: layout.spillIndexes, neededPct: layout.neededPct, warnings };
     } finally {
       await page.close();

@@ -17,6 +17,8 @@ export type TemplateManifest = {
   columnGap?: string;
   defaults?: { frame?: Frame };
   codeFont?: 'mono' | 'hand';
+  /** One paragraph telling the planner how pages of this family are shaped. */
+  recipe?: string;
 };
 
 export function templateManifest(template: string): TemplateManifest {

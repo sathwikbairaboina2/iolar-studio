@@ -1,14 +1,16 @@
 'use client';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Form, Input, InputNumber, Select, Typography, message } from 'antd';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v }));
 
 export default function SettingsPage() {
   const [form] = Form.useForm();
+  const [templates, setTemplates] = useState<string[]>([]);
 
   useEffect(() => {
     fetch('/api/settings').then((r) => r.json()).then((s) => form.setFieldsValue(s));
+    fetch('/api/handbooks').then((r) => r.json()).then((d) => setTemplates(d.templates ?? [])).catch(() => {});
   }, [form]);
 
   const save = async (values: Record<string, unknown>) => {
@@ -26,7 +28,7 @@ export default function SettingsPage() {
       <Typography.Title level={4}>Settings</Typography.Title>
       <Form form={form} layout="vertical" onFinish={save}>
         <Form.Item name="brand" label="Brand handle"><Input /></Form.Item>
-        <Form.Item name="defaultTemplate" label="Default template"><Input /></Form.Item>
+        <Form.Item name="defaultTemplate" label="Default template"><Select options={templates.map((t) => ({ value: t }))} showSearch /></Form.Item>
         <Form.Item name="defaultRatio" label="Default ratio"><Select options={RATIO_OPTS} /></Form.Item>
 
         <Typography.Title level={5} style={{ marginTop: 24 }}>Talking heads</Typography.Title>

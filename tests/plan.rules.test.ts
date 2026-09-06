@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SCHEMA_RULES, RECIPE_GUIDANCE } from '@/lib/ai/plan';
+import { SCHEMA_RULES, RECIPE_GUIDANCE, familyRecipe } from '@/lib/ai/plan';
 import { PRESERVE_RULE, SCHEMA_RULES as RULES2 } from '@/lib/ai/rules';
 import { DIAGRAM_KINDS, BULLET_STYLES, TEMPLATES } from '@/lib/schema';
 
@@ -36,5 +36,18 @@ describe('shared rules module', () => {
   it('plan re-exports the same rules the other stages import', () => {
     expect(RULES2).toBe(SCHEMA_RULES);
     for (const f of ['"hero"', '"icon"', '"frame"', '{icon:name}']) expect(PRESERVE_RULE).toContain(f);
+  });
+});
+
+describe('family recipes', () => {
+  it('every template tells the planner how its pages are shaped', () => {
+    for (const t of TEMPLATES) {
+      const r = familyRecipe(t);
+      expect(r, t).toContain(`FAMILY "${t}"`);
+      expect(r.length, t).toBeGreaterThan(80);
+    }
+    expect(familyRecipe('sketchnote')).toMatch(/hero/);
+    expect(familyRecipe('marker-notes')).toMatch(/schema/);
+    expect(familyRecipe('no-such-family')).toBe('');
   });
 });

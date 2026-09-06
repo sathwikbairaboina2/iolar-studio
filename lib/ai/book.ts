@@ -15,6 +15,8 @@ export const BookSchema = z.object({
         points: z.array(z.string()).min(1),
         /** Which reference page this chapter was read from (1-based), when built from references. */
         source_page: z.number().int().optional(),
+        /** Section roles for a chapter built from a topic (definition, mechanism, example, comparison, mistakes, summary, cheatsheet, cover). */
+        shape: z.array(z.string()).optional(),
         /** The block sequence that reference page actually used, so our page mirrors its shape. */
         layout: z
           .array(
@@ -65,6 +67,7 @@ const BOOK_SHAPE = `Return ONLY this JSON object, no prose and no markdown fence
     {
       "title": string,
       "points": [string, ...],          // every concept/fact/example that chapter must teach
+      "shape": [string, ...],           // section roles in order, from: definition, mechanism, example, comparison, mistakes, summary, cheatsheet, cover (built from a topic)
       "source_page": number,            // reference page it came from (omit when built from a topic)
       "layout": [ { "type": "heading"|"paragraph"|"bullets"|"sidebox"|"table"|"code"|"diagram"|"callout"|"qa",
                     "note": string } ]  // that page's block sequence, top to bottom (omit when built from a topic)
@@ -73,8 +76,8 @@ const BOOK_SHAPE = `Return ONLY this JSON object, no prose and no markdown fence
 }
 Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Aim for 6-12 points per chapter so a chapter fills a dense handwritten page.`;
 
-async function generateBook(prompt: string, allowedTools?: string[]): Promise<Book> {
-  const first = await thinker()(prompt, { timeoutMs: 900_000, allowedTools });
+async function generateBook(prompt: string, allowedTools?: string[], needsTools?: string): Promise<Book> {
+  const first = await thinker({ needsTools })(prompt, { timeoutMs: 900_000, allowedTools });
   try {
     return BookSchema.parse(extractJson(first));
   } catch (err) {
@@ -99,7 +102,7 @@ export async function bookFromReferences(subject: string, chapter: string, files
     'Keep the references\' depth: they pack a dense page per topic.',
     BOOK_SHAPE,
   ].join('\n\n');
-  return saveBook(subject, chapter, await generateBook(prompt, ['Read']));
+  return saveBook(subject, chapter, await generateBook(prompt, ['Read'], 'reading reference pages'));
 }
 
 export async function bookFromTopic(subject: string, chapter: string, topic: string): Promise<Book> {
@@ -107,6 +110,7 @@ export async function bookFromTopic(subject: string, chapter: string, topic: str
     'You are building the syllabus for a tech handbook published as an Instagram carousel of dense handwritten notes pages.',
     `Topic: ${topic}`,
     'Cover the topic thoroughly, the way a strong study-notes series would: fundamentals, mechanics/internals, practical usage, comparisons, complexity or trade-offs, common mistakes, and a closing summary.',
+    'Give every chapter a "shape": the ordered section roles its page should have (definition, mechanism, example, comparison, mistakes, summary, cheatsheet). A platform or service family (AWS, Docker, Kubernetes) starts with a chapter shaped ["cover"]; the last chapter of any series is shaped ["cheatsheet"].',
     BOOK_SHAPE,
   ].join('\n\n');
   return saveBook(subject, chapter, await generateBook(prompt));

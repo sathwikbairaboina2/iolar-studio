@@ -22,6 +22,8 @@ describe('template contract', () => {
     expect(m.name).toBe(t);
     expect(m.contentSelector).toBeTruthy();
     for (const ink of INKS) expect(m.inks[ink], `${t} missing ink ${ink}`).toMatch(/^#[0-9a-fA-F]{3,8}$/);
+    expect(typeof m.recipe, `${t} has no recipe`).toBe('string');
+    expect(m.recipe.length).toBeGreaterThan(60);
   });
 
   it('shared assets exist', () => {

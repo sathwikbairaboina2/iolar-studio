@@ -222,3 +222,19 @@ describe('tables and schema widths', () => {
     expect(forcesFullWidth(dg('er', { entities: [{ name: 'a', attrs: [] }], relations: [] }))).toBe(true);
   });
 });
+
+describe('icon warnings', () => {
+  it('reports icon names that resolve to nothing, in markers, fields, hero and cover', () => {
+    const blocks = [
+      { type: 'bullets', items: ['{icon:nope-none} x', '{icon:ec2} ok'] },
+      { type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'a', icon: 'zzq-none', lines: [] }, { title: 'b', icon: 'user', lines: [] }] } },
+    ] as Block[];
+    const w = collectWarnings(blocks, { hero: 'nothing-here', cover: { icons: [{ icon: 'also-none', label: 'x' }] } });
+    expect(w).toEqual([
+      'block 0: icon "nope-none" not found',
+      'block 1: icon "zzq-none" not found',
+      'hero icon "nothing-here" not found',
+      'cover icon "also-none" not found',
+    ]);
+  });
+});
