@@ -452,3 +452,23 @@ Still open: per-page planning (one prompt per chapter with a running summary, wh
 the 32k-context local model viable), an automatic densify/headings pass after render for pages
 under ~85% and "(cont.)" titles, editor forms for cover/hero/subtitle, and documenting that the
 reference downloader needs the media server on port 3000.
+
+### 15.4 Topic-mode validation (Docker, 6 Sep 2026)
+
+A "Docker Complete Notes" run on `sketchnote` with no references exercised the per-page
+planner end to end: 14 chapters planned in parallel (306 s), rendered with polish into
+three parts (10 + 10 + 4 pages, zero overflow, fills 88–100%). It exposed four defects,
+all fixed:
+
+- spillover stacked caption prefixes ("Part 3 of X. Part 2 of X. …") — the old prefix is
+  now stripped before the new one is added;
+- polish only ran on the part the click targeted — it now cascades into the follow-up
+  part a spill minted (`polishFollowUps:false` opts out);
+- the planner typed parens around subtitles and templates added their own ("((…))") —
+  the page chrome strips them;
+- each chapter flowed onto ~1.7 pages — the per-page prompt now states the one-page
+  budget in blocks (8–11 with an icon-card strip or flowchart, 12–16 text-only).
+
+Still open: a local-model (`qwen3.8:27b`) run of the per-page planner; the reference
+media server on port 3000 is an undocumented dependency of reference mode; diagram
+specs in the editor are still JSON textareas.
