@@ -15,7 +15,7 @@ describe('knowledge settings', () => {
     expect(s.neo4jUser).toBe('neo4j');
     expect(s.neo4jPassword).toBe('iolar-local');
     expect(s.qdrantUrl).toBe('http://127.0.0.1:3126');
-    expect(s.embedOllamaUrl).toBe('http://127.0.0.1:25103');
+    expect(s.embedOllamaUrl).toBe('http://127.0.0.1:11434');
     expect(s.embedModel).toBe('nomic-embed-text');
     expect(s.knowledgeMemory).toBe(true);
   });
