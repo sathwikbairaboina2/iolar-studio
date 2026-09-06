@@ -18,6 +18,14 @@ describe('SCHEMA_RULES teaches the whole vocabulary', () => {
   it('no longer offers removed diagram kinds', () => {
     for (const k of ['memory-cells', '"tree"', '"compare"']) expect(SCHEMA_RULES).not.toContain(k);
   });
+  it('teaches icons, hero, subtitle, cover and the new list styles', () => {
+    for (const w of ['{icon:', '"hero"', '"subtitle"', '"cover"', '"checkbox"', '"star"', '"pink"', 'IconName', '"chain"', '"tables"', '"schema"', '"er"', '"icon"']) expect(SCHEMA_RULES).toContain(w);
+    expect(SCHEMA_RULES).toContain('"ec2"');
+    expect(SCHEMA_RULES).toContain('"docker"');
+  });
+  it('recipe guidance covers the service page and the theory page', () => {
+    for (const w of ['cover slide', 'key concepts', 'service diagram', 'schema', 'cloud']) expect(RECIPE_GUIDANCE.toLowerCase()).toContain(w);
+  });
   it('recipe guidance covers the pattern page and the revision sheet', () => {
     for (const w of ['dry run', 'revision sheet', 'flowchart', 'complexity']) expect(RECIPE_GUIDANCE.toLowerCase()).toContain(w);
   });

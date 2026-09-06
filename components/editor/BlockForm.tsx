@@ -10,6 +10,7 @@ const { TextArea } = Input;
 
 const INK_OPTS = INKS.map((v) => ({ value: v }));
 const CALLOUT_OPTS = ['tip', 'takeaway', 'cloud', 'sticky', 'sticky-pink'].map((v) => ({ value: v }));
+// Bullet styles and diagram kinds come from the schema so the editor never lags the renderer.
 const DIAGRAM_OPTS = DIAGRAM_KINDS.map((v) => ({ value: v }));
 
 function lines(s: string): string[] {
