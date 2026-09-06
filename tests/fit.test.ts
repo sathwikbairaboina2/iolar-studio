@@ -60,3 +60,13 @@ describe('fitToPages guard', () => {
     await expect(fitToPages('python', 'fit-demo', 1)).rejects.toThrow(/removed content/);
   });
 });
+
+describe('uncoveredPoints ignores inline markers', () => {
+  it('a highlighted keyword still counts as covered', async () => {
+    const { uncoveredPoints } = await import('@/lib/ai/fit');
+    const book = { title: 't', summary: 's', chapters: [{ title: 'c', points: ['binary search needs a sorted array'] }] } as never;
+    const post = base();
+    post.slides[0].blocks = [{ type: 'paragraph', text: 'Binary search needs a ==sorted array== to __work__' }];
+    expect(uncoveredPoints(book, post)).toEqual([]);
+  });
+});

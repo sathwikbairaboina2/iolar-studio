@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { Post, validatePost } from '../schema';
 import { loadPost } from '../store';
 import { renderSlide, mergeContinuations } from '../renderer/capture';
+import { stripInline } from '../renderer/inline';
 import { Book, loadBook } from './book';
 import { thinker } from './runner';
 import { extractJson } from './revise';
@@ -37,7 +38,7 @@ function postText(post: Post): string {
       }
     }
   }
-  return parts.join(' ').toLowerCase();
+  return stripInline(parts.join(' ')).toLowerCase();
 }
 
 /** Book points whose keywords no longer appear in the post — i.e. content that was dropped. */

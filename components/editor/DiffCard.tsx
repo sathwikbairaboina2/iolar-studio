@@ -2,8 +2,9 @@
 import { Card, Tag, Typography } from 'antd';
 import type { SlideDiff, BlockDiff } from '@/lib/ai/diff';
 import type { Block } from '@/lib/schema';
+import { stripInline } from '@/lib/renderer/inline';
 
-function blockText(b?: Block): string {
+function rawBlockText(b?: Block): string {
   if (!b) return '';
   switch (b.type) {
     case 'heading': case 'paragraph': return b.text;
@@ -15,6 +16,10 @@ function blockText(b?: Block): string {
     case 'callout': return `${b.title}: ${b.text}`;
     case 'qa': return `${b.q} → ${b.a_bullets.join(' · ')}`;
   }
+}
+
+function blockText(b?: Block): string {
+  return stripInline(rawBlockText(b));
 }
 
 function DiffLine({ d }: { d: BlockDiff }) {

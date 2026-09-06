@@ -1,15 +1,9 @@
 import type { Block } from '../schema';
-
-export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+import { escapeHtml, renderInline } from './inline';
+export { escapeHtml };
 
 const e = escapeHtml;
+const t = renderInline;
 
 // Ink CSS var per logical ink name; templates define the actual colors.
 function inkVar(ink?: string) {
