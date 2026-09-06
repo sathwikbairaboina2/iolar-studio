@@ -14,7 +14,7 @@ window.applyJitter = function (seed) {
 
   document.querySelectorAll('[data-jitter]').forEach((el) => {
     const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => (n.parentElement && n.parentElement.closest('.hl') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+      acceptNode: (n) => (n.parentElement && n.parentElement.closest('mark.hl') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
     });
     const nodes = [];
     while (walk.nextNode()) nodes.push(walk.currentNode);

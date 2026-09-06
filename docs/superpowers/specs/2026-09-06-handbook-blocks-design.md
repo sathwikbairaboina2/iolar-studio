@@ -56,7 +56,7 @@ Not applied to: `heading.text`, `page_title`, `code.lines`.
 
 | marker | render |
 |---|---|
-| `==term==` | `<mark class="hl">` yellow marker swipe |
+| `==term==` | `<mark class="hl">` yellow marker swipe (styled as `mark.hl`; studygram-pastel already owns a `.hl` span for its series swipe) |
 | `**word**` | `<span class="em">` red emphasis, bold |
 | `__word__` | `<span class="ul">` underline |
 | `` `x` `` | `<code class="mono">` monospace inline |
