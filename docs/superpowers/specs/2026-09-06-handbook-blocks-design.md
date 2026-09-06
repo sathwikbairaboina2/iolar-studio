@@ -472,3 +472,32 @@ all fixed:
 Still open: a local-model (`qwen3.8:27b`) run of the per-page planner; the reference
 media server on port 3000 is an undocumented dependency of reference mode; diagram
 specs in the editor are still JSON textareas.
+
+### 15.5 End-to-end run: Kubernetes storage (6 Sep 2026)
+
+A second topic-mode run — a subject with no references, the `marker-notes` family, and logos
+that had to be found by search — took the pipeline from an empty chapter to packaged pages:
+book 90 s (11 chapters, every one with a shape), per-page plan 112 s (11 slides, cover plus a
+hero on each), polish render, package. Final state: part 1 ten pages (fills 86-100), part 2
+five pages (86-98), zero overflow, and a repeat polish is a no-op.
+
+It exposed a convergence bug and four layout defects, all fixed in `a985218`:
+
+- **The rename could never stick.** The heading pass kept the `cont` flag on pages it had
+  renamed, and `renderAll` merges every flagged page back into the chapter before it — so the
+  next render re-split the page and put "(cont.)" back. Two polish passes left two pages
+  sharing one title. A renamed page is now its own chapter.
+- **Pages were titled by their first block.** One block carried over renamed a whole page
+  after the previous chapter. A page now takes the title of the chapter owning most of its
+  blocks and is re-measured under it.
+- **Continuation pages lived only inside the render.** They are written back now, so later
+  passes can see them.
+- **The series was the chapter placeholder.** `createChapter` seeds part 1 with the chapter
+  title as its series; the planner kept it, so a whole carousel read "STORAGE". The series now
+  comes from the book (colon subtitle trimmed), and a series the user typed still wins.
+- **Densify overshot.** "Grow toward ~100%" added a page's worth of blocks, spilling onto a
+  new page that was thinner than the one being filled. Densify now asks for a measured number
+  of blocks, polish also treats a last page under 60% as thin, and any pass that lowers the
+  worst fill on the part is rolled back. The tail page went 34% to 99%.
+
+Long titles also got a third size step, and long series ribbons step down rather than wrap.
