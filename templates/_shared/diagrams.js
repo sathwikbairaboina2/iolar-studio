@@ -29,50 +29,18 @@
     head.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
     head.setAttribute('fill', 'var(--ink-black)');
     marker.appendChild(head); defs.appendChild(marker); svg.appendChild(defs);
-    // Seeded from the chart's own position so the same page always draws the same wobble.
-    var seed = Math.abs(Math.round(b.left * 31 + b.top * 17 + b.width)) % 100000 + 1;
-    return { svg: svg, marker: id, rc: window.rough ? rough.svg(svg) : null, seed: seed };
+    return { svg: svg, marker: id };
   }
 
-  /**
-   * A connector, drawn by the same hand as the frames: rough.js for the run of the line, then a
-   * short straight tip carrying the arrowhead, because a marker on a sketched path points
-   * wherever that path's last wobble happened to end.
-   */
   function line(ctx, points, opts) {
-    var stroke = (opts && opts.stroke) || 'var(--ink-black)';
-    var width = Number((opts && opts.width) || 2);
-    var drawn;
-    if (ctx.rc) {
-      drawn = ctx.rc.linearPath(points, {
-        stroke: stroke, strokeWidth: width, roughness: 1.05, bowing: 1.1,
-        disableMultiStroke: true, seed: ctx.seed++,
-        strokeLineDash: opts && opts.dash ? [9, 7] : undefined,
-      });
-      ctx.svg.appendChild(drawn);
-    } else {
-      drawn = document.createElementNS(NS, 'path');
-      drawn.setAttribute('d', points.map(function (pt, i) { return (i ? 'L' : 'M') + pt[0].toFixed(1) + ' ' + pt[1].toFixed(1); }).join(' '));
-      drawn.setAttribute('fill', 'none');
-      drawn.setAttribute('stroke', stroke);
-      drawn.setAttribute('stroke-width', width);
-      ctx.svg.appendChild(drawn);
-    }
-    if (opts && opts.arrow) {
-      var a = points[points.length - 2], b2 = points[points.length - 1];
-      var dx = b2[0] - a[0], dy = b2[1] - a[1];
-      var len = Math.sqrt(dx * dx + dy * dy) || 1;
-      var back = Math.min(9, len);
-      var tip = document.createElementNS(NS, 'path');
-      tip.setAttribute('d', 'M ' + (b2[0] - (dx / len) * back).toFixed(1) + ' ' + (b2[1] - (dy / len) * back).toFixed(1) +
-        ' L ' + b2[0].toFixed(1) + ' ' + b2[1].toFixed(1));
-      tip.setAttribute('fill', 'none');
-      tip.setAttribute('stroke', stroke);
-      tip.setAttribute('stroke-width', width);
-      tip.setAttribute('marker-end', 'url(#' + ctx.marker + ')');
-      ctx.svg.appendChild(tip);
-    }
-    return drawn;
+    var p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', points.map(function (pt, i) { return (i ? 'L' : 'M') + pt[0].toFixed(1) + ' ' + pt[1].toFixed(1); }).join(' '));
+    p.setAttribute('fill', 'none');
+    p.setAttribute('stroke', (opts && opts.stroke) || 'var(--ink-black)');
+    p.setAttribute('stroke-width', (opts && opts.width) || '2');
+    if (opts && opts.arrow) p.setAttribute('marker-end', 'url(#' + ctx.marker + ')');
+    ctx.svg.appendChild(p);
+    return p;
   }
 
   function label(ctx, x, y, text, cls, color, anchor) {

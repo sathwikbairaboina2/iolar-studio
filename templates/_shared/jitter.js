@@ -50,54 +50,6 @@ window.wrapForJitter = function (el, r) {
     });
 };
 
-// Generic icons ship as clean vector line art, which reads as clip-art dropped onto a
-// handwritten page. Redrawing their geometry with rough.js puts them in the same hand as the
-// frames and underlines. Brand marks (ic-brand, ic-aws) are never touched: a wobbly logo
-// stops being the logo.
-window.sketchIcons = function (r) {
-  const NS = 'http://www.w3.org/2000/svg';
-  const num = (el, a, d) => {
-    const v = parseFloat(el.getAttribute(a));
-    return isNaN(v) ? d : v;
-  };
-  const pts = (el) => (el.getAttribute('points') || '')
-    .trim().split(/[\s,]+/).map(Number)
-    .reduce((acc, n, i) => (i % 2 ? (acc[acc.length - 1].push(n), acc) : (acc.push([n]), acc)), [])
-    .filter((p) => p.length === 2);
-
-  document.querySelectorAll('svg.ic-ui').forEach((svg) => {
-    const rc = rough.svg(svg, { options: { seed: Math.floor(r() * 1e6) + 1 } });
-    const opts = {
-      stroke: 'currentColor',
-      strokeWidth: 1.7,
-      roughness: 0.9,
-      bowing: 1.4,
-      fill: 'none',
-      // One pass: at icon scale a second sketch stroke turns a 24-unit shape into a smudge.
-      disableMultiStroke: true,
-    };
-    const drawn = [];
-    svg.querySelectorAll('path,circle,ellipse,rect,line,polyline,polygon').forEach((el) => {
-      const tag = el.tagName.toLowerCase();
-      try {
-        if (tag === 'path') drawn.push(rc.path(el.getAttribute('d'), opts));
-        else if (tag === 'circle') drawn.push(rc.circle(num(el, 'cx', 0), num(el, 'cy', 0), num(el, 'r', 1) * 2, opts));
-        else if (tag === 'ellipse') drawn.push(rc.ellipse(num(el, 'cx', 0), num(el, 'cy', 0), num(el, 'rx', 1) * 2, num(el, 'ry', 1) * 2, opts));
-        else if (tag === 'rect') drawn.push(rc.rectangle(num(el, 'x', 0), num(el, 'y', 0), num(el, 'width', 1), num(el, 'height', 1), opts));
-        else if (tag === 'line') drawn.push(rc.line(num(el, 'x1', 0), num(el, 'y1', 0), num(el, 'x2', 0), num(el, 'y2', 0), opts));
-        else if (tag === 'polyline') drawn.push(rc.linearPath(pts(el), opts));
-        else if (tag === 'polygon') drawn.push(rc.polygon(pts(el), opts));
-      } catch (e) { /* an odd shape keeps its clean original */ }
-    });
-    if (!drawn.length) return;
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
-    drawn.forEach((g) => svg.appendChild(g));
-    svg.style.overflow = 'visible';
-    // Placed by hand, so never quite square to the page.
-    svg.style.transform = 'rotate(' + ((r() * 2 - 1) * 2.2).toFixed(2) + 'deg)';
-  });
-};
-
 window.applyJitter = function (seed) {
   const r = mulberry32(seed);
 
@@ -108,8 +60,6 @@ window.applyJitter = function (seed) {
   document.querySelectorAll('.co-sticky').forEach((el) => {
     el.style.transform = 'rotate(' + ((r() * 2 - 1) * 2).toFixed(2) + 'deg)';
   });
-
-  window.sketchIcons(r);
 
   // Text may have grown a line: re-stack the columns before frames are measured.
   if (window.reflowLayout) window.reflowLayout();

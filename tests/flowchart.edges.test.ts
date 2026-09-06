@@ -15,11 +15,7 @@ describe('drawFlowchartEdges', () => {
     } } as Extract<Block, { type: 'diagram' }>);
     (window as unknown as { drawFlowchartEdges: (r: Document) => void }).drawFlowchartEdges(document);
     const svg = document.querySelector('svg.fc-edges')!;
-    // One connector per edge, each with its own arrow tip: the tip is drawn separately so the
-    // arrowhead points along the edge rather than along a sketched path's last wobble.
-    const paths = [...svg.querySelectorAll(':scope > path')];
-    expect(paths.filter((p) => !p.getAttribute('marker-end')).length).toBe(2);
-    expect(paths.filter((p) => p.getAttribute('marker-end')).length).toBe(2);
+    expect(svg.querySelectorAll(':scope > path').length).toBe(2);
     expect(svg.querySelectorAll('text.fc-label').length).toBe(1);
     expect(svg.querySelector('text.fc-label')!.textContent).toBe('yes');
   });
@@ -36,9 +32,7 @@ describe('schema and er overlays', () => {
     document.body.innerHTML = renderDiagram({ type: 'diagram', kind: 'schema', spec: { tables: [{ name: 'A', columns: ['id'] }, { name: 'B', columns: ['a_id'] }, { name: 'C', columns: ['b_id'] }], links: [{ from: 'A', to: 'B', fromLabel: '1', toLabel: 'N', arrow: true }, { from: 'B', to: 'C' }] } } as Extract<Block, { type: 'diagram' }>);
     w.drawSchemaLinks(document);
     const svg = document.querySelector('svg.sc-links')!;
-    const links = [...svg.querySelectorAll(':scope > path')];
-    expect(links.filter((p) => !p.getAttribute('marker-end')).length).toBe(2);
-    expect(links.filter((p) => p.getAttribute('marker-end')).length).toBe(1); // only the arrowed link
+    expect(svg.querySelectorAll(':scope > path').length).toBe(2);
     expect(svg.querySelectorAll('text.sc-label').length).toBe(2);
   });
   it('er: one line per attribute plus two per neighbouring relation', () => {
