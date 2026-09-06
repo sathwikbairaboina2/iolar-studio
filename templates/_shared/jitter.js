@@ -13,7 +13,9 @@ window.applyJitter = function (seed) {
   const r = mulberry32(seed);
 
   document.querySelectorAll('[data-jitter]').forEach((el) => {
-    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.parentElement && n.parentElement.closest('.hl') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
     const nodes = [];
     while (walk.nextNode()) nodes.push(walk.currentNode);
     nodes.forEach((n) => {
@@ -48,6 +50,12 @@ window.applyJitter = function (seed) {
     });
   });
 
+  // Sticky notes lean a little. Drawn from the same stream, after character jitter and before
+  // rough frames, so a page without stickies keeps its exact pixels.
+  document.querySelectorAll('.co-sticky').forEach((el) => {
+    el.style.transform = 'rotate(' + ((r() * 2 - 1) * 2).toFixed(2) + 'deg)';
+  });
+
   document.querySelectorAll('[data-rough]').forEach((el) => {
     const rect = el.getBoundingClientRect();
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -56,15 +64,26 @@ window.applyJitter = function (seed) {
     svg.style.cssText =
       'position:absolute;left:-4px;top:-4px;z-index:-1;overflow:visible;pointer-events:none';
     const rc = rough.svg(svg, { options: { seed: Math.floor(r() * 1e6) + 1 } });
-    svg.appendChild(
-      rc.rectangle(2, 2, rect.width + 4, rect.height + 4, {
-        stroke: el.dataset.rough || '#333',
-        strokeWidth: 2.2,
-        roughness: 1.6,
-        bowing: 1.2,
-        fill: 'none',
-      })
-    );
+    const opts = {
+      stroke: el.dataset.rough || '#333',
+      strokeWidth: 2.2,
+      roughness: 1.6,
+      bowing: 1.2,
+      fill: 'none',
+    };
+    if (el.dataset.roughDash) opts.strokeLineDash = [9, 7];
+    const w = rect.width + 4, h = rect.height + 4;
+    const shape = el.dataset.roughShape || 'box';
+    if (shape === 'diamond') {
+      svg.appendChild(rc.polygon([[2 + w / 2, 2], [2 + w, 2 + h / 2], [2 + w / 2, 2 + h], [2, 2 + h / 2]], opts));
+    } else if (shape === 'pill') {
+      const rr = h / 2;
+      svg.appendChild(rc.path(
+        'M ' + (2 + rr) + ' 2 H ' + (2 + w - rr) + ' A ' + rr + ' ' + rr + ' 0 0 1 ' + (2 + w - rr) + ' ' + (2 + h) +
+        ' H ' + (2 + rr) + ' A ' + rr + ' ' + rr + ' 0 0 1 ' + (2 + rr) + ' 2 Z', opts));
+    } else {
+      svg.appendChild(rc.rectangle(2, 2, w, h, opts));
+    }
     el.style.position = 'relative';
     el.appendChild(svg);
   });

@@ -111,6 +111,8 @@
       used += row.height + (r ? rowGapPx : 0);
     }
 
+    if (window.drawFlowchartEdges) window.drawFlowchartEdges(document);
+
     window.LAYOUT = {
       spillIndexes: spillIndexes,
       usedPx: Math.round(used),
