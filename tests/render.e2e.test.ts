@@ -25,7 +25,7 @@ function makePost(template: string): Post {
 afterAll(async () => { await closeBrowser(); });
 
 describe('renderSlide', () => {
-  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall'])('%s produces a 1080x1440 png with no overflow', async (template) => {
+  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet'])('%s produces a 1080x1440 png with no overflow', async (template) => {
     const out = path.join(tmpdir(), `iolar-test-${template}-${Date.now()}.png`);
     const r = await renderSlide(makePost(template), 0, out);
     expect(existsSync(out)).toBe(true);
@@ -71,7 +71,7 @@ describe('renderSlide', () => {
     expect(again.slides.length).toBe(slides.length);
   }, 480_000);
 
-  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall'])(
+  it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet'])(
     '%s fills a dense page without overflowing',
     async (template) => {
       const dense = makePost(template);
@@ -102,4 +102,71 @@ describe('renderSlide', () => {
     const [ba, bb] = await Promise.all([sharp(a).raw().toBuffer(), sharp(b).raw().toBuffer()]);
     expect(Buffer.compare(ba, bb)).toBe(0);
   }, 120_000);
+});
+
+function kitchenSink(template: string): Post {
+  return validatePost({
+    brand: 'iolar', template, ratio: '3:4', seed: 11,
+    series: 'BINARY SEARCH PATTERNS', date: '06/09/2026',
+    slides: [{
+      page_title: 'Every New Block', blocks: [
+        { type: 'heading', text: '1. What is it?' },
+        { type: 'paragraph', text: 'Finds a target in a ==sorted array== by __halving__ the space.', frame: 'dashed', ink: 'green' },
+        { type: 'heading', text: '2. Steps' },
+        { type: 'bullets', style: 'number', items: ['Start with the whole array', 'Find the middle', 'Go **left** or **right**'] },
+        { type: 'heading', text: '3. Mistakes' },
+        { type: 'bullets', style: 'cross', items: ['`(low + high) / 2` overflows', 'Using `<` in the loop'], frame: 'solid', ink: 'red' },
+        { type: 'code', lang: 'java', lines: ['int mid = low + (high - low) / 2;', 'if (arr[mid] == target) return mid;'], note: 'sorted only' },
+        { type: 'diagram', kind: 'array', spec: { cells: ['2', '5', '8', '12', '16', '23', '38'], pointers: [{ index: 0, label: 'low' }, { index: 3, label: 'mid', ink: 'red' }, { index: 6, label: 'high' }], highlight: [3], dim: [0, 1], caption: '12 < 16 → right' } },
+        { type: 'table', headers: ['Step', 'low', 'high', 'mid', 'action'], rows: [['1', '0', '8', '4', 'right'], ['2', '5', '8', '6', 'left'], ['3', '5', '5', '5', 'found']], highlightRow: 2 },
+        { type: 'diagram', kind: 'flowchart', spec: {
+          rows: [['s'], ['m'], ['d'], ['l', 'r'], ['e']],
+          nodes: { s: { text: 'Start', shape: 'pill' }, m: { text: 'mid = low + (high-low)/2' }, d: { text: 'arr[mid] == target?', shape: 'diamond' }, l: { text: 'Search left', ink: 'blue' }, r: { text: 'Search right', ink: 'blue' }, e: { text: 'Not found', ink: 'red' } },
+          edges: [{ from: 's', to: 'm' }, { from: 'm', to: 'd' }, { from: 'd', to: 'l', label: 'no' }, { from: 'd', to: 'r', label: 'no' }, { from: 'l', to: 'e' }, { from: 'r', to: 'e' }],
+        } },
+        { type: 'callout', style: 'sticky', title: 'Key idea', text: 'One half is always sorted' },
+        { type: 'diagram', kind: 'matrix', spec: { rows: [['1', '3', '5'], ['10', '11', '16']], highlight: [[1, 2]], caption: 'n = 3' } },
+        { type: 'diagram', kind: 'flow', spec: { nodes: [{ text: 'Define', sub: 'answer', ink: 'red' }, { text: 'Search space', ink: 'orange' }, { text: 'isPossible', ink: 'blue' }] } },
+        { type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'Find target', lines: ['compare arr[low] & arr[mid]'] }, { title: 'Find pivot', lines: ['compare arr[mid] & arr[high]'], ink: 'orange' }, { title: 'Duplicates', lines: ['low++, high--'], ink: 'purple' }] } },
+      ],
+    }],
+    caption: { text: '', hashtags: [] },
+  });
+}
+
+describe('new blocks render', () => {
+  it.each(['study-sheet', 'spiral-notes'])('%s renders every new block on one page with no overflow', async (template) => {
+    const out = path.join(tmpdir(), `iolar-sink-${template}.png`);
+    const r = await renderSlide(kitchenSink(template), 0, out);
+    expect(existsSync(out)).toBe(true);
+    expect(r.overflowPx).toBe(0);
+    expect(r.warnings).toEqual([]);
+    const meta = await sharp(out).metadata();
+    expect([meta.width, meta.height]).toEqual([1080, 1440]);
+  }, 90_000);
+
+  it('reports a truncated code line as a warning', async () => {
+    const post = kitchenSink('spiral-notes');
+    post.slides[0].blocks = [{ type: 'code', lang: 'python', lines: ['x'.repeat(95)] }];
+    const r = await renderSlide(post, 0, path.join(tmpdir(), 'iolar-warn.png'));
+    expect(r.warnings).toEqual(['block 0: code line 1 truncated at 80 chars']);
+  }, 90_000);
+
+  it('writes a contact sheet of the kitchen sink across every family', async () => {
+    const { TEMPLATES } = await import('@/lib/schema');
+    const tiles: Buffer[] = [];
+    for (const template of TEMPLATES) {
+      const out = path.join(tmpdir(), `iolar-sink-${template}.png`);
+      const r = await renderSlide(kitchenSink(template), 0, out);
+      expect(r.overflowPx, template).toBe(0);
+      tiles.push(await sharp(out).resize(360, 480).png().toBuffer());
+    }
+    const cols = 3, rows = Math.ceil(tiles.length / cols);
+    const sheet = path.join(tmpdir(), 'iolar-blocks-contact.png');
+    await sharp({ create: { width: cols * 360, height: rows * 480, channels: 3, background: '#ffffff' } })
+      .composite(tiles.map((input, i) => ({ input, left: (i % cols) * 360, top: Math.floor(i / cols) * 480 })))
+      .png().toFile(sheet);
+    expect(existsSync(sheet)).toBe(true);
+    console.log('contact sheet:', sheet);
+  }, 600_000);
 });
