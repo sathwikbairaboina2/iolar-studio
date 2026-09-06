@@ -73,6 +73,19 @@ describe('fitToPages guard', () => {
   });
 });
 
+describe('uncoveredPoints counts diagram text', () => {
+  it('a point taught inside a cards strip or a chain is covered', async () => {
+    const { uncoveredPoints } = await import('@/lib/ai/fit');
+    const book = { title: 't', summary: 's', chapters: [{ title: 'c', points: ['candidate key is a minimal super key', 'roles grant temporary permissions'] }] } as never;
+    const post = base();
+    post.slides[0].blocks = [
+      { type: 'diagram', kind: 'chain', spec: { steps: [{ text: 'Candidate Key', note: 'minimal super key' }] } },
+      { type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'Roles', text: 'grant temporary permissions', lines: [] }, { title: 'Users', lines: [] }] } },
+    ] as never;
+    expect(uncoveredPoints(book, post)).toEqual([]);
+  });
+});
+
 describe('uncoveredPoints ignores inline markers', () => {
   it('a highlighted keyword still counts as covered', async () => {
     const { uncoveredPoints } = await import('@/lib/ai/fit');

@@ -2,6 +2,7 @@ import { Post, validatePost } from '../schema';
 import { loadPost } from '../store';
 import { thinker } from './runner';
 import { extractJson } from './revise';
+import { PRESERVE_RULE } from './rules';
 
 /**
  * After auto-flow splits a page, continuation pages carry a "(cont.)" placeholder title.
@@ -15,6 +16,7 @@ export async function fixHeadings(subject: string, chapter: string, part: number
     'A handwritten-notes carousel was reflowed, so some pages were split and carry "(cont.)" placeholder titles.',
     'Rewrite ONLY the page_title of each slide so the sequence reads as a deliberate handbook: a split pair becomes two distinct, specific titles describing what is actually on each page (for example "Python Lists" and "List Methods & Slicing"), never "(cont.)".',
     'Change nothing else — every block must stay byte-identical, and the slide count must not change.',
+    PRESERVE_RULE,
     'Current titles:',
     titles,
     'Current post JSON:',

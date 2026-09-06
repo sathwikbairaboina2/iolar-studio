@@ -4,6 +4,7 @@ import { Post, validatePost } from '../schema';
 import { loadPost } from '../store';
 import { renderSlide, mergeContinuations } from '../renderer/capture';
 import { stripInline } from '../renderer/inline';
+import { SCHEMA_RULES, PRESERVE_RULE } from './rules';
 import { Book, loadBook } from './book';
 import { thinker } from './runner';
 import { extractJson } from './revise';
@@ -18,6 +19,13 @@ function pointKeywords(point: string): string[] {
   return (point.toLowerCase().match(/[a-z_][a-z0-9_().]{2,}/g) ?? [])
     .filter((w) => !STOP.has(w))
     .slice(0, 6);
+}
+
+function stringsIn(v: unknown): string[] {
+  if (typeof v === 'string') return [v];
+  if (Array.isArray(v)) return v.flatMap(stringsIn);
+  if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).flatMap(stringsIn);
+  return [];
 }
 
 function postText(post: Post): string {
@@ -36,6 +44,8 @@ function postText(post: Post): string {
         parts.push(...b.headers);
         for (const row of b.rows) parts.push(...row);
       }
+      // Diagrams teach too: every string inside a spec counts (card text, chain notes, schema columns, node labels).
+      if (b.type === 'diagram') parts.push(...stringsIn(b.spec));
     }
   }
   return stripInline(parts.join(' ')).toLowerCase();
@@ -93,11 +103,14 @@ export async function fitToPages(
       .join('\n')}`,
     'NEVER remove or shorten existing content. Every fact, bullet, table row and code line that is already there must survive verbatim. You may only ADD.',
     'Do not change the number of slides. Keep the numbered section structure and the study-notes voice.',
-    'New blocks stay short: bullets one line each, table cells 1-3 words, code lines under 45 characters.',
+    'New blocks stay short: bullets one line each, table cells 1-3 words, code lines under 60 characters.',
+    PRESERVE_RULE,
     book ? `Draw the added material from this book (syllabus), preferring points that are currently thin:\n${JSON.stringify(book)}` : '',
     'Current post JSON:',
     JSON.stringify(post),
     'Return ONLY the complete updated post JSON, no prose and no markdown fences.',
+    'Schema and vocabulary:',
+    SCHEMA_RULES,
   ].filter(Boolean).join('\n\n');
 
   const out = await thinker()(prompt, { timeoutMs: 900_000 });

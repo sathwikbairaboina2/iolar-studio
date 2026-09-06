@@ -1,4 +1,5 @@
 import { Post, validatePost, MAX_SLIDES } from '../schema';
+import { SCHEMA_RULES, PRESERVE_RULE } from './rules';
 import { thinker } from './runner';
 
 export function extractJson(s: string): unknown {
@@ -23,7 +24,8 @@ function buildPrompt(post: Post, request: string, scope: string, slideIndex?: nu
     'You edit Instagram notes-carousel content stored as JSON.',
     'Rules:',
     `- Return ONLY the complete updated post JSON. No prose, no markdown fences.`,
-    `- The JSON must match the existing schema exactly (same field names, block types: heading, paragraph, bullets, sidebox, table, code, diagram, callout, qa).`,
+    `- The JSON must match the schema below exactly.`,
+    `- ${PRESERVE_RULE}`,
     `- HARD LIMIT: at most ${MAX_SLIDES} slides. If content cannot fit, condense; mention a second post in caption text only if asked.`,
     `- ${scopeRule}`,
     '- Keep content technically accurate and concise; slides are handwritten-notes style.',
@@ -34,6 +36,9 @@ function buildPrompt(post: Post, request: string, scope: string, slideIndex?: nu
     '',
     'User request:',
     request,
+    '',
+    'Schema and vocabulary:',
+    SCHEMA_RULES,
   ].filter(Boolean).join('\n');
 }
 

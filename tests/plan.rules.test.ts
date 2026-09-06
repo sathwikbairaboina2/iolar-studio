@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SCHEMA_RULES, RECIPE_GUIDANCE } from '@/lib/ai/plan';
+import { PRESERVE_RULE, SCHEMA_RULES as RULES2 } from '@/lib/ai/rules';
 import { DIAGRAM_KINDS, BULLET_STYLES, TEMPLATES } from '@/lib/schema';
 
 describe('SCHEMA_RULES teaches the whole vocabulary', () => {
@@ -28,5 +29,12 @@ describe('SCHEMA_RULES teaches the whole vocabulary', () => {
   });
   it('recipe guidance covers the pattern page and the revision sheet', () => {
     for (const w of ['dry run', 'revision sheet', 'flowchart', 'complexity']) expect(RECIPE_GUIDANCE.toLowerCase()).toContain(w);
+  });
+});
+
+describe('shared rules module', () => {
+  it('plan re-exports the same rules the other stages import', () => {
+    expect(RULES2).toBe(SCHEMA_RULES);
+    for (const f of ['"hero"', '"icon"', '"frame"', '{icon:name}']) expect(PRESERVE_RULE).toContain(f);
   });
 });
