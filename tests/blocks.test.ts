@@ -73,9 +73,4 @@ describe('renderBlockHtml', () => {
     expect(h).toContain('dg-node');
     expect((h.match(/dg-arrow/g) ?? []).length).toBe(2);
   });
-
-  it('non-flow diagram renders staged box', () => {
-    const h = renderBlockHtml({ type: 'diagram', kind: 'tree', spec: { root: 'x' } } as Block);
-    expect(h).toContain('b-diagram-staged');
-  });
 });

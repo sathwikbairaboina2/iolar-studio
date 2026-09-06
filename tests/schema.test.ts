@@ -28,3 +28,75 @@ describe('PostSchema', () => {
     expect(() => validatePost({ ...minimal, ratio: '9:16' })).toThrow();
   });
 });
+
+describe('block additions', () => {
+  const withBlock = (block: unknown) => ({
+    ...minimal, slides: [{ page_title: 'P', blocks: [block] }],
+  });
+
+  it('accepts list styles, frames and inks on bullets', () => {
+    const p = validatePost(withBlock({ type: 'bullets', items: ['a'], style: 'number', frame: 'dashed', ink: 'purple' }));
+    const b = p.slides[0].blocks[0];
+    expect(b).toMatchObject({ style: 'number', frame: 'dashed', ink: 'purple' });
+  });
+
+  it('rejects an unknown list style', () => {
+    expect(() => validatePost(withBlock({ type: 'bullets', items: ['a'], style: 'star' }))).toThrow();
+  });
+
+  it('accepts frame and ink on paragraph, highlightRow on table, note on code', () => {
+    validatePost(withBlock({ type: 'paragraph', text: 'x', frame: 'solid', ink: 'orange' }));
+    validatePost(withBlock({ type: 'table', headers: ['a'], rows: [['1']], highlightRow: 0, frame: 'dashed' }));
+    validatePost(withBlock({ type: 'code', lang: 'java', lines: ['int x;'], note: 'sorted only' }));
+  });
+
+  it('rejects a negative highlightRow', () => {
+    expect(() => validatePost(withBlock({ type: 'table', headers: ['a'], rows: [['1']], highlightRow: -1 }))).toThrow();
+  });
+
+  it('accepts sticky callouts', () => {
+    validatePost(withBlock({ type: 'callout', style: 'sticky', title: 'T', text: 't' }));
+    validatePost(withBlock({ type: 'callout', style: 'sticky-pink', title: 'T', text: 't' }));
+  });
+
+  it('accepts every diagram kind with its spec', () => {
+    validatePost(withBlock({ type: 'diagram', kind: 'flow', spec: { nodes: ['a', { text: 'b', sub: 's', ink: 'green' }] } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'array', spec: { cells: ['2', '5'], pointers: [{ index: 0, label: 'low' }], highlight: [1], dim: [], caption: 'c' } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'flowchart', spec: {
+      rows: [['s'], ['d'], ['l', 'r']],
+      nodes: { s: { text: 'Start' }, d: { text: 'ok?', shape: 'diamond' }, l: { text: 'L' }, r: { text: 'R', ink: 'red' } },
+      edges: [{ from: 's', to: 'd' }, { from: 'd', to: 'l', label: 'yes' }, { from: 'd', to: 'r', label: 'no' }],
+    } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'matrix', spec: { rows: [['1', '2'], ['3', '4']], highlight: [[0, 1]] } }));
+    validatePost(withBlock({ type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'A', lines: ['x'] }, { title: 'B', lines: ['y'], ink: 'blue' }] } }));
+  });
+
+  it('rejects removed diagram kinds and wrong specs', () => {
+    expect(() => validatePost(withBlock({ type: 'diagram', kind: 'memory-cells', spec: {} }))).toThrow();
+    expect(() => validatePost(withBlock({ type: 'diagram', kind: 'array', spec: { nodes: ['a'] } }))).toThrow();
+    expect(() => validatePost(withBlock({ type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'only one', lines: ['x'] }] } }))).toThrow();
+    expect(() => validatePost(withBlock({ type: 'diagram', kind: 'flowchart', spec: { rows: [['a']], nodes: { a: { text: 'a' } }, edges: [{ from: 'a', to: 'zzz' }] } }))).toThrow();
+  });
+
+  it('accepts study-sheet as a template', () => {
+    validatePost({ ...minimal, template: 'study-sheet' });
+  });
+
+  it('still validates every stored post', async () => {
+    const { readdirSync, readFileSync, existsSync } = await import('fs');
+    const path = await import('path');
+    const root = path.join(process.cwd(), 'data', 'handbooks');
+    if (!existsSync(root)) return;
+    for (const subject of readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory())) {
+      const sdir = path.join(root, subject.name);
+      for (const chapter of readdirSync(sdir, { withFileTypes: true }).filter((d) => d.isDirectory())) {
+        const parts = path.join(sdir, chapter.name, 'parts');
+        if (!existsSync(parts)) continue;
+        for (const part of readdirSync(parts)) {
+          const f = path.join(parts, part, 'post.json');
+          if (existsSync(f)) expect(() => validatePost(JSON.parse(readFileSync(f, 'utf8')))).not.toThrow();
+        }
+      }
+    }
+  });
+});
