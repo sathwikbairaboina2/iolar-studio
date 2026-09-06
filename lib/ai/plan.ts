@@ -110,10 +110,18 @@ export async function densifySlides(
 ): Promise<Post> {
   const post = await loadPost(subject, chapter, part);
   const book = await loadBook(subject, chapter);
-  const list = underfilled.map((u) => `slide ${u.slide} (only ${u.fillPct}% full)`).join(', ');
+  // Blocks are the currency the model can count, so the ask is in blocks, not in percent:
+  // "grow toward 100%" makes it overshoot by a page, which spills and leaves a thinner tail.
+  const list = underfilled
+    .map((u) => {
+      const have = post.slides[u.slide - 1]?.blocks.length ?? 0;
+      const add = Math.max(1, Math.round((have * (100 - u.fillPct)) / Math.max(u.fillPct, 25)));
+      return `slide ${u.slide} (${u.fillPct}% full, ${have} blocks — add about ${add} more)`;
+    })
+    .join(', ');
   const prompt = [
     'You are tightening a handwritten-notes carousel so every page looks fully used.',
-    `These slides have wasted space: ${list}. Grow ONLY those slides toward ~100% fill by adding genuinely useful content — another numbered section, more table rows, an extra example, a tip callout. Do not pad with filler and do not touch the other slides.`,
+    `These slides have wasted space: ${list}. Grow ONLY those slides to just fill the page — roughly the number of blocks named, no more, since overshooting spills onto a new near-empty page — by adding genuinely useful content — another numbered section, more table rows, an extra example, a tip callout. Do not pad with filler and do not touch the other slides.`,
     book ? `The book (syllabus) for this post — prefer adding points from it that are thin or missing:\n${JSON.stringify(book)}` : '',
     'Current post JSON:',
     JSON.stringify(post),

@@ -43,9 +43,12 @@ async function renderWhole(subject: string, chapter: string, part: number, spill
   let results: Results = out.results;
   let split = false;
   let followUp: { moved: number; part: number } | null = null;
-  if (out.slides.length !== post.slides.length) {
+  // The flow's own pages are written back whenever they differ from what was authored —
+  // a different page count, or a page it had to carry over. Otherwise a "(cont.)" title
+  // lives only inside the render, where no later pass can see or rename it.
+  if (out.slides.length !== post.slides.length || out.slides.some((s) => s.cont)) {
     await savePost(subject, chapter, part, { ...post, slides: out.slides });
-    split = true;
+    split = out.slides.length !== post.slides.length;
   }
   // Content is never trimmed: pages past the carousel limit become the next part.
   if (spill && out.slides.length > MAX_SLIDES) {
@@ -63,8 +66,16 @@ async function renderWhole(subject: string, chapter: string, part: number, spill
   return { results, split, followUp };
 }
 
-/** Golden rule: pages must use their space. Pages under this fill (except the last) get densified. */
+/** Golden rule: pages must use their space. Pages under this fill get densified. */
 const POLISH_MIN_FILL = 85;
+/** The last page ends the handbook, so it may run short — but not half empty. */
+const POLISH_LAST_MIN_FILL = 60;
+
+/** A page the auto-flow carried over from the page before it. */
+const hasContinuation = (title: string) => / \(cont\.\)$/.test(title);
+
+/** The emptiest page of the part: what polish must never make worse. */
+const worstFill = (rs: Results) => Math.min(...rs.map((r) => r.fillPct));
 
 /** Re-enters this route for a follow-up part with polish on; returns its polish notes prefixed by part. */
 async function polishChain(req: Request, subject: string, chapter: string, part: number): Promise<string[]> {
@@ -104,20 +115,33 @@ export async function POST(req: Request, ctx: Ctx) {
       if (body.polish) {
         const polish: string[] = [];
         const under = results
-          .filter((r, i) => i < results.length - 1 && r.fillPct < POLISH_MIN_FILL)
+          .filter((r, i) => r.fillPct < (i < results.length - 1 ? POLISH_MIN_FILL : POLISH_LAST_MIN_FILL))
           .map((r) => ({ slide: r.slide, fillPct: r.fillPct }));
         if (under.length) {
+          // Densifying can backfire: added content overflows onto a new page that is thinner
+          // than the one we set out to fill. The pixels decide — a pass that lowers the worst
+          // fill on the part is undone and the pages we already had are put back.
           const { densifySlides } = await import('@/lib/ai/plan');
+          const before = { post: await loadPost(subject, chapter, part), worst: worstFill(results) };
           await savePost(subject, chapter, part, await densifySlides(subject, chapter, part, under));
           ({ results, split, followUp } = await renderWhole(subject, chapter, part, body.spillToFollowUp !== false));
-          polish.push(`densified ${under.length} page(s)`);
+          if (worstFill(results) < before.worst) {
+            await savePost(subject, chapter, part, before.post);
+            ({ results, split, followUp } = await renderWhole(subject, chapter, part, body.spillToFollowUp !== false));
+            polish.push(`densify rolled back (worst fill ${worstFill(results)}% beat the attempt)`);
+          } else {
+            polish.push(`densified ${under.length} page(s)`);
+          }
         }
-        const now = await loadPost(subject, chapter, part);
-        if (now.slides.some((s) => / \(cont\.\)$/.test(s.page_title))) {
-          const { fixHeadings } = await import('@/lib/ai/headings');
+        // Renaming changes the titles, the re-render reflows, and the new split can mint a
+        // fresh "(cont.)" page — so rename until the pages settle, twice at most.
+        const { fixHeadings } = await import('@/lib/ai/headings');
+        for (let pass = 0; pass < 2; pass++) {
+          const now = await loadPost(subject, chapter, part);
+          if (!now.slides.some((s) => hasContinuation(s.page_title))) break;
           await savePost(subject, chapter, part, await fixHeadings(subject, chapter, part));
           ({ results } = await renderWhole(subject, chapter, part, false));
-          polish.push('continuation titles rewritten');
+          polish.push(pass === 0 ? 'continuation titles rewritten' : 'continuation titles rewritten again after the reflow');
         }
         await writeReport(subject, chapter, part, results);
         // A spill during this render minted a follow-up part; polish it the same way so the

@@ -61,6 +61,8 @@ VOCABULARY RULES:
 - Code lines at most 34 characters so a snippet can sit inside a column; a longer line forces the block full width and a line over 80 is cut.
 
 "page_title" is the section name ONLY — never write "Page 3:" or a page number in it; the template adds that.
+Keep "page_title" under 42 characters and "subtitle" under 30 (a 2-4 word gloss): together they are one
+headline line, and a longer pair wraps onto a second line and eats the page.
 
 WRITE SHORT BLOCKS, MANY OF THEM. This is the single most important rule. Real study-notes
 pages are dense because they carry MANY SMALL items, not a few long ones. A page is a

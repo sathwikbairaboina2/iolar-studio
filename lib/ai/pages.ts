@@ -1,6 +1,6 @@
 import { Post, Slide, validatePost, validateSlide } from '../schema';
 import { getSettings } from '../settings';
-import { loadPost, savePost } from '../store';
+import { loadPost, savePost, loadChapterMeta } from '../store';
 import { thinker, Runner } from './runner';
 import { extractJson } from './revise';
 import { Book, loadBook } from './book';
@@ -70,6 +70,16 @@ export function captionPrompt(book: Book, brand: string): string {
     `Handbook: "${book.title}" — ${book.summary}. Pages: ${book.chapters.map((c) => c.title).join('; ')}.`,
     'Return ONLY {"text": string, "hashtags": [string, ...]} — 2-3 sentences, hook first, then 8-12 relevant hashtags. No prose, no fences.',
   ].join('\n\n');
+}
+
+/**
+ * The ribbon name for the carousel. Creating a chapter seeds part 1 with the chapter title
+ * as its series, so that placeholder must lose to the book's own title; anything the user
+ * typed themselves wins. Long book titles carry a colon subtitle the ribbon has no room for.
+ */
+export function seriesFor(existing: string | undefined, placeholder: string | undefined, bookTitle: string): string {
+  if (existing && existing.toUpperCase() !== (placeholder ?? '').toUpperCase()) return existing;
+  return bookTitle.split(/[:—–|]/)[0].trim().toUpperCase();
 }
 
 /** What every other chapter covers, straight from the book, so a page never repeats a neighbour. */
@@ -152,7 +162,7 @@ export async function planPagesFromBook(
     template,
     ratio: existing?.ratio ?? s.defaultRatio,
     seed: existing?.seed ?? 42,
-    series: existing?.series ?? book.title.toUpperCase(),
+    series: seriesFor(existing?.series, (await loadChapterMeta(subject, chapter).catch(() => null))?.title, book.title),
     date: existing?.date ?? new Date().toLocaleDateString('en-GB'),
     slides,
     caption,

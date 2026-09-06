@@ -41,6 +41,15 @@ describe('chapterPrompt', () => {
   });
 });
 
+describe('seriesFor', () => {
+  it('drops the placeholder a new chapter seeds, keeps a series the user typed, and trims a colon subtitle', async () => {
+    const { seriesFor } = await import('@/lib/ai/pages');
+    expect(seriesFor('STORAGE', 'Storage', 'Kubernetes Storage Handbook: Volumes, PV, PVC')).toBe('KUBERNETES STORAGE HANDBOOK');
+    expect(seriesFor('IOLAR DEEP DIVE', 'Storage', 'Kubernetes Storage Handbook')).toBe('IOLAR DEEP DIVE');
+    expect(seriesFor(undefined, undefined, 'Docker Complete Notes')).toBe('DOCKER COMPLETE NOTES');
+  });
+});
+
 describe('planPagesFromBook', () => {
   it('asks once per chapter (in parallel), then once for the caption, assembles a valid post and saves it', async () => {
     const { createSubject, createChapter, createPart } = await import('@/lib/store');

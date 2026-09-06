@@ -42,6 +42,47 @@ describe('fixHeadings', () => {
     expect((await loadPost('python', 'head', 1)).slides[1].page_title).toBe('Lists (cont.)');
   });
 
+  it('drops the continuation flag from a page it renamed, so the next render cannot merge it back', async () => {
+    const proposal = base();
+    proposal.slides[1].page_title = 'List Methods and Slicing';
+    vi.doMock('@/lib/ai/claude', () => ({
+      runClaude: vi.fn().mockResolvedValue(JSON.stringify(proposal)),
+      ClaudeUnavailableError: class extends Error {},
+    }));
+
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'head3');
+    const start = base();
+    start.slides[1].cont = true;
+    await savePost('python', 'head3', 1, start);
+    const { fixHeadings } = await import('@/lib/ai/headings');
+    const out = await fixHeadings('python', 'head3', 1);
+
+    expect(out.slides[1].page_title).toBe('List Methods and Slicing');
+    expect(out.slides[1].cont).toBeUndefined();
+    const { mergeContinuations } = await import('@/lib/renderer/capture');
+    expect(mergeContinuations(out.slides).length).toBe(2);
+  });
+
+  it('keeps the flag on a page it left as a continuation', async () => {
+    const proposal = base();
+    vi.doMock('@/lib/ai/claude', () => ({
+      runClaude: vi.fn().mockResolvedValue(JSON.stringify(proposal)),
+      ClaudeUnavailableError: class extends Error {},
+    }));
+
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'head4');
+    const start = base();
+    start.slides[1].cont = true;
+    await savePost('python', 'head4', 1, start);
+    const { fixHeadings } = await import('@/lib/ai/headings');
+    const out = await fixHeadings('python', 'head4', 1);
+    expect(out.slides[1].cont).toBe(true);
+  });
+
   it('rejects a proposal that changes the slide count', async () => {
     const bad = base();
     bad.slides.push({ page_title: 'Extra', blocks: [{ type: 'heading', text: 'C' }] });

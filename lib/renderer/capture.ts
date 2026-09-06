@@ -138,7 +138,6 @@ export async function renderAll(
     const source = queue[0].from;
     const base = authored[source].page_title.replace(/ \(cont\.\)$/, '');
     const isCont = started.has(source);
-    started.add(source);
 
     const src = authored[source];
     const candidate: Post['slides'][number] = {
@@ -162,8 +161,31 @@ export async function renderAll(
     const kept = queue.filter((_, j) => !spilled.has(j)).slice(0, Math.max(keepCount, 1));
     const keptSet = new Set(kept.map((k) => k.block));
 
-    slides.push({ ...candidate, blocks: kept.map((k) => k.block) });
-    results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
+    // A page belongs to the chapter that owns most of it. Titling by the first block instead
+    // lets one carried-over block rename a whole page after the chapter before it — and that
+    // "(cont.)" comes back on every reflow, so no rename ever sticks.
+    const tally = new Map<number, number>();
+    for (const k of kept) tally.set(k.from, (tally.get(k.from) ?? 0) + 1);
+    const owner = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
+    let finished = { ...candidate, blocks: kept.map((k) => k.block) };
+    let measured = r;
+    if (owner !== source) {
+      const ownerSrc = authored[owner];
+      const ownerCont = started.has(owner);
+      finished = {
+        page_title: ownerCont ? `${ownerSrc.page_title.replace(/ \(cont\.\)$/, '')} (cont.)` : ownerSrc.page_title.replace(/ \(cont\.\)$/, ''),
+        blocks: finished.blocks,
+        ...(ownerCont ? { cont: true } : {}),
+        ...(ownerSrc.hero ? { hero: ownerSrc.hero } : {}),
+        ...(ownerSrc.subtitle ? { subtitle: ownerSrc.subtitle } : {}),
+      };
+      // The title is one line of the page, so the page is measured again under its real title.
+      measured = await renderSlide({ ...post, slides: [...slides, finished] }, page, file);
+    }
+    started.add(owner);
+
+    slides.push(finished);
+    results.push({ slide: page + 1, overflowPx: measured.overflowPx, fillPct: measured.fillPct, file, warnings: measured.warnings });
     queue = queue.filter((q) => !keptSet.has(q.block));
   }
   }

@@ -29,7 +29,13 @@ export async function fixHeadings(subject: string, chapter: string, part: number
   if (proposal.slides.length !== post.slides.length) {
     throw new Error('heading pass changed the slide count — rejected');
   }
-  // Titles change; split provenance must not, or a later re-render cannot rebalance the chain.
-  proposal.slides = proposal.slides.map((s, i) => ({ ...s, cont: post.slides[i].cont }));
+  // A page that got its own title is its own chapter now, so the continuation flag has to go:
+  // renderAll merges every slide still flagged `cont` back into the page before it, which would
+  // re-split it and put "(cont.)" straight back — the rename could never survive one reflow.
+  // Blocks still flow across chapter boundaries, so the pages rebalance either way.
+  proposal.slides = proposal.slides.map((s, i) => {
+    const stillContinuation = / \(cont\.\)$/.test(s.page_title);
+    return stillContinuation ? { ...s, cont: post.slides[i].cont } : { ...s, cont: undefined };
+  });
   return proposal;
 }
