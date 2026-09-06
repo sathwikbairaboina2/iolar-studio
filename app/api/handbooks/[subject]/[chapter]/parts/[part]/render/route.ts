@@ -68,8 +68,8 @@ async function renderWhole(subject: string, chapter: string, part: number, spill
 
 /** Golden rule: pages must use their space. Pages under this fill get densified. */
 const POLISH_MIN_FILL = 85;
-/** The last page ends the handbook, so it may run short — but not half empty. */
-const POLISH_LAST_MIN_FILL = 60;
+/** The last page ends the handbook, so it may run a little short — but not visibly empty. */
+const POLISH_LAST_MIN_FILL = 80;
 
 /** A page the auto-flow carried over from the page before it. */
 const hasContinuation = (title: string) => / \(cont\.\)$/.test(title);
