@@ -46,6 +46,20 @@ describe('splitIntoFollowUp', () => {
     expect((await loadPost('s', 'c', 2)).slides.length).toBe(4);
   });
 
+  it('a smaller re-spill keeps chapters the follow-up already held', async () => {
+    const { createSubject, createChapter, createPart, savePost, loadPost } = await import('@/lib/store');
+    const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
+    await createSubject('s', { name: 'S' });
+    await createChapter('s', 'c', 'C');
+    await createPart('s', 'c', 1, post(13) as never);
+    await splitIntoFollowUp('s', 'c', 1); // part 2 now holds P11, P12, P13
+    // Part 1 re-rendered denser: it still holds P1-P10 plus only P11 over the limit.
+    await savePost('s', 'c', 1, post(11) as never);
+    const r = await splitIntoFollowUp('s', 'c', 1);
+    expect(r).toEqual({ moved: 1, part: 2 });
+    expect((await loadPost('s', 'c', 2)).slides.map((x) => x.page_title)).toEqual(['P11', 'P12', 'P13']);
+  });
+
   it('never overwrites a part the user planned themselves', async () => {
     const { createSubject, createChapter, createPart, listParts } = await import('@/lib/store');
     const { splitIntoFollowUp } = await import('@/lib/ai/spillover');

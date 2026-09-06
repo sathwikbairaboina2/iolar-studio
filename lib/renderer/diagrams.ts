@@ -61,8 +61,9 @@ function flowchart(spec: Extract<D, { kind: 'flowchart' }>['spec']): string {
     .join('');
   const edges = e(JSON.stringify(spec.edges));
   const title = spec.title ? `<div class="fc-title" data-jitter>${t(spec.title)}</div>` : '';
+  const labelled = spec.edges.some((ed) => ed.label) ? ' fc-labelled' : '';
   const titled = spec.title ? ' dg-titled" data-rough="var(--ink-blue)" data-rough-dash="1' : '';
-  return `<div class="b-diagram dg-flowchart${titled}" data-edges="${edges}">${title}${rows}<svg class="fc-edges"></svg></div>`;
+  return `<div class="b-diagram dg-flowchart${labelled}${titled}" data-edges="${edges}">${title}${rows}<svg class="fc-edges"></svg></div>`;
 }
 
 function matrix(spec: Extract<D, { kind: 'matrix' }>['spec']): string {
@@ -87,7 +88,7 @@ function cards(spec: Extract<D, { kind: 'cards' }>['spec']): string {
       return `<div class="card" data-rough="${ink(c.ink)}"><div class="card-title" style="color:${ink(c.ink)}" data-jitter>${t(c.title)}</div>${icon}${text}${lines}${code}${chain}</div>`;
     })
     .join('');
-  return `<div class="b-diagram dg-cards" style="--card-cols:${spec.cards.length}">${items}</div>`;
+  return `<div class="b-diagram dg-cards cards-n${spec.cards.length}" style="--card-cols:${spec.cards.length}">${items}</div>`;
 }
 
 function chain(spec: Extract<D, { kind: 'chain' }>['spec']): string {

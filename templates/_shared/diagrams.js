@@ -43,9 +43,10 @@
     return p;
   }
 
-  function label(ctx, x, y, text, cls, color) {
+  function label(ctx, x, y, text, cls, color, anchor) {
     var tx = document.createElementNS(NS, 'text');
     tx.setAttribute('x', x); tx.setAttribute('y', y);
+    tx.setAttribute('text-anchor', anchor || 'middle');
     tx.setAttribute('class', cls || 'fc-label');
     tx.setAttribute('fill', color || 'var(--ink-black)');
     tx.textContent = text;
@@ -68,12 +69,13 @@
       try { edges = JSON.parse(chart.getAttribute('data-edges') || '[]'); } catch (e) { edges = []; }
       var nodes = {};
       chart.querySelectorAll('.fc-node').forEach(function (n) { nodes[n.getAttribute('data-id')] = box(n, chart); });
+      var labelsAt = {}; // labels already stacked above a target, so two never overlap
 
       edges.forEach(function (edge) {
         var a = nodes[edge.from], b = nodes[edge.to];
         if (!a || !b) return;
         var sameRow = Math.abs(a.cy - b.cy) < Math.max(a.h, b.h) / 2;
-        var points, lx, ly;
+        var points, lx, ly, anchor = 'middle';
         if (sameRow) {
           // Neighbours in one row: a straight horizontal arrow between facing edges.
           var leftToRight = b.cx > a.cx;
@@ -84,23 +86,26 @@
         } else if (b.cy > a.cy) {
           var y1 = a.y + a.h, y2 = b.y;
           if (Math.abs(a.cx - b.cx) < 4) {
+            // Straight drop: the label sits beside the line, never on a caption.
             points = [[a.cx, y1], [b.cx, y2]];
-            lx = a.cx + 6; ly = (y1 + y2) / 2;
+            lx = a.cx + 8; ly = (y1 + y2) / 2 + 5; anchor = 'start';
           } else {
             var ym = (y1 + y2) / 2;
             points = [[a.cx, y1], [a.cx, ym], [b.cx, ym], [b.cx, y2]];
-            // Label above the target's own drop, so two branches from one node never share a spot.
-            lx = b.cx; ly = y2 - 6;
+            // Label above the target's own drop, so two branches from one node never share a spot;
+            // a second label aimed at the same target stacks above the first.
+            var n = (labelsAt[edge.to] = (labelsAt[edge.to] || 0) + 1);
+            lx = b.cx; ly = y2 - 6 - (n - 1) * 14;
           }
         } else {
           // Back-edge: leave the bottom of a, run down the left margin, come in at b's side.
           var margin = 6;
           var yd = a.y + a.h + 8;
           points = [[a.cx, a.y + a.h], [a.cx, yd], [margin, yd], [margin, b.cy], [b.x, b.cy]];
-          lx = margin + 4; ly = (yd + b.cy) / 2;
+          lx = margin + 6; ly = (yd + b.cy) / 2; anchor = 'start';
         }
         line(ctx, points, { arrow: true });
-        if (edge.label) label(ctx, lx, ly, edge.label, 'fc-label', labelColor(edge.label));
+        if (edge.label) label(ctx, lx, ly, edge.label, 'fc-label', labelColor(edge.label), anchor);
       });
     });
   };
