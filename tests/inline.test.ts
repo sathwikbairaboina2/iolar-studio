@@ -23,6 +23,10 @@ describe('renderInline', () => {
     expect(renderInline('`__init__`')).toBe('<code class="mono">__init__</code>');
     expect(renderInline('call `a**b` now')).toBe('call <code class="mono">a**b</code> now');
   });
+  it('allows a single = inside a highlight', () => {
+    expect(renderInline('==stop, answer = 4==')).toBe('<mark class="hl">stop, answer = 4</mark>');
+    expect(stripInline('==a = b== c')).toBe('a = b c');
+  });
   it('does not cross lines', () => {
     expect(renderInline('==a\nb==')).toBe('==a\nb==');
   });

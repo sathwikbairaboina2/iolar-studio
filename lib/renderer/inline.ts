@@ -12,7 +12,8 @@ export function escapeHtml(s: string): string {
 
 const INK_RE = new RegExp(`\\{(${INLINE_INKS.join('|')}):([^{}\\n]+?)\\}`, 'g');
 const MARKERS: [RegExp, string][] = [
-  [/==([^=\n]+?)==/g, '<mark class="hl">$1</mark>'],
+  // A lone `=` may sit inside a highlight ("answer = 4"); only a double one closes it.
+  [/==((?:[^=\n]|=(?!=))+?)==/g, '<mark class="hl">$1</mark>'],
   [/\*\*([^*\n]+?)\*\*/g, '<span class="em">$1</span>'],
   [/__([^_\n]+?)__/g, '<span class="ul">$1</span>'],
   [INK_RE, '<span class="ink-$1">$2</span>'],
