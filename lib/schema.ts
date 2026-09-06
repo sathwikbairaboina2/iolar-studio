@@ -134,6 +134,27 @@ export const CoverSchema = z.object({
 });
 export type Cover = z.infer<typeof CoverSchema>;
 
+export const SlideSchema = z
+  .object({
+    page_title: z.string(),
+    blocks: z.array(BlockSchema),
+    /** Set by auto-flow: this page holds content spilled from the page before it.
+     *  Survives title rewrites, so a re-render can merge the chain and re-split evenly. */
+    cont: z.boolean().optional(),
+    /** A logo or icon drawn in the page chrome, top right (the AWS cloud, a bucket). */
+    hero: z.string().optional(),
+    /** Smaller line after the title: "(Identity and Access Management)". */
+    subtitle: z.string().optional(),
+    /** A cover is its own page: no blocks, never merged into or spilled from. */
+    kind: z.enum(['page', 'cover']).optional(),
+    cover: CoverSchema.optional(),
+  })
+  .superRefine((s, ctx) => {
+    if (s.kind === 'cover' && !s.cover) ctx.addIssue({ code: 'custom', message: 'a cover slide needs a "cover" object' });
+    if (s.kind !== 'cover' && s.blocks.length === 0) ctx.addIssue({ code: 'custom', message: 'a page needs at least one block' });
+  });
+export type SlideInput = z.input<typeof SlideSchema>;
+
 export const PostSchema = z.object({
   brand: z.string().default('iolar'),
   template: z.enum(TEMPLATES).default('spiral-notes'),
@@ -141,29 +162,7 @@ export const PostSchema = z.object({
   seed: z.number().int().default(42),
   series: z.string(),
   date: z.string(),
-  slides: z
-    .array(
-      z
-        .object({
-          page_title: z.string(),
-          blocks: z.array(BlockSchema),
-          /** Set by auto-flow: this page holds content spilled from the page before it.
-           *  Survives title rewrites, so a re-render can merge the chain and re-split evenly. */
-          cont: z.boolean().optional(),
-          /** A logo or icon drawn in the page chrome, top right (the AWS cloud, a bucket). */
-          hero: z.string().optional(),
-          /** Smaller line after the title: "(Identity and Access Management)". */
-          subtitle: z.string().optional(),
-          /** A cover is its own page: no blocks, never merged into or spilled from. */
-          kind: z.enum(['page', 'cover']).optional(),
-          cover: CoverSchema.optional(),
-        })
-        .superRefine((s, ctx) => {
-          if (s.kind === 'cover' && !s.cover) ctx.addIssue({ code: 'custom', message: 'a cover slide needs a "cover" object' });
-          if (s.kind !== 'cover' && s.blocks.length === 0) ctx.addIssue({ code: 'custom', message: 'a page needs at least one block' });
-        })
-    )
-    .min(1),
+  slides: z.array(SlideSchema).min(1),
   caption: z.object({ text: z.string(), hashtags: z.array(z.string()) }).default({ text: '', hashtags: [] }),
   /** Set on a part created by spillover: the part whose surplus pages it holds. A later spill from that part overwrites it. */
   spilledFrom: z.number().int().positive().optional(),
@@ -172,6 +171,10 @@ export const PostSchema = z.object({
 export type Post = z.infer<typeof PostSchema>;
 export type Slide = Post['slides'][number];
 export type Block = Slide['blocks'][number];
+
+export function validateSlide(data: unknown): Slide {
+  return SlideSchema.parse(data);
+}
 
 export function validatePost(data: unknown): Post {
   return PostSchema.parse(data);

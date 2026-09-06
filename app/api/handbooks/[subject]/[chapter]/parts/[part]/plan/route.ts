@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { planSlidesFromBook, densifySlides } from '@/lib/ai/plan';
+import { planPagesFromBook } from '@/lib/ai/pages';
 import { ClaudeUnavailableError } from '@/lib/ai/claude';
 
 type Ctx = { params: Promise<{ subject: string; chapter: string; part: string }> };
@@ -31,8 +32,9 @@ export async function POST(req: Request, ctx: Ctx) {
       return NextResponse.json({ proposal: await densifySlides(subject, chapter, part, body.underfilled) });
     }
 
-    // Default: generate pages from the approved book.
-    return NextResponse.json(await planSlidesFromBook(subject, chapter, part));
+    // Default: one prompt per chapter with a running summary. `mode: 'whole'` keeps the single-shot planner.
+    if (body.mode === 'whole') return NextResponse.json(await planSlidesFromBook(subject, chapter, part));
+    return NextResponse.json(await planPagesFromBook(subject, chapter, part));
   } catch (err) {
     if (err instanceof ClaudeUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
