@@ -326,3 +326,97 @@ forced full width and centred, and a code note reserved a quarter of the box. Ch
 
 Measured on `algorithms/binary-search-patterns` (same post, re-rendered): 10+2 slides at
 83-94% became 7+1 slides at 97-100% (last page of each part excepted).
+
+## 14. Addendum: reference sets 2 and 3
+
+Set 2, "AWS Complete Notes" (16 pages, cover + one service family per page), and set 3, "DBMS
+Notes Part 1" (10 pages, tables and schemas), same author as set 1. Everything from sets 1 and
+the column-flow addendum applies. The user's one hard requirement: **logos stay as real as
+possible** — the actual AWS cloud mark and official service icons, the Docker whale, the
+Kubernetes helm, the Instagram glyph, not generic stand-ins.
+
+### 14.1 Icons and logos (`lib/renderer/icons.ts`)
+
+Three sources, most real first:
+
+| prefix | package | what | colour |
+|---|---|---|---|
+| `aws:` | `aws-icons` (official AWS Architecture Icons) | `architecture-service/<Name>.svg` coloured squares; `aws:res:<Name>` for `resource/` line glyphs; `aws` itself = `architecture-group/AWSCloud.svg` | as shipped |
+| `brand:` | `simple-icons` | brand marks by slug (`docker`, `kubernetes`, `mongodb`, `redis`, `mysql`, `postgresql`, `instagram`, `linux`, `netapp`, `python`, `github`, …) | brand hex from the package |
+| `ui:` | `lucide-static` | generic line icons (`user`, `users`, `lock`, `key`, `phone`, `bell`, `globe`, `file-text`, `folder`, `cpu`, `server`, `database`, `cloud`, …) | `currentColor`, stroke 2 |
+
+`iconSvg(name): string` returns an inline `<svg class="ic ic-aws|ic-brand|ic-ui">` or `''` for an
+unknown name (never throws, never breaks a render). A bare name resolves through a curated
+alias map first (`ec2`, `s3`, `rds`, `lambda`, `vpc`, `iam`, `cloudwatch`, `route53`,
+`cloudfront`, `elb`, `eks`, `ecs`, `ecr`, `ebs`, `efs`, `fsx`, `glacier`, `kms`, `waf`,
+`guardduty`, `cloudtrail`, `config`, `ssm`, `cloudformation`, `trustedadvisor`, `eventbridge`,
+`organizations`, `redshift`, `elasticache`, `documentdb`, `lightsail`, `batch`, `aurora`,
+`directconnect`, `transitgateway`, `vpn`, `storagegateway`, `sns`, `sqs`, `kinesis`,
+`apigateway`, `cognito`, `stepfunctions`, `dynamodb`, `autoscaling`, `aws`, `docker`,
+`kubernetes`, `mongodb`, `redis`, `mysql`, `postgresql`, `instagram`, `linux`, `netapp`,
+`windows`→`ui:monitor`, `oracle`→`ui:database`, plus the generic names), then `aws:` service
+CamelCase, then `brand:` slug, then `ui:` slug. `ICON_VOCAB` (the alias names) is exported for
+the planner prompt. SVGs are read once and cached.
+
+Where icons appear: the inline marker `{icon:name}` in any text field (so list items and table
+cells carry them); `cards[].icon`; flowchart node `icon` and the icon-only node shape; the
+slide `hero`; cover `icons[]`. `renderInline` takes an optional `icon` resolver so the module
+stays free of `fs` for the client bundle; `stripInline` drops the marker.
+
+### 14.2 Primitives
+
+- Ink `pink` (`#d6338a`, base fallback → red). All manifests declare it.
+- `bullets.style` adds `checkbox` (☑) and `star` (☆).
+- `callout.cloud` is drawn as a rough scalloped cloud (`data-rough-shape="cloud"`), not a pill.
+
+### 14.3 Diagrams
+
+- `chain`: `{ title?, steps: [{ text, note?, ink? }] }` — vertical boxes joined by ↓ arrows, the
+  note beside each step. Half width allowed. (Key hierarchy, three levels, tier architectures.)
+- `tables`: `{ tables: [{ title?, headers, rows, caption? }], arrow?: boolean }` — 2-3 small
+  tables in one row, `→` between them when `arrow`. Full width when more than two tables or
+  more than six columns in total. (Decompositions, before/after normal forms.)
+- `schema`: `{ tables: [{ name, columns: string[] }], links: [{ from, to, fromLabel?, toLabel?, arrow? }] }` —
+  table boxes (name header, one column per line, `(PK)`/`(FK)` kept as text) in a row, links as
+  SVG lines from the right edge of `from` to the left edge of `to`, labels at the ends. Full
+  width past two tables.
+- `er`: `{ entities: [{ name, attrs: string[], key? }], relations: [{ from, to, name, labels?: [string, string] }] }` —
+  entities in a row, a relationship diamond between linked entities, attributes as ovals
+  fanned above and below each entity, lines drawn in the browser like flowchart edges.
+  Always full width.
+- `flowchart` gains `title?`, node `icon?`, node shape `icon` (icon with caption, no box),
+  horizontal arrows between nodes that share a row, and side-routed upward edges (a back-edge
+  runs down the left margin of the chart).
+- `cards` gains `icon?`, `code?: string[]`, `chain?: string[]` (mini vertical chain with ↕),
+  `text?`, up to 6 per row; `lines` may be empty when another body field is given.
+
+### 14.4 Slide-level fields
+
+- `hero?: string` — an icon drawn top right of the page chrome (the AWS cloud, a bucket).
+- `subtitle?: string` — rendered smaller after the title (`(Identity and Access Management)`).
+- `kind?: 'page' | 'cover'` with `cover?: { title, subtitle?, tagline?, icons?: [{ icon, label, sub? }], pills?: string[] }`;
+  a cover slide may have no blocks. `page.ts` renders the cover into `#content` with `.cover-*`
+  classes and adds `cover` to `#page`; families style it, base.css gives a plain default.
+
+### 14.5 Families
+
+- `sketchnote` (set 2): ruled spiral paper, Instagram-glyph handle badge top left, `PAGE N`
+  cloud badge top right, purple numbered title with subtitle, intro line, hero icon, purple
+  uppercase section headings, coloured icon cards, dashed diagram boxes.
+- `marker-notes` (set 3): handle box top left, `••— SERIES —••` centre with the part line under
+  it, `Page 0N` box top right, page title with a yellow marker swipe, green/navy section
+  headings, pink example boxes and clouds, cream ruled paper.
+
+### 14.6 Planner
+
+`SCHEMA_RULES` documents the new kinds, fields, inks, styles, the icon marker and the icon
+vocabulary (`ICON_VOCAB`), the `hero`/`subtitle`/cover fields, and two recipes: the service
+page (title + subtitle + intro + hero, key-concept icon cards, section + service-diagram
+pairs, comparison table, takeaways checkbox list, tip sticky, cover page first when the
+series has one) and the theory page (title with intro, definition sections with example
+boxes, schema/table diagrams, comparison table, quick-notes cloud).
+
+### 14.7 Out of scope
+
+Editor forms for the new fields; hand-drawn roughening of logo SVGs (they render clean, as the
+reference's logos do); Windows/Azure/Oracle marks (not in any package).
