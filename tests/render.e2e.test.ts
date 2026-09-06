@@ -170,3 +170,54 @@ describe('new blocks render', () => {
     console.log('contact sheet:', sheet);
   }, 600_000);
 });
+
+function kitchenSink2(template: string): Post {
+  return validatePost({
+    brand: 'iolar', template, ratio: '3:4', seed: 12,
+    series: 'AWS COMPLETE NOTES (Part 1)', date: '06/09/2026',
+    slides: [
+      { page_title: 'cover', kind: 'cover', blocks: [], hero: 'aws', cover: { title: 'AWS', subtitle: 'Complete Notes', tagline: 'All Important AWS Services in One Place', icons: [{ icon: 'ec2', label: 'Compute', sub: 'EC2, Lambda' }, { icon: 's3', label: 'Storage', sub: 'S3, EBS' }, { icon: 'rds', label: 'Database' }, { icon: 'iam', label: 'Security' }], pills: ['EC2', 'S3', 'RDS', 'VPC'] } },
+      { page_title: 'AWS IAM', subtitle: 'Identity and Access Management', hero: 'iam', blocks: [
+        { type: 'paragraph', text: 'IAM controls access to ==AWS services== {icon:aws} and resources.' },
+        { type: 'heading', text: '1. Key Concepts' },
+        { type: 'diagram', kind: 'cards', spec: { cards: [{ title: 'Users', icon: 'user', text: 'An identity.' }, { title: 'Groups', icon: 'users', text: 'Users together.' }, { title: 'Roles', icon: 'shield', text: 'Temporary.' }, { title: 'DDL', code: ['CREATE TABLE t (', '  id INT', ');'] }, { title: '2-Tier', chain: ['Client', 'DB Server'] }] } },
+        { type: 'heading', text: '2. RDS Architecture' },
+        { type: 'diagram', kind: 'flowchart', spec: { title: 'RDS Architecture', rows: [['app'], ['rds'], ['r1', 'r2']], nodes: { app: { text: 'Application', shape: 'icon', icon: 'laptop' }, rds: { text: 'RDS', shape: 'icon', icon: 'rds' }, r1: { text: 'Replica', shape: 'icon', icon: 'database' }, r2: { text: 'Replica', shape: 'icon', icon: 'database' } }, edges: [{ from: 'app', to: 'rds' }, { from: 'rds', to: 'r1' }, { from: 'rds', to: 'r2' }] } },
+        { type: 'heading', text: '3. Key hierarchy' },
+        { type: 'diagram', kind: 'chain', spec: { title: 'KEY HIERARCHY', steps: [{ text: 'Super Key', note: 'any set', ink: 'green' }, { text: 'Candidate Key', note: 'minimal', ink: 'orange' }] } },
+        { type: 'bullets', style: 'checkbox', items: ['{icon:ec2} **EC2** compute', '{icon:docker} Docker on {icon:eks} EKS'] },
+        { type: 'bullets', style: 'star', items: ['Host web apps in public subnets'] },
+        { type: 'diagram', kind: 'schema', spec: { tables: [{ name: 'DEPARTMENT', columns: ['ID (PK)', 'Dept_Name'] }, { name: 'STUDENT', columns: ['Roll_No (PK)', 'Dept_ID (FK)'] }], links: [{ from: 'DEPARTMENT', to: 'STUDENT', fromLabel: '1', toLabel: 'N', arrow: true }] } },
+        { type: 'callout', style: 'cloud', title: 'Key Takeaway', text: 'The relational model is the foundation of RDBMS.' },
+        { type: 'diagram', kind: 'tables', spec: { arrow: true, tables: [{ title: 'Before', headers: ['a', 'b'], rows: [['1', '2']] }, { title: 'After', headers: ['a', 'b'], rows: [['1', '2']] }] } },
+        { type: 'diagram', kind: 'er', spec: { entities: [{ name: 'STUDENT', attrs: ['Roll_No', 'Name'], key: 'Roll_No' }, { name: 'COURSE', attrs: ['Course_ID'], key: 'Course_ID' }], relations: [{ from: 'STUDENT', to: 'COURSE', name: 'ENROLLS', labels: ['M', 'N'] }] } },
+        { type: 'paragraph', text: 'Example : STUDENT (__Roll_No__, Name, Dept)', frame: 'dashed', ink: 'pink' },
+      ] },
+    ],
+    caption: { text: '', hashtags: [] },
+  });
+}
+
+describe('set 2/3 blocks render', () => {
+  it.each(['sketchnote', 'marker-notes', 'study-sheet'])('%s renders the cover and the icon page with no overflow', async (template) => {
+    const post = kitchenSink2(template);
+    for (const i of [0, 1]) {
+      const out = path.join(tmpdir(), `iolar-sink2-${template}-${i + 1}.png`);
+      const r = await renderSlide(post, i, out);
+      expect(existsSync(out)).toBe(true);
+      expect(r.overflowPx, `${template} slide ${i + 1}`).toBe(0);
+      expect(r.warnings).toEqual([]);
+    }
+  }, 180_000);
+
+  it('renderAll keeps the cover as its own first page and flows the rest', async () => {
+    const post = kitchenSink2('sketchnote');
+    const dir = path.join(tmpdir(), `iolar-sink2-all-${Date.now()}`);
+    const { results, slides } = await renderAll(post, dir);
+    expect(slides[0].kind).toBe('cover');
+    expect(slides[0].blocks.length).toBe(0);
+    expect(results[0].slide).toBe(1);
+    expect(results.length).toBeGreaterThanOrEqual(2);
+    expect(results.every((r) => r.overflowPx === 0)).toBe(true);
+  }, 300_000);
+});
