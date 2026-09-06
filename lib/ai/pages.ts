@@ -1,6 +1,6 @@
 import { Post, Slide, validatePost, validateSlide } from '../schema';
 import { getSettings } from '../settings';
-import { loadPost } from '../store';
+import { loadPost, savePost } from '../store';
 import { thinker, Runner } from './runner';
 import { extractJson } from './revise';
 import { Book, loadBook } from './book';
@@ -10,8 +10,11 @@ import { familyRecipe } from './plan';
 /**
  * Page-by-page planning. One prompt per chapter instead of one prompt for the whole
  * carousel: each call is small enough for the local model's context, a bad page fails alone
- * and retries alone, and every page sees what the pages before it already taught.
+ * and retries alone, and every page knows what the other pages cover. That context comes
+ * from the book (titles and points of the other chapters), not from generated pages, so the
+ * pages can be planned in parallel — a Claude call costs ~15 s of start-up each.
  */
+export const PAGE_CONCURRENCY = 4;
 
 export const SLIDE_SHAPE = `Return ONLY ONE Slide object for THIS chapter (not a whole post), no prose and no markdown fences:
 {"page_title":string,"subtitle"?:string,"hero"?:IconName,"blocks":[Block,...]}
@@ -19,7 +22,7 @@ or, for a cover chapter:
 {"kind":"cover","page_title":string,"hero"?:IconName,"blocks":[],"cover":{"title":string,"subtitle"?:string,"tagline"?:string,"icons"?:[{"icon":IconName,"label":string,"sub"?:string}],"pills"?:[string]}}
 Ignore the post envelope and slide-count rules in the vocabulary below; the block vocabulary, inline markup, icons, per-block ceilings and the PER-SLIDE TARGET all apply to this one page.`;
 
-export type PriorPage = { title: string; taught: string[] };
+export type PriorPage = { index: number; title: string; taught: string[] };
 
 export function chapterPrompt(opts: {
   brand: string;
@@ -37,10 +40,10 @@ export function chapterPrompt(opts: {
       ? `Shape this page from these section roles, in order: ${chapter.shape.join(' → ')}.`
       : 'Shape this page as dense study notes: definition, mechanism, example, mistakes, summary.';
   const prior = opts.prior.length
-    ? `Pages already written in this handbook (do not repeat them; refer to them if useful):\n${opts.prior
-        .map((p, i) => `${i + 1}. ${p.title}: ${p.taught.slice(0, 8).join('; ')}`)
+    ? `The other pages of this handbook (do not repeat what they cover; refer to them if useful):\n${opts.prior
+        .map((p) => `${p.index + 1}. ${p.title}: ${p.taught.slice(0, 6).join('; ')}`)
         .join('\n')}`
-    : 'This is the first page of the handbook.';
+    : 'This handbook has only this page.';
   return [
     `You are the content designer for "${opts.brand}", an Instagram account publishing tech handbooks as handwritten-notes carousels.`,
     `Handbook: "${book.title}" — ${book.summary}`,
@@ -68,13 +71,24 @@ export function captionPrompt(book: Book, brand: string): string {
   ].join('\n\n');
 }
 
-/** What a finished page taught: its title plus its headings and sidebox/callout titles. */
-export function taughtBy(slide: Slide): string[] {
-  const out: string[] = [];
-  for (const b of slide.blocks) {
-    if (b.type === 'heading') out.push(b.text.replace(/^\d+[.)]\s*/, ''));
-    else if (b.type === 'sidebox' || b.type === 'callout') out.push(b.title);
-  }
+/** What every other chapter covers, straight from the book, so a page never repeats a neighbour. */
+export function otherPages(book: Book, index: number): PriorPage[] {
+  return book.chapters
+    .map((c, i) => ({ index: i, title: c.title, taught: c.points }))
+    .filter((p) => p.index !== index);
+}
+
+/** Runs `fn` over the indexes with at most `limit` in flight; results land in order. */
+export async function mapLimit<T>(count: number, limit: number, fn: (i: number) => Promise<T>): Promise<T[]> {
+  const out: T[] = new Array(count);
+  let next = 0;
+  const worker = async () => {
+    while (next < count) {
+      const i = next++;
+      out[i] = await fn(i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, count) }, worker));
   return out;
 }
 
@@ -125,17 +139,14 @@ export async function planPagesFromBook(
     coveredElsewhere = await fn(subject, chapter);
   } catch { /* graph optional */ }
 
-  const slides: Slide[] = [];
-  const prior: PriorPage[] = [];
-  for (let i = 0; i < book.chapters.length; i++) {
-    const slide = await askSlide(run, chapterPrompt({ brand: s.brand, template, book, index: i, prior, coveredElsewhere }));
-    slides.push(slide);
-    prior.push({ title: slide.page_title, taught: taughtBy(slide) });
+  const slides = await mapLimit(book.chapters.length, PAGE_CONCURRENCY, async (i) => {
+    const slide = await askSlide(run, chapterPrompt({ brand: s.brand, template, book, index: i, prior: otherPages(book, i), coveredElsewhere }));
     onPage?.(i, slide);
-  }
+    return slide;
+  });
 
   const caption = await askCaption(run, book, s.brand);
-  return validatePost({
+  const post = validatePost({
     brand: s.brand,
     template,
     ratio: existing?.ratio ?? s.defaultRatio,
@@ -145,4 +156,6 @@ export async function planPagesFromBook(
     slides,
     caption,
   });
+  await savePost(subject, chapter, part, post);
+  return post;
 }

@@ -21,12 +21,15 @@ beforeEach(() => {
 describe('chapterPrompt', () => {
   it('carries the chapter, the family recipe, the hint and what earlier pages taught', async () => {
     const { chapterPrompt } = await import('@/lib/ai/pages');
-    const p = chapterPrompt({ brand: 'iolar', template: 'sketchnote', book: book as never, index: 1, prior: [{ title: 'Docker Complete Notes', taught: [] }] });
+    const { otherPages } = await import('@/lib/ai/pages');
+    const p = chapterPrompt({ brand: 'iolar', template: 'sketchnote', book: book as never, index: 1, prior: otherPages(book as never, 1) });
     expect(p).toContain('page 2 of 3');
     expect(p).toContain('an image is a stack of layers');
     expect(p).toContain('FAMILY "sketchnote"');
     expect(p).toContain('definition → mechanism → example');
     expect(p).toContain('1. Docker Complete Notes');
+    expect(p).toContain('3. Containers: a container is a running image');
+    expect(p).not.toContain('2. Images and Layers:');
     expect(p).toContain('Return ONLY ONE Slide object');
     expect(p).toContain('"kind":"flowchart"');
   });
@@ -39,7 +42,7 @@ describe('chapterPrompt', () => {
 });
 
 describe('planPagesFromBook', () => {
-  it('asks once per chapter in order with a running summary, then once for the caption, and assembles a valid post', async () => {
+  it('asks once per chapter (in parallel), then once for the caption, assembles a valid post and saves it', async () => {
     const { createSubject, createChapter, createPart } = await import('@/lib/store');
     const { saveBook } = await import('@/lib/ai/book');
     const { planPagesFromBook } = await import('@/lib/ai/pages');
@@ -52,7 +55,8 @@ describe('planPagesFromBook', () => {
     const run = async (prompt: string) => {
       prompts.push(prompt);
       if (prompt.includes('Write the Instagram caption')) return '{"text":"Hook first.","hashtags":["#docker","#devops"]}';
-      const n = prompts.length;
+      const m = /You are writing page (\d+) of 3/.exec(prompt);
+      const n = Number(m?.[1]);
       if (n === 1) return JSON.stringify({ kind: 'cover', page_title: 'Docker Complete Notes', hero: 'docker', blocks: [], cover: { title: 'Docker', subtitle: 'Complete Notes', icons: [{ icon: 'docker', label: 'Docker' }], pills: ['images'] } });
       return JSON.stringify({ page_title: `Page ${n}`, hero: 'docker', subtitle: 'sub', blocks: [{ type: 'heading', text: `${n}. Heading ${n}` }, { type: 'bullets', items: ['one', 'two'] }] });
     };
@@ -60,11 +64,15 @@ describe('planPagesFromBook', () => {
     const post = await planPagesFromBook('d', 'c', 1, run, (i) => seen.push(i));
 
     expect(prompts.length).toBe(4);
-    expect(prompts[1]).toContain('1. Docker Complete Notes');
-    expect(prompts[2]).toContain('2. Page 2: Heading 2');
-    expect(seen).toEqual([0, 1, 2]);
+    const pagePrompts = prompts.filter((p) => p.includes('You are writing page'));
+    expect(pagePrompts.some((p) => p.includes('page 2 of 3') && p.includes('1. Docker Complete Notes') && p.includes('3. Containers'))).toBe(true);
+    expect([...seen].sort()).toEqual([0, 1, 2]);
+    const { loadPost } = await import('@/lib/store');
+    expect((await loadPost('d', 'c', 1)).slides.length).toBe(3);
     expect(post.slides.length).toBe(3);
     expect(post.slides[0].kind).toBe('cover');
+    expect(post.slides[1].page_title).toBe('Page 2');
+    expect(post.slides[2].page_title).toBe('Page 3');
     expect(post.slides[1].hero).toBe('docker');
     expect(post.template).toBe('sketchnote');
     expect(post.series).toBe('DOCKER NOTES');
