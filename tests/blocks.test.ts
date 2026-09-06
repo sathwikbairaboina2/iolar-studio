@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { renderBlockHtml, renderSlideBlocks } from '@/lib/renderer/blocks';
 import type { Block } from '@/lib/schema';
+import { forcesFullWidth, collectWarnings } from '@/lib/renderer/blocks';
 
 describe('renderSlideBlocks', () => {
   it('wraps every block with index and type', () => {
@@ -26,7 +27,7 @@ describe('renderSlideBlocks', () => {
     expect(narrow).not.toContain('data-force-full="1"');
 
     const diagram = renderSlideBlocks([
-      { type: 'diagram', kind: 'flow', spec: { nodes: ['a'] } },
+      { type: 'diagram', kind: 'flow', spec: { nodes: ['a', 'b', 'c', 'd'] } },
     ] as Block[]);
     expect(diagram).toContain('data-force-full="1"');
   });
@@ -63,7 +64,7 @@ describe('renderBlockHtml', () => {
     expect(h).toContain('What?');
     expect(h).toContain('Ans');
     expect(h).toContain('because');
-    expect(h).toContain('x = 1');
+    expect(h).toContain('x = <span class="tk-num">1</span>');
   });
 
   it('flow diagram renders nodes with arrows', () => {
@@ -72,5 +73,95 @@ describe('renderBlockHtml', () => {
     } as Block);
     expect(h).toContain('dg-node');
     expect((h.match(/dg-arrow/g) ?? []).length).toBe(2);
+  });
+});
+
+describe('list styles and frames', () => {
+  it('numbered lists use circled digits', () => {
+    const h = renderBlockHtml({ type: 'bullets', items: ['a', 'b'], style: 'number' } as Block);
+    expect(h).toContain('bl-number');
+    expect(h).toContain('①');
+    expect(h).toContain('②');
+  });
+  it('check and cross lists carry their glyph class', () => {
+    expect(renderBlockHtml({ type: 'bullets', items: ['a'], style: 'check' } as Block)).toContain('bl-check');
+    expect(renderBlockHtml({ type: 'bullets', items: ['a'], style: 'cross' } as Block)).toContain('bl-cross');
+  });
+  it('a framed block is wrapped in a rough frame with its ink and dash flag', () => {
+    const h = renderBlockHtml({ type: 'bullets', items: ['a'], frame: 'dashed', ink: 'purple' } as Block);
+    expect(h).toMatch(/<div class="b-frame" data-rough="var\(--ink-purple\)" data-rough-dash="1">/);
+    const solid = renderBlockHtml({ type: 'paragraph', text: 'p', frame: 'solid' } as Block);
+    expect(solid).toContain('data-rough="var(--ink-blue)"');
+    expect(solid).not.toContain('data-rough-dash');
+  });
+  it('manifest defaults apply only when the block leaves frame unset', () => {
+    const d = { defaults: { frame: 'dashed' as const } };
+    expect(renderBlockHtml({ type: 'bullets', items: ['a'] } as Block, d)).toContain('b-frame');
+    expect(renderBlockHtml({ type: 'bullets', items: ['a'], frame: 'none' } as Block, d)).not.toContain('b-frame');
+    expect(renderBlockHtml({ type: 'heading', text: 'h' } as Block, d)).not.toContain('b-frame');
+    expect(renderBlockHtml({ type: 'code', lang: 'py', lines: ['x'] } as Block, d)).not.toContain('b-frame');
+  });
+  it('bullet items carry inline markup', () => {
+    expect(renderBlockHtml({ type: 'bullets', items: ['==a=='] } as Block)).toContain('<mark class="hl">a</mark>');
+  });
+});
+
+describe('tables', () => {
+  it('highlights the requested row', () => {
+    const h = renderBlockHtml({ type: 'table', headers: ['a'], rows: [['1'], ['2']], highlightRow: 1 } as Block);
+    expect(h).toContain('<tr class="hl-row"><td data-jitter>2</td></tr>');
+    expect(h).not.toContain('<tr class="hl-row"><td data-jitter>1</td>');
+  });
+});
+
+describe('sticky callouts', () => {
+  it('render as a note with a pin and no rough frame', () => {
+    const h = renderBlockHtml({ type: 'callout', style: 'sticky', title: 'T', text: 'x' } as Block);
+    expect(h).toContain('co-sticky');
+    expect(h).not.toContain('data-rough');
+    expect(h).toContain('co-pin');
+    expect(renderBlockHtml({ type: 'callout', style: 'sticky-pink', title: 'T', text: 'x' } as Block)).toContain('co-sticky-pink');
+  });
+});
+
+describe('code rules', () => {
+  const code = (lines: string[], extra = {}) => ({ type: 'code', lang: 'python', lines, ...extra }) as Block;
+  it('colours tokens and keeps jitter off', () => {
+    const h = renderBlockHtml(code(['if x: # c']));
+    expect(h).toContain('tk-kw');
+    expect(h).toContain('tk-cm');
+    expect(h).not.toContain('data-jitter');
+  });
+  it('renders the note as a sticky inside the box', () => {
+    const h = renderBlockHtml(code(['x'], { note: 'sorted ==only==' }));
+    expect(h).toContain('code-note');
+    expect(h).toContain('<mark class="hl">only</mark>');
+    expect(h).toContain('has-note');
+  });
+  it('forces full width past 34 chars and steps down past 60', () => {
+    expect(forcesFullWidth(code(['a'.repeat(34)]))).toBe(false);
+    expect(forcesFullWidth(code(['a'.repeat(35)]))).toBe(true);
+    expect(renderBlockHtml(code(['a'.repeat(61)]))).toContain('code-small');
+    expect(renderBlockHtml(code(['a'.repeat(60)]))).not.toContain('code-small');
+  });
+  it('truncates past 80 chars and reports a warning', () => {
+    const long = 'b'.repeat(90);
+    const h = renderBlockHtml(code([long]));
+    expect(h).toContain('b'.repeat(80) + '…');
+    expect(h).not.toContain(long);
+    expect(collectWarnings([code([long]), code(['ok'])])).toEqual(['block 0: code line 1 truncated at 80 chars']);
+  });
+});
+
+describe('forcesFullWidth for diagrams', () => {
+  const dg = (kind: string, spec: unknown) => ({ type: 'diagram', kind, spec }) as Block;
+  it('array, flowchart and cards always; flow from 4 nodes; matrix past 4 columns', () => {
+    expect(forcesFullWidth(dg('array', { cells: ['1'], indices: true, pointers: [], highlight: [], dim: [] }))).toBe(true);
+    expect(forcesFullWidth(dg('flowchart', { rows: [['a'], ['b']], nodes: { a: { text: 'a', shape: 'box' }, b: { text: 'b', shape: 'box' } }, edges: [] }))).toBe(true);
+    expect(forcesFullWidth(dg('cards', { cards: [{ title: 'a', lines: ['x'] }, { title: 'b', lines: ['y'] }] }))).toBe(true);
+    expect(forcesFullWidth(dg('flow', { nodes: ['a', 'b', 'c'] }))).toBe(false);
+    expect(forcesFullWidth(dg('flow', { nodes: ['a', 'b', 'c', 'd'] }))).toBe(true);
+    expect(forcesFullWidth(dg('matrix', { rows: [['1', '2', '3', '4']], highlight: [] }))).toBe(false);
+    expect(forcesFullWidth(dg('matrix', { rows: [['1', '2', '3', '4', '5']], highlight: [] }))).toBe(true);
   });
 });

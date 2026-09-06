@@ -1,11 +1,20 @@
-import type { Block } from '../schema';
+import type { Block, Frame } from '../schema';
 import { escapeHtml, renderInline } from './inline';
+import { highlightLine } from './syntax';
+import { renderDiagram } from './diagrams';
 export { escapeHtml };
 
 const e = escapeHtml;
 const t = renderInline;
 
-// Ink CSS var per logical ink name; templates define the actual colors.
+export type RenderOpts = { defaults?: { frame?: Frame } };
+
+export const CODE_FULL_AT = 34;
+export const CODE_SMALL_AT = 60;
+export const CODE_TRUNCATE_AT = 80;
+
+const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+
 function inkVar(ink?: string) {
   return `var(--ink-${ink ?? 'blue'})`;
 }
@@ -16,97 +25,141 @@ function heading(b: Extract<Block, { type: 'heading' }>) {
 }
 
 function paragraph(b: Extract<Block, { type: 'paragraph' }>) {
-  return `<div class="b-paragraph" data-jitter>${e(b.text)}</div>`;
+  return `<div class="b-paragraph" data-jitter>${t(b.text)}</div>`;
 }
 
 function bullets(b: Extract<Block, { type: 'bullets' }>) {
-  return `<ul class="b-bullets" data-jitter>${b.items.map((i) => `<li>${e(i)}</li>`).join('')}</ul>`;
+  const style = b.style ?? 'dot';
+  const items = b.items
+    .map((item, i) => {
+      const glyph = style === 'number' ? `<span class="bl-glyph">${CIRCLED[i] ?? `${i + 1}.`}</span>` : '';
+      return `<li>${glyph}${t(item)}</li>`;
+    })
+    .join('');
+  return `<ul class="b-bullets bl-${style}" data-jitter>${items}</ul>`;
 }
 
 function sidebox(b: Extract<Block, { type: 'sidebox' }>) {
   return (
     `<div class="b-sidebox" data-rough="${inkVar(b.ink ?? 'green')}">` +
-    `<div class="sb-title" data-jitter>${e(b.title)}</div>` +
-    `<ul data-jitter>${b.items.map((i) => `<li>${e(i)}</li>`).join('')}</ul></div>`
+    `<div class="sb-title" data-jitter>${t(b.title)}</div>` +
+    `<ul data-jitter>${b.items.map((i) => `<li>${t(i)}</li>`).join('')}</ul></div>`
   );
 }
 
 function table(b: Extract<Block, { type: 'table' }>) {
-  const head = `<tr>${b.headers.map((h) => `<th data-jitter>${e(h)}</th>`).join('')}</tr>`;
+  const head = `<tr>${b.headers.map((h) => `<th data-jitter>${t(h)}</th>`).join('')}</tr>`;
   const rows = b.rows
-    .map((r) => `<tr>${r.map((c) => `<td data-jitter>${e(c)}</td>`).join('')}</tr>`)
+    .map((r, i) => `<tr${i === b.highlightRow ? ' class="hl-row"' : ''}>${r.map((c) => `<td data-jitter>${t(c)}</td>`).join('')}</tr>`)
     .join('');
   return `<table class="b-table">${head}${rows}</table>`;
 }
 
-function code(b: Extract<Block, { type: 'code' }>) {
-  // No jitter on code: monospace legibility beats realism.
-  return `<div class="b-code">${b.lines.map(e).join('\n')}</div>`;
+function longestLine(lines: string[]): number {
+  return lines.reduce((m, l) => Math.max(m, l.length), 0);
 }
 
-function diagram(b: Extract<Block, { type: 'diagram' }>) {
-  if (b.kind === 'flow') {
-    const nodes: string[] = Array.isArray(b.spec.nodes) ? b.spec.nodes.map(String) : [];
-    const inner = nodes
-      .map((n) => `<span class="dg-node" data-rough="var(--ink-blue)" data-jitter>${e(n)}</span>`)
-      .join('<span class="dg-arrow">→</span>');
-    return `<div class="b-diagram"><div class="dg-flow">${inner}</div></div>`;
-  }
-  // Staged: other diagram kinds render as a visible placeholder box until implemented.
-  const keys = Object.keys(b.spec).join(', ');
-  return `<div class="b-diagram-staged">[${e(b.kind)} diagram — ${e(keys)}]</div>`;
+function code(b: Extract<Block, { type: 'code' }>) {
+  // No jitter on code: legibility beats realism. Lines never wrap; long ones step down or truncate.
+  const lines = b.lines.map((l) => (l.length > CODE_TRUNCATE_AT ? l.slice(0, CODE_TRUNCATE_AT) + '…' : l));
+  const cls = ['b-code', longestLine(lines) > CODE_SMALL_AT ? 'code-small' : '', b.note ? 'has-note' : ''].filter(Boolean).join(' ');
+  const note = b.note ? `<div class="code-note co-sticky"><span class="co-pin">📌</span>${t(b.note)}</div>` : '';
+  return `<div class="${cls}" data-lang="${e(b.lang)}">${note}<pre>${lines.map((l) => highlightLine(b.lang, l)).join('\n')}</pre></div>`;
 }
 
 function callout(b: Extract<Block, { type: 'callout' }>) {
+  if (b.style === 'sticky' || b.style === 'sticky-pink') {
+    return (
+      `<div class="b-callout co-sticky${b.style === 'sticky-pink' ? ' co-sticky-pink' : ''}">` +
+      `<span class="co-pin">📌</span>` +
+      `<div class="co-title" data-jitter>${t(b.title)}</div>` +
+      `<div class="co-text" data-jitter>${t(b.text)}</div></div>`
+    );
+  }
   const icon = b.style === 'tip' ? '💡 ' : b.style === 'takeaway' ? '★ ' : '';
   const ink = b.style === 'cloud' ? 'var(--ink-green)' : 'var(--ink-red)';
   return (
     `<div class="b-callout co-${b.style}" data-rough="${ink}">` +
-    `<div class="co-title" data-jitter>${icon}${e(b.title)}</div>` +
-    `<div class="co-text" data-jitter>${e(b.text)}</div></div>`
+    `<div class="co-title" data-jitter>${icon}${t(b.title)}</div>` +
+    `<div class="co-text" data-jitter>${t(b.text)}</div></div>`
   );
 }
 
 function qa(b: Extract<Block, { type: 'qa' }>) {
   const codeHtml = b.example_code?.length
-    ? `<div class="b-code">${b.example_code.map(e).join('\n')}</div>`
+    ? `<div class="b-code"><pre>${b.example_code.map((l) => highlightLine('python', l)).join('\n')}</pre></div>`
     : '';
   return (
     `<div class="b-qa">` +
-    `<div class="qa-q" data-jitter>${e(b.q)}</div>` +
+    `<div class="qa-q" data-jitter>${t(b.q)}</div>` +
     `<div class="qa-a"><span class="qa-ans-label" data-jitter>Ans→</span>` +
-    `<ul data-jitter>${b.a_bullets.map((i) => `<li>${e(i)}</li>`).join('')}</ul></div>` +
+    `<ul data-jitter>${b.a_bullets.map((i) => `<li>${t(i)}</li>`).join('')}</ul></div>` +
     codeHtml +
     `</div>`
   );
 }
 
-function forcesFullWidth(block: Block): boolean {
-  if (block.type === 'diagram') return true;
-  if (block.type === 'table' && block.headers.length >= 4) return true;
+function frameOf(block: Block, opts?: RenderOpts): Frame {
+  if (block.type !== 'bullets' && block.type !== 'paragraph' && block.type !== 'table') return 'none';
+  return block.frame ?? opts?.defaults?.frame ?? 'none';
+}
+
+function withFrame(block: Block, inner: string, opts?: RenderOpts): string {
+  const frame = frameOf(block, opts);
+  if (frame === 'none') return inner;
+  const ink = 'ink' in block && block.ink ? block.ink : 'blue';
+  const dash = frame === 'dashed' ? ' data-rough-dash="1"' : '';
+  return `<div class="b-frame" data-rough="${inkVar(ink)}"${dash}>${inner}</div>`;
+}
+
+export function renderBlockHtml(block: Block, opts?: RenderOpts): string {
+  let inner: string;
+  switch (block.type) {
+    case 'heading': inner = heading(block); break;
+    case 'paragraph': inner = paragraph(block); break;
+    case 'bullets': inner = bullets(block); break;
+    case 'sidebox': inner = sidebox(block); break;
+    case 'table': inner = table(block); break;
+    case 'code': inner = code(block); break;
+    case 'diagram': inner = renderDiagram(block); break;
+    case 'callout': inner = callout(block); break;
+    case 'qa': inner = qa(block); break;
+  }
+  return withFrame(block, inner, opts);
+}
+
+export function forcesFullWidth(block: Block): boolean {
+  if (block.type === 'table') return block.headers.length >= 4;
+  if (block.type === 'code') return longestLine(block.lines) > CODE_FULL_AT;
+  if (block.type === 'diagram') {
+    switch (block.kind) {
+      case 'array': case 'flowchart': case 'cards': return true;
+      case 'flow': return block.spec.nodes.length >= 4;
+      case 'matrix': return block.spec.rows.some((r) => r.length > 4);
+    }
+  }
   return false;
 }
 
+/** Render-time warnings that do not block a render but the report should carry. */
+export function collectWarnings(blocks: Block[]): string[] {
+  const out: string[] = [];
+  blocks.forEach((b, i) => {
+    if (b.type === 'code') {
+      b.lines.forEach((l, li) => {
+        if (l.length > CODE_TRUNCATE_AT) out.push(`block ${i}: code line ${li + 1} truncated at ${CODE_TRUNCATE_AT} chars`);
+      });
+    }
+  });
+  return out;
+}
+
 /** Wraps each block in a packing unit the layout engine can measure and place. */
-export function renderSlideBlocks(blocks: Block[]): string {
+export function renderSlideBlocks(blocks: Block[], opts?: RenderOpts): string {
   return blocks
     .map((b, i) => {
       const full = forcesFullWidth(b) ? ' data-force-full="1"' : '';
-      return `<div class="pk-unit" data-block-index="${i}" data-block-type="${b.type}"${full}>${renderBlockHtml(b)}</div>`;
+      return `<div class="pk-unit" data-block-index="${i}" data-block-type="${b.type}"${full}>${renderBlockHtml(b, opts)}</div>`;
     })
     .join('\n');
-}
-
-export function renderBlockHtml(block: Block): string {
-  switch (block.type) {
-    case 'heading': return heading(block);
-    case 'paragraph': return paragraph(block);
-    case 'bullets': return bullets(block);
-    case 'sidebox': return sidebox(block);
-    case 'table': return table(block);
-    case 'code': return code(block);
-    case 'diagram': return diagram(block);
-    case 'callout': return callout(block);
-    case 'qa': return qa(block);
-  }
 }

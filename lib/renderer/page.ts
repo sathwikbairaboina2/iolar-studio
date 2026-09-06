@@ -1,18 +1,24 @@
 import { readFileSync } from 'fs';
 import path from 'path';
 import { Post, RATIOS } from '../schema';
+import type { Frame } from '../schema';
 import { renderSlideBlocks } from './blocks';
 
 export function templatesRoot() {
   return path.join(process.cwd(), 'templates');
 }
 
-export function templateManifest(template: string): {
+export type TemplateManifest = {
+  name: string;
   contentSelector: string;
   inks: Record<string, string>;
   maxColumns?: number;
   columnGap?: string;
-} {
+  defaults?: { frame?: Frame };
+  codeFont?: 'mono' | 'hand';
+};
+
+export function templateManifest(template: string): TemplateManifest {
   return JSON.parse(readFileSync(path.join(templatesRoot(), template, 'manifest.json'), 'utf8'));
 }
 
@@ -37,7 +43,8 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     `<link rel="stylesheet" href="../_shared/base.css">` +
     `<style>#content{--pk-cols:${columns};--pk-col-gap:${columnGap}}</style>`;
 
-  const content = renderSlideBlocks(slide.blocks);
+  const content = renderSlideBlocks(slide.blocks, { defaults: manifest.defaults });
+  const codeClass = manifest.codeFont === 'hand' ? 'code-hand' : 'code-mono';
 
   const pageVars = `<script>window.PAGE = ${JSON.stringify({
     brand: post.brand,
@@ -57,5 +64,6 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
   return tpl
     .replace('<!--HEAD-->', head)
     .replace('<!--CONTENT-->', content)
-    .replace('<!--PAGEVARS-->', pageVars);
+    .replace('<!--PAGEVARS-->', pageVars)
+    .replace('<div id="page">', `<div id="page" class="${codeClass}">`);
 }
