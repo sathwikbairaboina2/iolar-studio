@@ -10,16 +10,18 @@ type Ctx = { params: Promise<{ subject: string; chapter: string; part: string }>
 
 async function writeReport(
   subject: string, chapter: string, part: number,
-  results: { slide: number; overflowPx: number; fillPct: number; file: string }[]
+  results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings?: string[] }[]
 ) {
   const dir = rendersDir(subject, chapter, part);
   await fs.mkdir(dir, { recursive: true });
   const reportPath = path.join(dir, 'render-report.json');
-  let existing: Record<string, { overflowPx: number; fillPct?: number }> = {};
+  let existing: Record<string, { overflowPx: number; fillPct?: number; warnings?: string[] }> = {};
   try {
     existing = JSON.parse(await fs.readFile(reportPath, 'utf8'));
   } catch { /* fresh report */ }
-  for (const r of results) existing[String(r.slide)] = { overflowPx: r.overflowPx, fillPct: r.fillPct };
+  for (const r of results) {
+    existing[String(r.slide)] = { overflowPx: r.overflowPx, fillPct: r.fillPct, ...(r.warnings?.length ? { warnings: r.warnings } : {}) };
+  }
   await fs.writeFile(reportPath, JSON.stringify(existing, null, 2));
   try {
     const { syncRenders } = await import('@/lib/handbookIndex');
@@ -50,7 +52,7 @@ export async function POST(req: Request, ctx: Ctx) {
       }
       const file = path.join(outDir, `slide-${String(body.slide).padStart(2, '0')}.png`);
       const r = await renderSlide(post, i, file);
-      results = [{ slide: body.slide, overflowPx: r.overflowPx, fillPct: r.fillPct, file }];
+      results = [{ slide: body.slide, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings }];
     } else {
       const out = await renderAll(post, outDir);
       results = out.results;

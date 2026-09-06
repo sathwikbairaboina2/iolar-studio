@@ -4,6 +4,7 @@ import { chromium, Browser } from 'playwright';
 import sharp from 'sharp';
 import { Post, RATIOS } from '../schema';
 import { buildSlideHtml, templateManifest, templatesRoot } from './page';
+import { collectWarnings } from './blocks';
 
 let browserPromise: Promise<Browser> | null = null;
 
@@ -31,7 +32,7 @@ declare global {
   }
 }
 
-export type RenderResult = { overflowPx: number; fillPct: number; spillIndexes: number[]; neededPct: number };
+export type RenderResult = { overflowPx: number; fillPct: number; spillIndexes: number[]; neededPct: number; warnings: string[] };
 
 export async function renderSlide(post: Post, slideIndex: number, outPath: string): Promise<RenderResult> {
   const [w, h] = RATIOS[post.ratio];
@@ -66,7 +67,8 @@ export async function renderSlide(post: Post, slideIndex: number, outPath: strin
       await fs.mkdir(path.dirname(outPath), { recursive: true });
       await sharp(shot).resize(w, h, { kernel: 'lanczos3' }).png().toFile(outPath);
 
-      return { overflowPx, fillPct, spillIndexes: layout.spillIndexes, neededPct: layout.neededPct };
+      const warnings = collectWarnings(post.slides[slideIndex].blocks);
+      return { overflowPx, fillPct, spillIndexes: layout.spillIndexes, neededPct: layout.neededPct, warnings };
     } finally {
       await page.close();
     }
@@ -98,7 +100,7 @@ export async function renderAll(
   post: Post,
   outDir: string
 ): Promise<{
-  results: { slide: number; overflowPx: number; fillPct: number; file: string }[];
+  results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[];
   slides: Post['slides'];
 }> {
   const authored = mergeContinuations(post.slides);
@@ -109,7 +111,7 @@ export async function renderAll(
   type Item = { block: Post['slides'][number]['blocks'][number]; from: number };
   let queue: Item[] = authored.flatMap((s, i) => s.blocks.map((block) => ({ block, from: i })));
 
-  const results: { slide: number; overflowPx: number; fillPct: number; file: string }[] = [];
+  const results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[] = [];
   const slides: Post['slides'] = [];
   const started = new Set<number>();
 
@@ -138,7 +140,7 @@ export async function renderAll(
     const keptSet = new Set(kept.map((k) => k.block));
 
     slides.push({ ...candidate, blocks: kept.map((k) => k.block) });
-    results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file });
+    results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
     queue = queue.filter((q) => !keptSet.has(q.block));
   }
 
