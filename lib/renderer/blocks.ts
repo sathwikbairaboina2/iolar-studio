@@ -140,7 +140,11 @@ export function renderBlockHtml(block: Block, opts?: RenderOpts): string {
 }
 
 export function forcesFullWidth(block: Block): boolean {
-  if (block.type === 'table') return block.headers.length >= 4;
+  if (block.type === 'table') {
+    // Five columns always need the width; four do only when a cell is long enough to wrap badly.
+    const longest = Math.max(...block.headers.map((h) => h.length), ...block.rows.flat().map((c) => c.length));
+    return block.headers.length >= 5 || (block.headers.length === 4 && longest > 12);
+  }
   if (block.type === 'code') return longestLine(block.lines) > CODE_FULL_AT;
   if (block.type === 'diagram') {
     switch (block.kind) {
@@ -150,7 +154,7 @@ export function forcesFullWidth(block: Block): boolean {
       case 'array': return block.spec.cells.length > 10;
       case 'flow': return block.spec.nodes.length >= 4;
       case 'matrix': return block.spec.rows.some((r) => r.length > 4);
-      case 'tables': return block.spec.tables.length > 2 || block.spec.tables.reduce((n, t) => n + t.headers.length, 0) > 6;
+      case 'tables': return block.spec.tables.length > 2 || block.spec.tables.reduce((n, t) => n + t.headers.length, 0) >= 6;
       case 'schema': return block.spec.tables.length > 2;
     }
   }

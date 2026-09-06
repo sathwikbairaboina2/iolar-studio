@@ -117,7 +117,7 @@
         if (!a || !b) return;
         var ltr = b.cx >= a.cx;
         var x1 = ltr ? a.x + a.w : a.x, x2 = ltr ? b.x : b.x + b.w;
-        var y1 = a.y + Math.min(a.h - 8, 22), y2 = b.y + Math.min(b.h - 8, 22);
+        var y1 = a.cy, y2 = b.cy;
         var xm = (x1 + x2) / 2;
         line(ctx, [[x1, y1], [xm, y1], [xm, y2], [x2, y2]], { arrow: !!l.arrow, stroke: 'var(--ink-green)' });
         if (l.fromLabel) label(ctx, x1 + (ltr ? 4 : -14), y1 - 5, l.fromLabel, 'sc-label', 'var(--ink-red)');

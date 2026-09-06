@@ -17,9 +17,13 @@ describe('renderSlideBlocks', () => {
 
   it('marks wide tables and diagrams as force-full', () => {
     const wide = renderSlideBlocks([
-      { type: 'table', headers: ['a', 'b', 'c', 'd'], rows: [['1', '2', '3', '4']] },
+      { type: 'table', headers: ['a', 'b', 'c', 'd', 'e'], rows: [['1', '2', '3', '4', '5']] },
     ] as Block[]);
     expect(wide).toContain('data-force-full="1"');
+    const fourShort = renderSlideBlocks([{ type: 'table', headers: ['ID', 'NAME', 'AGE', 'CITY'], rows: [['1', 'Abhi', '22', 'Pune']] }] as Block[]);
+    expect(fourShort).not.toContain('data-force-full="1"');
+    const fourLong = renderSlideBlocks([{ type: 'table', headers: ['a', 'b', 'c', 'd'], rows: [['1', 'a rather long cell value', '3', '4']] }] as Block[]);
+    expect(fourLong).toContain('data-force-full="1"');
 
     const narrow = renderSlideBlocks([
       { type: 'table', headers: ['a', 'b'], rows: [['1', '2']] },
@@ -207,7 +211,8 @@ describe('tables and schema widths', () => {
     const tb = (n: number) => ({ headers: Array.from({ length: n }, (_, i) => `c${i}`), rows: [['1']] });
     expect(forcesFullWidth(dg('tables', { tables: [tb(2), tb(2)], arrow: false }))).toBe(false);
     expect(forcesFullWidth(dg('tables', { tables: [tb(2), tb(2), tb(2)], arrow: false }))).toBe(true);
-    expect(forcesFullWidth(dg('tables', { tables: [tb(4), tb(3)], arrow: false }))).toBe(true);
+    expect(forcesFullWidth(dg('tables', { tables: [tb(3), tb(3)], arrow: false }))).toBe(true);
+    expect(forcesFullWidth(dg('tables', { tables: [tb(3), tb(2)], arrow: false }))).toBe(false);
     expect(forcesFullWidth(dg('schema', { tables: [{ name: 'a', columns: ['x'] }, { name: 'b', columns: ['y'] }], links: [] }))).toBe(false);
     expect(forcesFullWidth(dg('schema', { tables: [{ name: 'a', columns: ['x'] }, { name: 'b', columns: ['y'] }, { name: 'c', columns: ['z'] }], links: [] }))).toBe(true);
     expect(forcesFullWidth(dg('chain', { steps: [{ text: 'a' }] }))).toBe(false);
