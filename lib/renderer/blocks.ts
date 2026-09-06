@@ -16,8 +16,10 @@ function sameTitle(a: string, b: string): boolean {
   return norm(a) === norm(b) && norm(a).length > 0;
 }
 
-export const CODE_FULL_AT = 34;
-export const CODE_SMALL_AT = 60;
+/** Width follows content: a snippet stays in a column up to 60 characters by stepping its font down. */
+export const CODE_SMALL_AT = 42;
+export const CODE_TINY_AT = 50;
+export const CODE_FULL_AT = 60;
 export const CODE_TRUNCATE_AT = 80;
 
 const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
@@ -69,7 +71,9 @@ function longestLine(lines: string[]): number {
 function code(b: Extract<Block, { type: 'code' }>) {
   // No jitter on code: legibility beats realism. Lines never wrap; long ones step down or truncate.
   const lines = b.lines.map((l) => (l.length > CODE_TRUNCATE_AT ? l.slice(0, CODE_TRUNCATE_AT) + '…' : l));
-  const cls = ['b-code', longestLine(lines) > CODE_SMALL_AT ? 'code-small' : '', b.note ? 'has-note' : ''].filter(Boolean).join(' ');
+  const longest = longestLine(lines);
+  const size = longest > CODE_FULL_AT ? (longest > 70 ? 'code-small' : '') : longest > CODE_TINY_AT ? 'code-tiny' : longest > CODE_SMALL_AT ? 'code-small' : '';
+  const cls = ['b-code', size, b.note ? 'has-note' : ''].filter(Boolean).join(' ');
   // The note is a chip under the last line, so a short snippet keeps its column.
   const note = b.note ? `<div class="code-note co-sticky"><span class="co-pin">📌</span>${t(b.note)}</div>` : '';
   return `<div class="${cls}" data-lang="${e(b.lang)}"><pre>${lines.map((l) => highlightLine(b.lang, l)).join('\n')}</pre>${note}</div>`;

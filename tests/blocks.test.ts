@@ -144,14 +144,17 @@ describe('code rules', () => {
     expect(h).toContain('<mark class="hl">only</mark>');
     expect(h).toContain('has-note');
   });
-  it('forces full width past 34 chars and steps down past 60', () => {
-    expect(forcesFullWidth(code(['a'.repeat(34)]))).toBe(false);
-    expect(forcesFullWidth(code(['a'.repeat(35)]))).toBe(true);
-    expect(renderBlockHtml(code(['a'.repeat(61)]))).toContain('code-small');
-    expect(renderBlockHtml(code(['a'.repeat(60)]))).not.toContain('code-small');
+  it('stays in a column up to 60 chars by stepping the font down; full width only past that', () => {
+    expect(forcesFullWidth(code(['a'.repeat(60)]))).toBe(false);
+    expect(forcesFullWidth(code(['a'.repeat(61)]))).toBe(true);
+    expect(renderBlockHtml(code(['a'.repeat(42)]))).not.toContain('code-small');
+    expect(renderBlockHtml(code(['a'.repeat(43)]))).toContain('code-small');
+    expect(renderBlockHtml(code(['a'.repeat(51)]))).toContain('code-tiny');
+    expect(renderBlockHtml(code(['a'.repeat(61)]))).not.toContain('code-tiny');
+    expect(renderBlockHtml(code(['a'.repeat(71)]))).toContain('code-small');
   });
   it('a note does not widen the block', () => {
-    expect(forcesFullWidth(code(['a'.repeat(30)], { note: 'n' }))).toBe(false);
+    expect(forcesFullWidth(code(['a'.repeat(50)], { note: 'n' }))).toBe(false);
   });
   it('truncates past 80 chars and reports a warning', () => {
     const long = 'b'.repeat(90);
