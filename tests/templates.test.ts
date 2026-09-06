@@ -31,7 +31,7 @@ describe('template contract', () => {
 
   it('base.css styles every new class', () => {
     const css = readFileSync(path.join(dir, '_shared', 'base.css'), 'utf8');
-    for (const cls of ['.hl', '.em', '.ul', '.mono', '.bl-number', '.bl-check', '.bl-cross', '.b-frame', '.co-sticky', '.co-sticky-pink', '.code-note', '.code-small', '.tk-kw', '.tk-cm', '.tk-str', '.tk-num', '.tk-fn', '.hl-row', '.dg-array', '.ar-cell', '.ar-hl', '.ar-dim', '.dg-flowchart', '.fc-node', '.fc-diamond', '.fc-edges', '.dg-matrix', '.mx-hl', '.dg-cards', '.card', '.dg-node-rich', '--ink-purple', '--ink-orange'])
+    for (const cls of ['.hl', '.em', '.ul', '.mono', '.bl-number', '.bl-check', '.bl-cross', '.b-frame', '.co-sticky', '.co-sticky-pink', '.code-note', '.code-small', '.tk-kw', '.tk-cm', '.tk-str', '.tk-num', '.tk-fn', '.hl-row', '.dg-array', '.ar-cell', '.ar-hl', '.ar-dim', '.dg-flowchart', '.fc-node', '.fc-diamond', '.fc-edges', '.dg-matrix', '.mx-hl', '.dg-cards', '.card', '.dg-node-rich', '--ink-purple', '--ink-orange', '--ink-pink', '.ic', '.bl-checkbox', '.bl-star'])
       expect(css, `base.css lacks ${cls}`).toContain(cls);
   });
 });

@@ -14,9 +14,9 @@ export const TEMPLATES = [
   'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet',
 ] as const;
 
-export const INKS = ['blue', 'red', 'green', 'black', 'accent', 'purple', 'orange'] as const;
+export const INKS = ['blue', 'red', 'green', 'black', 'accent', 'purple', 'orange', 'pink'] as const;
 export const FRAMES = ['none', 'solid', 'dashed'] as const;
-export const BULLET_STYLES = ['dot', 'number', 'check', 'cross'] as const;
+export const BULLET_STYLES = ['dot', 'number', 'check', 'cross', 'checkbox', 'star'] as const;
 export const DIAGRAM_KINDS = ['flow', 'array', 'flowchart', 'matrix', 'cards'] as const;
 
 const Ink = z.enum(INKS);

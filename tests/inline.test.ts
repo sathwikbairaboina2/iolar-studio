@@ -17,7 +17,7 @@ describe('renderInline', () => {
     expect(renderInline('a == b')).toBe('a == b');
     expect(renderInline('2 ** 3')).toBe('2 ** 3');
     expect(renderInline('{accent:x}')).toBe('{accent:x}');
-    expect(renderInline('{pink:x}')).toBe('{pink:x}');
+    expect(renderInline('{teal:x}')).toBe('{teal:x}');
   });
   it('protects code spans from other markers', () => {
     expect(renderInline('`__init__`')).toBe('<code class="mono">__init__</code>');
@@ -41,5 +41,15 @@ describe('stripInline', () => {
   });
   it('leaves unmatched markers alone', () => {
     expect(stripInline('a == b')).toBe('a == b');
+  });
+});
+
+describe('icon marker', () => {
+  it('renders through the resolver the caller passes, and nothing without one', () => {
+    expect(renderInline('see {icon:lock} here', { icon: (n) => `<svg data-i="${n}"></svg>` })).toBe('see <svg data-i="lock"></svg> here');
+    expect(renderInline('see {icon:lock} here')).toBe('see  here');
+  });
+  it('is stripped from coverage text', () => {
+    expect(stripInline('{icon:s3} S3 bucket')).toBe('S3 bucket');
   });
 });

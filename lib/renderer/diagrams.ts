@@ -1,8 +1,8 @@
 import type { Block } from '../schema';
-import { escapeHtml, renderInline } from './inline';
+import { escapeHtml } from './inline';
+import { t } from './text';
 
 type D = Extract<Block, { type: 'diagram' }>;
-const t = renderInline;
 const ink = (name?: string) => `var(--ink-${name ?? 'blue'})`;
 
 function flow(spec: Extract<D, { kind: 'flow' }>['spec']): string {

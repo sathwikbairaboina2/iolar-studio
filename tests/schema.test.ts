@@ -40,8 +40,13 @@ describe('block additions', () => {
     expect(b).toMatchObject({ style: 'number', frame: 'dashed', ink: 'purple' });
   });
 
+  it('accepts pink ink and the checkbox and star styles', () => {
+    validatePost(withBlock({ type: 'bullets', items: ['a'], style: 'checkbox', ink: 'pink' }));
+    validatePost(withBlock({ type: 'bullets', items: ['a'], style: 'star' }));
+  });
+
   it('rejects an unknown list style', () => {
-    expect(() => validatePost(withBlock({ type: 'bullets', items: ['a'], style: 'star' }))).toThrow();
+    expect(() => validatePost(withBlock({ type: 'bullets', items: ['a'], style: 'squiggle' }))).toThrow();
   });
 
   it('accepts frame and ink on paragraph, highlightRow on table, note on code', () => {

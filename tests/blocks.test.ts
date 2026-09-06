@@ -183,3 +183,20 @@ describe('title-duplicate heading', () => {
     expect(renderSlideBlocks([{ type: 'paragraph', text: 'p' }, { type: 'heading', text: 'Binary Search Fundamentals' }] as Block[], { pageTitle: 'Binary Search Fundamentals' })).not.toContain('pk-hidden');
   });
 });
+
+describe('set 2/3 primitives', () => {
+  it('checkbox and star list styles carry their class', () => {
+    expect(renderBlockHtml({ type: 'bullets', items: ['a'], style: 'checkbox' } as Block)).toContain('bl-checkbox');
+    expect(renderBlockHtml({ type: 'bullets', items: ['a'], style: 'star' } as Block)).toContain('bl-star');
+  });
+  it('a bullet item with an icon marker gets the real logo inline', () => {
+    const h = renderBlockHtml({ type: 'bullets', items: ['{icon:ec2} EC2'] } as Block);
+    expect(h).toContain('class="ic ic-aws"');
+    expect(h.toLowerCase()).toContain('#ed7100');
+  });
+  it('a cloud callout asks for the scalloped shape in pink', () => {
+    const h = renderBlockHtml({ type: 'callout', style: 'cloud', title: 'Key', text: 'x' } as Block);
+    expect(h).toContain('data-rough-shape="cloud"');
+    expect(h).toContain('var(--ink-pink)');
+  });
+});

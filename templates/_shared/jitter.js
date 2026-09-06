@@ -83,7 +83,18 @@ window.applyJitter = function (seed) {
         el.style.background = 'transparent';
       }
     }
-    if (shape === 'diamond') {
+    if (shape === 'cloud') {
+      // Scalloped thought cloud: bumps around the box, drawn as one rough path.
+      var pad = 6, bump = Math.max(14, Math.min(26, h / 3));
+      var x0 = 2 - pad, y0 = 2 - pad, x1 = 2 + w + pad, y1 = 2 + h + pad;
+      var d = 'M ' + x0 + ' ' + (y0 + bump / 2);
+      for (var x = x0; x < x1 - bump / 2; x += bump) d += ' A ' + (bump / 2) + ' ' + (bump / 2) + ' 0 0 1 ' + Math.min(x + bump, x1) + ' ' + y0;
+      for (var y = y0; y < y1 - bump / 2; y += bump) d += ' A ' + (bump / 2) + ' ' + (bump / 2) + ' 0 0 1 ' + x1 + ' ' + Math.min(y + bump, y1);
+      for (var xb = x1; xb > x0 + bump / 2; xb -= bump) d += ' A ' + (bump / 2) + ' ' + (bump / 2) + ' 0 0 1 ' + Math.max(xb - bump, x0) + ' ' + y1;
+      for (var yb = y1; yb > y0 + bump / 2; yb -= bump) d += ' A ' + (bump / 2) + ' ' + (bump / 2) + ' 0 0 1 ' + x0 + ' ' + Math.max(yb - bump, y0);
+      d += ' Z';
+      svg.appendChild(rc.path(d, opts));
+    } else if (shape === 'diamond') {
       svg.appendChild(rc.polygon([[2 + w / 2, 2], [2 + w, 2 + h / 2], [2 + w / 2, 2 + h], [2, 2 + h / 2]], opts));
     } else if (shape === 'pill') {
       const rr = h / 2;

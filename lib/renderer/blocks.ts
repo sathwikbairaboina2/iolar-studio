@@ -1,11 +1,11 @@
 import type { Block, Frame } from '../schema';
-import { escapeHtml, renderInline } from './inline';
+import { escapeHtml } from './inline';
+import { t } from './text';
 import { highlightLine } from './syntax';
 import { renderDiagram } from './diagrams';
 export { escapeHtml };
 
 const e = escapeHtml;
-const t = renderInline;
 
 export type RenderOpts = { defaults?: { frame?: Frame }; pageTitle?: string };
 
@@ -84,9 +84,10 @@ function callout(b: Extract<Block, { type: 'callout' }>) {
     );
   }
   const icon = b.style === 'tip' ? '💡 ' : b.style === 'takeaway' ? '★ ' : '';
-  const ink = b.style === 'cloud' ? 'var(--ink-green)' : 'var(--ink-red)';
+  const ink = b.style === 'cloud' ? 'var(--ink-pink)' : 'var(--ink-red)';
+  const shape = b.style === 'cloud' ? ' data-rough-shape="cloud"' : '';
   return (
-    `<div class="b-callout co-${b.style}" data-rough="${ink}">` +
+    `<div class="b-callout co-${b.style}" data-rough="${ink}"${shape}>` +
     `<div class="co-title" data-jitter>${icon}${t(b.title)}</div>` +
     `<div class="co-text" data-jitter>${t(b.text)}</div></div>`
   );
