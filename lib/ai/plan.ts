@@ -24,7 +24,10 @@ Block types (discriminated by "type"):
 - {"type":"sidebox","title":string,"items":[string,...],"ink"?:string}
 - {"type":"table","headers":[string,...],"rows":[[string,...],...]}
 - {"type":"code","lang":string,"lines":[string,...],"runnable":boolean}
-- {"type":"diagram","kind":"flow","spec":{"nodes":[string,...]}}
+- {"type":"diagram","kind":"flow","spec":{"nodes":[string,...]}}  // a pipeline, left to right
+- {"type":"diagram","kind":"tree","spec":{"root":string,"branches":[{"label":string,"children"?:[string,...]}]}}  // a hierarchy or a split
+- {"type":"diagram","kind":"compare","spec":{"left":{"title":string,"items":[string,...]},"right":{"title":string,"items":[string,...]}}}  // two options side by side
+- {"type":"diagram","kind":"memory-cells","spec":{"label"?:string,"cells":[string,...]}}  // an array, buffer, stack or table of slots
 - {"type":"callout","style":"tip"|"takeaway"|"cloud","title":string,"text":string}
 - {"type":"qa","q":string,"a_bullets":[string,...],"example_code"?:[string,...]}
 
@@ -32,30 +35,46 @@ Block types (discriminated by "type"):
 
 WRITE SHORT BLOCKS, MANY OF THEM. This is the single most important rule. Real study-notes
 pages are dense because they carry MANY SMALL items, not a few long ones. A page is a
-TWO-COLUMN grid holding about 70 short lines, and short blocks pair up side by side.
+TWO-COLUMN page holding about 70 short lines: blocks flow down the left column and then
+down the right one, so a short block costs half a page width and nothing more.
 
 Per-block ceilings — treat these as hard:
 - bullets: 3-5 items, each ONE line (max 12 words). Never a paragraph inside a bullet.
 - paragraph: at most 2 short sentences. Prefer bullets; use paragraph sparingly.
 - table: 3-5 rows, 2-4 columns, cells of 1-3 words. Terse ("O(1) avg", not "on average constant time").
-- code: 3-5 lines, each under 45 characters, with a short trailing # comment where it teaches something.
+- code: 3-5 lines. 45 characters per line is a HARD cap — a longer line wraps in the box and the
+  snippet stops looking like code. Shorten the identifier, drop the comment, or split the block.
+  Add a short trailing # comment where it teaches something.
   Set "runnable": true when the snippet is a COMPLETE program that runs on its own — it will be
   executed and any '# value' comment on a print will be checked against real output. Set
   "runnable": false for an illustrative fragment (a bare decorator, a method without its class).
   A fragment must still be structurally sound: never start a block indented, never declare a
   def or class with no body, never leave an except/else without its opener.
 - sidebox / callout: title plus 2-4 one-line items.
-- heading: a 2-5 word section label; number them (1., 2., 3. ...).
+- heading: a 2-5 word section label. Do NOT number it — the page numbers its own sections,
+  and a number you write is stripped.
+- diagram: 3-6 nodes, 2-4 branches, or 4-8 cells. Labels of 1-3 words.
+
+Wrap identifiers, commands, flags and file names in backticks (\`docker compose\`, \`-v\`,
+\`.env\`) — they render as inline code. Do not use any other markdown: no **bold**, no
+headings with #, no links.
+
+PER-PAGE MIX — a page of nothing but heading + bullets reads like a listicle, not notes:
+- at most 5 headings on a page,
+- at least one visual block (table, diagram or code) in every 3 sections,
+- at least one diagram somewhere in every 3 pages, choosing the kind that matches the idea
+  (flow for a pipeline, tree for a hierarchy, compare for two options, memory-cells for slots),
+- a callout or sidebox on most pages, and a qa block where a question is the clearest framing.
 
 Each block should render in about 4-6 lines. A block that runs past ~8 lines is too long —
 split it into two blocks or cut words.
 
-PER-SLIDE TARGET: 12-16 blocks, i.e. 4-6 numbered sections each followed by its bullets,
-table, or code. Fewer than 10 blocks means the page will render half empty.
+PER-SLIDE TARGET: 12-16 blocks, i.e. 4-6 sections each followed by its bullets,
+table, diagram or code. Fewer than 10 blocks means the page will render half empty.
 
-SLIDE COUNT: exactly ${MAX_SLIDES} slides unless the book truly cannot fit. Divide the book's
-points evenly — with N points that is about N/${MAX_SLIDES} points per slide, and each point
-should become one short bullet, one table row, or one code line, NOT a paragraph.`;
+SLIDE COUNT: one slide per book chapter, in the book's order, and never more than
+${MAX_SLIDES} — the book is written to fit a part. Each point becomes one short bullet, one
+table row, or one code line, NOT a paragraph.`;
 
 function envelope(brand: string, template: string, ratio: string) {
   return `Use "brand": "${brand}", "template": "${template}", "ratio": "${ratio}", "seed": 42, today's date ${new Date().toLocaleDateString('en-GB')}. Write an engaging caption (2-3 sentences, hook first) and 8-12 relevant hashtags.`;
@@ -123,7 +142,7 @@ export async function planSlidesFromBook(subject: string, chapter: string, part:
     JSON.stringify(book),
     hasLayout
       ? `Each chapter was read from one reference page and carries a "layout": the exact block sequence that page used. Write ONE SLIDE PER CHAPTER, in order, emitting those block types in that order — if the layout says heading, bullets, sidebox, table, code, callout, then produce exactly that sequence, filled with this chapter's own points. Mirror the reference page's shape; write original wording.`
-      : `That is ${book.chapters.length} chapters and ${totalPoints} points. Choose the slide count that covers them all at full page density; keep the book's order.`,
+      : `That is ${book.chapters.length} chapters and ${totalPoints} points: write ${Math.min(book.chapters.length, MAX_SLIDES)} slides, one per chapter, in the book's order, each packed to full page density.`,
     'Write original prose — teach each point concretely with real examples, tables and code, the way dense study notes do.',
     covered.length
       ? `Other posts on this account already cover these topics — do not rehash them at length; reference them briefly if needed and spend the space on this book's own material:\n${covered.join(', ')}`

@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { z } from 'zod';
+import { MAX_SLIDES } from '../schema';
 import { bookFile, chapterDir } from '../paths';
 import { runClaude } from './claude';
 import { extractJson } from './revise';
@@ -70,7 +71,21 @@ const BOOK_SHAPE = `Return ONLY this JSON object, no prose and no markdown fence
     }
   ]
 }
-Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Aim for 6-12 points per chapter so a chapter fills a dense handwritten page.`;
+Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Aim for 11-13 points per chapter: that is what one dense handwritten page holds.`;
+
+/**
+ * A chapter becomes a page and a part holds ${MAX_SLIDES} pages, so a book longer than that
+ * guarantees a spillover part nobody asked for. Depth goes into points per chapter instead.
+ */
+/** Measured over 60 chapters: one rendered page carries about 12.6 book points. */
+const POINTS_PER_PAGE = 12;
+
+const PART_BUDGET = `SIZE — both limits are hard:
+- at most ${MAX_SLIDES} chapters, because one carousel part holds ${MAX_SLIDES} pages and a chapter is a page;
+- at most ${MAX_SLIDES * POINTS_PER_PAGE} points in the whole book, because a page holds about ${POINTS_PER_PAGE} of them.
+That is about ${POINTS_PER_PAGE} points per chapter. Going over does not add depth — it spills the
+chapter into a second post. Cut the weakest points instead, and keep the ones that teach something
+specific.`;
 
 async function generateBook(prompt: string, allowedTools?: string[]): Promise<Book> {
   const first = await runClaude(prompt, { timeoutMs: 900_000, allowedTools });
@@ -106,6 +121,7 @@ export async function bookFromTopic(subject: string, chapter: string, topic: str
     'You are building the syllabus for a tech handbook published as an Instagram carousel of dense handwritten notes pages.',
     `Topic: ${topic}`,
     'Cover the topic thoroughly, the way a strong study-notes series would: fundamentals, mechanics/internals, practical usage, comparisons, complexity or trade-offs, common mistakes, and a closing summary.',
+    PART_BUDGET,
     BOOK_SHAPE,
   ].join('\n\n');
   return saveBook(subject, chapter, await generateBook(prompt));

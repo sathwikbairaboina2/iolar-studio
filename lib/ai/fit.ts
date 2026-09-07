@@ -189,6 +189,20 @@ export async function fitToPages(
       `fit pass removed content (${blocksBefore} blocks -> ${blocksAfter}) — rejected; it may only add`
     );
   }
+  // A wrapped code line stops reading as code. 45 characters is the rule the prompt states;
+  // the gate only rejects lines so long that the box is guaranteed to wrap badly, so that a
+  // borderline line does not throw away a whole pass of work.
+  const RUNAWAY = 60;
+  const runaway = (p: Post) =>
+    p.slides.flatMap((s) => s.blocks).filter((b) => b.type === 'code')
+      .flatMap((b) => (b as Extract<Post['slides'][number]['blocks'][number], { type: 'code' }>).lines)
+      .filter((l) => l.length > RUNAWAY).length;
+  if (runaway(proposal) > runaway(post)) {
+    throw new Error(
+      `fit pass added code lines over ${RUNAWAY} characters — rejected; keep code lines under 45`
+    );
+  }
+
   if (book) {
     // Hard gate: the fit pass may only add. Anything the book covered must still be covered.
     const lostNow = uncoveredPoints(book, proposal);

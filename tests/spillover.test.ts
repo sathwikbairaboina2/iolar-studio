@@ -66,13 +66,14 @@ describe('splitIntoFollowUp', () => {
       loadPost('k8s', 'pods', 3),
     ]);
     expect(titles(one)).toHaveLength(10);
-    expect(titles(two)).toEqual(['p1-11', 'p1-12', 'p1-13', 'p2-1', 'p2-2', 'p2-3', 'p2-4', 'p2-5', 'p2-6', 'p2-7']);
-    expect(titles(three)).toEqual(['p2-8', 'p2-9']);
+    expect(titles(two)).toEqual(['p1-11', 'p1-12', 'p1-13', 'p2-1', 'p2-2', 'p2-3', 'p2-4', 'p2-5']);
+    // Part 3 held two orphan pages; balancing pushed two more back so it reads as a post.
+    expect(titles(three)).toEqual(['p2-6', 'p2-7', 'p2-8', 'p2-9']);
     // Every page that existed before the split still exists after it.
     expect([...titles(one), ...titles(two), ...titles(three)]).toHaveLength(22);
   });
 
-  it('creates the follow-up when there is none, and leaves short parts alone', async () => {
+  it('creates the follow-up when there is none, and gives it enough pages to stand alone', async () => {
     const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
     const { loadPost, listParts } = await import('@/lib/store');
 
@@ -80,11 +81,26 @@ describe('splitIntoFollowUp', () => {
     await splitIntoFollowUp('k8s', 'pods', 1, 10);
 
     expect(await listParts('k8s', 'pods')).toEqual([1, 2]);
-    const two = await loadPost('k8s', 'pods', 2);
-    expect(titles(two)).toEqual(['p1-11']);
+    const [one, two] = await Promise.all([loadPost('k8s', 'pods', 1), loadPost('k8s', 'pods', 2)]);
+    // One page over the limit used to publish as ten pages plus a single orphan.
+    expect(titles(two)).toEqual(['p1-8', 'p1-9', 'p1-10', 'p1-11']);
+    expect(titles(one)).toHaveLength(7);
     expect(two.series).toBe('SPILL TEST — PART 2');
     // A part inside the limit is not a split.
     expect(await splitIntoFollowUp('k8s', 'pods', 2, 10)).toBeNull();
+  });
+
+  it('never starves the part it borrows from', async () => {
+    const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
+    const { loadPost } = await import('@/lib/store');
+
+    // Seven pages cannot give three away, so the tail stays short rather than gutting part 1.
+    await seed({ 1: Array.from({ length: 8 }, (_, i) => `p1-${i + 1}`) });
+    await splitIntoFollowUp('k8s', 'pods', 1, 7);
+
+    const [one, two] = await Promise.all([loadPost('k8s', 'pods', 1), loadPost('k8s', 'pods', 2)]);
+    expect(titles(one)).toHaveLength(6);
+    expect(titles(two)).toEqual(['p1-7', 'p1-8']);
   });
 
   it('never leaves a follow-up opening as a continuation page', async () => {

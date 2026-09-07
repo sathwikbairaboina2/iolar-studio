@@ -59,5 +59,39 @@ export async function splitIntoFollowUp(
     target += 1;
   }
 
+  await balanceParts(subject, chapter, part, base);
   return { moved: overflow.length, part: part + 1 };
+}
+
+/** A part shorter than this reads as an offcut rather than a post. */
+const MIN_PART = 4;
+/** Never shrink the part we borrow from below this. */
+const KEEP = 6;
+
+/**
+ * Splitting leaves the remainder on the last part, so a chapter one page over the limit used
+ * to publish as ten pages plus a single orphan. Pages move back down the chain until the tail
+ * is worth posting — nothing is added, removed or rewritten, only moved.
+ */
+async function balanceParts(subject: string, chapter: string, from: number, base: string) {
+  const parts = (await listParts(subject, chapter)).filter((p) => p >= from).sort((a, b) => a - b);
+  for (let i = parts.length - 1; i > 0; i--) {
+    const tail = await loadPost(subject, chapter, parts[i]);
+    const prev = await loadPost(subject, chapter, parts[i - 1]);
+    let moved = 0;
+    while (
+      tail.slides.length + moved < MIN_PART &&
+      prev.slides.length - moved > KEEP
+    ) moved++;
+    if (!moved) continue;
+
+    const keep = prev.slides.slice(0, prev.slides.length - moved);
+    const give = prev.slides.slice(prev.slides.length - moved);
+    await savePost(subject, chapter, parts[i - 1], { ...prev, slides: keep });
+    await savePost(subject, chapter, parts[i], {
+      ...tail,
+      series: `${base} — PART ${parts[i]}`,
+      slides: openPart([...give, ...tail.slides]),
+    });
+  }
 }

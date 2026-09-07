@@ -73,7 +73,9 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     saveTimer.current = setTimeout(() => save(p), 800);
   }, [save]);
 
-  const render = async (which?: number) => {
+  // `refine` asks the server to grow thin pages and rename "(cont.)" titles from the
+  // measurements it just took. It calls the AI, so it is a separate button, not the default.
+  const render = async (which?: number, refine = false) => {
     if (!post) return;
     setRendering(true);
     if (dirty) await save(post);
@@ -81,7 +83,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(which !== undefined ? { slide: which } : {}),
+        body: JSON.stringify(which !== undefined ? { slide: which } : { refine }),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error);
@@ -94,17 +96,24 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       setOverflow(ovf);
       setFill(fl);
       setVersion(Date.now());
+      if (body.followUpParts?.length) {
+        message.info(`Overflow moved to part ${body.followUpParts.join(', ')} and rendered`);
+      }
+      if (body.refined?.note) message.warning(body.refined.note);
       if (body.split) {
         const fresh = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((r) => r.json());
         setPost(fresh);
         message.info(`Content reflowed onto ${body.slides} pages`);
 
-        const h = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
+        // The refine pass already renamed them server-side.
+        const h = body.refined?.retitled
+          ? { ok: false }
+          : await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode: 'headings' }),
         });
-        if (h.ok) {
+        if (h.ok && 'json' in h) {
           const { proposal } = await h.json();
           setPost(proposal);
           await save(proposal);
@@ -191,6 +200,14 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
         )}
         <Button icon={<PictureOutlined />} onClick={() => render(slide + 1)} loading={rendering}>Render slide</Button>
         <Button icon={<ThunderboltOutlined />} onClick={() => render()} loading={rendering}>Render all</Button>
+        <Button
+          icon={<ThunderboltOutlined />}
+          onClick={() => render(undefined, true)}
+          loading={rendering}
+          title="Render, then let the AI fill thin pages and retitle continuation pages"
+        >
+          Render &amp; fit
+        </Button>
         <Button icon={<StarOutlined />} disabled={!comfyUp} onClick={doPolish} title={comfyUp ? '' : 'ComfyUI offline'}>Polish</Button>
         <BookPanel subject={subject} chapter={chapter} part={part} onSlidesPlanned={reloadAndRender} />
         <ReferencePanel
