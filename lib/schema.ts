@@ -17,7 +17,14 @@ export const TEMPLATES = [
 const Ink = z.enum(['blue', 'red', 'green', 'black', 'accent']);
 
 const BlockSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('heading'), text: z.string().min(1), ink: Ink.optional() }),
+  z.object({
+    type: z.literal('heading'),
+    /** Authors keep numbering their sections even when told not to, and their numbering runs
+     *  across the whole part while a page numbers its own sections. It is stripped on the way
+     *  in so the stored JSON says what the page shows. */
+    text: z.string().min(1).transform((t) => t.replace(/^\s*\d+\s*[.)]\s*/, '').trim() || t),
+    ink: Ink.optional(),
+  }),
   z.object({ type: z.literal('paragraph'), text: z.string().min(1) }),
   z.object({ type: z.literal('bullets'), items: z.array(z.string().min(1)).min(1) }),
   z.object({ type: z.literal('sidebox'), title: z.string(), items: z.array(z.string()).min(1), ink: Ink.optional() }),

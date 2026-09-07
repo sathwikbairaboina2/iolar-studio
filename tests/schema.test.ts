@@ -9,6 +9,21 @@ const minimal = {
 };
 
 describe('PostSchema', () => {
+  it('strips section numbers the author typed into a heading', () => {
+    const post = validatePost({
+      ...minimal,
+      slides: [{ page_title: 'P', blocks: [
+        { type: 'heading', text: '12. Retention' },
+        { type: 'heading', text: '3) Compaction' },
+        { type: 'heading', text: 'Tombstones' },
+        { type: 'heading', text: '404' },
+      ] }],
+    });
+    const texts = post.slides[0].blocks.map((b) => (b as { text: string }).text);
+    // A heading that is nothing but a number keeps it — stripping would leave an empty label.
+    expect(texts).toEqual(['Retention', 'Compaction', 'Tombstones', '404']);
+  });
+
   it('accepts a minimal valid post', () => {
     expect(validatePost(minimal).slides.length).toBe(1);
   });

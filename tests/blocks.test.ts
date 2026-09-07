@@ -74,8 +74,55 @@ describe('renderBlockHtml', () => {
     expect((h.match(/dg-arrow/g) ?? []).length).toBe(2);
   });
 
-  it('non-flow diagram renders staged box', () => {
-    const h = renderBlockHtml({ type: 'diagram', kind: 'tree', spec: { root: 'x' } } as Block);
-    expect(h).toContain('b-diagram-staged');
+  it('tree diagram renders a root over its branches and leaves', () => {
+    const h = renderBlockHtml({
+      type: 'diagram', kind: 'tree',
+      spec: { root: 'event loop', branches: [{ label: 'macrotask', children: ['setTimeout'] }, { label: 'microtask' }] },
+    } as Block);
+    expect(h).toContain('dg-tree-root');
+    expect((h.match(/dg-branch/g) ?? []).length).toBe(2);
+    expect(h).toContain('setTimeout');
+  });
+
+  it('compare diagram renders both sides with a vs divider', () => {
+    const h = renderBlockHtml({
+      type: 'diagram', kind: 'compare',
+      spec: { left: { title: 'stash', items: ['one tree'] }, right: { title: 'worktree', items: ['many trees'] } },
+    } as Block);
+    expect((h.match(/dg-side"/g) ?? []).length).toBe(2);
+    expect(h).toContain('dg-vs');
+    expect(h).toContain('many trees');
+  });
+
+  it('memory-cells diagram numbers its cells and takes plain or object cells', () => {
+    const h = renderBlockHtml({
+      type: 'diagram', kind: 'memory-cells',
+      spec: { label: 'arr', cells: ['10', { value: '20', addr: '0x2' }] },
+    } as Block);
+    expect((h.match(/dg-cell"/g) ?? []).length).toBe(2);
+    expect(h).toContain('>0<');
+    expect(h).toContain('0x2');
+  });
+
+  it('renders inline code spans instead of printing backticks', () => {
+    const h = renderBlockHtml({ type: 'bullets', items: ['run `git stash` first'] } as Block);
+    expect(h).toContain('<code class="b-inline">git stash</code>');
+    expect(h).not.toContain('`');
+  });
+
+  it('leaves an unmatched backtick alone', () => {
+    const h = renderBlockHtml({ type: 'paragraph', text: 'a lone ` tick' } as Block);
+    expect(h).toContain('a lone ` tick');
+  });
+
+  it('numbers headings per page and drops numbering the author typed', () => {
+    const html = renderSlideBlocks([
+      { type: 'heading', text: '7. First' },
+      { type: 'bullets', items: ['x'] },
+      { type: 'heading', text: 'Second' },
+    ] as Block[]);
+    expect(html).toContain('1. First');
+    expect(html).not.toContain('7. First');
+    expect(html).toContain('2. Second');
   });
 });

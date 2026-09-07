@@ -95,15 +95,12 @@
 
     measure(container, units, columns, colGapPx);
 
-    // What fraction of one page ALL of this slide's content needs. >100% means the author
-    // wrote more than a page holds; the fit pass uses this to trim by a measured amount.
+    // What fraction of one page ALL of this slide's content needs, drawn as compactly as
+    // the columns allow. >100% means the author wrote more than a page holds.
     var unconstrained = window.packUnits(units, {
       columns: columns, pageHeight: Number.MAX_SAFE_INTEGER, rowGap: rowGapPx
     });
-    var neededPx = 0;
-    for (var q = 0; q < unconstrained.rows.length; q++) {
-      neededPx += unconstrained.rows[q].height + (q ? rowGapPx : 0);
-    }
+    var neededPx = window.packedHeight(unconstrained.bands, rowGapPx);
 
     // Fill each page to capacity and let the remainder spill forward. Content is never
     // trimmed and never spread thin: a full page beats two half-empty ones.
@@ -117,17 +114,29 @@
     }
     spillIndexes.sort(function (a, b) { return a - b; });
 
-    var used = 0;
-    for (var r = 0; r < packed.rows.length; r++) {
-      var row = packed.rows[r];
-      for (var c = 0; c < row.items.length; c++) {
-        var item = row.items[c];
-        item.unit.el.classList.add(item.span === 'full' ? 'span-full' : 'span-half');
-        item.unit.el.style.gridColumnStart = String(item.col + 1);
-        container.appendChild(item.unit.el); // reorder DOM to packed order
+    // Bands run down the page; inside a band, units run down one column and then the next,
+    // so a reader follows the numbering straight down instead of hopping between columns.
+    for (var b = 0; b < packed.bands.length; b++) {
+      var band = packed.bands[b];
+      var bandEl = document.createElement('div');
+      bandEl.className = band.span === 'full' ? 'pk-band pk-band-full' : 'pk-band';
+      for (var c = 0; c < band.cols.length; c++) {
+        var colEl = document.createElement('div');
+        colEl.className = 'pk-col';
+        for (var u = 0; u < band.cols[c].length; u++) colEl.appendChild(band.cols[c][u].el);
+        bandEl.appendChild(colEl);
       }
-      used += row.height + (r ? rowGapPx : 0);
+      // A band that used only one of its columns must not stretch that column to full width.
+      if (band.span !== 'full') {
+        for (var pad = band.cols.length; pad < columns; pad++) {
+          var filler = document.createElement('div');
+          filler.className = 'pk-col';
+          bandEl.appendChild(filler);
+        }
+      }
+      container.appendChild(bandEl);
     }
+    var used = window.packedHeight(packed.bands, rowGapPx);
 
     window.LAYOUT = {
       spillIndexes: spillIndexes,

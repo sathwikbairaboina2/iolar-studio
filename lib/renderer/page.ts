@@ -54,8 +54,11 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     rowGapPx: Math.round(height * 2 * 0.006),
   })};</script>`;
 
+  // Replacement functions, not strings: page content carries `$$`, `$&`, `` $` ``
+  // and `$1` (shell interpolation, awk fields, sed backreferences), which a string
+  // replacement would eat or expand into the surrounding page.
   return tpl
-    .replace('<!--HEAD-->', head)
-    .replace('<!--CONTENT-->', content)
-    .replace('<!--PAGEVARS-->', pageVars);
+    .replace('<!--HEAD-->', () => head)
+    .replace('<!--CONTENT-->', () => content)
+    .replace('<!--PAGEVARS-->', () => pageVars);
 }

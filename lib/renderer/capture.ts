@@ -163,11 +163,15 @@ async function balanceTail(
   results: { slide: number; overflowPx: number; fillPct: number; file: string }[],
   outDir: string
 ) {
-  const THIN = 55; // a final page below this reads as an accident
-  const TARGET = 70; // once the tail reaches this it no longer looks like a mistake
-  const FLOOR = 62; // never starve the page we borrow from
+  // Column flow packs each page tighter than the old row layout did, which pushes content up
+  // the part and leaves less on the final page: measured over 180 parts, 53 of them ended
+  // under 70%. The trigger rose and the floor dropped so the tail can borrow more before the
+  // page it borrows from is called starved — two pages at 60% beat one at 90% and one at 24%.
+  const THIN = 62; // a final page below this reads as an accident
+  const TARGET = 72; // once the tail reaches this it no longer looks like a mistake
+  const FLOOR = 56; // never starve the page we borrow from
 
-  for (let move = 0; move < 10; move++) {
+  for (let move = 0; move < 20; move++) {
     if (slides.length < 2) return;
     const lastIndex = slides.length - 1;
     const last = results[lastIndex];
