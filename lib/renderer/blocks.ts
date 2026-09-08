@@ -17,7 +17,7 @@ function sameTitle(a: string, b: string): boolean {
 }
 
 /** Width follows content: a snippet stays in a column up to 60 characters by stepping its font down. */
-export const CODE_SMALL_AT = 42;
+export const CODE_SMALL_AT = 35;
 export const CODE_TINY_AT = 50;
 export const CODE_FULL_AT = 60;
 export const CODE_TRUNCATE_AT = 80;

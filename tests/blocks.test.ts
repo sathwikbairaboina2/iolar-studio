@@ -147,8 +147,9 @@ describe('code rules', () => {
   it('stays in a column up to 60 chars by stepping the font down; full width only past that', () => {
     expect(forcesFullWidth(code(['a'.repeat(60)]))).toBe(false);
     expect(forcesFullWidth(code(['a'.repeat(61)]))).toBe(true);
-    expect(renderBlockHtml(code(['a'.repeat(42)]))).not.toContain('code-small');
-    expect(renderBlockHtml(code(['a'.repeat(43)]))).toContain('code-small');
+    expect(renderBlockHtml(code(['a'.repeat(34)]))).not.toContain('code-small');
+    // A line of 35 already overflows a column at full size — that is where the step down starts.
+    expect(renderBlockHtml(code(['a'.repeat(36)]))).toContain('code-small');
     expect(renderBlockHtml(code(['a'.repeat(51)]))).toContain('code-tiny');
     expect(renderBlockHtml(code(['a'.repeat(61)]))).not.toContain('code-tiny');
     expect(renderBlockHtml(code(['a'.repeat(71)]))).toContain('code-small');

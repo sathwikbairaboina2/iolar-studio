@@ -10,6 +10,9 @@
  *   tree         -> flowchart when it fits the 12-node budget, else chain (root as the title,
  *                   each branch a step, its children the note beside it)
  *
+ * It also re-runs safely: an array whose cells are too long for their boxes — the shape a
+ * phrase-carrying memory-cells lands in — is reshaped into a matrix.
+ *
  * Run: npx tsx scripts/migrate-legacy-diagrams.mts [--dry]
  */
 import { readdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
@@ -20,10 +23,32 @@ type Json = Record<string, unknown>;
 const dry = process.argv.includes('--dry');
 const root = 'data/handbooks';
 
+/**
+ * An array draws one narrow box per cell, so it only works when the labels are short. The old
+ * memory-cells often held a phrase ("[0] whole match"), which overflows its box and breaks the
+ * row; those become a matrix instead, two per row, which is a grid of real cells.
+ */
+const ARRAY_CELL_MAX = 10;
+
 function memoryCells(spec: Json) {
-  const cells = (spec.cells as string[]) ?? [];
+  const cells = ((spec.cells as string[]) ?? []).slice(0, 20);
   const label = typeof spec.label === 'string' ? spec.label : undefined;
-  return { kind: 'array', spec: { cells: cells.slice(0, 20), ...(label ? { caption: label } : {}) } };
+  const caption = label ? { caption: label } : {};
+  if (cells.every((c) => c.length <= ARRAY_CELL_MAX)) {
+    return { kind: 'array', spec: { cells, ...caption } };
+  }
+  const rows: string[][] = [];
+  for (let i = 0; i < cells.length; i += 2) rows.push(cells.slice(i, i + 2));
+  return { kind: 'matrix', spec: { rows, ...caption } };
+}
+
+/** An array written by the first pass (or by hand) whose cells are too long for their boxes. */
+function wideArray(spec: Json) {
+  const cells = ((spec.cells as string[]) ?? []).slice(0, 20);
+  const caption = typeof spec.caption === 'string' ? { caption: spec.caption } : {};
+  const rows: string[][] = [];
+  for (let i = 0; i < cells.length; i += 2) rows.push(cells.slice(i, i + 2));
+  return { kind: 'matrix', spec: { rows, ...caption } };
 }
 
 function compare(spec: Json) {
@@ -83,10 +108,17 @@ function tree(spec: Json) {
   };
 }
 
-const CONVERT: Record<string, (spec: Json) => { kind: string; spec: unknown }> = {
+const CONVERT: Record<string, (spec: Json) => { kind: string; spec: unknown } | null> = {
   'memory-cells': memoryCells,
   compare,
   tree,
+  // Idempotent clean-up: an array whose cells never fit their boxes is really a matrix.
+  array: (spec) => {
+    const cells = (spec.cells as string[]) ?? [];
+    if (!cells.length || cells.every((c) => c.length <= ARRAY_CELL_MAX)) return null;
+    if ((spec.pointers as unknown[])?.length || (spec.highlight as unknown[])?.length) return null;
+    return wideArray(spec);
+  },
 };
 
 let files = 0;
@@ -108,7 +140,8 @@ for (const subject of readdirSync(root)) {
           const convert = CONVERT[block.kind as string];
           if (!convert) continue;
           const next = convert((block.spec ?? {}) as Json);
-          counts[block.kind] = (counts[block.kind] ?? 0) + 1;
+          if (!next) continue;
+          counts[`${block.kind} -> ${next.kind}`] = (counts[`${block.kind} -> ${next.kind}`] ?? 0) + 1;
           block.kind = next.kind;
           block.spec = next.spec;
           touched = true;
