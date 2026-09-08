@@ -87,7 +87,23 @@ what master lacked came over:
   memory-cells to `array`, compare to `cards`, tree to `flowchart` or `chain` — rewriting 102
   posts (72 + 170 + 77 diagrams). All 205 posts on disk validate.
 
+## Found by rendering the merged corpus
+
+Reading real pages on this branch turned up three defects the tests did not:
+
+- A snippet whose longest line ran past ~34 characters kept a font its column could not hold,
+  so `pre` clipped the tail of every line ("// a moved int"). Thresholds re-measured against
+  rendered pages: small at 35, tiny at 41, full width past 46 (`0646dcb`, `da68b84`).
+- A memory-cells diagram carrying phrases became an `array` whose narrow boxes broke the row;
+  the migration reshapes an over-wide array into a `matrix` and re-runs safely (`da68b84`).
+- Rendering a single slide silently omits blocks the packer spills — only a whole-part render
+  moves them onto the next page. Worth a warning in the editor; not fixed here.
+
 ## State
 
 Full suite green: 142 files, 1098 passed, 3 skipped. Typecheck and lint clean on every file
-touched. Remaining: a real end-to-end render on this branch, judged by eye.
+touched. Verified live on `localhost:3120`: the merged index reads 26 subjects / 108 chapters /
+1,375 pages; whole-part render of `bash/quoting` gives 8 pages, fills 91-99 and a 28% tail page
+that only the polish pass can fix; the gates endpoint finds real defects in `python/decorators`
+(severed snippet, a NameError from the sandbox, thin pages) and the coverage endpoint reports
+`rust/ownership` complete.
