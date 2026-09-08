@@ -49,10 +49,11 @@ Every commit that existed outside `master` and every non-golden file that differ
 **Superseded** — `master` rewrote the same file and its version is newer:
 `lib/schema.ts` (more families, inks, frames, bullet styles and diagram kinds),
 `lib/ai/plan.ts` (per-page planner, recipes), `lib/ai/spillover.ts` (`spilledFrom`),
-`lib/renderer/blocks.ts`, `lib/renderer/capture.ts`,
+`lib/renderer/blocks.ts` and `tests/blocks.test.ts` (superseded as a port, but both changed
+on this branch by the code-width fix below), `lib/renderer/capture.ts`,
 `app/api/handbooks/[subject]/[chapter]/parts/[part]/render/route.ts` (settles spillover, polish),
 `templates/_shared/base.css`, `templates/_shared/pack.js`, `templates/sticky-wall/template.html`,
-and the tests written against the old engine: `tests/blocks.test.ts`, `tests/fit.test.ts`,
+and the tests written against the old engine: `tests/fit.test.ts`,
 `tests/pack.test.ts`, `tests/schema.test.ts`, `tests/spillover.test.ts` (asserts the old
 follow-up policy: extend, cascade, never starve — this engine overwrites the part a spill
 minted, by design), `tests/store.test.ts`, `tests/render.e2e.test.ts`,
