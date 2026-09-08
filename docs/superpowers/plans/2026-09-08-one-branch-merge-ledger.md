@@ -20,8 +20,8 @@ Every commit that existed outside `master` and every non-golden file that differ
 | `1921835` chore: fix audit script typing | handbooks | **superseded** — it types the branch's own audit scripts, which are not on this branch (see the scripts row below). |
 | `b81556a` keep worked examples whole; stop parts multiplying | handbooks | **split** — the layout half is **ported** (`8368c14`, consecutive code blocks merge into one unit); the spillover half is **superseded** by `master`'s `spilledFrom` parts. |
 | `3c8d08f` retry transient network failures | handbooks | **ported** — `afcaa84`. |
-| `90d3b3d` balance a starved final page | handbooks | **superseded** — `master` replaced tail balancing with the polish loop and its 80% last-page floor. |
-| `3cf6f48` tail balancing crash when pagination outgrew the page count | handbooks | **superseded** — fixes `balanceTail`, which this engine does not have. |
+| `90d3b3d` balance a starved final page | handbooks | **ported, rebuilt** (`7b68535`) — first judged superseded by the polish loop; rendering proved otherwise (a 28% tail that polish lifted to 71% and no further, twice). `renderAll` now rebalances the last pages by measuring candidate splits, which is the same idea rebuilt for a flow engine. |
+| `3cf6f48` tail balancing crash when pagination outgrew the page count | handbooks | **superseded** — it fixes the old `balanceTail`'s page bookkeeping; the rebuilt pass (`7b68535`) works on measured splits and never indexes past the pages it has. |
 | `0d09fc4` re-rendering a part destroyed the part after it | handbooks | **superseded** — `master` rewrote spillover around `spilledFrom`, which overwrites only the part a spill minted. |
 | `fdc7d4e` creating a chapter over an existing one wiped its first part | handbooks | **ported** — `7eb6680` (`createChapter` refuses an existing slug). |
 | `a8c6052` surface chapter coverage gaps in the Book drawer | handbooks | **ported** — `aac6982`. |
@@ -97,8 +97,12 @@ Reading real pages on this branch turned up three defects the tests did not:
   rendered pages: small at 35, tiny at 41, full width past 46 (`0646dcb`, `da68b84`).
 - A memory-cells diagram carrying phrases became an `array` whose narrow boxes broke the row;
   the migration reshapes an over-wide array into a `matrix` and re-runs safely (`da68b84`).
-- Rendering a single slide silently omits blocks the packer spills — only a whole-part render
-  moves them onto the next page. Worth a warning in the editor; not fixed here.
+- Rendering a single slide silently omitted blocks the packer spills. The route now returns a
+  warning saying how many were left undrawn and that a whole-part render flows them on, and the
+  editor surfaces render warnings instead of discarding them (`0d0540a`).
+- A part could end on a 28% scrap page. The polish pass could not fix it — twice measured, it
+  lifted the tail to 71% and stopped. `renderAll` rebalances the last pages instead (`7b68535`):
+  `bash/quoting` now runs 86-99 across ten pages.
 
 ## State
 
