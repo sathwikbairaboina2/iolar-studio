@@ -88,10 +88,13 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     rowGapPx: Math.round(height * 2 * 0.006),
   })};</script>`;
 
+  // Replacement functions, not strings: page content carries `$$`, `$&`, `` $` `` and `$1`
+  // (shell interpolation, awk fields, sed backreferences), which a string replacement would
+  // eat or expand into the surrounding page. The src rewrite keeps its own `$1` on purpose.
   return tpl
     .replace(/src="\.\.\/_shared\/([a-z.]+\.js)"/g, `src="../_shared/$1?v=${v}"`)
-    .replace('<!--HEAD-->', head)
-    .replace('<!--CONTENT-->', content)
-    .replace('<!--PAGEVARS-->', pageVars)
-    .replace('<div id="page">', `<div id="page" class="${pageClass}">${heroHtml}`);
+    .replace('<!--HEAD-->', () => head)
+    .replace('<!--CONTENT-->', () => content)
+    .replace('<!--PAGEVARS-->', () => pageVars)
+    .replace('<div id="page">', () => `<div id="page" class="${pageClass}">${heroHtml}`);
 }
