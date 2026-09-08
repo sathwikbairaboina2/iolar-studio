@@ -1,4 +1,5 @@
 'use client';
+import { fetchWithRetry } from '@/lib/http';
 import { useEffect, useRef, useState } from 'react';
 import { Button, Drawer, Input, Segmented, Space, Spin, Typography, message } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
@@ -51,7 +52,7 @@ export default function AiDrawer({
     setDiff([]);
     setHistory((h) => [...h, { role: 'user', text: request, ts: new Date().toISOString() }]);
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/revise`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/revise`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ request, scope, slideIndex: scope === 'slide' ? slideIndex : undefined }),

@@ -1,4 +1,5 @@
 'use client';
+import { fetchWithRetry } from '@/lib/http';
 import { use, useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Col, Row, Segmented, Select, Space, Tag, Typography, message } from 'antd';
 import { PictureOutlined, ThunderboltOutlined, ExportOutlined, CheckCircleOutlined } from '@ant-design/icons';
@@ -71,7 +72,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     setRendering(true);
     if (dirty) await save(post);
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(which !== undefined ? { slide: which } : polish ? { polish: true } : {}),
@@ -94,7 +95,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
         setPost(fresh);
         message.info(`Content reflowed onto ${body.slides} pages`);
 
-        const h = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
+        const h = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode: 'headings' }),
@@ -130,7 +131,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     setRendering(true);
     message.info(`Asking AI to fill ${underfilled.length} slide(s) from the book…`);
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode: 'densify', underfilled }),
@@ -148,7 +149,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
   };
 
   const doPackage = async () => {
-    const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/package`, { method: 'POST' });
+    const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/package`, { method: 'POST' });
     const body = await r.json();
     if (r.ok) message.success(`Packaged to ${body.dir}`);
     else message.error(body.error ?? 'package failed');

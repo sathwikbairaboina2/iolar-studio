@@ -1,4 +1,5 @@
 'use client';
+import { fetchWithRetry } from '@/lib/http';
 import { useEffect, useState } from 'react';
 import { Alert, Button, Collapse, Drawer, Empty, Input, Space, Tag, Typography, message } from 'antd';
 import { BookOutlined } from '@ant-design/icons';
@@ -31,7 +32,7 @@ export default function BookPanel({
   const call = async (body: object, phase: typeof busy) => {
     setBusy(phase);
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/book`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/book`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -73,7 +74,7 @@ export default function BookPanel({
   };
 
   const applyProposal = async () => {
-    const r = await fetch(`/api/handbooks/${subject}/${chapter}/book`, {
+    const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/book`, {
       method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(proposal),
     });
     if (r.ok) {
@@ -88,7 +89,7 @@ export default function BookPanel({
     setBusy('slides');
     message.info('Writing slides that cover every point in the book…');
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/plan`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
       });
       const d = await r.json();

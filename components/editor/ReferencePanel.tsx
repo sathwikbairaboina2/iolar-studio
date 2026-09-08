@@ -1,4 +1,5 @@
 'use client';
+import { fetchWithRetry } from '@/lib/http';
 import { useEffect, useState } from 'react';
 import { Button, Drawer, Input, Space, Switch, Typography, message } from 'antd';
 import { PictureOutlined } from '@ant-design/icons';
@@ -29,7 +30,7 @@ export default function ReferencePanel({
     setPlanning(true);
     message.info('AI reading references and building the book… (a few minutes)');
     try {
-      const r = await fetch(`/api/handbooks/${subject}/${chapter}/book`, {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/book`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'generate', mode: 'references' }),
@@ -60,7 +61,7 @@ export default function ReferencePanel({
 
   const save = async () => {
     const parsed = parseUrls(text);
-    const r = await fetch(`/api/handbooks/${subject}/${chapter}/references`, {
+    const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/references`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ urls: parsed }),
