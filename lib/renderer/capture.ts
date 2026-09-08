@@ -190,5 +190,85 @@ export async function renderAll(
   }
   }
 
+  // Walk the deficit back through the part: filling the tail from the page before it can
+  // starve that page in turn, so the pair before that is balanced next, up to three pairs.
+  for (let pair = 0; pair < TAIL_CASCADE; pair++) {
+    const at = slides.length - 1 - pair;
+    if (at < 1 || results[at].fillPct >= TAIL_FLOOR) break;
+    if (!(await balanceTail(post, outDir, slides, results, at))) break;
+  }
+
   return { results, slides };
+}
+
+/** A last page this thin is a scrap of a page, whatever the pages before it look like. */
+export const TAIL_FLOOR = 80;
+
+/** How many blocks may be pushed back from the page before the tail while looking for a split. */
+const TAIL_SEARCH = 8;
+
+/** How far back the rebalance walks: filling the tail can starve the page that fed it. */
+const TAIL_CASCADE = 3;
+
+/** A split has to earn the shuffle — a point or two of noise is not worth moving content. */
+const TAIL_GAIN = 2;
+
+/**
+ * Evens out a starved last page by pushing blocks back into it from the page before.
+ *
+ * The flow fills each page greedily, so whatever is left over lands on the last one — a part
+ * can end at 28% while every page before it sits at 97%. Densifying cannot fix that: the
+ * model adds content, the flow re-fills the earlier pages first, and the tail keeps the
+ * remainder. Moving the split back is what actually fills it.
+ *
+ * Every candidate split is measured, never estimated, and a split is only taken when it lifts
+ * the worse of the two pages without overflowing either.
+ */
+export async function balanceTail(
+  post: Post,
+  outDir: string,
+  slides: Post['slides'],
+  results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[],
+  at = slides.length - 1
+): Promise<boolean> {
+  const last = at;
+  if (last < 1 || last >= slides.length) return false;
+  if (results[last].fillPct >= TAIL_FLOOR) return false;
+  if (slides[last].kind === 'cover' || slides[last - 1].kind === 'cover') return false;
+
+  const prev = slides[last - 1];
+  const tail = slides[last];
+  const combined = [...prev.blocks, ...tail.blocks];
+  let bestCut = prev.blocks.length;
+  let bestScore = Math.min(results[last - 1].fillPct, results[last].fillPct);
+  let bestPair: [RenderResult, RenderResult] | null = null;
+
+  const probe = path.join(outDir, '.tail-probe.png');
+  for (let move = 1; move <= Math.min(TAIL_SEARCH, prev.blocks.length - 1); move++) {
+    const cut = prev.blocks.length - move;
+    const a = { ...prev, blocks: combined.slice(0, cut) };
+    const b = { ...tail, blocks: combined.slice(cut) };
+    const working: Post = { ...post, slides: [...slides.slice(0, last - 1), a, b] };
+    const ra = await renderSlide(working, last - 1, probe);
+    if (ra.overflowPx > 0 || ra.spillIndexes.length) continue;
+    const rb = await renderSlide(working, last, probe);
+    if (rb.overflowPx > 0 || rb.spillIndexes.length) continue;
+    const score = Math.min(ra.fillPct, rb.fillPct);
+    if (score >= bestScore + TAIL_GAIN) {
+      bestScore = score;
+      bestCut = cut;
+      bestPair = [ra, rb];
+    }
+  }
+  await fs.rm(probe, { force: true });
+  if (!bestPair) return false;
+
+  slides[last - 1] = { ...prev, blocks: combined.slice(0, bestCut) };
+  slides[last] = { ...tail, blocks: combined.slice(bestCut) };
+  for (const [offset, r] of [[last - 1, bestPair[0]], [last, bestPair[1]]] as const) {
+    const file = results[offset].file;
+    await renderSlide({ ...post, slides }, offset, file);
+    results[offset] = { ...results[offset], overflowPx: r.overflowPx, fillPct: r.fillPct, warnings: r.warnings };
+  }
+  return true;
 }

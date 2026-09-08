@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { renderSlide, renderAll, closeBrowser } from '@/lib/renderer/capture';
+import { renderSlide, renderAll, closeBrowser, TAIL_FLOOR } from '@/lib/renderer/capture';
 import { validatePost, Post } from '@/lib/schema';
 import path from 'path';
 import { tmpdir } from 'os';
@@ -23,6 +23,34 @@ function makePost(template: string): Post {
 }
 
 afterAll(async () => { await closeBrowser(); });
+
+describe('a part that flows onto a starved last page', () => {
+  it('pushes blocks back until the tail is a real page', async () => {
+    // Just over one page of content: the flow fills page 1 and drops the remainder on page 2.
+    const post = validatePost({
+      brand: 'iolar', template: 'spiral-notes', ratio: '3:4', seed: 7,
+      series: 'TAIL TEST', date: '08/09/2026',
+      slides: [{
+        page_title: 'ONE AND A BIT',
+        blocks: Array.from({ length: 26 }, (_, i) => ({
+          type: 'bullets',
+          items: [`point ${i} carrying a line of real length`, 'a second line of the same', 'and a third'],
+        })),
+      }],
+      caption: { text: '', hashtags: [] },
+    });
+    const dir = path.join(tmpdir(), `iolar-test-tail-${Date.now()}`);
+    const { results } = await renderAll(post, dir);
+    expect(results.length).toBe(2);
+    const [first, last] = results;
+    // The content is only about 1.3 pages, so neither page can reach the floor — what the
+    // rebalance owes us is that the deficit is shared, not dumped on a scrap last page.
+    expect(last.fillPct).toBeGreaterThan(55);
+    expect(Math.abs(first.fillPct - last.fillPct)).toBeLessThanOrEqual(8);
+    expect(TAIL_FLOOR).toBe(80);
+    for (const r of results) expect(r.overflowPx).toBe(0);
+  });
+});
 
 describe('renderSlide on an overstuffed page', () => {
   it('names the blocks it could not draw, so a single-slide render can say so', async () => {
