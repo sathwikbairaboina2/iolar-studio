@@ -1,4 +1,4 @@
-import { promises as fs } from 'fs';
+import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { Post, validatePost } from './schema';
 import { getSettings } from './settings';
@@ -18,6 +18,8 @@ export type ChapterMeta = {
   pages: number;
   avgFill: number;
   status: string;
+  /** One entry per part, in part order, so the UI need not collapse them into one word. */
+  partStatuses: string[];
   updatedAt: string;
 };
 
@@ -83,6 +85,11 @@ export async function listSubjects(): Promise<SubjectMeta[]> {
 /* ── chapters ─────────────────────────────────────────── */
 
 export async function createChapter(subject: string, slug: string, title?: string): Promise<ChapterMeta> {
+  // Creating over a chapter that exists would reset part 1 to the placeholder page and throw
+  // away everything written there. Refuse instead: the caller wants a different slug.
+  if (existsSync(chapterFile(subject, slug))) {
+    throw new Error(`chapter ${subject}/${slug} already exists`);
+  }
   await fs.mkdir(chapterDir(subject, slug), { recursive: true });
   await fs.writeFile(
     chapterFile(subject, slug),
@@ -122,9 +129,11 @@ export async function loadChapterMeta(subject: string, chapter: string): Promise
   }
 
   const statuses = await Promise.all(parts.map((p) => partStatus(subject, chapter, p)));
-  const rank = ['draft', 'rendered', 'polished', 'packaged'];
+  const rank = ['draft', 'rendered', 'polished', 'packaged', 'published'];
+  // The chapter reports its least-advanced part, but every part's status travels with it
+  // so the UI can show "part 1 published, part 2 draft" rather than a single flat word.
   const status = statuses.length
-    ? statuses.reduce((a, b) => (rank.indexOf(b) < rank.indexOf(a) ? b : a), 'packaged')
+    ? statuses.reduce((a, b) => (rank.indexOf(b) < rank.indexOf(a) ? b : a), 'published')
     : 'draft';
 
   let updatedAt = new Date(0).toISOString();
@@ -144,6 +153,7 @@ export async function loadChapterMeta(subject: string, chapter: string): Promise
     pages,
     avgFill: fillCount ? Math.round(fillSum / fillCount) : 0,
     status,
+    partStatuses: statuses,
     updatedAt,
   };
 }
@@ -199,8 +209,16 @@ export async function savePost(subject: string, chapter: string, part: number, p
 
 export async function partStatus(
   subject: string, chapter: string, part: number
-): Promise<'draft' | 'rendered' | 'polished' | 'packaged'> {
-  if (await exists(exportDir(subject, chapter, part))) return 'packaged';
+): Promise<'draft' | 'rendered' | 'polished' | 'packaged' | 'published'> {
+  if (await exists(exportDir(subject, chapter, part))) {
+    // Packaged files alone do not mean vetted: publishing needs a current, passing review.
+    try {
+      const { loadReview, reviewIsCurrent } = await import('./verify/review');
+      const review = await loadReview(subject, chapter, part);
+      if (review?.passed && (await reviewIsCurrent(subject, chapter, part))) return 'published';
+    } catch { /* verification unavailable: stay at packaged */ }
+    return 'packaged';
+  }
   if (await exists(path.join(rendersDir(subject, chapter, part), 'polished'))) return 'polished';
   if (await exists(rendersDir(subject, chapter, part))) return 'rendered';
   return 'draft';
