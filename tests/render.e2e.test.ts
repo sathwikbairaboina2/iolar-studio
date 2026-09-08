@@ -24,6 +24,28 @@ function makePost(template: string): Post {
 
 afterAll(async () => { await closeBrowser(); });
 
+describe('renderSlide on an overstuffed page', () => {
+  it('names the blocks it could not draw, so a single-slide render can say so', async () => {
+    const post = validatePost({
+      brand: 'iolar', template: 'spiral-notes', ratio: '3:4', seed: 7,
+      series: 'SPILL TEST', date: '08/09/2026',
+      slides: [{
+        page_title: 'TOO MUCH',
+        blocks: Array.from({ length: 40 }, (_, i) => ({
+          type: 'bullets',
+          items: [`point ${i} of a page that cannot hold them all`, 'second line', 'third line'],
+        })),
+      }],
+      caption: { text: '', hashtags: [] },
+    });
+    const out = path.join(tmpdir(), `iolar-test-spill-${Date.now()}.png`);
+    const r = await renderSlide(post, 0, out);
+    expect(r.spillIndexes.length).toBeGreaterThan(0);
+    // What is drawn still fits the page: the rest is left out, not overflowing it.
+    expect(r.overflowPx).toBe(0);
+  });
+});
+
 describe('renderSlide', () => {
   it.each(['spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel', 'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet', 'sketchnote', 'marker-notes'])('%s produces a 1080x1440 png with no overflow', async (template) => {
     const out = path.join(tmpdir(), `iolar-test-${template}-${Date.now()}.png`);

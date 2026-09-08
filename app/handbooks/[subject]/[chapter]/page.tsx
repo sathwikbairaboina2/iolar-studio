@@ -23,7 +23,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
   const [templates, setTemplates] = useState<string[]>([]);
   const [slide, setSlide] = useState(0);
   const [dirty, setDirty] = useState(false);
-  const [version, setVersion] = useState(Date.now());
+  const [version, setVersion] = useState(() => Date.now());
   const [rendering, setRendering] = useState(false);
   const [overflow, setOverflow] = useState<Record<number, number>>({});
   const [fill, setFill] = useState<Record<number, number>>({});
@@ -90,6 +90,13 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       setOverflow(ovf);
       setFill(fl);
       setVersion(Date.now());
+      // A render can succeed and still have something to say: a block left undrawn, an icon
+      // that resolved to nothing, a code line cut. Those warnings were being thrown away.
+      const warned: string[] = body.results.flatMap((res: { slide: number; warnings?: string[] }) =>
+        (res.warnings ?? []).map((w: string) => `p${res.slide}: ${w}`)
+      );
+      for (const w of warned.slice(0, 4)) message.warning(w, 6);
+      if (warned.length > 4) message.warning(`and ${warned.length - 4} more render warnings`, 6);
       if (Array.isArray(body.polish) && body.polish.length) message.success(`Polished: ${body.polish.join(', ')}`);
       else if (polish) message.info('Every page already full; nothing to polish');
       if (body.split) {

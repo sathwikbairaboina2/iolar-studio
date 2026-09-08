@@ -106,7 +106,13 @@ export async function POST(req: Request, ctx: Ctx) {
       }
       const file = path.join(outDir, `slide-${String(body.slide).padStart(2, '0')}.png`);
       const r = await renderSlide(post, i, file);
-      results = [{ slide: body.slide, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings }];
+      // One slide is drawn where it stands: nothing reflows, so blocks the packer could not
+      // fit are simply absent from the PNG. Say so — silently dropping them reads as content
+      // loss, and rendering the whole part is what moves them onto the next page.
+      const undrawn = r.spillIndexes.length
+        ? [`${r.spillIndexes.length} block(s) did not fit on this page and were not drawn — render the whole part to flow them onto the next page`]
+        : [];
+      results = [{ slide: body.slide, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: [...r.warnings, ...undrawn] }];
     } else {
       ({ results, split, followUp } = await renderWhole(subject, chapter, part, body.spillToFollowUp !== false));
 
