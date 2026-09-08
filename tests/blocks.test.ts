@@ -144,18 +144,19 @@ describe('code rules', () => {
     expect(h).toContain('<mark class="hl">only</mark>');
     expect(h).toContain('has-note');
   });
-  it('stays in a column up to 60 chars by stepping the font down; full width only past that', () => {
-    expect(forcesFullWidth(code(['a'.repeat(60)]))).toBe(false);
-    expect(forcesFullWidth(code(['a'.repeat(61)]))).toBe(true);
+  it('stays in a column up to 46 chars by stepping the font down; full width past that', () => {
+    // Measured against real pages: a column holds ~34 chars at full size, ~40 small and
+    // ~48 tiny, so a longer line is not squeezed — it takes the width instead of being clipped.
+    expect(forcesFullWidth(code(['a'.repeat(46)]))).toBe(false);
+    expect(forcesFullWidth(code(['a'.repeat(47)]))).toBe(true);
     expect(renderBlockHtml(code(['a'.repeat(34)]))).not.toContain('code-small');
-    // A line of 35 already overflows a column at full size — that is where the step down starts.
     expect(renderBlockHtml(code(['a'.repeat(36)]))).toContain('code-small');
-    expect(renderBlockHtml(code(['a'.repeat(51)]))).toContain('code-tiny');
-    expect(renderBlockHtml(code(['a'.repeat(61)]))).not.toContain('code-tiny');
+    expect(renderBlockHtml(code(['a'.repeat(44)]))).toContain('code-tiny');
+    expect(renderBlockHtml(code(['a'.repeat(47)]))).not.toContain('code-tiny');
     expect(renderBlockHtml(code(['a'.repeat(71)]))).toContain('code-small');
   });
   it('a note does not widen the block', () => {
-    expect(forcesFullWidth(code(['a'.repeat(50)], { note: 'n' }))).toBe(false);
+    expect(forcesFullWidth(code(['a'.repeat(44)], { note: 'n' }))).toBe(false);
   });
   it('truncates past 80 chars and reports a warning', () => {
     const long = 'b'.repeat(90);

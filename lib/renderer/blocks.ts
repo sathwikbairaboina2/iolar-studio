@@ -16,10 +16,14 @@ function sameTitle(a: string, b: string): boolean {
   return norm(a) === norm(b) && norm(a).length > 0;
 }
 
-/** Width follows content: a snippet stays in a column up to 60 characters by stepping its font down. */
+/**
+ * Width follows content: a column holds about 34 characters at full size, 40 at code-small
+ * and 48 at code-tiny, all measured on rendered pages. Past that the snippet takes the page
+ * width — squeezing it further clips the tail of every line, which is worse than the space.
+ */
 export const CODE_SMALL_AT = 35;
-export const CODE_TINY_AT = 50;
-export const CODE_FULL_AT = 60;
+export const CODE_TINY_AT = 41;
+export const CODE_FULL_AT = 46;
 export const CODE_TRUNCATE_AT = 80;
 
 const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
