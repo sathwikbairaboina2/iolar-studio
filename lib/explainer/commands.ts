@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import * as edits from './edits';
 import {
-  ExplainerDocSchema, FoldError, ICONS, MutationSchema, ROLES, ROW_STATES, RowSchema, foldDoc,
-  type ExplainerDoc,
+  ExplainerDocSchema, FoldError, ICONS, MutationSchema, ROLES, ROW_STATES, RowSchema, applyBeat,
+  foldDoc, type ExplainerDoc,
 } from './schema';
 import type { Actor } from './history';
 
@@ -196,6 +196,29 @@ export class CommandError extends Error {
   }
 }
 
+/** The row ids a mutation names. `*` names none in particular, so it is not a reference. */
+function rowsNamedBy(mutation: { op: string } & Record<string, unknown>): string[] {
+  if (mutation.op === 'set') return mutation.row === '*' ? [] : [String(mutation.row)];
+  if (mutation.op === 'link') return [String(mutation.from), String(mutation.to)];
+  return [];
+}
+
+/**
+ * The board as it stands at a beat, including anything that beat has already done.
+ *
+ * A row added at b2 does not exist at b1, so whether a mutation may name it depends on where its
+ * beat sits. Checking against the union of every row the document ever holds would accept
+ * mutations the renderer refuses; checking against the opening scene would reject correct ones.
+ */
+function boardAt(doc: ExplainerDoc, beatId: string): string[] {
+  let scene = doc.scene;
+  for (const beat of doc.beats) {
+    scene = applyBeat(scene, beat);
+    if (beat.id === beatId) break;
+  }
+  return scene.rows.map((r) => r.id);
+}
+
 /**
  * Runs one command against a document held in memory and returns the result.
  *
@@ -226,6 +249,24 @@ export function applyOne(
     if (!ids.includes(String(args[spec.beatRef]))) {
       throw new CommandError(`no beat "${String(args[spec.beatRef])}" on this explainer`, 404, {
         validIds: ids,
+      });
+    }
+  }
+
+  // Row references are beat-relative. The fold below would catch a bad one anyway; this exists to
+  // reject it with the rows that are actually on the board at that point, rather than a bare
+  // "does not exist yet".
+  const named = args.mutation
+    ? rowsNamedBy(args.mutation as { op: string } & Record<string, unknown>)
+    : [];
+  if (named.length && spec.beatRef) {
+    const beatId = String(args[spec.beatRef]);
+    const onBoard = boardAt(doc, beatId);
+    const missing = named.find((id) => !onBoard.includes(id));
+    if (missing) {
+      throw new CommandError(`no row "${missing}" on the board at ${beatId}`, 404, {
+        beatId,
+        validIds: onBoard,
       });
     }
   }

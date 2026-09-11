@@ -106,3 +106,61 @@ describe('the fold post-condition', () => {
     }
   });
 });
+
+describe('row references are beat-relative', () => {
+  /** `edge` is added at b2, so it exists at b3 and does not exist at b1. */
+  const growing = (): ExplainerDoc => ExplainerDocSchema.parse({
+    template: 'explainer',
+    theme: 'midnight',
+    brand: { handle: '@stackframe', name: 'Stack Frame' },
+    scene: { title: 'Growing board', rows: [{ id: 'origin', label: 'Origin' }], links: [], panel: [] },
+    beats: [
+      { id: 'b1', role: 'hook', mutations: [] },
+      { id: 'b2', role: 'step', mutations: [{ op: 'add', row: { id: 'edge', label: 'Edge' } }] },
+      { id: 'b3', role: 'payoff', mutations: [] },
+    ],
+  });
+
+  it('accepts a row that exists by the target beat', () => {
+    const out = run(growing(), 'mutation.add', {
+      beatId: 'b3',
+      mutation: { op: 'set', row: 'edge', state: 'good' },
+    });
+    expect(out.doc.beats[2].mutations).toHaveLength(1);
+  });
+
+  it('rejects the same row at an earlier beat, listing what is on the board there', () => {
+    try {
+      run(growing(), 'mutation.add', { beatId: 'b1', mutation: { op: 'set', row: 'edge', state: 'good' } });
+      throw new Error('should have thrown');
+    } catch (e) {
+      const err = e as CommandError;
+      expect(err.status).toBe(404);
+      expect(err.detail.validIds).toEqual(['origin']);
+      expect(err.detail.beatId).toBe('b1');
+    }
+  });
+
+  it('checks both ends of a link', () => {
+    try {
+      run(growing(), 'mutation.add', { beatId: 'b1', mutation: { op: 'link', from: 'origin', to: 'edge' } });
+      throw new Error('should have thrown');
+    } catch (e) {
+      expect((e as CommandError).detail.validIds).toEqual(['origin']);
+    }
+  });
+
+  it('sees rows the same beat added before this mutation', () => {
+    const d = run(growing(), 'mutation.add', {
+      beatId: 'b1',
+      mutation: { op: 'add', row: { id: 'cache', label: 'Cache' } },
+    }).doc;
+    const out = run(d, 'mutation.add', { beatId: 'b1', mutation: { op: 'set', row: 'cache', state: 'good' } });
+    expect(out.doc.beats[0].mutations).toHaveLength(2);
+  });
+
+  it('lets `*` through, since it names no row in particular', () => {
+    const out = run(growing(), 'mutation.add', { beatId: 'b1', mutation: { op: 'set', row: '*', state: 'good' } });
+    expect(out.doc.beats[0].mutations).toHaveLength(1);
+  });
+});
