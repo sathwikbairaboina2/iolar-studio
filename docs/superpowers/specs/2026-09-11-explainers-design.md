@@ -31,10 +31,46 @@ Nothing here is built from nothing. Four pieces of the machine are already in pl
 | Plugin registry | `lib/plugins/registry.ts` | The `templates` row, its health check and its Start button. No new entry needed. |
 | Category pattern | `app/handbooks`, `app/reel`, `app/jobs` | Route plus API plus `lib/` module plus one `AppShell` menu entry. |
 
-The plugin's template families are already a clean seam: `templates/<family>/template.json`
-declares the contract, `render/src/templates/<family>/` holds the Remotion composition, and the
-four themes under `render/src/themes/` are shared across families. Adding a family is an
-established extension. Today there is exactly one, `tools`.
+### The service is single-category today
+
+The directory layout suggests categories are pluggable — `templates/<category>/template.json`
+beside `render/src/templates/<category>/`. That is a convention, not an implemented abstraction.
+Nothing has ever forced the seam to be real, because `tools` has always been the only category,
+and the coupling to it runs the full depth of the service. Verified 2026-09-11:
+
+| Where | State |
+| --- | --- |
+| `GET /templates` | **Already generic.** Scans the templates dir for any subdir holding a `template.json` and serves them all. A new category appears here with no Python change. |
+| `GET /preview/{template}/{theme}` | **Route generic, body not.** Takes the category as a path parameter and 404s on an unknown one, but then calls `ReelDoc.model_validate` and `build_props`, both tools-shaped. |
+| `api/reels_api/models.py:143` | `ReelDoc.template: Literal["tools"]` — the document model admits exactly one category by type. |
+| `POST /jobs`, `POST /validate`, preview props | All three take `ReelDoc` directly. |
+| `props.py` / `timing.py` / `fit.py` | Tools-shaped: 29, 13 and 5 attribute accesses on the document respectively. |
+| `render/src/schema.ts` | `PropsSchema` is Hook/Slide/Page/Cta throughout. |
+| `render/src/themes/index.ts` | The theme *registry* imports `ThemeComponents` from `../templates/tools/types`. |
+| each `render/src/themes/<name>/` | Exactly `Hook.tsx Slide.tsx Page.tsx Cta.tsx` plus `tokens.tsx`. |
+| `render/src/Root.tsx` | Hardcodes `tools-${theme}` composition ids and imports the tools samples. |
+
+So adding `explainer` is a real extension of the service, not a drop-in. What is genuinely
+reusable across categories is the token layer — bg, fg, muted, accent, font, mono, caption style —
+and the job plumbing. Every section component is category-specific.
+
+### Categories do not mix
+
+`explainer` is a separate category inside the same service, and the tools stack is not
+generalised to accommodate it. Sharing stops at plumbing that knows nothing about sections:
+`jobs.py`, `worker.py`, `renderer.py`, `assets.py`, `capture.py`, `config.py` and the HTTP app.
+Explainer gets job creation, polling, cancel, timeouts, asset resolution and ffmpeg from those,
+with no new port, no new daemon and no new registry row.
+
+Everything that touches sections is per-category and never crosses: the contract, the document
+model, the Remotion props schema, the compositions, the themes, and the timing/props/fit pipeline.
+
+One shared line has to move, and it is the seam rather than a violation of it. Something must
+dispatch on the document's `template` field to select the right model, or an explainer document
+cannot be accepted at all. `Literal["tools"]` becomes a discriminator over a registry of
+categories; `Root.tsx` becomes a thin registry of `${category}-${theme}` composition ids instead
+of hardcoding `tools-`. Beyond those two dispatch points the tools stack is unchanged, and
+pattern reels keep rendering through the path they use now.
 
 ## The seam
 
@@ -46,7 +82,7 @@ other decision below follows from it.
 
 ## The op vocabulary
 
-A new family, `explainer`, declares its contract alongside `tools`:
+A new category, `explainer`, declares its contract alongside `tools`:
 
 ```json
 {
@@ -133,10 +169,10 @@ than by guesses made now.
 ### Deliberately deferred
 
 `array`, `swap`, `pointer`, `push`, `pop` — the sorting and data-structure ops — are a second
-family, `algo`, sharing the same envelope. Sorting and data-structure posts are a real part of
-the reference corpus, so this family is expected, not hypothetical. It is still deferred: the
+category, `algo`, sharing the same envelope. Sorting and data-structure posts are a real part of
+the reference corpus, so this category is expected, not hypothetical. It is still deferred: the
 runtime-discovered contract means adding it later touches no studio code, and building two
-families before one has rendered a frame doubles the surface for no information.
+categories before one has rendered a frame doubles the surface for no information.
 
 ## Script envelope
 
@@ -217,13 +253,30 @@ studio
   components/AppShell.tsx                             one menu entry under Create
   data/explainer/<slug>/{script.json,fit.json,renders/,export/}
 
-plugin
-  templates/explainer/template.json                   contract and samples
-  render/src/templates/explainer/{index.tsx,types.ts} Remotion composition
+plugin — new, all category-local
+  templates/explainer/template.json                   contract
+  templates/explainer/samples/*.json                  one sample per theme shipped
+  api/reels_api/models_explainer.py                   ExplainerDoc, its sections and ops
+  api/reels_api/props_explainer.py                    document -> Remotion props
+  api/reels_api/timing_explainer.py                   section seconds -> timeline
+  render/src/templates/explainer/index.tsx            the composition
+  render/src/templates/explainer/types.ts             its own ThemeComponents
+  render/src/templates/explainer/schema.ts            its own props schema
+  render/src/templates/explainer/themes/<theme>/      its own section components
+
+plugin — the two dispatch points, the only tools-side edits
+  api/reels_api/categories.py                         name -> model, props, timing
+  api/reels_api/models.py:143                         Literal["tools"] -> discriminator
+  api/reels_api/routes/{jobs,templates,preview}.py    take the union, dispatch on template
+  render/src/Root.tsx                                 registry of ${category}-${theme}
 ```
 
-`registry.ts` is unchanged: the `templates` row already covers the service. No new port, no new
-daemon.
+`registry.ts` in the studio is unchanged: the `templates` row already covers the service. No new
+port, no new daemon, no new Plugins row.
+
+`props.py`, `timing.py` and `fit.py` keep their current tools-shaped bodies and are reached only
+through the registry. Nothing in them is rewritten to be category-aware, because the category
+that needs different behaviour brings its own module instead.
 
 ### The one move in existing code
 
@@ -241,9 +294,10 @@ to keep it trivially revertable if those branches collide.
 Two screens, following `app/reel`'s shape.
 
 The list shows thumb, topic, template and state. The detail page puts the beat list on the left
-and a live preview on the right, through `GET /preview/explainer/{theme}?job={id}`. That route is
-family-scoped and exists today as `/preview/tools/{theme}` — the new family picks it up by the
-same pattern rather than needing a new endpoint. Template and theme are dropdowns populated from
+and a live preview on the right, through `GET /preview/explainer/{theme}?job={id}`. The route
+itself already takes the category as a path parameter, so no new endpoint is needed — but its
+body validates through `ReelDoc` and `build_props`, so it only serves explainer once those two
+calls go through the category registry. Template and theme are dropdowns populated from
 `GET /templates`, never from a studio constant.
 
 The fit report sits above the beats as one line — *"9 of 11 beats fitted; 2 fell back to panel"* —
@@ -279,11 +333,19 @@ The plugin already returns a deterministic `timeline.json` from both `POST /vali
 `GET /jobs/{id}/timeline.json`. That is what gets golden-compared. It is the thing that must stay
 stable, it diffs readably, and checking it needs no render.
 
-**One real render per family in e2e**, skipped when 26200 is not answering, matching
+**One real render per category in e2e**, skipped when 26200 is not answering, matching
 `tests/reel.pattern.e2e.test.ts`.
 
 **A blank-path fixture**: a hand-written script covering all seven ops, rendered once per theme.
 That is the regression net for the plugin half.
+
+**The tools suite stays green, unchanged.** The two dispatch edits are the only tools-side code
+this work touches, and the plugin's existing `api/tests/` suite — `test_models.py`, `test_props.py`,
+`test_timing.py`, `test_fit.py`, `test_jobs.py`, `test_preview.py`, `test_e2e.py` — is what proves
+they changed nothing observable. Those tests run before the discriminator lands and again after,
+with no edits to them. A test that needs modifying to keep passing means the change was not the
+minimal dispatch move it was supposed to be, and that is the signal to stop and reconsider rather
+than to update the test.
 
 ## Resource cost
 
@@ -293,7 +355,12 @@ render returns.
 
 ## Out of scope
 
-- The `algo` family and its ops.
+- **Generalising the tools stack.** Considered and rejected on 2026-09-11. Making categories a
+  real abstraction across `models.py`, `schema.ts`, the theme registry and `Root.tsx` would be
+  the principled refactor, but it puts a service that pattern reels depend on at risk in order to
+  serve a vocabulary that has never rendered a frame. Explainer brings its own stack instead, and
+  the tools stack is left as it is.
+- The `algo` category and its ops.
 - Voiceover. The reference format is silent text-on-screen; `lib/reel` owns TTS and alignment
   and none of it is needed here.
 - Publishing. Export writes a file; posting stays manual.
