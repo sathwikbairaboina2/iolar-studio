@@ -115,6 +115,8 @@ describe('the surplus a model writes past a hard limit', () => {
     expect(run).toHaveBeenCalledTimes(1);
     const lines = doc.beats.flatMap((b) => b.mutations.filter((m) => m.op === 'panel'));
     expect(lines).toHaveLength(4);
+    // The panel is a log: the earliest four survive and the surplus goes from the end.
+    expect(lines.map((m) => (m as { text: string }).text)).toEqual(['one', 'two', 'three', 'four']);
     // The set that followed the fifth line is still there: only the surplus goes.
     expect(doc.beats[1].mutations.some((m) => m.op === 'set')).toBe(true);
   });

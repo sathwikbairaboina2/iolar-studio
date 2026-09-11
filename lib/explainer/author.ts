@@ -140,6 +140,10 @@ const PANEL_LINES = 4;
  * Only additive things are dropped, never rewritten: panel lines past the fourth and links past
  * the twelfth. Everything else that will not fold is still the model's problem to fix, because
  * a row that does not exist cannot be trimmed into one that does.
+ *
+ * The panel is a log, so order matters and the trim keeps the earliest: it walks the beats in
+ * order and drops the surplus where it is written, which is always the latest line. If a panel
+ * line ever becomes something other than append-at-the-end, this stops being safe.
  */
 function tidy(doc: ExplainerDoc): ExplainerDoc {
   let panel = doc.scene.panel.length;
