@@ -3,59 +3,26 @@ import React from 'react';
 import { Alert, Button, Card, Col, Row, Segmented, Space, Tag, Typography, message } from 'antd';
 import { useParams } from 'next/navigation';
 import ScenePreview from '@/components/explainer/ScenePreview';
-import type { Scene } from '@/lib/explainer/schema';
-
-type Step = {
-  id: string; role: string; startFrame: number; durationFrames: number; mutations: number; scene: Scene;
-};
-type Loaded = {
-  slug: string;
-  doc: Record<string, unknown> & { theme: string };
-  seconds: number | null;
-  steps: Step[];
-  foldError: { beatId: string; message: string } | null;
-};
+import { useExplainerEditor } from './useExplainerEditor';
 
 const ROLE_COLOUR: Record<string, string> = { hook: 'magenta', step: 'blue', payoff: 'green', cta: 'gold' };
 
 export default function ExplainerEditor() {
   const { slug } = useParams<{ slug: string }>();
-  const [data, setData] = React.useState<Loaded | null>(null);
-  const [beat, setBeat] = React.useState(0);
-  const [draft, setDraft] = React.useState('');
-  const [dirty, setDirty] = React.useState(false);
+  const { data, log, busy, move, reload } = useExplainerEditor(slug);
+  const [beatSel, setBeat] = React.useState(0);
   const [saving, setSaving] = React.useState(false);
   const [rendering, setRendering] = React.useState(false);
   const [mp4, setMp4] = React.useState<string | null>(null);
   const [mode, setMode] = React.useState<'dark' | 'light'>('dark');
 
-  const apply = React.useCallback((body: Loaded) => {
-    setData(body);
-    setDraft(JSON.stringify(body.doc, null, 2));
-    setDirty(false);
-    setBeat((b) => Math.min(b, Math.max(0, body.steps.length - 1)));
-  }, []);
-
-  /** Re-read after a save or a render. Called from handlers, never from an effect. */
-  const reload = React.useCallback(async () => {
-    const r = await fetch(`/api/explainers/${slug}`, { cache: 'no-store' });
-    if (!r.ok) { message.error('could not load it'); return; }
-    apply(await r.json());
-  }, [slug, apply]);
-
-  // The `alive` guard is not ceremony: the page can be left while the fetch is in flight, and
-  // setting state after that is a leak the console will complain about.
-  React.useEffect(() => {
-    let alive = true;
-    (async () => {
-      const r = await fetch(`/api/explainers/${slug}`, { cache: 'no-store' });
-      if (!alive) return;
-      if (!r.ok) { message.error('could not load it'); return; }
-      const body: Loaded = await r.json();
-      if (alive) apply(body);
-    })();
-    return () => { alive = false; };
-  }, [slug, apply]);
+  // The textarea is derived, not synchronised. `edit` holds what was typed along with the document
+  // it was typed against; the hook hands back a fresh object on every reload, so a save, render,
+  // undo or redo drops the stale draft by identity without an effect to do it.
+  const [edit, setEdit] = React.useState<{ against: unknown; text: string } | null>(null);
+  const dirty = !!edit && edit.against === data?.doc;
+  const draft = dirty ? edit!.text : JSON.stringify(data?.doc ?? {}, null, 2);
+  const beat = Math.min(beatSel, Math.max(0, (data?.steps.length ?? 1) - 1));
 
   const save = async () => {
     let parsed: unknown;
@@ -117,6 +84,10 @@ export default function ExplainerEditor() {
               onChange={(v) => setMode(v as 'dark' | 'light')}
               options={[{ label: 'dark', value: 'dark' }, { label: 'light', value: 'light' }]}
             />
+            <Button onClick={() => void move('undo')} disabled={busy || log.cursor === 0}>Undo</Button>
+            <Button onClick={() => void move('redo')} disabled={busy || log.cursor >= log.entries.length}>
+              Redo
+            </Button>
             <Button onClick={() => void save()} loading={saving} type={dirty ? 'primary' : 'default'}>
               Save
             </Button>
@@ -161,6 +132,33 @@ export default function ExplainerEditor() {
               </div>
             ))}
           </Card>
+
+          <Card
+            size="small"
+            title="History"
+            style={{ marginTop: 12 }}
+            styles={{ body: { padding: 0, maxHeight: 220, overflowY: 'auto' } }}
+          >
+            {log.entries.length === 0 ? (
+              <div style={{ padding: '10px 14px', opacity: 0.6, fontSize: 12 }}>Nothing yet.</div>
+            ) : (
+              log.entries.map((e, i) => (
+                <div
+                  key={e.seq}
+                  style={{
+                    padding: '8px 14px', fontSize: 12,
+                    opacity: i < log.cursor ? 1 : 0.4,
+                    borderBottom: '1px solid rgba(128,128,128,.12)',
+                  }}
+                >
+                  <Tag color={e.actor === 'agent' ? 'purple' : 'default'} style={{ marginInlineEnd: 6 }}>
+                    {e.actor}
+                  </Tag>
+                  {e.summary}
+                </div>
+              ))
+            )}
+          </Card>
         </Col>
 
         <Col span={9}>
@@ -179,7 +177,7 @@ export default function ExplainerEditor() {
             <Card size="small" title="Document">
               <textarea
                 value={draft}
-                onChange={(e) => { setDraft(e.target.value); setDirty(true); }}
+                onChange={(e) => setEdit({ against: data?.doc, text: e.target.value })}
                 spellCheck={false}
                 style={{
                   width: '100%', height: 420, fontFamily: 'ui-monospace, monospace', fontSize: 12,
