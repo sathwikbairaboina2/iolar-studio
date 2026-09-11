@@ -1622,7 +1622,7 @@ Expected: everything green — this task adds no tests, and must break none.
 
 - [ ] **Step 4: Try it by hand**
 
-Start the studio (`npm run dev`) and open **`http://localhost:3100/explainers`** — not
+Start the studio (`npm run dev`) and open **`http://localhost:3120/explainers`** — not
 `127.0.0.1`, which Next treats as a foreign origin and whose dev bundle it silently blocks, so the
 page renders but never hydrates.
 
