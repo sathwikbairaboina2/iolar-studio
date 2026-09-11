@@ -35,7 +35,15 @@ const place = (rows: Row[]): Placed[] => {
   });
 };
 
-export default function ScenePreview({ scene, mode = 'dark' }: { scene: Scene; mode?: 'light' | 'dark' }) {
+export default function ScenePreview({
+  scene, mode = 'dark', selected = null, onSelect,
+}: {
+  scene: Scene;
+  mode?: 'light' | 'dark';
+  /** The row the inspector is open on, ringed here so the two panels agree. */
+  selected?: string | null;
+  onSelect?: (rowId: string) => void;
+}) {
   const p = PALETTE[mode];
   const asDiagram = scene.links.length > 0 || scene.rows.some((r) => r.tier > 0);
   const nodes = place(scene.rows);
@@ -81,13 +89,15 @@ export default function ScenePreview({ scene, mode = 'dark' }: { scene: Scene; m
             </svg>
             {nodes.map((n) => (
               <div key={n.id} style={{ position: 'absolute', left: `${n.x}%`, top: `${n.y}%`, transform: 'translate(-50%,-50%)' }}>
-                <NodeChip row={n} p={p} />
+                <NodeChip row={n} p={p} selected={selected === n.id} onSelect={onSelect} />
               </div>
             ))}
           </>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4%', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-            {scene.rows.map((r) => <NodeChip key={r.id} row={r} p={p} />)}
+            {scene.rows.map((r) => (
+              <NodeChip key={r.id} row={r} p={p} selected={selected === r.id} onSelect={onSelect} />
+            ))}
           </div>
         )}
       </div>
@@ -122,14 +132,26 @@ export default function ScenePreview({ scene, mode = 'dark' }: { scene: Scene; m
   );
 }
 
-function NodeChip({ row, p }: { row: Row; p: typeof PALETTE.dark }) {
+function NodeChip({
+  row, p, selected = false, onSelect,
+}: {
+  row: Row;
+  p: typeof PALETTE.dark;
+  selected?: boolean;
+  onSelect?: (rowId: string) => void;
+}) {
   const live = row.state !== 'idle';
   const c = colourFor(row.state, p);
   return (
     <div
+      onClick={onSelect ? () => onSelect(row.id) : undefined}
       style={{
         border: `1.5px solid ${live ? c : p.line}`, borderRadius: 10, padding: '5px 10px',
         background: live ? `${c}14` : p.surface, textAlign: 'center', minWidth: 72,
+        cursor: onSelect ? 'pointer' : undefined,
+        // A ring rather than a colour change: the colours already mean something here.
+        outline: selected ? `2px solid ${p.accent}` : undefined,
+        outlineOffset: 2,
       }}
     >
       <div style={{ color: p.fg, fontSize: '1.5cqw', fontWeight: 700, letterSpacing: 0.6, whiteSpace: 'nowrap' }}>

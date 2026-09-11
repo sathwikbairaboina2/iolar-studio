@@ -6,8 +6,10 @@ import ScenePreview from '@/components/explainer/ScenePreview';
 import { useExplainerEditor } from './useExplainerEditor';
 import { useExplainerRenders, type RenderRecord } from './useExplainerRenders';
 import ScriptCard from './ScriptCard';
+import BeatRail from './BeatRail';
+import RowInspector from './RowInspector';
+import MutationList from './MutationList';
 
-const ROLE_COLOUR: Record<string, string> = { hook: 'magenta', step: 'blue', payoff: 'green', cta: 'gold' };
 const RENDER_COLOUR: Record<string, string> = {
   queued: 'default', preparing: 'blue', rendering: 'processing', done: 'green', failed: 'red',
 };
@@ -23,12 +25,13 @@ function ago(iso: string): string {
 
 export default function ExplainerEditor() {
   const { slug } = useParams<{ slug: string }>();
-  const { data, log, busy, move, reload } = useExplainerEditor(slug);
+  const { data, log, busy, run, move, reload } = useExplainerEditor(slug);
   const [beatSel, setBeat] = React.useState(0);
   const [saving, setSaving] = React.useState(false);
   const [mode, setMode] = React.useState<'dark' | 'light'>('dark');
   const { log: renders, submitting, submit: startRender, stop: stopRender } = useExplainerRenders(slug);
   const [watching, setWatching] = React.useState<string | null>(null);
+  const [picked, setPicked] = React.useState<string | null>(null);
 
   // The textarea is derived, not synchronised. `edit` holds what was typed along with the document
   // it was typed against; the hook hands back a fresh object on every reload, so a save, render,
@@ -37,6 +40,7 @@ export default function ExplainerEditor() {
   const dirty = !!edit && edit.against === data?.doc;
   const draft = dirty ? edit!.text : JSON.stringify(data?.doc ?? {}, null, 2);
   const beat = Math.min(beatSel, Math.max(0, (data?.steps.length ?? 1) - 1));
+  const step = data?.steps[beat];
 
   const live = renders.renders.find((r) => r.state !== 'done' && r.state !== 'failed') ?? null;
   const done = renders.renders.filter((r) => r.state === 'done');
@@ -68,8 +72,6 @@ export default function ExplainerEditor() {
       setSaving(false);
     }
   };
-
-  const step = data?.steps[beat];
 
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
@@ -119,29 +121,30 @@ export default function ExplainerEditor() {
 
       <Row gutter={16}>
         <Col span={7}>
-          <Card size="small" title="Beats" styles={{ body: { padding: 0 } }}>
-            {(data?.steps ?? []).map((s, i) => (
-              <div
-                key={s.id}
-                onClick={() => setBeat(i)}
-                style={{
-                  padding: '10px 14px', cursor: 'pointer',
-                  borderLeft: `4px solid ${i === beat ? '#1677ff' : 'transparent'}`,
-                  background: i === beat ? 'rgba(22,119,255,.08)' : undefined,
-                  borderBottom: '1px solid rgba(128,128,128,.14)',
-                }}
-              >
-                <Space size={8}>
-                  <Tag color={ROLE_COLOUR[s.role]} style={{ marginInlineEnd: 0 }}>{s.role}</Tag>
-                  <strong>{s.id}</strong>
-                </Space>
-                <div style={{ fontSize: 12, opacity: 0.65, marginTop: 3 }}>
-                  {(s.durationFrames / 30).toFixed(1)}s · {s.mutations} change{s.mutations === 1 ? '' : 's'}
-                  {' · '}{s.scene.rows.length} nodes
-                </div>
-              </div>
-            ))}
+          <Card size="small" title="Beats">
+            <BeatRail
+              steps={data?.steps ?? []}
+              selected={beat}
+              busy={busy}
+              onSelect={(i) => setBeat(i)}
+              onRun={run}
+            />
           </Card>
+
+          <div style={{ marginTop: 12 }}>
+            <RowInspector
+              doc={data?.doc ?? null}
+              beatId={step?.id ?? null}
+              rowId={picked}
+              busy={busy}
+              onRun={run}
+              onClose={() => setPicked(null)}
+            />
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <MutationList doc={data?.doc ?? null} beatId={step?.id ?? null} busy={busy} onRun={run} />
+          </div>
 
           <Card
             size="small"
@@ -178,10 +181,18 @@ export default function ExplainerEditor() {
         <Col span={9}>
           <Card size="small" title={step ? `The board at ${step.id}` : 'The board'}>
             <div style={{ containerType: 'inline-size' }}>
-              {step ? <ScenePreview scene={step.scene} mode={mode} /> : null}
+              {step ? (
+                <ScenePreview
+                  scene={step.scene}
+                  mode={mode}
+                  selected={picked}
+                  onSelect={(rowId) => setPicked(rowId === picked ? null : rowId)}
+                />
+              ) : null}
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-              An approximation, drawn here so a change shows at once. Render for the real thing.
+              An approximation, drawn here so a change shows at once. Click a node to edit it;
+              render for the real thing.
             </Typography.Text>
           </Card>
         </Col>
