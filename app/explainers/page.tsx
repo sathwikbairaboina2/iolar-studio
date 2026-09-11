@@ -24,7 +24,7 @@ export default function ExplainersPage() {
   const [write, setWrite] = React.useState(false);
   const [audience, setAudience] = React.useState('');
   const [claim, setClaim] = React.useState('');
-  const [seconds, setSeconds] = React.useState(16);
+  const [seconds, setSeconds] = React.useState(18);
 
   // The `alive` guard is not ceremony: the page can be left while the fetch is in flight, and
   // setting state after that is a leak the console will complain about.

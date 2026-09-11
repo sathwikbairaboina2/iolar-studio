@@ -14,7 +14,7 @@ import type { FitReport } from '@/lib/explainer/fit';
 
 type Proposal = { doc: ExplainerDoc; diff: string[]; fit: FitReport };
 
-const BLANK: Brief = { topic: '', audience: '', claim: '', seconds: 16 };
+const BLANK: Brief = { topic: '', audience: '', claim: '', seconds: 18 };
 const LEVEL_COLOUR: Record<string, string> = { good: 'default', warn: 'orange', bad: 'red' };
 
 export default function ScriptCard({
