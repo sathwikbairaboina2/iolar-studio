@@ -87,3 +87,8 @@ export function explainerFile(slug: string) { return path.join(explainerDir(slug
 export function explainerRendersDir(slug: string) { return path.join(explainerDir(slug), 'renders'); }
 export function explainerMp4(slug: string) { return path.join(explainerRendersDir(slug), 'reel.mp4'); }
 export function explainerTimelineFile(slug: string) { return path.join(explainerRendersDir(slug), 'timeline.json'); }
+
+/** Undo for an explainer: an index beside one snapshot of the whole document per sequence. */
+export function explainerHistoryDir(slug: string) { return path.join(explainerDir(slug), 'history'); }
+export function explainerHistoryIndex(slug: string) { return path.join(explainerHistoryDir(slug), 'index.json'); }
+export function explainerHistorySnap(slug: string, seq: number) { return path.join(explainerHistoryDir(slug), `${seq}.json`); }
