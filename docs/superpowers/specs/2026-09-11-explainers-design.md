@@ -58,19 +58,39 @@ and the job plumbing. Every section component is category-specific.
 
 `explainer` is a separate category inside the same service, and the tools stack is not
 generalised to accommodate it. Sharing stops at plumbing that knows nothing about sections:
-`jobs.py`, `worker.py`, `renderer.py`, `assets.py`, `capture.py`, `config.py` and the HTTP app.
-Explainer gets job creation, polling, cancel, timeouts, asset resolution and ffmpeg from those,
-with no new port, no new daemon and no new registry row.
+the job store's directory and state handling in `jobs.py`, the subprocess wrappers in
+`renderer.py`, `assets.py` and `capture.py`, `config.py`, the worker queue and thread in
+`worker.py`, and the HTTP app. Explainer gets job creation, polling, cancel and timeouts from
+those, with no new port, no new daemon and no new registry row.
 
 Everything that touches sections is per-category and never crosses: the contract, the document
 model, the Remotion props schema, the compositions, the themes, and the timing/props/fit pipeline.
 
-One shared line has to move, and it is the seam rather than a violation of it. Something must
-dispatch on the document's `template` field to select the right model, or an explainer document
-cannot be accepted at all. `Literal["tools"]` becomes a discriminator over a registry of
-categories; `Root.tsx` becomes a thin registry of `${category}-${theme}` composition ids instead
-of hardcoding `tools-`. Beyond those two dispatch points the tools stack is unchanged, and
-pattern reels keep rendering through the path they use now.
+**Three dispatch points move**, and they are the seam rather than a violation of it.
+
+1. `models.py` — `Literal["tools"]` becomes a discriminator over a registry of categories, or an
+   explainer document cannot be accepted by type at all.
+2. `render/src/Root.tsx` — a registry of `${category}-${theme}` composition ids instead of
+   hardcoding `tools-`.
+3. `Pipeline.run` in `worker.py` — an explainer is drawn, not assembled, so it branches to its
+   own short pipeline method: props, render, timeline. No assets to fetch, no voice to probe, no
+   presenter clip, no pages to capture. The tools body is unchanged rather than growing guards.
+
+Corrected 2026-09-11, after the end-to-end render failed with
+`AttributeError: 'ExplainerDoc' object has no attribute 'hook'`. The third point was missed
+because the survey grepped for the type name `ReelDoc`, and `Pipeline.run` never mentions it —
+it reads `doc.hook`, `doc.slides` and `doc.pages` off whatever `input_doc()` returns, and renders
+a hardcoded `tools-{theme}` composition. A grep proved a claim it could not actually prove; only
+reading the pipeline, or running it, could.
+
+Beyond those three the tools stack is unchanged, and pattern reels keep rendering through the
+path they use now.
+
+Two operational notes for anyone adding a category. A Remotion composition renders its
+`defaultProps` unless `--props` overrides them, so a still taken by composition id alone can
+silently draw the wrong beat. And the renderer reuses a cached Remotion bundle, so a newly
+registered composition id needs `RENDER_REBUILD=1` once, or the render fails with
+`Could not find composition`.
 
 ## The seam
 
