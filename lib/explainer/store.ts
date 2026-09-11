@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { explainerDir, explainerFile, explainerMp4, explainersRoot, isSlug, slugify } from '@/lib/paths';
 import { ExplainerDocSchema, totalSeconds, type ExplainerDoc } from './schema';
+import { latestDone } from './renders';
 
 /**
  * Where an explainer lives: `data/explainer/<slug>/explainer.json`, with anything it renders
@@ -59,8 +60,11 @@ export async function freeSlug(title: string): Promise<string> {
 async function summarise(slug: string): Promise<ExplainerSummary | null> {
   const doc = await readDoc(slug);
   if (!doc) return null;
-  const [stat, rendered] = await Promise.all([
+  // What counts as rendered is the newest done job, not a file name: a render that failed leaves
+  // the previous mp4 in place, and the list should not call that a fresh render.
+  const [stat, newest, legacy] = await Promise.all([
     fs.stat(explainerFile(slug)).catch(() => null),
+    latestDone(slug),
     fs.stat(explainerMp4(slug)).catch(() => null),
   ]);
   return {
@@ -71,7 +75,7 @@ async function summarise(slug: string): Promise<ExplainerSummary | null> {
     nodes: doc.scene.rows.length,
     seconds: Math.round(totalSeconds(doc) * 10) / 10,
     updatedAt: (stat?.mtime ?? new Date()).toISOString(),
-    renderedAt: rendered ? rendered.mtime.toISOString() : null,
+    renderedAt: newest?.finishedAt ?? (legacy ? legacy.mtime.toISOString() : null),
   };
 }
 

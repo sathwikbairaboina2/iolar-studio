@@ -97,6 +97,12 @@ export async function job(id: string, opts: ServiceOpts = {}): Promise<ServiceJo
   return { id, state: (b.state ?? 'failed') as ServiceJobState, progress: Number(b.progress ?? 0), error: b.error ?? null, timeline: b.timeline ?? null };
 }
 
+/** Cancel a running job and forget it. The service answers 404 for a job it has already dropped. */
+export async function cancel(id: string, opts: ServiceOpts = {}): Promise<void> {
+  const res = await call(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE', timeoutMs: READ_MS }, opts);
+  if (!res.ok && res.status !== 404) throw new ServiceDown(`reels-templates answered ${res.status} cancelling job ${id}`);
+}
+
 export async function log(id: string, opts: ServiceOpts = {}): Promise<string> {
   const res = await call(`/jobs/${encodeURIComponent(id)}/log`, { timeoutMs: READ_MS }, opts);
   return res.ok ? res.text() : '';

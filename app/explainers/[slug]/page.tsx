@@ -4,17 +4,30 @@ import { Alert, Button, Card, Col, Row, Segmented, Space, Tag, Typography, messa
 import { useParams } from 'next/navigation';
 import ScenePreview from '@/components/explainer/ScenePreview';
 import { useExplainerEditor } from './useExplainerEditor';
+import { useExplainerRenders, type RenderRecord } from './useExplainerRenders';
 
 const ROLE_COLOUR: Record<string, string> = { hook: 'magenta', step: 'blue', payoff: 'green', cta: 'gold' };
+const RENDER_COLOUR: Record<string, string> = {
+  queued: 'default', preparing: 'blue', rendering: 'processing', done: 'green', failed: 'red',
+};
+
+/** "4m ago", because the clock time of a render is never what anyone wants to know. */
+function ago(iso: string): string {
+  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
 
 export default function ExplainerEditor() {
   const { slug } = useParams<{ slug: string }>();
   const { data, log, busy, move, reload } = useExplainerEditor(slug);
   const [beatSel, setBeat] = React.useState(0);
   const [saving, setSaving] = React.useState(false);
-  const [rendering, setRendering] = React.useState(false);
-  const [mp4, setMp4] = React.useState<string | null>(null);
   const [mode, setMode] = React.useState<'dark' | 'light'>('dark');
+  const { log: renders, submitting, submit: startRender, stop: stopRender } = useExplainerRenders(slug);
+  const [watching, setWatching] = React.useState<string | null>(null);
 
   // The textarea is derived, not synchronised. `edit` holds what was typed along with the document
   // it was typed against; the hook hands back a fresh object on every reload, so a save, render,
@@ -23,6 +36,12 @@ export default function ExplainerEditor() {
   const dirty = !!edit && edit.against === data?.doc;
   const draft = dirty ? edit!.text : JSON.stringify(data?.doc ?? {}, null, 2);
   const beat = Math.min(beatSel, Math.max(0, (data?.steps.length ?? 1) - 1));
+
+  const live = renders.renders.find((r) => r.state !== 'done' && r.state !== 'failed') ?? null;
+  const done = renders.renders.filter((r) => r.state === 'done');
+  // What plays is whatever was clicked, and the newest finished render until something is.
+  const playing = done.find((r) => r.id === watching) ?? done[0] ?? null;
+  const stale = (r: RenderRecord) => Boolean(renders.currentHash) && r.docHash !== renders.currentHash;
 
   const save = async () => {
     let parsed: unknown;
@@ -46,21 +65,6 @@ export default function ExplainerEditor() {
       await reload();
     } finally {
       setSaving(false);
-    }
-  };
-
-  const renderIt = async () => {
-    setRendering(true);
-    setMp4(null);
-    try {
-      const r = await fetch(`/api/explainers/${slug}/render`, { method: 'POST' });
-      const body = await r.json();
-      if (!r.ok) { message.error(body.error ?? 'the render failed'); return; }
-      message.success(`rendered ${body.seconds ?? '?'}s`);
-      setMp4(`${body.mp4}?t=${Date.now()}`);
-      await reload();
-    } finally {
-      setRendering(false);
     }
   };
 
@@ -91,9 +95,14 @@ export default function ExplainerEditor() {
             <Button onClick={() => void save()} loading={saving} type={dirty ? 'primary' : 'default'}>
               Save
             </Button>
-            <Button onClick={() => void renderIt()} loading={rendering} disabled={!!data?.foldError}>
-              Render
+            <Button
+              onClick={() => void startRender()}
+              loading={submitting}
+              disabled={!!data?.foldError || !!live}
+            >
+              {live ? `Rendering ${Math.round((live.progress ?? 0) * 100)}%` : 'Render'}
             </Button>
+            {live ? <Button danger onClick={() => void stopRender(live.id)}>Stop</Button> : null}
           </Space>
         </Col>
       </Row>
@@ -186,12 +195,51 @@ export default function ExplainerEditor() {
                 }}
               />
             </Card>
-            {mp4 ? (
-              <Card size="small" title="Rendered">
-
-                <video src={mp4} controls loop style={{ width: '100%', borderRadius: 8 }} />
+            {playing ? (
+              <Card
+                size="small"
+                title={`Rendered ${ago(playing.finishedAt ?? playing.submittedAt)}`}
+                extra={stale(playing) ? <Tag color="orange">older document</Tag> : null}
+              >
+                <video
+                  key={playing.id}
+                  src={`/api/explainers/${slug}/renders/${playing.id}/mp4`}
+                  controls
+                  loop
+                  style={{ width: '100%', borderRadius: 8 }}
+                />
               </Card>
             ) : null}
+
+            <Card size="small" title="Renders" styles={{ body: { padding: 0, maxHeight: 260, overflowY: 'auto' } }}>
+              {renders.renders.length === 0 ? (
+                <div style={{ padding: '10px 14px', opacity: 0.6, fontSize: 12 }}>Nothing rendered yet.</div>
+              ) : (
+                renders.renders.map((r) => (
+                  <div
+                    key={r.id}
+                    onClick={() => r.state === 'done' && setWatching(r.id)}
+                    style={{
+                      padding: '8px 14px', fontSize: 12,
+                      cursor: r.state === 'done' ? 'pointer' : 'default',
+                      background: playing?.id === r.id ? 'rgba(22,119,255,.08)' : undefined,
+                      borderBottom: '1px solid rgba(128,128,128,.12)',
+                    }}
+                  >
+                    <Space size={6} wrap>
+                      <Tag color={RENDER_COLOUR[r.state]} style={{ marginInlineEnd: 0 }}>
+                        {r.state === 'rendering' ? `${Math.round((r.progress ?? 0) * 100)}%` : r.state}
+                      </Tag>
+                      <span>{ago(r.submittedAt)}</span>
+                      {r.seconds ? <span style={{ opacity: 0.6 }}>{r.seconds}s</span> : null}
+                      <span style={{ opacity: 0.6 }}>{r.theme}</span>
+                      {stale(r) ? <Tag color="orange">older document</Tag> : null}
+                    </Space>
+                    {r.error ? <div style={{ color: '#cf1322', marginTop: 4 }}>{r.error}</div> : null}
+                  </div>
+                ))
+              )}
+            </Card>
           </Space>
         </Col>
       </Row>

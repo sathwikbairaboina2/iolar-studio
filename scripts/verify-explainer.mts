@@ -8,8 +8,9 @@
 import { promises as fs } from 'fs';
 import { foldDoc, totalSeconds } from '../lib/explainer/schema';
 import { blankDoc, get, list, remove, save } from '../lib/explainer/store';
-import { contract, render } from '../lib/explainer/service';
-import { explainerMp4 } from '../lib/paths';
+import { contract } from '../lib/explainer/service';
+import * as renders from '../lib/explainer/renders';
+import { explainerRenderMp4 } from '../lib/paths';
 
 const SLUG = 'verify-explainer-smoke';
 
@@ -32,11 +33,17 @@ async function main() {
   if (!listed) throw new Error('it does not appear in the list');
   console.log(`listed     "${listed.title}"  ${listed.seconds}s  rendered=${listed.renderedAt ? 'yes' : 'no'}`);
 
-  console.log('rendering  (this takes a few seconds)');
-  const result = await render(SLUG, back);
-  if (!result.ok) throw new Error(`render failed: ${result.error}`);
-  const stat = await fs.stat(explainerMp4(SLUG));
-  console.log(`rendered   ${result.seconds}s  ${(stat.size / 1024).toFixed(0)}kb  job ${result.jobId}`);
+  console.log('rendering  (submitted as a job, polled here the way the page polls it)');
+  const submitted = await renders.start(SLUG, back);
+  let log = await renders.read(SLUG, back);
+  for (let n = 0; log.live && n < 600; n += 1) {
+    await new Promise((r) => setTimeout(r, 1200));
+    log = await renders.poll(SLUG);
+  }
+  const record = log.renders.find((r) => r.id === submitted.id);
+  if (!record || record.state !== 'done') throw new Error(`render failed: ${record?.error ?? 'it never finished'}`);
+  const stat = await fs.stat(explainerRenderMp4(SLUG, record.id));
+  console.log(`rendered   ${record.seconds}s  ${(stat.size / 1024).toFixed(0)}kb  job ${record.id}`);
 
   await remove(SLUG);
   console.log(`cleaned    removed ${SLUG}`);

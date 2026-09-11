@@ -89,8 +89,9 @@ explainer, which is the same order as what a reel keeps.
 |---|---|
 | `POST /api/explainers/<slug>/render` | submit; **202** with the new record. 503 if the service is down, 422 if it rejects the document — unchanged from today. |
 | `GET /api/explainers/<slug>/render` | poll the service for anything live, then answer with the whole log |
+| `DELETE /api/explainers/<slug>/render` | `{id}` — stop that render. `DELETE /jobs/{id}` on the service drops the job, and the record is written failed with `stopped here`, because that is what stopped looks like to everything reading this list. |
 | `GET /api/explainers/<slug>/renders/<id>/mp4` | stream one render |
-| `GET /api/explainers/<slug>/mp4` | stream the newest **done** render — same path as today, resolved from the log rather than from a fixed file name |
+| `GET /api/explainers/<slug>/mp4` | stream the newest **done** render — same path as today, resolved from the log rather than from a fixed file name, falling back to an older explainer's `reel.mp4` when there is no log yet |
 
 `POST` no longer waits. That is the whole point, and it is why the response is 202 rather than 200:
 the answer is "this is now a job", not "here is your video".
@@ -110,8 +111,6 @@ service's progress.
 
 - **No queue of its own.** The templates service already queues; a second queue in the studio would
   only be able to disagree with it.
-- **No cancel.** The service has no cancel endpoint. A button that cannot do anything is worse than
-  no button.
 - **No cross-explainer job list.** The Jobs tab is about job cards, not renders. If a global render
   list is wanted later it reads these logs; it does not need them to be stored anywhere else.
 
@@ -127,3 +126,5 @@ service's progress.
 - the twenty-first render drops the oldest, and its mp4 goes with it
 - `latestDone` ignores a newer failed render
 - a document edited after a render makes that record read as stale
+- stopping a live render drops the job at the service and records why it ended
+- stopping a finished render asks the service nothing

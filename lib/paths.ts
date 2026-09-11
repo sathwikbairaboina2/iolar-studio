@@ -88,6 +88,11 @@ export function explainerRendersDir(slug: string) { return path.join(explainerDi
 export function explainerMp4(slug: string) { return path.join(explainerRendersDir(slug), 'reel.mp4'); }
 export function explainerTimelineFile(slug: string) { return path.join(explainerRendersDir(slug), 'timeline.json'); }
 
+/** One render, one job id: the mp4, its timeline, and the list they are both written into. */
+export function explainerRendersIndex(slug: string) { return path.join(explainerRendersDir(slug), 'index.json'); }
+export function explainerRenderMp4(slug: string, jobId: string) { return path.join(explainerRendersDir(slug), `${jobId}.mp4`); }
+export function explainerRenderTimeline(slug: string, jobId: string) { return path.join(explainerRendersDir(slug), `${jobId}.timeline.json`); }
+
 /** Undo for an explainer: an index beside one snapshot of the whole document per sequence. */
 export function explainerHistoryDir(slug: string) { return path.join(explainerDir(slug), 'history'); }
 export function explainerHistoryIndex(slug: string) { return path.join(explainerHistoryDir(slug), 'index.json'); }
