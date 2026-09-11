@@ -1,5 +1,5 @@
 import { tools } from './tools';
-import { templates, ServiceDown, type ServiceOpts, type TemplateInfo } from './service';
+import { templates, ServiceDown, type ServiceOpts, type TemplateInfo } from '@/lib/templates/service';
 import type { PatternDef } from './types';
 
 export const PATTERNS: Record<string, PatternDef> = { tools };

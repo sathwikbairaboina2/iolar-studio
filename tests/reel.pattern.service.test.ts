@@ -34,7 +34,7 @@ describe('templates service client', () => {
   beforeEach(() => vi.resetModules());
 
   it('lists templates and caches them for a minute per base', async () => {
-    const S = await import('@/lib/reel/pattern/service');
+    const S = await import('@/lib/templates/service');
     const { f, calls } = fake({ '/templates': { body: { templates: [template] } } });
     let now = 1000;
     const opts = { baseUrl: 'http://x', fetchImpl: f, now: () => now };
@@ -47,7 +47,7 @@ describe('templates service client', () => {
   });
 
   it('turns a 422 from validate into field issues', async () => {
-    const S = await import('@/lib/reel/pattern/service');
+    const S = await import('@/lib/templates/service');
     const { f } = fake({ '/validate': { status: 422, body: { detail: [{ loc: ['body', 'sections', 0, 'hook', 'title'], msg: 'String should have at most 60 characters', type: 'string_too_long' }] } } });
     await expect(S.validate({}, { baseUrl: 'http://x', fetchImpl: f })).rejects.toMatchObject({
       issues: [{ loc: ['sections', 0, 'hook', 'title'], msg: 'String should have at most 60 characters' }],
@@ -55,7 +55,7 @@ describe('templates service client', () => {
   });
 
   it('submits, polls, and downloads the reel', async () => {
-    const S = await import('@/lib/reel/pattern/service');
+    const S = await import('@/lib/templates/service');
     const dir = mkdtempSync(path.join(tmpdir(), 'svc-'));
     const { f, calls } = fake({
       '/jobs': { status: 202, body: { id: 'j1' } },
@@ -71,7 +71,7 @@ describe('templates service client', () => {
   });
 
   it('names the base when the service is down, and builds the preview url', async () => {
-    const S = await import('@/lib/reel/pattern/service');
+    const S = await import('@/lib/templates/service');
     const { f } = fake({ '/templates': { fail: true } });
     await expect(S.templates({ baseUrl: 'http://x', fetchImpl: f })).rejects.toThrow(/http:\/\/x/);
     expect(S.previewUrl('tools', 'kinetic', 'j1', 'http://x')).toBe('http://x/preview/tools/kinetic?job=j1');

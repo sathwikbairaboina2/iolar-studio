@@ -4,6 +4,7 @@ import { Button, Input, Layout, Menu, Tag } from 'antd';
 import {
   BookOutlined, VideoCameraOutlined, ClockCircleOutlined, MessageOutlined, SmileOutlined,
   ShareAltOutlined, PictureOutlined, SettingOutlined, MoonOutlined, SunOutlined, ApiOutlined, ScheduleOutlined, ReadOutlined,
+  NodeIndexOutlined,
 } from '@ant-design/icons';
 import { usePathname, useRouter } from 'next/navigation';
 import { SWEEP, useTheme } from './ThemeProvider';
@@ -22,6 +23,7 @@ const items = [
     children: [
       { key: '/handbooks', icon: <BookOutlined />, label: 'Handbooks' },
       { key: '/reel', icon: <VideoCameraOutlined />, label: 'Reels' },
+      { key: '/explainers', icon: <NodeIndexOutlined />, label: 'Explainers' },
       { key: '/jobs', icon: <ScheduleOutlined />, label: 'Jobs' },
       { key: '/stories', icon: <ClockCircleOutlined />, label: soon('Stories'), disabled: true },
       { key: '/quotes', icon: <MessageOutlined />, label: soon('Quote cards'), disabled: true },

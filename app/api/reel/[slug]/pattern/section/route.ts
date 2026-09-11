@@ -3,7 +3,7 @@ import { isSlug } from '@/lib/paths';
 import { sectionReel } from '@/lib/reel/pattern/section';
 import { patternState } from '@/lib/reel/pattern/run';
 import { SectionError } from '@/lib/reel/pattern';
-import { ServiceDown } from '@/lib/reel/pattern/service';
+import { ServiceDown } from '@/lib/templates/service';
 
 type Ctx = { params: Promise<{ slug: string }> };
 export const maxDuration = 900;

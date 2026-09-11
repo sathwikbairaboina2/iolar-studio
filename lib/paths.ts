@@ -79,3 +79,11 @@ export function jobcardDir(id: string) { return path.join(jobcardsRoot(), id); }
 export function jobcardFile(id: string) { return path.join(jobcardDir(id), 'card.json'); }
 export function jobcardImage(id: string) { return path.join(jobcardDir(id), 'card.png'); }
 export function jobcardLogo(id: string, ext: string) { return path.join(jobcardDir(id), `logo.${ext}`); }
+
+/** One explainer, one folder: the document, what it rendered, and what it exported. */
+export function explainersRoot() { return path.join(dataRoot(), 'explainer'); }
+export function explainerDir(slug: string) { return path.join(explainersRoot(), slug); }
+export function explainerFile(slug: string) { return path.join(explainerDir(slug), 'explainer.json'); }
+export function explainerRendersDir(slug: string) { return path.join(explainerDir(slug), 'renders'); }
+export function explainerMp4(slug: string) { return path.join(explainerRendersDir(slug), 'reel.mp4'); }
+export function explainerTimelineFile(slug: string) { return path.join(explainerRendersDir(slug), 'timeline.json'); }

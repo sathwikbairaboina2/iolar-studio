@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { isSlug } from '@/lib/paths';
 import { renderPattern } from '@/lib/reel/pattern/run';
-import { ServiceDown, ServiceRejected } from '@/lib/reel/pattern/service';
+import { ServiceDown, ServiceRejected } from '@/lib/templates/service';
 
 type Ctx = { params: Promise<{ slug: string }> };
 

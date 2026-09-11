@@ -6,7 +6,7 @@ import { getSettings } from '@/lib/settings';
 import { reelDir, reelPresenterFile, reelVoFile } from '@/lib/paths';
 import { textHash } from '../script';
 import { patternDef, templateFor } from './index';
-import { templates, type ServiceOpts } from './service';
+import { templates, type ServiceOpts } from '@/lib/templates/service';
 import { defaultTimes, lineSpans, unitTimes } from './timing';
 import { alignScriptWords } from '../script-align';
 import type { Brand, CandidateRef, UnitTime } from './types';

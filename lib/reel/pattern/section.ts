@@ -5,7 +5,7 @@ import type { Script } from '../research/script';
 import type { Reel } from '../schema';
 import { linesText, textHash } from '../script';
 import { patternDef, templateFor } from './index';
-import { templates, type ServiceOpts } from './service';
+import { templates, type ServiceOpts } from '@/lib/templates/service';
 import { brandFor, candidateRefs } from './document';
 import { SectionError } from './types';
 

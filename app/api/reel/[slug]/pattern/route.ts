@@ -4,7 +4,7 @@ import { loadReel, saveReel } from '@/lib/reel/store';
 import { patternDef, SectionError, templateFor } from '@/lib/reel/pattern';
 import { patternState, pollRender, type PatternState } from '@/lib/reel/pattern/run';
 import { candidateRefs } from '@/lib/reel/pattern/document';
-import { templates, ServiceDown } from '@/lib/reel/pattern/service';
+import { templates, ServiceDown } from '@/lib/templates/service';
 import * as research from '@/lib/reel/research/store';
 
 type Ctx = { params: Promise<{ slug: string }> };

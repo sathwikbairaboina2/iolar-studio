@@ -10,7 +10,7 @@ import { run as runProbe } from '../probe';
 import { buildDocument } from './document';
 import { sectionReel, sectionsHash, type SectionDeps } from './section';
 import { presenterState, refreshPresenter, startPresenter, type PresenterState } from './presenter';
-import * as service from './service';
+import * as service from '@/lib/templates/service';
 import { UnitTooLong } from './timing';
 import type { UnitTime } from './types';
 

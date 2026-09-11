@@ -7,7 +7,7 @@ import { reelAssetsDir, reelDir, reelPatternDir, reelPatternHookAudio, reelPrese
 import { videoProvider, type VideoProvider } from '../videoProvider';
 import '../providers';
 import { buildDocument } from './document';
-import type { ServiceOpts } from './service';
+import type { ServiceOpts } from '@/lib/templates/service';
 
 /**
  * The hook's presenter clip. By default the lipsync desk animates the settings presenter

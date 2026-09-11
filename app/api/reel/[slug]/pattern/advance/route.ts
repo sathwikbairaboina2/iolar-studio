@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { isSlug } from '@/lib/paths';
 import { advancePattern } from '@/lib/reel/pattern/run';
 import { SectionError } from '@/lib/reel/pattern';
-import { ServiceDown, ServiceRejected } from '@/lib/reel/pattern/service';
+import { ServiceDown, ServiceRejected } from '@/lib/templates/service';
 
 type Ctx = { params: Promise<{ slug: string }> };
 export const maxDuration = 900;
