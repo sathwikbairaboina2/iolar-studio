@@ -86,6 +86,20 @@ export const BeatSchema = z.object({
   mutations: z.array(MutationSchema).max(8).default([]),
 });
 
+/**
+ * What was asked for, kept with what was written.
+ *
+ * It travels on the document so a revise knows the brief without the user restating it, and so the
+ * fit report can measure the length against the length that was wanted. The render service ignores
+ * fields it does not know, so this costs the renderer nothing.
+ */
+export const BriefSchema = z.object({
+  topic: z.string().max(200),
+  audience: z.string().max(200),
+  claim: z.string().max(300),
+  seconds: z.number().gt(0).max(120),
+});
+
 export const ExplainerDocSchema = z.object({
   template: z.literal('explainer'),
   theme: z.string().min(1),
@@ -94,8 +108,10 @@ export const ExplainerDocSchema = z.object({
   brand: z.object({ handle: z.string().min(1).max(24), name: z.string().min(1).max(24) }),
   scene: SceneSchema,
   beats: z.array(BeatSchema).min(2).max(14),
+  brief: BriefSchema.nullish(),
 });
 
+export type Brief = z.infer<typeof BriefSchema>;
 export type Row = z.infer<typeof RowSchema>;
 export type Link = z.infer<typeof LinkSchema>;
 export type PanelLine = z.infer<typeof PanelLineSchema>;

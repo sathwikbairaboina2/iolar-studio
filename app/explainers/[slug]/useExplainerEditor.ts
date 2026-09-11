@@ -1,17 +1,20 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { message } from 'antd';
-import type { Scene } from '@/lib/explainer/schema';
+import type { ExplainerDoc, Scene } from '@/lib/explainer/schema';
+import type { FitReport } from '@/lib/explainer/fit';
 
 export type Step = {
   id: string; role: string; startFrame: number; durationFrames: number; mutations: number; scene: Scene;
 };
 export type Loaded = {
   slug: string;
-  doc: Record<string, unknown> & { theme: string };
+  doc: ExplainerDoc;
   seconds: number | null;
   steps: Step[];
   foldError: { beatId: string; message: string } | null;
+  /** Computed on the read, because the route folded the document to answer anyway. */
+  fit: FitReport | null;
 };
 export type Entry = { seq: number; op: string; actor: 'ui' | 'agent'; at: string; summary: string };
 export type Log = { cursor: number; entries: Entry[] };

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { CommandError, applyCommand } from '@/lib/explainer/commands';
+import { fit } from '@/lib/explainer/fit';
 import { FoldError, foldDoc, totalSeconds } from '@/lib/explainer/schema';
 import { get, remove } from '@/lib/explainer/store';
 
@@ -27,11 +28,14 @@ export async function GET(_req: Request, { params }: Ctx) {
         mutations: s.beat.mutations.length, scene: s.scene,
       })),
       foldError: null,
+      fit: fit(doc, doc.brief?.seconds ?? null),
     });
   } catch (err) {
     const fold = err instanceof FoldError ? { beatId: err.beatId, message: err.message } : null;
     if (!fold) throw err;
-    return NextResponse.json({ slug, doc, seconds: null, steps: [], foldError: fold });
+    return NextResponse.json({
+      slug, doc, seconds: null, steps: [], foldError: fold, fit: fit(doc, doc.brief?.seconds ?? null),
+    });
   }
 }
 

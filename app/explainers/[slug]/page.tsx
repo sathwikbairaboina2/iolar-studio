@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import ScenePreview from '@/components/explainer/ScenePreview';
 import { useExplainerEditor } from './useExplainerEditor';
 import { useExplainerRenders, type RenderRecord } from './useExplainerRenders';
+import ScriptCard from './ScriptCard';
 
 const ROLE_COLOUR: Record<string, string> = { hook: 'magenta', step: 'blue', payoff: 'green', cta: 'gold' };
 const RENDER_COLOUR: Record<string, string> = {
@@ -111,7 +112,7 @@ export default function ExplainerEditor() {
         <Alert
           type="error"
           showIcon
-          message={`Beat ${data.foldError.beatId} cannot be applied`}
+          title={`Beat ${data.foldError.beatId} cannot be applied`}
           description={`${data.foldError.message} — the beats before it are fine; this one refers to something that is not on the board yet.`}
         />
       ) : null}
@@ -168,6 +169,10 @@ export default function ExplainerEditor() {
               ))
             )}
           </Card>
+
+          <div style={{ marginTop: 12 }}>
+            <ScriptCard slug={slug} doc={data?.doc ?? null} fit={data?.fit ?? null} onApplied={reload} />
+          </div>
         </Col>
 
         <Col span={9}>
