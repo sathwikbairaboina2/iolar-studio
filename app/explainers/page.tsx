@@ -1,6 +1,8 @@
 'use client';
 import React from 'react';
-import { Alert, Button, Card, Empty, Input, Select, Space, Table, Tag, Typography, message } from 'antd';
+import {
+  Alert, Button, Card, Empty, Input, InputNumber, Select, Space, Switch, Table, Tag, Typography, message,
+} from 'antd';
 import { useRouter } from 'next/navigation';
 
 type Summary = {
@@ -17,6 +19,12 @@ export default function ExplainersPage() {
   const [title, setTitle] = React.useState('');
   const [theme, setTheme] = React.useState<string | undefined>();
   const [creating, setCreating] = React.useState(false);
+  // Writing it here is the difference between opening a board about your topic and opening two
+  // rows called Before and After.
+  const [write, setWrite] = React.useState(false);
+  const [audience, setAudience] = React.useState('');
+  const [claim, setClaim] = React.useState('');
+  const [seconds, setSeconds] = React.useState(16);
 
   // The `alive` guard is not ceremony: the page can be left while the fetch is in flight, and
   // setting state after that is a leak the console will complain about.
@@ -44,10 +52,19 @@ export default function ExplainersPage() {
       const r = await fetch('/api/explainers', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title: title.trim(), theme }),
+        body: JSON.stringify({
+          title: title.trim(),
+          theme,
+          brief: write && claim.trim()
+            ? { topic: title.trim(), audience: audience.trim() || 'engineers', claim: claim.trim(), seconds }
+            : undefined,
+        }),
       });
       const body = await r.json();
       if (!r.ok) { message.error(body.error ?? 'could not create it'); return; }
+      // A model that would not answer still leaves an explainer to work in; say so rather than
+      // opening a blank board with no explanation.
+      if (write && body.drafted === false) message.warning(body.error ?? 'it was created, but not written');
       router.push(`/explainers/${body.slug}`);
     } finally {
       setCreating(false);
@@ -68,7 +85,7 @@ export default function ExplainersPage() {
         <Alert
           type="warning"
           showIcon
-          message="The templates service is not answering on 26200"
+          title="The templates service is not answering on 26200"
           description="You can still write and edit here. Rendering, and the list of themes, need it running — start it from Plugins."
         />
       ) : null}
@@ -94,9 +111,38 @@ export default function ExplainersPage() {
             disabled={!contract}
           />
           <Button type="primary" loading={creating} onClick={() => void create()} disabled={!title.trim()}>
-            New explainer
+            {write ? 'Write it' : 'New explainer'}
           </Button>
         </Space.Compact>
+
+        <Space style={{ marginTop: 10 }} size={8}>
+          <Switch size="small" checked={write} onChange={setWrite} />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            Write the first draft with the model
+          </Typography.Text>
+        </Space>
+
+        {write ? (
+          <Space orientation="vertical" size={8} style={{ width: '100%', marginTop: 10 }}>
+            <Input
+              placeholder="Audience — who it is for"
+              value={audience}
+              onChange={(e) => setAudience(e.target.value)}
+            />
+            <Input.TextArea
+              placeholder="The one thing that must land"
+              autoSize={{ minRows: 2, maxRows: 3 }}
+              value={claim}
+              onChange={(e) => setClaim(e.target.value)}
+            />
+            <Space>
+              <InputNumber min={6} max={60} value={seconds} onChange={(v) => setSeconds(Number(v ?? 16))} suffix="s" />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                The reference channel sits between 14 and 21 seconds.
+              </Typography.Text>
+            </Space>
+          </Space>
+        ) : null}
       </Card>
 
       {rows.length === 0 && !loading ? (

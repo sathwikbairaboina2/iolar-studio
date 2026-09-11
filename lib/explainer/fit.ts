@@ -79,8 +79,12 @@ export function fit(doc: ExplainerDoc, target: number | null = null): FitReport 
     });
   }
 
-  // A row that is never mutated is decoration the viewer still has to read.
-  const touched = new Set(doc.beats.flatMap((b) => b.mutations.flatMap(rowsNamed)));
+  // A row that is never mutated is decoration the viewer still has to read — unless something is
+  // drawn to it, because a hub everything links through is structure rather than decoration.
+  const touched = new Set([
+    ...doc.beats.flatMap((b) => b.mutations.flatMap(rowsNamed)),
+    ...doc.scene.links.flatMap((l) => [l.from, l.to]),
+  ]);
   const wildcard = doc.beats.some((b) => b.mutations.some((m) => m.op === 'set' && m.row === '*'));
   const dead = wildcard ? [] : doc.scene.rows.filter((r) => !touched.has(r.id)).map((r) => r.id);
   if (dead.length) {
@@ -88,6 +92,21 @@ export function fit(doc: ExplainerDoc, target: number | null = null): FitReport 
       level: 'warn',
       text: `${dead.map((id) => `"${id}"`).join(', ')} never ${dead.length === 1 ? 'changes' : 'change'}; either move it or cut it`,
     });
+  }
+
+  // A board of two or three rows with nothing linking them is a list on a phone screen, and it
+  // leaves most of a vertical frame empty. The reference channel's boards run four to six.
+  if (busiestBoard < 4 && doc.scene.links.length === 0) {
+    notes.push({
+      level: 'warn',
+      text: `${busiestBoard} rows and no links; a board this thin leaves most of the frame empty`,
+    });
+  }
+  const panelLines = steps[steps.length - 1]?.scene.panel.length ?? 0;
+  if (panelLines >= 4) {
+    notes.push({ level: 'warn', text: 'the panel is full; a fifth line is refused by the fold' });
+  } else if (panelLines < 2) {
+    notes.push({ level: 'warn', text: `${panelLines} panel lines; the panel is what fills the bottom of the frame` });
   }
 
   if (doc.beats[0]?.role !== 'hook') {

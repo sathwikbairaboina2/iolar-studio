@@ -77,8 +77,16 @@ function vocabulary(): string {
     '  and it is the one the claim lands on. A cta, if there is one, is last.',
     '- Every beat changes something. A beat with no mutations is a still frame and is wrong.',
     `- "sec" is null unless a beat needs its own length. Defaults: ${Object.entries(DEFAULT_SECS).map(([r, s]) => `${r} ${s}s`).join(', ')}.`,
-    '- At most six rows on the board at once. Numbers beat adjectives: a row with a value and a unit',
-    '  says more than a row with a longer label.',
+    '- Four to six rows, spread over two or three tiers. Two rows is a comparison; five on three',
+    '  tiers is a system with something flowing through it, which is what fills a vertical frame.',
+    '  `tier` is the band top to bottom, `col` the slot within it: a client on tier 0, what it talks',
+    '  to on tier 1, what that fans out to on tier 2.',
+    '- Link the rows that talk to each other. An unlinked board is a list.',
+    '- Three or four panel lines in total, added over the beats: the panel is the log of what just',
+    '  happened, and it is what fills the bottom of the frame. It holds FOUR lines and no more —',
+    '  a fifth is rejected, and lines in `scene.panel` count towards the four.',
+    '- Numbers beat adjectives: a row with a value and a unit says more than a row with a longer',
+    '  label. A value with a "%" unit is drawn as a meter.',
     'Return ONLY the JSON document. No prose, no markdown fences.',
   ].join('\n');
 }
@@ -93,7 +101,9 @@ function briefPrompt(brief: Brief): string {
     `TOPIC: ${brief.topic}`,
     `AUDIENCE: ${brief.audience}`,
     `THE ONE THING THAT MUST LAND: ${brief.claim}`,
-    `LENGTH: about ${brief.seconds} seconds, so roughly ${beats} beats.`,
+    `LENGTH: about ${brief.seconds} seconds, so roughly ${beats} beats. Beat lengths add up:`,
+    `default ${Object.entries(DEFAULT_SECS).map(([r, sec]) => `${r} ${sec}s`).join(', ')}, and "sec" overrides one.`,
+    `The total must land within a second of ${brief.seconds}s — count it before you answer.`,
     '',
     'Write the board so the claim is something the viewer watches happen, not something they read.',
   ].join('\n');
@@ -121,9 +131,39 @@ function revisePrompt(doc: ExplainerDoc, instruction: string): string {
   ].filter(Boolean).join('\n');
 }
 
+/** The panel holds four lines, and a model told that still writes five about half the time. */
+const PANEL_LINES = 4;
+
+/**
+ * Trim the surplus a model writes past a hard limit, rather than spending a retry on it.
+ *
+ * Only additive things are dropped, never rewritten: panel lines past the fourth and links past
+ * the twelfth. Everything else that will not fold is still the model's problem to fix, because
+ * a row that does not exist cannot be trimmed into one that does.
+ */
+function tidy(doc: ExplainerDoc): ExplainerDoc {
+  let panel = doc.scene.panel.length;
+  let links = doc.scene.links.length;
+  const beats = doc.beats.map((beat) => ({
+    ...beat,
+    mutations: beat.mutations.filter((m) => {
+      if (m.op === 'panel') {
+        if (panel >= PANEL_LINES) return false;
+        panel += 1;
+      }
+      if (m.op === 'link') {
+        if (links >= 12) return false;
+        links += 1;
+      }
+      return true;
+    }),
+  }));
+  return { ...doc, beats };
+}
+
 /** Parse, validate, fold. Whichever step fails, the message is what goes back to the model. */
 function accept(said: string): ExplainerDoc {
-  const parsed = ExplainerDocSchema.parse(extractJson(said));
+  const parsed = tidy(ExplainerDocSchema.parse(extractJson(said)));
   foldDoc(parsed);
   return parsed;
 }

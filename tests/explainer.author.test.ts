@@ -95,3 +95,27 @@ describe('revising', () => {
     expect((await revise(current(), 'shorter', { run })).brief).toEqual(BRIEF);
   });
 });
+
+describe('the surplus a model writes past a hard limit', () => {
+  it('drops panel lines past the fourth rather than spending a retry on them', async () => {
+    const five = good({
+      beats: [
+        { id: 'b1', role: 'hook', mutations: [
+          { op: 'panel', text: 'one' }, { op: 'panel', text: 'two' }, { op: 'panel', text: 'three' },
+        ] },
+        { id: 'b2', role: 'payoff', mutations: [
+          { op: 'panel', text: 'four' }, { op: 'panel', text: 'five' },
+          { op: 'set', row: 'index', value: 2, state: 'good' },
+        ] },
+      ],
+    });
+    const run = vi.fn(async (_prompt: string) => five);
+    const doc = await draft(BRIEF, { run });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    const lines = doc.beats.flatMap((b) => b.mutations.filter((m) => m.op === 'panel'));
+    expect(lines).toHaveLength(4);
+    // The set that followed the fifth line is still there: only the surplus goes.
+    expect(doc.beats[1].mutations.some((m) => m.op === 'set')).toBe(true);
+  });
+});

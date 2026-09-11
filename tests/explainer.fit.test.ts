@@ -25,10 +25,36 @@ const levels = (d: ExplainerDoc, seconds?: number) => fit(d, seconds).notes.map(
 const said = (d: ExplainerDoc, seconds?: number) => fit(d, seconds).notes.map((n) => n.text).join(' | ');
 
 describe('the fit report', () => {
+  /** What the reference channel's boards look like: four rows, linked, with a panel filling up. */
+  const full = (): ExplainerDoc => ExplainerDocSchema.parse({
+    ...doc(),
+    scene: {
+      title: 'Indexes',
+      rows: [
+        { id: 'query', label: 'Query', tier: 0 },
+        { id: 'scan', label: 'Scan', value: 200, unit: ' ms', tier: 1, col: 0 },
+        { id: 'index', label: 'Index', value: 200, unit: ' ms', tier: 1, col: 1 },
+        { id: 'rows', label: 'Rows read', value: 1000000, tier: 2 },
+      ],
+      links: [{ from: 'query', to: 'scan' }, { from: 'query', to: 'index' }],
+      panel: [{ text: 'SELECT * FROM users WHERE id = 7' }],
+    },
+    beats: [
+      { id: 'b1', role: 'hook', mutations: [{ op: 'set', row: 'scan', state: 'bad' }] },
+      { id: 'b2', role: 'step', mutations: [{ op: 'panel', text: 'Seq Scan on users' }, { op: 'set', row: 'rows', state: 'bad' }] },
+      { id: 'b3', role: 'payoff', mutations: [{ op: 'set', row: 'index', value: 2, state: 'good' }, { op: 'panel', text: 'Index Scan using users_pkey' }] },
+    ],
+  });
+
   it('says nothing is wrong with a document that is fine', () => {
-    const report = fit(doc(), 9);
+    const report = fit(full(), 9);
     expect(report.seconds).toBe(9);
     expect(report.notes.filter((n) => n.level !== 'good')).toEqual([]);
+  });
+
+  it('calls out a board too thin to fill a vertical frame', () => {
+    expect(said(doc())).toMatch(/rows and no links/);
+    expect(said(doc())).toMatch(/panel lines/);
   });
 
   it('calls a document far over its target bad, and one a little over a warning', () => {
