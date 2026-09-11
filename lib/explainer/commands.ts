@@ -4,6 +4,8 @@ import {
   ExplainerDocSchema, FoldError, ICONS, MutationSchema, ROLES, ROW_STATES, RowSchema, applyBeat,
   foldDoc, type ExplainerDoc,
 } from './schema';
+import * as history from './history';
+import { get, save } from './store';
 import type { Actor } from './history';
 
 /**
@@ -295,4 +297,33 @@ export function applyOne(
   }
 
   return { doc: valid, op: input.op, summary: spec.summary(parsed.data as never), args: parsed.data };
+}
+
+export async function loadDocOr404(slug: string): Promise<ExplainerDoc> {
+  const doc = await get(slug);
+  if (!doc) throw new CommandError(`no explainer "${slug}"`, 404, {});
+  return doc;
+}
+
+export async function applyCommand(
+  slug: string,
+  input: CommandInput
+): Promise<{ doc: ExplainerDoc; entry: history.Entry }> {
+  const doc = await loadDocOr404(slug);
+  const { doc: valid, summary, args: parsedArgs } = applyOne(doc, input);
+
+  await save(slug, valid);
+
+  // Deliberately after the save. A failed log entry must not cost the user their edit, so it is
+  // reported and swallowed rather than thrown.
+  const meta = { op: input.op, args: parsedArgs, actor: input.actor, summary };
+  let entry: history.Entry = { seq: -1, at: new Date().toISOString(), ...meta };
+  try {
+    const log = await history.push(slug, doc, valid, meta);
+    entry = log.entries[log.cursor - 1] ?? entry;
+  } catch (err) {
+    console.error(`[explainer] history write failed for ${slug}:`, err);
+  }
+
+  return { doc: valid, entry };
 }
