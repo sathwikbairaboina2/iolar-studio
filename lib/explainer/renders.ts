@@ -1,9 +1,11 @@
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import {
-  explainerRenderMp4, explainerRenderTimeline, explainerRendersDir, explainerRendersIndex, isSlug,
+  explainerRenderMp4, explainerRenderPoster, explainerRenderTimeline, explainerRendersDir,
+  explainerRendersIndex, isSlug,
 } from '@/lib/paths';
 import { cancel as cancelJob, download, job, submit, validate, type ServiceOpts } from '@/lib/templates/service';
+import * as poster from './poster';
 import type { ExplainerDoc } from './schema';
 
 /**
@@ -76,6 +78,7 @@ async function writeFile(slug: string, renders: RenderRecord[]): Promise<RenderR
   for (const gone of renders.slice(KEEP)) {
     await fs.rm(explainerRenderMp4(slug, gone.id), { force: true });
     await fs.rm(explainerRenderTimeline(slug, gone.id), { force: true });
+    await fs.rm(explainerRenderPoster(slug, gone.id), { force: true });
   }
   return kept;
 }
@@ -135,6 +138,9 @@ export async function poll(slug: string, opts: ServiceOpts = {}): Promise<Render
       // The file comes home first. A record that says done before its mp4 exists is a record the
       // player will 404 on.
       await download(record.id, explainerRenderMp4(slug, record.id), opts);
+      // The still the shelf shows, taken now because this is the one moment we know the mp4 is
+      // whole and nobody is waiting on it. It answers null rather than throwing when it cannot.
+      await poster.write(slug, record.id);
       const timeline = remote.timeline as Timeline;
       if (timeline) {
         await fs.writeFile(explainerRenderTimeline(slug, record.id), JSON.stringify(timeline, null, 2), 'utf8');

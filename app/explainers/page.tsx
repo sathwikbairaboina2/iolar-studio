@@ -1,24 +1,31 @@
 'use client';
 import React from 'react';
 import {
-  Alert, Button, Card, Empty, Input, InputNumber, Select, Space, Switch, Table, Tag, Typography, message,
+  Alert, Button, Card, Empty, Input, InputNumber, Segmented, Select, Space, Switch, Typography, message,
 } from 'antd';
+import { AppstoreOutlined, BarsOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
+import type { ExplainerSummary } from '@/lib/explainer/store';
+import { search } from '@/lib/explainer/browse';
+import ExplainerShelf from './ExplainerShelf';
+import ExplainerTable from './ExplainerTable';
 
-type Summary = {
-  slug: string; title: string; theme: string; beats: number; nodes: number;
-  seconds: number; updatedAt: string; renderedAt: string | null;
-};
 type Contract = { themes: string[]; themeModes: Record<string, 'light' | 'dark'> } | null;
+type View = 'shelf' | 'table';
+
+/** Which way you like to look at these outlives the tab; it is a preference, not state. */
+const VIEW_KEY = 'explainers.view';
 
 export default function ExplainersPage() {
   const router = useRouter();
-  const [rows, setRows] = React.useState<Summary[]>([]);
+  const [rows, setRows] = React.useState<ExplainerSummary[]>([]);
   const [contract, setContract] = React.useState<Contract>(null);
   const [loading, setLoading] = React.useState(true);
   const [title, setTitle] = React.useState('');
   const [theme, setTheme] = React.useState<string | undefined>();
   const [creating, setCreating] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+  const [view, setView] = React.useState<View>('shelf');
   // Writing it here is the difference between opening a board about your topic and opening two
   // rows called Before and After.
   const [write, setWrite] = React.useState(false);
@@ -26,24 +33,44 @@ export default function ExplainersPage() {
   const [claim, setClaim] = React.useState('');
   const [seconds, setSeconds] = React.useState(18);
 
+  React.useEffect(() => {
+    // Read after mount, never during render: the server has no localStorage and the markup it
+    // sends has to match the first client paint.
+    try {
+      const saved = window.localStorage.getItem(VIEW_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (saved === 'shelf' || saved === 'table') setView(saved);
+    } catch { /* a browser that refuses storage still gets the default */ }
+  }, []);
+
+  const pickView = (next: View) => {
+    setView(next);
+    try { window.localStorage.setItem(VIEW_KEY, next); } catch { /* preference only */ }
+  };
+
   // The `alive` guard is not ceremony: the page can be left while the fetch is in flight, and
   // setting state after that is a leak the console will complain about.
+  const load = React.useCallback(async () => {
+    const r = await fetch('/api/explainers', { cache: 'no-store' });
+    const body = await r.json();
+    return body as { explainers?: ExplainerSummary[]; contract?: Contract };
+  }, []);
+
   React.useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch('/api/explainers', { cache: 'no-store' });
-        const body = await r.json();
+        const body = await load();
         if (!alive) return;
         setRows(body.explainers ?? []);
         setContract(body.contract ?? null);
-        if (body.contract?.themes?.length) setTheme((t) => t ?? body.contract.themes[0]);
+        if (body.contract?.themes?.length) setTheme((t) => t ?? body.contract!.themes[0]);
       } finally {
         if (alive) setLoading(false);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [load]);
 
   const create = async () => {
     if (!title.trim()) return;
@@ -70,6 +97,18 @@ export default function ExplainersPage() {
       setCreating(false);
     }
   };
+
+  const remove = async (slug: string) => {
+    const r = await fetch(`/api/explainers/${slug}`, { method: 'DELETE' });
+    if (!r.ok) { message.error('could not delete it'); return; }
+    // Drop it here rather than refetching: the list is already right, and a round trip would make
+    // the row sit there for a beat after you confirmed it was gone.
+    setRows((all) => all.filter((row) => row.slug !== slug));
+    message.success('deleted');
+  };
+
+  const open = (slug: string) => router.push(`/explainers/${slug}`);
+  const shown = React.useMemo(() => search(rows, query), [rows, query]);
 
   return (
     <Space orientation="vertical" size={18} style={{ width: '100%' }}>
@@ -148,27 +187,40 @@ export default function ExplainersPage() {
       {rows.length === 0 && !loading ? (
         <Empty description="Nothing here yet. Name one above and it opens with a working two-row board." />
       ) : (
-        <Table<Summary>
-          size="small"
-          loading={loading}
-          rowKey="slug"
-          dataSource={rows}
-          pagination={false}
-          onRow={(r) => ({ onClick: () => router.push(`/explainers/${r.slug}`), style: { cursor: 'pointer' } })}
-          columns={[
-            { title: 'Title', dataIndex: 'title', render: (v: string) => <strong>{v}</strong> },
-            { title: 'Theme', dataIndex: 'theme', width: 130, render: (v: string) => <Tag>{v}</Tag> },
-            { title: 'Beats', dataIndex: 'beats', width: 80 },
-            { title: 'Nodes', dataIndex: 'nodes', width: 80 },
-            { title: 'Length', dataIndex: 'seconds', width: 100, render: (v: number) => `${v}s` },
-            {
-              title: 'Rendered',
-              dataIndex: 'renderedAt',
-              width: 140,
-              render: (v: string | null) => (v ? <Tag color="green">yes</Tag> : <Tag>not yet</Tag>),
-            },
-          ]}
-        />
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <Input
+              prefix={<SearchOutlined />}
+              placeholder="Search title, theme or slug"
+              allowClear
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ maxWidth: 320 }}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {query.trim() && shown.length !== rows.length
+                ? `${shown.length} of ${rows.length}`
+                : `${rows.length} explainer${rows.length === 1 ? '' : 's'}`}
+            </Typography.Text>
+            <div style={{ flex: 1 }} />
+            <Segmented
+              value={view}
+              onChange={(v) => pickView(v as View)}
+              options={[
+                { value: 'shelf', icon: <AppstoreOutlined /> },
+                { value: 'table', icon: <BarsOutlined /> },
+              ]}
+            />
+          </div>
+
+          {shown.length === 0 ? (
+            <Empty description={`Nothing matches “${query.trim()}”.`} />
+          ) : view === 'shelf' ? (
+            <ExplainerShelf rows={shown} onOpen={open} onDelete={(s) => void remove(s)} />
+          ) : (
+            <ExplainerTable rows={shown} loading={loading} onOpen={open} onDelete={(s) => void remove(s)} />
+          )}
+        </>
       )}
     </Space>
   );

@@ -19,6 +19,12 @@ export type ExplainerSummary = {
   seconds: number;
   updatedAt: string;
   renderedAt: string | null;
+  /**
+   * Whether a still can be drawn for it — which is the same question as whether anything has
+   * rendered. The jpg itself is written when the render lands, and taken on demand for the ones
+   * that rendered before posters existed, so the shelf asks for it either way.
+   */
+  poster: boolean;
 };
 
 async function readDoc(slug: string): Promise<ExplainerDoc | null> {
@@ -69,6 +75,7 @@ async function summarise(slug: string): Promise<ExplainerSummary | null> {
   ]);
   return {
     slug,
+    poster: !!newest || !!legacy,
     title: doc.scene.title,
     theme: doc.theme,
     beats: doc.beats.length,

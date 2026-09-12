@@ -3,6 +3,7 @@ import React from 'react';
 import { Alert, Button, Card, Col, Row, Segmented, Space, Tag, Typography, message } from 'antd';
 import { useParams } from 'next/navigation';
 import ScenePreview from '@/components/explainer/ScenePreview';
+import { ago } from '@/lib/explainer/browse';
 import { useExplainerEditor } from './useExplainerEditor';
 import { useExplainerRenders, type RenderRecord } from './useExplainerRenders';
 import ScriptCard from './ScriptCard';
@@ -13,15 +14,6 @@ import MutationList from './MutationList';
 const RENDER_COLOUR: Record<string, string> = {
   queued: 'default', preparing: 'blue', rendering: 'processing', done: 'green', failed: 'red',
 };
-
-/** "4m ago", because the clock time of a render is never what anyone wants to know. */
-function ago(iso: string): string {
-  const secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
-  return `${Math.round(secs / 86400)}d ago`;
-}
 
 export default function ExplainerEditor() {
   const { slug } = useParams<{ slug: string }>();
