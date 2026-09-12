@@ -41,11 +41,28 @@ export async function get(slug: string): Promise<ExplainerDoc | null> {
   return readDoc(slug);
 }
 
+/**
+ * Mirrors the board into the knowledge graph. Never fails a save.
+ *
+ * `renderedAt` is read rather than passed: the writer replaces the node's properties, so a save
+ * that sent null would quietly un-render an explainer the graph already knew was rendered.
+ */
+async function indexExplainer(slug: string, doc: ExplainerDoc) {
+  try {
+    const { recordExplainer } = await import('../knowledge/spaces/explainers');
+    const newest = await latestDone(slug).catch(() => null);
+    await recordExplainer(slug, doc, newest?.finishedAt ?? null);
+  } catch (err) {
+    console.warn('[instastudio] graph index failed for explainer', slug, err);
+  }
+}
+
 export async function save(slug: string, doc: ExplainerDoc): Promise<ExplainerDoc> {
   if (!isSlug(slug)) throw new Error(`bad slug "${slug}"`);
   const parsed = ExplainerDocSchema.parse(doc);
   await fs.mkdir(explainerDir(slug), { recursive: true });
   await fs.writeFile(explainerFile(slug), JSON.stringify(parsed, null, 2), 'utf8');
+  await indexExplainer(slug, parsed);
   return parsed;
 }
 

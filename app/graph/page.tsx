@@ -13,11 +13,11 @@ const GraphCanvas3D = dynamic(() => import('@/components/graph/GraphCanvas3D'), 
 });
 
 /**
- * One page, four tabs, one space at a time. The second search box is the meaning search
+ * One page, five tabs, one space at a time. The second search box is the meaning search
  * the research agents use, shown here so what they would see is never a mystery.
  */
 
-type SpaceKey = 'handbooks' | 'reels' | 'jobs' | 'all';
+type SpaceKey = 'handbooks' | 'reels' | 'jobs' | 'explainers' | 'all';
 type Hit = { collection: string; score: number; text: string; payload: Record<string, unknown> };
 
 export default function GraphPage() {
@@ -119,6 +119,7 @@ export default function GraphPage() {
           { key: 'handbooks', label: 'Handbooks' },
           { key: 'reels', label: 'Reels' },
           { key: 'jobs', label: 'Jobs' },
+          { key: 'explainers', label: 'Explainers' },
           { key: 'all', label: 'All' },
         ]}
       />

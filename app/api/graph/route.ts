@@ -15,7 +15,7 @@ export async function GET(req: Request) {
     if (ask) return NextResponse.json({ hits: await meaningSearch(space, ask) });
     if (q) return NextResponse.json({ nodes: await labelSearch(space, q) });
     if (space === 'all') return NextResponse.json(await crossLinks());
-    if (space !== 'handbooks' && space !== 'reels' && space !== 'jobs') {
+    if (space !== 'handbooks' && space !== 'reels' && space !== 'jobs' && space !== 'explainers') {
       return NextResponse.json({ error: `no space ${space}` }, { status: 400 });
     }
     return NextResponse.json(await spaceGraph(space));

@@ -27,7 +27,7 @@ async function withEdges(nodes: ViewNode[]) {
   return { nodes, edges };
 }
 
-export async function spaceGraph(space: 'handbooks' | 'reels' | 'jobs', limit = 400) {
+export async function spaceGraph(space: 'handbooks' | 'reels' | 'jobs' | 'explainers', limit = 400) {
   const { graph } = getStores();
   const nodes = await graph.query<ViewNode>(
     `MATCH (n) WHERE n.space = $space OR n.space = 'shared'
@@ -69,7 +69,8 @@ const COLLECTIONS: Record<string, string[]> = {
   reels: ['passages', 'claims'],
   handbooks: ['chapters'],
   jobs: [],
-  all: ['passages', 'claims', 'chapters'],
+  explainers: ['explainers'],
+  all: ['passages', 'claims', 'chapters', 'explainers'],
 };
 
 /** The search the research agents use, exposed so what they would see is never a mystery. */

@@ -7,8 +7,8 @@
  * opt-in live test.
  */
 
-export type Space = 'handbooks' | 'reels' | 'jobs' | 'shared';
-export const SPACES: Space[] = ['handbooks', 'reels', 'jobs', 'shared'];
+export type Space = 'handbooks' | 'reels' | 'jobs' | 'explainers' | 'shared';
+export const SPACES: Space[] = ['handbooks', 'reels', 'jobs', 'explainers', 'shared'];
 export type Props = Record<string, string | number | boolean | null>;
 export type NodeRef = { label: string; key: Props };
 

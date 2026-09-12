@@ -11,7 +11,7 @@ import { getStores } from './stores';
 export async function reindexKnowledge(opts: { spaces: Space[]; wipe: boolean; log?: (s: string) => void }) {
   const log = opts.log ?? (() => {});
   const { graph, vectors } = getStores();
-  const out = { handbooks: 0, reels: 0, jobs: 0 };
+  const out = { handbooks: 0, reels: 0, jobs: 0, explainers: 0 };
 
   if (opts.wipe) {
     for (const s of opts.spaces) {
@@ -19,6 +19,7 @@ export async function reindexKnowledge(opts: { spaces: Space[]; wipe: boolean; l
       if (s === 'reels') {
         for (const c of ['passages', 'claims']) await vectors.deleteWhere(c, { space: s }).catch(() => {});
       }
+      if (s === 'explainers') await vectors.deleteWhere('explainers', { space: s }).catch(() => {});
       log(`wiped ${s}`);
     }
   }
@@ -76,6 +77,21 @@ export async function reindexKnowledge(opts: { spaces: Space[]; wipe: boolean; l
       out.reels++;
       log(`reel ${slug}`);
     }
+  }
+
+  if (opts.spaces.includes('explainers')) {
+    const store = await import('@/lib/explainer/store');
+    const ex = await import('./spaces/explainers');
+    const { latestDone } = await import('@/lib/explainer/renders');
+    for (const summary of await store.list()) {
+      const doc = await store.get(summary.slug);
+      if (!doc) continue;
+      const newest = await latestDone(summary.slug).catch(() => null);
+      await ex.recordExplainer(summary.slug, doc, newest?.finishedAt ?? summary.renderedAt);
+      out.explainers++;
+      log(`explainer ${summary.slug}`);
+    }
+    log(`explainers: ${out.explainers} boards`);
   }
 
   if (opts.spaces.includes('jobs')) {
