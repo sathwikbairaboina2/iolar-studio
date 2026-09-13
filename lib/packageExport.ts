@@ -19,7 +19,14 @@ export async function packagePost(
   }
   if (!files.length) throw new Error('render first');
   if (files.length !== post.slides.length) {
-    throw new Error(`rendered ${files.length} of ${post.slides.length} slides — render all first`);
+    // More PNGs than pages means the part shrank and the surplus renders are stale; fewer
+    // means it grew and the new pages were never drawn. Either way the fix is one render of
+    // the whole part, which redraws every page and drops the leftovers — but say which it is.
+    throw new Error(
+      files.length > post.slides.length
+        ? `${files.length} renders on disk for ${post.slides.length} pages — ${files.length - post.slides.length} stale; render all first`
+        : `rendered ${files.length} of ${post.slides.length} pages — render all first`
+    );
   }
 
   // Refuse packaging when the last render reported overflow.
