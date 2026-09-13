@@ -186,13 +186,13 @@ export default function PatternBoard({ slug, onChanged }: { slug: string; patter
   return (
     <Space orientation="vertical" style={{ width: '100%' }} size="middle">
       <Steps size="small" current={state.stage === 'failed' ? 4 : step} status={state.stage === 'failed' ? 'error' : undefined} items={LABELS.map((title) => ({ title }))} />
-      {error && <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />}
-      {state.blocked && <Alert type="warning" showIcon message={state.blocked} />}
+      {error && <Alert type="error" showIcon title={error} closable onClose={() => setError(null)} />}
+      {state.blocked && <Alert type="warning" showIcon title={state.blocked} />}
       {state.sectionsStale && (
-        <Alert type="warning" showIcon message="The script changed since these sections were cut" action={<Button size="small" onClick={() => call('/section', {})}>Re-section</Button>} />
+        <Alert type="warning" showIcon title="The script changed since these sections were cut" action={<Button size="small" onClick={() => call('/section', {})}>Re-section</Button>} />
       )}
-      {state.renderStale && state.job && <Alert type="info" showIcon message="The document changed since the last render" />}
-      {state.timingError && <Alert type="error" showIcon message={state.timingError} />}
+      {state.renderStale && state.job && <Alert type="info" showIcon title="The document changed since the last render" />}
+      {state.timingError && <Alert type="error" showIcon title={state.timingError} />}
 
       <Card
         size="small"
@@ -338,7 +338,7 @@ export default function PatternBoard({ slug, onChanged }: { slug: string; patter
           <Space orientation="vertical" style={{ width: '100%' }}>
             <Tag>{state.job.id} · {state.job.state}</Tag>
             {state.stage === 'rendering' && <Progress percent={Math.round((state.progress ?? 0) * 100)} status="active" />}
-            {state.job.error && <Alert type="error" showIcon message={state.job.error} />}
+            {state.job.error && <Alert type="error" showIcon title={state.job.error} />}
             {state.previewUrl && state.job.state !== 'queued' && state.job.state !== 'preparing' && (
               <>
                 {/* Keyed on the job state: the player fetches its props once, and before the

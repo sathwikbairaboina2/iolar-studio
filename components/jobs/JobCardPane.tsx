@@ -1,8 +1,21 @@
 'use client';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Divider, Empty, Input, InputNumber, Pagination, Segmented, Select, Space, Tag, Typography, message,
+  Alert,
+  Button,
+  Card,
+  Divider,
+  Empty,
+  Input,
+  InputNumber,
+  Pagination,
+  Segmented,
+  Select,
+  Space,
+  Tag,
+  Typography,
 } from 'antd';
+import { message } from '@/lib/ui/message';
 import { FileImageOutlined, PictureOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { Family, JobCardDraft } from '@/lib/jobcard/schema';
 import type { CardRow } from '@/lib/jobcard/store';

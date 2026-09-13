@@ -1,6 +1,7 @@
 'use client';
 import React from 'react';
-import { Alert, Button, Card, Col, Row, Segmented, Space, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Row, Segmented, Space, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { useParams } from 'next/navigation';
 import ScenePreview from '@/components/explainer/ScenePreview';
 import { ago } from '@/lib/explainer/browse';

@@ -1,6 +1,7 @@
 'use client';
 import React from 'react';
-import { Alert, Button, Card, Input, InputNumber, Space, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Input, InputNumber, Space, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { LoadingOutlined } from '@ant-design/icons';
 import type { Brief, ExplainerDoc } from '@/lib/explainer/schema';
 import type { FitReport } from '@/lib/explainer/fit';

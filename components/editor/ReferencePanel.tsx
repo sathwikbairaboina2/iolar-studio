@@ -1,7 +1,8 @@
 'use client';
 import { fetchWithRetry } from '@/lib/http';
 import { useEffect, useState } from 'react';
-import { Button, Drawer, Input, Space, Switch, Typography, message } from 'antd';
+import { Button, Drawer, Input, Space, Switch, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { PictureOutlined } from '@ant-design/icons';
 
 export function parseUrls(text: string): string[] {
@@ -83,7 +84,7 @@ export default function ReferencePanel({
         References{urls.length ? ` (${urls.length})` : ''}
       </Button>
 
-      <Drawer title="Reference images" open={open} onClose={() => setOpen(false)} width={460}>
+      <Drawer title="Reference images" open={open} onClose={() => setOpen(false)} size={460}>
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           Paste URLs — one per line or comma-separated. Reference N pairs with slide N in compare mode.
         </Typography.Paragraph>

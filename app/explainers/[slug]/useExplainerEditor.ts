@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { message } from 'antd';
+import { message } from '@/lib/ui/message';
 import type { ExplainerDoc, Scene } from '@/lib/explainer/schema';
 import type { FitReport } from '@/lib/explainer/fit';
 

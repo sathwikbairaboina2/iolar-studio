@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
-import { Alert, Button, Modal, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Modal, Space, Tag, Tooltip, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { CheckCircleOutlined, DeleteOutlined, HolderOutlined } from '@ant-design/icons';
 import { MAX_SLIDES, type Post } from '@/lib/schema';
 
@@ -100,7 +101,7 @@ export default function ReviewPanel({
           type="warning"
           showIcon
           style={{ marginBottom: 12 }}
-          message={`${current.length} pages — Instagram shows ${MAX_SLIDES}. Drop pages here, or let the renderer move the surplus into a follow-up post.`}
+          title={`${current.length} pages — Instagram shows ${MAX_SLIDES}. Drop pages here, or let the renderer move the surplus into a follow-up post.`}
         />
       )}
 

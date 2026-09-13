@@ -1,6 +1,7 @@
 'use client';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Space, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Space, Tag, Typography, Upload } from 'antd';
+import { message } from '@/lib/ui/message';
 import { CopyOutlined, ExportOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 
 /**

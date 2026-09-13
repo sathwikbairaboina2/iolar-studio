@@ -1,7 +1,8 @@
 'use client';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Badge, Button, Card, Empty, Pagination, Segmented, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Badge, Button, Card, Empty, Pagination, Segmented, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { CaretRightOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
 import { reconcile, type PluginHealth } from '@/lib/plugins/reconcile';
 import type { JobBoard, JobRow } from '@/lib/plugins/jobs';

@@ -1,7 +1,8 @@
 'use client';
 import { fetchWithRetry } from '@/lib/http';
 import { use, useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Col, Row, Segmented, Select, Space, Tag, Typography, message } from 'antd';
+import { Button, Col, Row, Segmented, Select, Space, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { PictureOutlined, ThunderboltOutlined, ExportOutlined, CheckCircleOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { MAX_SLIDES, type Post, type Slide } from '@/lib/schema';
 import SlideChips from '@/components/editor/SlideChips';

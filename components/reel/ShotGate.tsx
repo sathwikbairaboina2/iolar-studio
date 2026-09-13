@@ -1,6 +1,7 @@
 'use client';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Checkbox, Empty, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Checkbox, Empty, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import type { ResolvedShot } from '@/lib/reel/shots';
 

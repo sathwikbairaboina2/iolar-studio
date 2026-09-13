@@ -1,7 +1,8 @@
 'use client';
 import { fetchWithRetry } from '@/lib/http';
 import { useEffect, useRef, useState } from 'react';
-import { Button, Drawer, Input, Segmented, Space, Spin, Typography, message } from 'antd';
+import { Button, Drawer, Input, Segmented, Space, Spin, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { SendOutlined } from '@ant-design/icons';
 import type { Post } from '@/lib/schema';
 import type { SlideDiff } from '@/lib/ai/diff';
@@ -100,7 +101,7 @@ export default function AiDrawer({
         title="✦ Revise with AI"
         open={open}
         onClose={onClose}
-        width={400}
+        size={400}
         styles={{ body: { display: 'flex', flexDirection: 'column', padding: 0 } }}
       >
         <div style={{ padding: '10px 16px', borderBottom: '1px solid rgba(128,128,128,.15)' }}>

@@ -268,7 +268,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
         items={STEP_LABELS.map((title) => ({ title }))}
       />
 
-      {error && <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />}
+      {error && <Alert type="error" showIcon title={error} closable onClose={() => setError(null)} />}
 
       {/* Stage 1 — the five questions, one at a time. */}
       {!status && (
@@ -503,7 +503,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
               <Alert
                 type="error"
                 showIcon
-                message={`${uncited.size} line(s) claim something with no source.`}
+                title={`${uncited.size} line(s) claim something with no source.`}
                 description="Cite them, or mark them as commentary if they are your opinion rather than a finding."
               />
             )}
@@ -511,7 +511,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
               <Alert
                 type="warning"
                 showIcon
-                message="The brief asked this script to prove things it does not say"
+                title="The brief asked this script to prove things it does not say"
                 description={
                   <ul style={{ margin: '4px 0 0 16px' }}>
                     {script.unsupported.map((c) => (
@@ -598,7 +598,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
               <Alert
                 type="success"
                 showIcon
-                message="Script approved"
+                title="Script approved"
                 description="This is where the research ends. Take it to Voice, then Shots, to build the reel."
               />
             )}

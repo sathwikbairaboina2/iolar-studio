@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Alert, Badge, Button, Collapse, Drawer, Empty, Space, Tag, Typography, message } from 'antd';
+import { Alert, Badge, Button, Collapse, Drawer, Empty, Space, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { SafetyCertificateOutlined } from '@ant-design/icons';
 import type { Post } from '@/lib/schema';
 import type { Finding } from '@/lib/verify/gates';
@@ -111,7 +112,7 @@ export default function VerifyDrawer({
         </Button>
       </Badge>
 
-      <Drawer title="Verify before publishing" open={open} onClose={onClose} width={520}>
+      <Drawer title="Verify before publishing" open={open} onClose={onClose} size={520}>
         <Space style={{ marginBottom: 14 }} wrap>
           <Button loading={busy === 'gates'} onClick={() => run('gates')}>Run checks</Button>
           <Button type="primary" loading={busy === 'full'} onClick={() => run('full')}>Full review</Button>
@@ -126,7 +127,7 @@ export default function VerifyDrawer({
               type={review.passed ? 'success' : 'error'}
               showIcon
               style={{ marginBottom: 14 }}
-              message={review.passed ? 'No blockers — this part can be published' : `${blockers.length} blocker(s) hold publishing`}
+              title={review.passed ? 'No blockers — this part can be published' : `${blockers.length} blocker(s) hold publishing`}
               description={`${findings.length} finding(s) · reviewed ${new Date(review.generatedAt).toLocaleString()}`}
             />
 

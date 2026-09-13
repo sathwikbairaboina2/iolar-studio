@@ -1,6 +1,7 @@
 'use client';
 import React, { useState } from 'react';
-import { Button, Input, Space, Typography, message } from 'antd';
+import { Button, Input, Space, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { CheckOutlined, CloseOutlined, EditOutlined } from '@ant-design/icons';
 
 /**

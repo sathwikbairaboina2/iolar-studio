@@ -1,7 +1,8 @@
 'use client';
 import { fetchWithRetry } from '@/lib/http';
 import { useEffect, useState } from 'react';
-import { Alert, Button, Collapse, Drawer, Empty, Input, Space, Tag, Typography, message } from 'antd';
+import { Alert, Button, Collapse, Drawer, Empty, Input, Space, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { BookOutlined } from '@ant-design/icons';
 
 export type Book = {
@@ -136,7 +137,7 @@ export default function BookPanel({
         Book{book ? ` (${book.chapters.length}ch · ${points}pts)` : ''}
       </Button>
 
-      <Drawer title="Handbook — topic coverage" open={open} onClose={() => setOpen(false)} width={520}>
+      <Drawer title="Handbook — topic coverage" open={open} onClose={() => setOpen(false)} size={520}>
         {!book && (
           <Empty description="No book yet — build one from reference images, or from a topic">
             <Space direction="vertical" style={{ width: '100%' }}>
@@ -163,7 +164,7 @@ export default function BookPanel({
                   type="warning"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message={`${gaps.length} book point${gaps.length > 1 ? 's are' : ' is'} not taught on any page`}
+                  title={`${gaps.length} book point${gaps.length > 1 ? 's are' : ' is'} not taught on any page`}
                   description={
                     <>
                       <ul style={{ margin: '4px 0 8px', paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
@@ -187,7 +188,7 @@ export default function BookPanel({
                   type="success"
                   showIcon
                   style={{ marginBottom: 12 }}
-                  message="Every point in the book is taught on a page"
+                  title="Every point in the book is taught on a page"
                 />
               )
             )}
@@ -197,7 +198,7 @@ export default function BookPanel({
                 type="info"
                 showIcon
                 style={{ marginBottom: 12 }}
-                message="Proposed revision — review below"
+                title="Proposed revision — review below"
                 action={
                   <Space>
                     <Button size="small" type="primary" onClick={applyProposal}>Apply</Button>

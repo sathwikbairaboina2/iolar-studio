@@ -122,11 +122,11 @@ function AgentPanel({ slug, onApplied }: AgentPanelProps) {
 
       {busy === 'ask' && <Spin size="small" />}
 
-      {error && <Alert type="error" showIcon message={error} />}
+      {error && <Alert type="error" showIcon title={error} />}
 
       {proposal && (
         <>
-          {proposal.note && <Alert type="info" showIcon message={proposal.note} />}
+          {proposal.note && <Alert type="info" showIcon title={proposal.note} />}
 
           {proposal.applied.length > 0 && (
             <div data-testid="agent-plan">
@@ -145,7 +145,7 @@ function AgentPanel({ slug, onApplied }: AgentPanelProps) {
             <Alert
               type="warning"
               showIcon
-              message="This plan would not fully apply, so it is not offered."
+              title="This plan would not fully apply, so it is not offered."
               description={proposal.rejected.map((r) => (
                 <div key={r.index} style={{ fontSize: 12 }}>
                   {r.op}: {r.error}
@@ -156,7 +156,7 @@ function AgentPanel({ slug, onApplied }: AgentPanelProps) {
 
           {/* The model returned something unparseable; show it rather than pretend. */}
           {proposal.raw && proposal.commands.length === 0 && (
-            <Alert type="warning" message="The agent's reply could not be read as edits" description={
+            <Alert type="warning" title="The agent's reply could not be read as edits" description={
               <pre style={{ fontSize: 11, whiteSpace: 'pre-wrap', margin: 0 }}>{proposal.raw.slice(0, 600)}</pre>
             } />
           )}

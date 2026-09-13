@@ -43,7 +43,7 @@ export default function PreviewPane({
           type="warning"
           showIcon
           style={{ marginBottom: 8 }}
-          message={`Page only ${fillPct}% used — wasted space`}
+          title={`Page only ${fillPct}% used — wasted space`}
           action={<Button size="small" onClick={onDensify}>Fill pages with AI</Button>}
         />
       )}
@@ -53,7 +53,7 @@ export default function PreviewPane({
           type="error"
           showIcon
           style={{ marginBottom: 8 }}
-          message={`Slide overflows by ${overflowPx}px`}
+          title={`Slide overflows by ${overflowPx}px`}
           action={<Button size="small" danger onClick={onAiFix}>Auto-fix with AI</Button>}
         />
       )}

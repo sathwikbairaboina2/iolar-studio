@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button, Form, Input, InputNumber, Select, Typography, message } from 'antd';
+import { Button, Form, Input, InputNumber, Select, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v }));
 

@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Input, Modal, Radio, Select, Table, Tag, Typography, message } from 'antd';
+import { Button, Input, Modal, Radio, Select, Table, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { PlusOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 

@@ -110,7 +110,7 @@ export default function BuildBoard({ slug, beats, onBuilt }: { slug: string; bea
     <Space orientation="vertical" style={{ width: '100%' }} size="middle">
       <Steps size="small" current={step} items={LABELS.map((title) => ({ title }))} />
 
-      {error && <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />}
+      {error && <Alert type="error" showIcon title={error} closable onClose={() => setError(null)} />}
 
       {state?.stage === 'unbuilt' && (
         <Card size="small" title="Plan the beats">
@@ -207,7 +207,7 @@ export default function BuildBoard({ slug, beats, onBuilt }: { slug: string; bea
         <Alert
           type="warning"
           showIcon
-          message="Nothing is running, and not every shot arrived"
+          title="Nothing is running, and not every shot arrived"
           description="The Pages and Presenter boards say which ones, and why. Retry them there."
         />
       )}
@@ -216,7 +216,7 @@ export default function BuildBoard({ slug, beats, onBuilt }: { slug: string; bea
         <Alert
           type="success"
           showIcon
-          message="Every shot is rendered"
+          title="Every shot is rendered"
           description="Take it to Clip to trim and time it, then Export."
         />
       )}
@@ -225,7 +225,7 @@ export default function BuildBoard({ slug, beats, onBuilt }: { slug: string; bea
         <Alert
           type="warning"
           showIcon
-          message={`${state.awaitingManual} shot(s) waiting on you, ${state.failed} failed`}
+          title={`${state.awaitingManual} shot(s) waiting on you, ${state.failed} failed`}
           description="The Pages and Presenter boards say why, and let you retry one at a time."
         />
       )}

@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button, Card, Col, Empty, Input, Modal, Progress, Row, Statistic, Tag, Typography, message } from 'antd';
+import { Button, Card, Col, Empty, Input, Modal, Progress, Row, Statistic, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
+import LabeledInput from '@/components/ui/LabeledInput';
 import { PlusOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { isSlug, slugify } from '@/lib/paths';
@@ -98,8 +100,8 @@ export default function HandbooksPage() {
           onChange={(e) => setName(e.target.value)}
           style={{ marginBottom: 10 }}
         />
-        <Input
-          addonBefore="emoji"
+        <LabeledInput
+          label="emoji"
           value={emoji}
           onChange={(e) => setEmoji(e.target.value)}
           style={{ marginBottom: 10, maxWidth: 160 }}

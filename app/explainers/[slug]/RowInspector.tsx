@@ -1,6 +1,7 @@
 'use client';
 import React from 'react';
 import { Alert, Button, Card, Input, InputNumber, Segmented, Select, Space, Typography } from 'antd';
+import LabeledInput, { FieldLabel, flatStart } from '@/components/ui/LabeledInput';
 import { editRow, rowAt, type RowPatch } from '@/lib/explainer/inspect';
 import { ICONS, ROW_STATES, type ExplainerDoc } from '@/lib/explainer/schema';
 
@@ -51,9 +52,9 @@ export default function RowInspector({
       </Typography.Text>
 
       <Space orientation="vertical" size={8} style={{ width: '100%' }}>
-        <Input
+        <LabeledInput
           size="small"
-          addonBefore="label"
+          label="label"
           maxLength={28}
           defaultValue={row.label}
           key={`label-${beatId}-${rowId}-${row.label}`}
@@ -83,9 +84,9 @@ export default function RowInspector({
           />
         </Space.Compact>
 
-        <Input
+        <LabeledInput
           size="small"
-          addonBefore="sub"
+          label="sub"
           maxLength={40}
           defaultValue={row.sub ?? ''}
           key={`sub-${beatId}-${rowId}-${row.sub ?? ''}`}
@@ -106,26 +107,30 @@ export default function RowInspector({
         />
 
         <Space size={8} style={{ width: '100%' }}>
-          <InputNumber
-            size="small"
-            addonBefore="tier"
-            min={0}
-            max={3}
-            value={row.tier}
-            disabled={busy}
-            onChange={(v) => v !== null && write({ tier: Number(v) })}
-            style={{ width: 118 }}
-          />
-          <InputNumber
-            size="small"
-            addonBefore="col"
-            min={0}
-            max={5}
-            value={row.col}
-            disabled={busy}
-            onChange={(v) => v !== null && write({ col: Number(v) })}
-            style={{ width: 112 }}
-          />
+          <Space.Compact>
+            <FieldLabel size="small">tier</FieldLabel>
+            <InputNumber
+              size="small"
+              min={0}
+              max={3}
+              value={row.tier}
+              disabled={busy}
+              onChange={(v) => v !== null && write({ tier: Number(v) })}
+              style={{ width: 72, ...flatStart }}
+            />
+          </Space.Compact>
+          <Space.Compact>
+            <FieldLabel size="small">col</FieldLabel>
+            <InputNumber
+              size="small"
+              min={0}
+              max={5}
+              value={row.col}
+              disabled={busy}
+              onChange={(v) => v !== null && write({ col: Number(v) })}
+              style={{ width: 72, ...flatStart }}
+            />
+          </Space.Compact>
           <Select
             size="small"
             value={row.icon}

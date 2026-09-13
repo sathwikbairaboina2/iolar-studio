@@ -1,8 +1,19 @@
 'use client';
 import React from 'react';
 import {
-  Alert, Button, Card, Empty, Input, InputNumber, Segmented, Select, Space, Switch, Typography, message,
+  Alert,
+  Button,
+  Card,
+  Empty,
+  Input,
+  InputNumber,
+  Segmented,
+  Select,
+  Space,
+  Switch,
+  Typography,
 } from 'antd';
+import { message } from '@/lib/ui/message';
 import { AppstoreOutlined, BarsOutlined, SearchOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import type { ExplainerSummary } from '@/lib/explainer/store';

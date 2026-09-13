@@ -1,7 +1,8 @@
 'use client';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Button, Drawer, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
+import { Alert, Button, Drawer, Select, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { ExportOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { WeekRow, WeekStage } from '@/lib/jobs/board';
 import type { Cut } from '@/lib/jobs/ledger';

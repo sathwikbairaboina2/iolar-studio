@@ -102,7 +102,7 @@ export default function JobsBoard({
         )}
       </Space>
 
-      {error && <Alert type="error" showIcon message={error} closable onClose={() => setError(null)} />}
+      {error && <Alert type="error" showIcon title={error} closable onClose={() => setError(null)} />}
 
       {jobs.length === 0 ? (
         <Empty description={empty} />

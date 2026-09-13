@@ -1,7 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { Button, Card, Slider, Space, Spin, Tabs, Tag, Tooltip, Typography, Upload, message } from 'antd';
+import { Button, Card, Slider, Space, Spin, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
+import { message } from '@/lib/ui/message';
 import {
   AudioOutlined, PlayCircleOutlined, PauseCircleOutlined,
   ReloadOutlined, ThunderboltOutlined, UploadOutlined, WarningOutlined,

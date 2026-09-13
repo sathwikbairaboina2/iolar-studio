@@ -1,6 +1,7 @@
 'use client';
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { ConfigProvider, theme as antdTheme } from 'antd';
+import { App, ConfigProvider, theme as antdTheme } from 'antd';
+import { bindMessageApi } from '@/lib/ui/message';
 
 type Mode = 'light' | 'dark';
 const ThemeCtx = createContext<{ mode: Mode; toggle: () => void }>({ mode: 'light', toggle: () => {} });
@@ -40,6 +41,16 @@ const GLOBAL_CSS = `
 .ant-progress-bg{background-image:${SWEEP}}
 `;
 
+/** Hands the studio's toast API the instance that lives inside the theme. */
+function MessageBridge() {
+  const { message } = App.useApp();
+  useEffect(() => {
+    bindMessageApi(message);
+    return () => bindMessageApi(null);
+  }, [message]);
+  return null;
+}
+
 export default function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = useState<Mode>('light');
 
@@ -66,7 +77,11 @@ export default function ThemeProvider({ children }: { children: React.ReactNode 
         }}
       >
         <style>{GLOBAL_CSS}</style>
-        {children}
+        {/* component={false}: no wrapper element, so the shell keeps its own layout box. */}
+        <App component={false}>
+          <MessageBridge />
+          {children}
+        </App>
       </ConfigProvider>
     </ThemeCtx.Provider>
   );

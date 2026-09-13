@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { message } from 'antd';
+import { message } from '@/lib/ui/message';
 import type { RenderLog, RenderRecord } from '@/lib/explainer/renders';
 
 /**

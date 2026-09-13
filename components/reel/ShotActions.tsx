@@ -1,6 +1,7 @@
 'use client';
 import React, { useState } from 'react';
-import { Button, Input, Space, Tooltip, message } from 'antd';
+import { Button, Input, Space, Tooltip } from 'antd';
+import { message } from '@/lib/ui/message';
 import { RedoOutlined, StopOutlined, SwapOutlined } from '@ant-design/icons';
 import type { Beat } from '@/lib/reel/schema';
 

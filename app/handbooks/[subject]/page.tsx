@@ -1,6 +1,7 @@
 'use client';
 import { use, useEffect, useState } from 'react';
-import { Button, Card, Empty, Input, Modal, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { Button, Card, Empty, Input, Modal, Space, Tag, Tooltip, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { PlusOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
 import { isSlug, slugify } from '@/lib/paths';

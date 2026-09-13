@@ -1,5 +1,6 @@
 'use client';
 import { Button, Dropdown, Input, Space, Switch } from 'antd';
+import LabeledInput from '@/components/ui/LabeledInput';
 import { PlusOutlined } from '@ant-design/icons';
 import type { Block, Slide } from '@/lib/schema';
 import BlockForm from './BlockForm';
@@ -35,21 +36,21 @@ export default function BlockEditor({
 
   return (
     <div>
-      <Input
-        addonBefore="Page title"
+      <LabeledInput
+        label="Page title"
         value={slide.page_title}
         onChange={(e) => onChange({ ...slide, page_title: e.target.value })}
         style={{ marginBottom: 8 }}
       />
       <Space style={{ marginBottom: 8, width: '100%' }} styles={{ item: { flex: 1 } }}>
-        <Input
-          addonBefore="Subtitle"
+        <LabeledInput
+          label="Subtitle"
           placeholder="(Identity and Access Management)"
           value={slide.subtitle ?? ''}
           onChange={(e) => onChange({ ...slide, subtitle: e.target.value || undefined })}
         />
-        <Input
-          addonBefore="Hero icon"
+        <LabeledInput
+          label="Hero icon"
           placeholder="aws, iam, docker, database…"
           value={slide.hero ?? ''}
           onChange={(e) => onChange({ ...slide, hero: e.target.value || undefined })}
@@ -70,11 +71,11 @@ export default function BlockEditor({
       </Space>
       {slide.kind === 'cover' && slide.cover && (
         <div style={{ display: 'grid', gap: 8, marginBottom: 12 }}>
-          <Input addonBefore="Cover title" value={slide.cover.title} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, title: e.target.value } })} />
-          <Input addonBefore="Cover subtitle" value={slide.cover.subtitle ?? ''} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, subtitle: e.target.value || undefined } })} />
-          <Input addonBefore="Tagline" value={slide.cover.tagline ?? ''} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, tagline: e.target.value || undefined } })} />
-          <Input
-            addonBefore="Pills"
+          <LabeledInput label="Cover title" value={slide.cover.title} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, title: e.target.value } })} />
+          <LabeledInput label="Cover subtitle" value={slide.cover.subtitle ?? ''} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, subtitle: e.target.value || undefined } })} />
+          <LabeledInput label="Tagline" value={slide.cover.tagline ?? ''} onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, tagline: e.target.value || undefined } })} />
+          <LabeledInput
+            label="Pills"
             placeholder="EC2, S3, RDS"
             value={slide.cover.pills.join(', ')}
             onChange={(e) => onChange({ ...slide, cover: { ...slide.cover!, pills: e.target.value.split(',').map((x) => x.trim()).filter(Boolean) } })}

@@ -1,6 +1,7 @@
 'use client';
 import React, { useCallback, useEffect, useState } from 'react';
-import { Button, Card, Empty, Space, Tag, Typography, message } from 'antd';
+import { Button, Card, Empty, Space, Tag, Typography } from 'antd';
+import { message } from '@/lib/ui/message';
 import { CopyOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { BeatInbox } from '@/lib/reel/inbox';
 
