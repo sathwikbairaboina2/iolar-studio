@@ -129,9 +129,9 @@ export const PLUGINS: Plugin[] = [
     start: {
       command: 'powershell.exe',
       args: ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', 'run.ps1'],
-      cwd: `${PLUGIN_ROOT}/plugins/main-reels-templates-plugin`,
-      hint: String.raw`.
-un.ps1`,
+      // run.ps1 lives in the plugin's api/ directory, not at its root.
+      cwd: `${PLUGIN_ROOT}/plugins/main-reels-templates-plugin/api`,
+      hint: String.raw`.\run.ps1`,
     },
   },
   {
