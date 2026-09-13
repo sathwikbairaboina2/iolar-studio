@@ -1,12 +1,13 @@
 'use client';
 import React from 'react';
-import { Button, Input, Layout, Menu, Tag } from 'antd';
+import { Button, Layout, Menu, Tag } from 'antd';
 import {
   BookOutlined, VideoCameraOutlined, ClockCircleOutlined, MessageOutlined, SmileOutlined,
   ShareAltOutlined, PictureOutlined, SettingOutlined, MoonOutlined, SunOutlined, ApiOutlined, ScheduleOutlined, ReadOutlined,
   NodeIndexOutlined,
 } from '@ant-design/icons';
 import { usePathname, useRouter } from 'next/navigation';
+import StudioSearch from './StudioSearch';
 import { SWEEP, useTheme } from './ThemeProvider';
 
 const soon = (label: string) => (
@@ -95,7 +96,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <span style={{ fontSize: 12.5, opacity: 0.7 }} data-testid="crumbs">
             {crumbs.length ? crumbs.join(' / ') : 'instastudio'}
           </span>
-          <Input.Search placeholder="search chapters, topics…" style={{ maxWidth: 260, marginLeft: 'auto' }} />
+          <StudioSearch />
           <Button
             type="text"
             aria-label="toggle theme"
