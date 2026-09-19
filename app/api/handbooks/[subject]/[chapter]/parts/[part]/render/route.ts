@@ -10,15 +10,25 @@ type Ctx = { params: Promise<{ subject: string; chapter: string; part: string }>
 
 async function writeReport(
   subject: string, chapter: string, part: number,
-  results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings?: string[] }[]
+  results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings?: string[] }[],
+  /**
+   * A whole-part render replaces the report; a single-slide render merges into it.
+   *
+   * Merging always leaves a page behind. When a spill shrinks a part from eleven pages to
+   * ten, page eleven's entry survives — and the chapter listing counts report entries as the
+   * part's pages, so the chapter goes on claiming a page that no longer exists.
+   */
+  replace = false
 ) {
   const dir = rendersDir(subject, chapter, part);
   await fs.mkdir(dir, { recursive: true });
   const reportPath = path.join(dir, 'render-report.json');
   let existing: Record<string, { overflowPx: number; fillPct?: number; warnings?: string[] }> = {};
-  try {
-    existing = JSON.parse(await fs.readFile(reportPath, 'utf8'));
-  } catch { /* fresh report */ }
+  if (!replace) {
+    try {
+      existing = JSON.parse(await fs.readFile(reportPath, 'utf8'));
+    } catch { /* fresh report */ }
+  }
   for (const r of results) {
     existing[String(r.slide)] = { overflowPx: r.overflowPx, fillPct: r.fillPct, ...(r.warnings?.length ? { warnings: r.warnings } : {}) };
   }
@@ -35,28 +45,55 @@ export const maxDuration = 900;
 
 type Results = { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[];
 
+/**
+ * How many times one render may spill before it gives up and hands back a part still over
+ * the limit. Each pass moves the surplus and reflows what is left, and a part that has not
+ * settled by the third is not converging — an unsplittable block, usually — so looping on
+ * would only burn renders.
+ */
+const SPILL_PASSES = 3;
+
 /** Render every page of a part, reflow, spill past the carousel limit, drop stale PNGs. */
 async function renderWhole(subject: string, chapter: string, part: number, spill: boolean) {
   const post = await loadPost(subject, chapter, part);
   const outDir = rendersDir(subject, chapter, part);
   const out = await renderAll(post, outDir);
   let results: Results = out.results;
+  let flowed = out.slides;
   let split = false;
   let followUp: { moved: number; part: number } | null = null;
   // The flow's own pages are written back whenever they differ from what was authored —
   // a different page count, or a page it had to carry over. Otherwise a "(cont.)" title
   // lives only inside the render, where no later pass can see or rename it.
-  if (out.slides.length !== post.slides.length || out.slides.some((s) => s.cont)) {
-    await savePost(subject, chapter, part, { ...post, slides: out.slides });
-    split = out.slides.length !== post.slides.length;
+  if (flowed.length !== post.slides.length || flowed.some((s) => s.cont)) {
+    await savePost(subject, chapter, part, { ...post, slides: flowed });
+    split = flowed.length !== post.slides.length;
   }
   // Content is never trimmed: pages past the carousel limit become the next part.
-  if (spill && out.slides.length > MAX_SLIDES) {
+  //
+  // This is a loop because a spill caps the AUTHORED pages, not the RENDERED ones. The
+  // packer reflows what is left, so ten authored pages can still land on eleven, and one
+  // pass would hand back a part that is still over the limit. Re-spilling is safe by
+  // design: the surplus always returns to the same follow-up and merges with what is
+  // already there, so a second pass moves the overflow rather than minting a third part.
+  if (spill && flowed.length > MAX_SLIDES) {
     const { splitIntoFollowUp } = await import('@/lib/ai/spillover');
-    followUp = await splitIntoFollowUp(subject, chapter, part);
-    if (followUp) {
+    for (let pass = 0; pass < SPILL_PASSES && flowed.length > MAX_SLIDES; pass++) {
+      const moved = await splitIntoFollowUp(subject, chapter, part);
+      if (!moved) break;
+      followUp = moved;
+      split = true;
       const trimmed = await loadPost(subject, chapter, part);
-      results = (await renderAll(trimmed, outDir)).results;
+      const again = await renderAll(trimmed, outDir);
+      results = again.results;
+      flowed = again.slides;
+      // The flow after a spill is the part's new shape, and it is written back for the same
+      // reason the first render is. Left unsaved, post.json still claims the pages the spill
+      // took away while their PNGs sit in the folder, and packaging refuses the part as
+      // stale until someone renders it a second time.
+      if (flowed.length !== trimmed.slides.length || flowed.some((s) => s.cont)) {
+        await savePost(subject, chapter, part, { ...trimmed, slides: flowed });
+      }
     }
   }
   for (const f of await fs.readdir(outDir)) {
@@ -149,7 +186,7 @@ export async function POST(req: Request, ctx: Ctx) {
           ({ results } = await renderWhole(subject, chapter, part, false));
           polish.push(pass === 0 ? 'continuation titles rewritten' : 'continuation titles rewritten again after the reflow');
         }
-        await writeReport(subject, chapter, part, results);
+        await writeReport(subject, chapter, part, results, true);
         // A spill during this render minted a follow-up part; polish it the same way so the
         // whole chain (every part, every "(cont.)" title) comes out finished from one click.
         if (followUp && body.polishFollowUps !== false) {
@@ -160,7 +197,7 @@ export async function POST(req: Request, ctx: Ctx) {
       }
     }
 
-    await writeReport(subject, chapter, part, results);
+    await writeReport(subject, chapter, part, results, typeof body.slide !== 'number');
     return NextResponse.json({ results, slides: results.length, split, followUp });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
