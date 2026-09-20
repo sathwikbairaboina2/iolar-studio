@@ -68,9 +68,12 @@ export async function runGates(subject: string, chapter: string, part: number): 
 
   // Coverage belongs to the CHAPTER: its parts publish the book between them, so a point
   // living in part 2 is not missing from part 1. Compare against every part combined.
+  // Emitting the same gap on every part triples the count and makes a two-part chapter look
+  // twice as broken as a one-part chapter with the same hole, so it is reported once, on the
+  // lowest-numbered part. `part` joins the min so a part not yet on disk still reports.
   const book = await loadBook(subject, chapter);
-  if (book) {
-    const parts = await listParts(subject, chapter);
+  const parts = await listParts(subject, chapter);
+  if (book && part === Math.min(...parts, part)) {
     let combined = post;
     for (const p of parts) {
       if (p === part) continue;
