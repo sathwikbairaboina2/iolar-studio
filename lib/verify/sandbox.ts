@@ -65,6 +65,12 @@ export async function runPython(code: string, opts: { timeoutMs?: number } = {})
   }
 }
 
+/** A claim that stands for a shape rather than a value cannot be compared. */
+const WILDCARD = /\bxx\b|x{2,}|\.\.\.|…/;
+
+/** Prose a writer appends to a value to say the order is not guaranteed. */
+const HEDGE = /[,;]?\s*\(?\b(?:order\s+)?varies\b\)?\s*$/i;
+
 /**
  * Pulls an expected value out of a trailing output comment, e.g.
  *   print(xs)   # [1, 2, 3]      ->  "[1, 2, 3]"
@@ -77,18 +83,30 @@ export function expectedOutput(lines: string[]): string | null {
     if (!/\bprint\s*\(/.test(line)) continue;
     const m = line.match(/#\s*(?:→|->)?\s*(.+)$/);
     if (!m) return null;
-    const claim = m[1].trim();
+    const claim = m[1].trim().replace(HEDGE, '').trim();
     // Ignore prose comments; an output claim looks like a value.
     if (/^[a-z][a-z ]{6,}$/i.test(claim)) return null;
+    if (!claim || WILDCARD.test(claim)) return null;
     return claim;
   }
   return null;
 }
 
-/** Loose comparison: whitespace and quote style should not fail a correct snippet. */
+/**
+ * Loose comparison: a writer types `[3,5,8]` where python prints `[3, 5, 8]`, and neither
+ * spacing nor quote style should fail a correct snippet. Whitespace is removed rather than
+ * collapsed for exactly that reason — collapsing still leaves `[3, 5, 8]` unequal to
+ * `[3,5,8]`. A wrong value is still a wrong value once the spaces are gone.
+ *
+ * A claim separated by " / " summarises one printed line per piece ("# b 20 / c 3" for a
+ * two-line loop print), so every piece must appear. The spaces matter: they are what
+ * distinguishes the separator from a slash inside a value such as a path.
+ */
 export function outputMatches(actual: string, expected: string): boolean {
-  const norm = (s: string) => s.replace(/['"]/g, '"').replace(/\s+/g, ' ').trim();
-  return norm(actual).includes(norm(expected));
+  const norm = (s: string) => s.replace(/['"]/g, '"').replace(/\s+/g, '');
+  const haystack = norm(actual);
+  const pieces = expected.includes(' / ') ? expected.split(' / ') : [expected];
+  return pieces.every((p) => p.trim() && haystack.includes(norm(p)));
 }
 
 /**

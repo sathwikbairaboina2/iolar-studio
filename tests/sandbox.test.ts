@@ -49,7 +49,7 @@ describe('expectedOutput', () => {
 describe('outputMatches', () => {
   it('ignores quote style and spacing', () => {
     expect(outputMatches("{'a': 1}", '{"a": 1}')).toBe(true);
-    expect(outputMatches('[1, 2, 3]', '[1,2,3]')).toBe(false); // spacing inside the value still differs
+    expect(outputMatches('[1, 2, 3]', '[1,2,3]')).toBe(true); // a writer omits the spaces python prints
     expect(outputMatches('hello world', 'hello  world')).toBe(true);
   });
 
@@ -89,4 +89,39 @@ describe('buildPrelude', () => {
     expect(r.ok).toBe(false);
     expect(r.stderr).toContain('ValueError');
   }, 30_000);
+});
+
+describe('output claim matching', () => {
+  it('accepts a claim written without the spaces python prints', () => {
+    expect(outputMatches('[1, 3, 5, 8, 10]\n[3, 5, 8]', '[3,5,8]')).toBe(true);
+  });
+
+  it('accepts a hedged claim about an unordered value', () => {
+    expect(expectedOutput(['s = {10,20,30,40}', 'print(s)  # {40,10,20,30} order varies']))
+      .toBe('{40,10,20,30}');
+    expect(outputMatches('{40, 10, 20, 30}', '{40,10,20,30}')).toBe(true);
+  });
+
+  it('ignores a wildcard claim entirely', () => {
+    expect(expectedOutput(['print(bits)   # 000001xx'])).toBeNull();
+    expect(expectedOutput(['print(xs)     # [1, 2, ...]'])).toBeNull();
+  });
+
+  it('reads a slash-separated claim as one value per printed line', () => {
+    // "print(k, d[k])  # b 20 / c 3" summarises a two-line loop print.
+    expect(outputMatches('b 20\nc 3\n', 'b 20 / c 3')).toBe(true);
+    expect(outputMatches('b 20\nc 9\n', 'b 20 / c 3')).toBe(false);
+  });
+
+  it('does not split a slash that is part of the value', () => {
+    expect(outputMatches('usr\n', 'a/b')).toBe(false);
+  });
+
+  it('still fails a genuinely wrong output', () => {
+    expect(outputMatches('[1, 2, 4]', '[1,2,3]')).toBe(false);
+  });
+
+  it('still reads a plain claim', () => {
+    expect(expectedOutput(['print(n)   # 42'])).toBe('42');
+  });
 });
