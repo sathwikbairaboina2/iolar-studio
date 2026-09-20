@@ -96,6 +96,28 @@ export function mergeContinuations(input: Post['slides']): Post['slides'] {
   return slides;
 }
 
+/** One authored block queued for flow, tagged with the authored slide it came from. */
+export type FlowItem = { block: Post['slides'][number]['blocks'][number]; from: number };
+
+/**
+ * The leading stretch of the queue that all came from ONE authored slide.
+ *
+ * A page is filled from this rather than from the whole queue, so it never mixes two
+ * chapters. Letting the stream run across a chapter boundary is what put a chapter's
+ * opening code blocks at the foot of the previous chapter's page and left dangling tails
+ * at the top of the next one — 96 review findings traced to that single rule.
+ *
+ * The cost is deliberate: a short chapter now yields a short page instead of borrowing the
+ * next chapter's material. Filling it is the densify pass's job, which adds from the book.
+ */
+export function leadingRun(queue: FlowItem[]): FlowItem[] {
+  if (!queue.length) return [];
+  const from = queue[0].from;
+  let end = 0;
+  while (end < queue.length && queue[end].from === from) end++;
+  return queue.slice(0, end);
+}
+
 export async function renderAll(
   post: Post,
   outDir: string
@@ -105,13 +127,18 @@ export async function renderAll(
 }> {
   const authored = mergeContinuations(post.slides);
 
-  // Blocks flow as one stream across chapter boundaries: a chapter that ends halfway down
-  // a page is followed by the next chapter on the same page. Nothing is trimmed, and no
-  // page is left half empty just because a chapter ended there. A cover slide is the one
-  // exception: it is its own page, and the stream drains before it and restarts after it.
-  type Item = { block: Post['slides'][number]['blocks'][number]; from: number };
+  // Blocks flow within a chapter but never across one: a page is filled from the leading
+  // run of blocks sharing an authored slide, so a chapter that ends halfway down a page
+  // leaves the rest of that page empty rather than pulling the next chapter up into it.
+  // Nothing is trimmed. A page left thin this way is the densify pass's problem, and it
+  // fills it from the book instead of from the chapter next door. A cover slide is its own
+  // page, and the stream drains before it and restarts after it.
+  type Item = FlowItem;
   const results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[] = [];
   const slides: Post['slides'] = [];
+  // Which authored slide each flowed page came from, index-aligned with `slides`/`results`.
+  // A cover is nobody's chapter, so it gets -1 and never pairs with anything in balanceTail.
+  const owners: number[] = [];
   const started = new Set<number>();
   let page = 0;
 
@@ -120,6 +147,7 @@ export async function renderAll(
     const working: Post = { ...post, slides: [...slides, cover] };
     const r = await renderSlide(working, page, file);
     slides.push(cover);
+    owners.push(-1);
     results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
     page++;
   };
@@ -135,14 +163,17 @@ export async function renderAll(
   if (seg.cover) { await renderCoverPage(seg.cover); continue; }
   let queue = seg.queue;
   for (; queue.length && page < MAX_AUTOFLOW_PAGES; page++) {
-    const source = queue[0].from;
+    // Only this chapter's leading run is a candidate for the page. Whatever follows it
+    // belongs to the next chapter and waits for a page of its own.
+    const run = leadingRun(queue);
+    const source = run[0].from;
     const base = authored[source].page_title.replace(/ \(cont\.\)$/, '');
     const isCont = started.has(source);
 
     const src = authored[source];
     const candidate: Post['slides'][number] = {
       page_title: isCont ? `${base} (cont.)` : base,
-      blocks: queue.map((q) => q.block),
+      blocks: run.map((q) => q.block),
       // Only a page continuing the SAME chapter is a continuation. Marking every page
       // after the first would make mergeContinuations collapse the whole post into one.
       ...(isCont ? { cont: true } : {}),
@@ -157,35 +188,19 @@ export async function renderAll(
 
     const spilled = new Set(r.spillIndexes);
     // Everything spilled: one block is taller than a page. Keep it alone rather than loop.
-    const keepCount = spilled.size >= queue.length ? 1 : queue.length - spilled.size;
-    const kept = queue.filter((_, j) => !spilled.has(j)).slice(0, Math.max(keepCount, 1));
+    const keepCount = spilled.size >= run.length ? 1 : run.length - spilled.size;
+    const kept = run.filter((_, j) => !spilled.has(j)).slice(0, Math.max(keepCount, 1));
     const keptSet = new Set(kept.map((k) => k.block));
 
-    // A page belongs to the chapter that owns most of it. Titling by the first block instead
-    // lets one carried-over block rename a whole page after the chapter before it — and that
-    // "(cont.)" comes back on every reflow, so no rename ever sticks.
-    const tally = new Map<number, number>();
-    for (const k of kept) tally.set(k.from, (tally.get(k.from) ?? 0) + 1);
-    const owner = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0];
-    let finished = { ...candidate, blocks: kept.map((k) => k.block) };
-    let measured = r;
-    if (owner !== source) {
-      const ownerSrc = authored[owner];
-      const ownerCont = started.has(owner);
-      finished = {
-        page_title: ownerCont ? `${ownerSrc.page_title.replace(/ \(cont\.\)$/, '')} (cont.)` : ownerSrc.page_title.replace(/ \(cont\.\)$/, ''),
-        blocks: finished.blocks,
-        ...(ownerCont ? { cont: true } : {}),
-        ...(ownerSrc.hero ? { hero: ownerSrc.hero } : {}),
-        ...(ownerSrc.subtitle ? { subtitle: ownerSrc.subtitle } : {}),
-      };
-      // The title is one line of the page, so the page is measured again under its real title.
-      measured = await renderSlide({ ...post, slides: [...slides, finished] }, page, file);
-    }
-    started.add(owner);
+    // Every kept block came from `source` — the run guarantees it — so the page's owner is
+    // known before it is measured. The old majority-owner tally and its re-measure under a
+    // corrected title existed only because a page could straddle two chapters; it cannot now.
+    const finished = { ...candidate, blocks: kept.map((k) => k.block) };
+    started.add(source);
+    owners.push(source);
 
     slides.push(finished);
-    results.push({ slide: page + 1, overflowPx: measured.overflowPx, fillPct: measured.fillPct, file, warnings: measured.warnings });
+    results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
     queue = queue.filter((q) => !keptSet.has(q.block));
   }
   }
@@ -195,7 +210,7 @@ export async function renderAll(
   for (let pair = 0; pair < TAIL_CASCADE; pair++) {
     const at = slides.length - 1 - pair;
     if (at < 1 || results[at].fillPct >= TAIL_FLOOR) break;
-    if (!(await balanceTail(post, outDir, slides, results, at))) break;
+    if (!(await balanceTail(post, outDir, slides, results, at, owners))) break;
   }
 
   return { results, slides };
@@ -229,12 +244,18 @@ export async function balanceTail(
   outDir: string,
   slides: Post['slides'],
   results: { slide: number; overflowPx: number; fillPct: number; file: string; warnings: string[] }[],
-  at = slides.length - 1
+  at = slides.length - 1,
+  /** Authored-slide owner per page, index-aligned with `slides`. Omitted: no pairing guard. */
+  owners?: number[]
 ): Promise<boolean> {
   const last = at;
   if (last < 1 || last >= slides.length) return false;
   if (results[last].fillPct >= TAIL_FLOOR) return false;
   if (slides[last].kind === 'cover' || slides[last - 1].kind === 'cover') return false;
+  // Rebalancing re-cuts the two pages as one block list, which would put a chapter's blocks
+  // on its neighbour's page — the very mixing the flow now refuses to do. Two pages may only
+  // trade blocks when they are the same chapter.
+  if (owners && (owners[last] === -1 || owners[last] !== owners[last - 1])) return false;
 
   const prev = slides[last - 1];
   const tail = slides[last];
