@@ -1,0 +1,1200 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "DOCKER NETWORKING & VOLUMES",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "Why Containers Need Their Own Network & Storage",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Process, Not A VM",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Container = host process wrapped in namespaces + cgroups.",
+            "Isolation comes from kernel primitives, not virtual hardware.",
+            "Two costs: ports unreachable outside, filesystem dies with it."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Namespace",
+            "Gives the container"
+          ],
+          "rows": [
+            [
+              "net",
+              "own NICs, routes, iptables"
+            ],
+            [
+              "mnt",
+              "own mount tree"
+            ],
+            [
+              "pid / uts",
+              "own PID 1, own hostname"
+            ],
+            [
+              "ipc / user / cgroup",
+              "own SHM, UIDs, limits"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. The Writable Layer",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Image layers read-only + one thin writable layer on top.",
+            "Copy-on-write: touching 1 byte copies the whole file up.",
+            "Slow when write-heavy, unshareable, tied to container life."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run --rm alpine true  # RW layer dropped",
+            "docker ps -a --size          # SIZE = RW layer",
+            "docker system df             # what stopped ones hold"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Where Each Thing Lives"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Thing",
+            "Home"
+          ],
+          "rows": [
+            [
+              "App code",
+              "the image"
+            ],
+            [
+              "Config",
+              "injected at run time"
+            ],
+            [
+              "State",
+              "a volume"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Disposable Rule",
+          "text": "12-factor: if `docker rm` loses something you care about, it should have been a volume."
+        },
+        {
+          "type": "heading",
+          "text": "4. Proof And Route Ahead"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run -it alpine ip addr",
+            "# 1: lo   2: eth0@if12",
+            "# no host wlan0, no docker0 = net ns"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "namespaces",
+              "bridge",
+              "ports",
+              "DNS",
+              "drivers",
+              "volumes",
+              "permissions",
+              "debug"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "5. Netns And The veth Pair",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A netns holds interfaces, IPs, routes, ARP, netfilter rules.",
+            "veth = virtual cable: in one end, out the other.",
+            "Container end is `eth0`; host end `vethXXXX` joins `docker0`."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "- type: bind",
+            "  source: ./src",
+            "  target: /app",
+            "  read_only: true       # long form wins"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "tcpdump -i docker0 port 5432",
+            "tcpdump -i vethb2f1        # one container",
+            "# see exactly what crosses the bridge"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Why Containers Need Their Own Network & Storage (cont.)",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "ip link | grep veth   # vethb2f1@if11 (host)",
+            "docker exec c ip link # eth0@if12",
+            "# if-numbers cross-reference the two ends"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "1. Inspect What Got Wired",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker network inspect bridge   # IPs + MACs",
+            "F='{{.NetworkSettings.IPAddress}}'",
+            "docker inspect -f $F c          # 172.17.0.3"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "2. localhost Is The Container",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every container gets its own `lo` at 127.0.0.1.",
+            "So `localhost` inside means the container, never the host.",
+            "The single biggest source of beginner confusion."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "P=$(docker inspect -f '{{.State.Pid}}' c)",
+            "nsenter -t $P -n ip addr",
+            "# works on images with no shell tools"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Two Traps To Know Early"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "veth/bridge MTU defaults 1500; VPN hosts hang on big payloads.",
+            "Small pings pass, large transfers stall — MTU hides well.",
+            "Container IPs are reassigned on restart. Never hardcode them."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run --network=container:web tools",
+            "# same IP, same ports, one namespace",
+            "# this is how k8s pods and sidecars work"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Default vs User-Defined",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Trait",
+            "default bridge",
+            "user-defined"
+          ],
+          "rows": [
+            [
+              "DNS by name",
+              "no",
+              "yes"
+            ],
+            [
+              "Isolation",
+              "all can talk",
+              "per-network"
+            ],
+            [
+              "Live attach",
+              "no",
+              "yes"
+            ],
+            [
+              "Subnet control",
+              "daemon-wide",
+              "per-network"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker0` is usually 172.17.0.0/16 — joined when no `--network`.",
+            "Only the deprecated `--link` gave names on the default bridge.",
+            "Compose builds one per project, named `<project>_default`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Attach, Detach, Multi-Home"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker network create mynet",
+            "docker network connect mynet c   # live",
+            "docker network disconnect bridge c"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One container can sit on many networks at once.",
+            "It gets `eth0`, `eth1`, … one IP per network.",
+            "Standard shape: proxy fronting an isolated backend."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Reading The Wiring & The Bridge Driver",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Subnets And Sealed Tiers"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker network create --subnet 10.20.0.0/16 \\",
+            "  --gateway 10.20.0.1 mynet",
+            "docker run --net mynet --ip 10.20.0.9 db",
+            "docker network create --internal dbnet"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "--internal",
+          "text": "No outbound NAT at all — the database tier physically cannot reach the internet."
+        },
+        {
+          "type": "heading",
+          "text": "1. ICC And Pool Limits",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Daemon `--icc=false` blocks default-bridge container chatter.",
+            "Prefer user-defined networks over fiddling with ICC.",
+            "`no available, non-overlapping IPv4 address pool` = too many nets."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker network prune          # reclaim ranges",
+            "# or daemon.json:",
+            "# \"default-address-pools\": [ ... ]"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "2. Publishing, Host Side First",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "-p 8080:80",
+              "host 8080 to container 80"
+            ],
+            [
+              "EXPOSE 80",
+              "documents only, publishes nothing"
+            ],
+            [
+              "-P",
+              "every EXPOSEd port to random high port"
+            ],
+            [
+              "docker port c",
+              "shows what -P actually chose"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Order Matters",
+          "text": "Reversing `-p CONTAINER:HOST` is the classic bug — the host port always comes first."
+        },
+        {
+          "type": "heading",
+          "text": "3. Bind, Protocol, Ranges"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "-p 127.0.0.1:8080:80   # loopback only",
+            "-p 8080:80             # binds 0.0.0.0",
+            "-p 53:53/udp           # TCP is default",
+            "-p 8000-8010:8000-8010 # a whole block"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. What Happens Underneath",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Docker writes a DNAT rule in the nat table `DOCKER` chain.",
+            "Destination is rewritten to the container IP.",
+            "A MASQUERADE rule covers outbound traffic."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Publishing Ports: -p, EXPOSE, and NAT",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "iptables -t nat -L DOCKER -n",
+            "# DNAT tcp dpt:8080 to:172.17.0.3:80"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker-proxy` is a userland fallback for cases iptables misses.",
+            "Example: host-local loopback hairpin traffic.",
+            "It is why a process appears to hold the port."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Three Ways It Bites"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Docker's rules sit ahead of most UFW/firewalld rules.",
+            "So `-p 8080:80` punches through a firewall you thought closed.",
+            "Bind to 127.0.0.1, or set `iptables: false` and own the rules.",
+            "Outbound needs no publishing — NAT works by default."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# bind: address already in use",
+            "ss -ltnp | grep 8080   # who has it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "1. Host Mode",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No net namespace — the host stack and port space directly.",
+            "Fastest: no NAT, no veth hop. Zero isolation, real collisions.",
+            "`-p` is ignored with a warning; there is nothing to map."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Desktop Catch",
+          "text": "On macOS/Windows the 'host' is the Linux VM, not your laptop — host mode does not expose your machine's network."
+        },
+        {
+          "type": "heading",
+          "text": "2. None And LAN-Native",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`--network none`: a namespace holding only `lo`.",
+            "Use for batch jobs that must have no connectivity.",
+            "macvlan: own MAC + IP on the physical LAN, no NAT.",
+            "macvlan needs promiscuous mode; host-to-container is blocked."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Host, None, macvlan, ipvlan, overlay",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker network create -d macvlan \\",
+            "  --subnet 192.168.1.0/24 \\",
+            "  -o parent=eth0 lan",
+            "# ipvlan: same, shares host MAC (L2/L3)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Overlay Across Hosts"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "VXLAN-based multi-host networking for Swarm services.",
+            "Encapsulates container traffic between nodes.",
+            "`--attachable` lets standalone containers join too."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Driver Cheat Table",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Driver",
+            "NAT",
+            "Isolation",
+            "Needs -p"
+          ],
+          "rows": [
+            [
+              "bridge",
+              "yes",
+              "yes + DNS",
+              "yes"
+            ],
+            [
+              "host",
+              "no",
+              "none",
+              "no (ignored)"
+            ],
+            [
+              "none",
+              "n/a",
+              "total",
+              "n/a"
+            ],
+            [
+              "macvlan",
+              "no",
+              "LAN-native IP",
+              "no"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Reaching Back To The Host"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# Desktop: host.docker.internal just works",
+            "docker run --add-host=\\",
+            "  host.docker.internal:host-gateway app",
+            "# or use the bridge gateway IP on Linux"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker network ls` shows driver and scope (local vs swarm).",
+            "`bridge`, `host`, `none` are built in and cannot be removed.",
+            "Default to a user-defined bridge; host only when measured."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Embedded DNS Begins"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Resolver at 127.0.0.11 in every user-defined-network container.",
+            "Names served: container name, `--hostname`, `--network-alias`.",
+            "Misses forward to the daemon's upstream resolvers."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec c cat /etc/resolv.conf",
+            "# nameserver 127.0.0.11",
+            "# upstream from --dns or daemon.json"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "1. Aliases And Scaling",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Many containers on one alias = many A records.",
+            "Crude round-robin, but clients cache DNS — not a balancer.",
+            "`docker compose up --scale web=3` returns all three IPs."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Service Discovery, Then Mount Types",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "DNS is per-network: two networks, names from both.",
+            "On the default bridge a container resolves no peers at all.",
+            "musl (Alpine) queries nameservers in parallel — flaky lookups."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Debug A Name",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec c getent hosts other",
+            "docker exec c nslookup other",
+            "docker exec c cat /etc/resolv.conf"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "--link Is Legacy",
+          "text": "It injected /etc/hosts entries and env vars, one-directional, and broke across restarts. Use user-defined networks."
+        },
+        {
+          "type": "heading",
+          "text": "3. The Pattern To Copy"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "App dials `postgres:5432` — a service name, not an IP.",
+            "No ports published, so the DB is unreachable from the host.",
+            "Restarts change IPs; the name keeps resolving."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. The Three Mount Types",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Lives",
+            "Use"
+          ],
+          "rows": [
+            [
+              "named volume",
+              "/var/lib/docker/volumes",
+              "production state"
+            ],
+            [
+              "bind mount",
+              "any host path",
+              "dev source, config"
+            ],
+            [
+              "tmpfs",
+              "RAM only",
+              "secrets, scratch"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "-v myvol:/data                 # named",
+            "-v /srv/app:/app               # bind (abs!)",
+            "--tmpfs /tmp                   # RAM",
+            "--mount type=tmpfs,dst=/tmp,tmpfs-size=64m"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "5. -v Versus --mount"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A relative bind path is parsed as a volume NAME, not a path.",
+            "`-v` auto-creates missing host paths, root-owned — a surprise.",
+            "`--mount` is explicit key=value and errors on a missing source.",
+            "Prefer `--mount` in scripts, `-v` at the prompt."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Service Discovery, Then Mount Types (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Volume Seeding Rule"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Empty named volume on a populated path: image content copies in.",
+            "Bind mounts never seed — they shadow whatever was there.",
+            "The copy happens once, only while the volume is empty.",
+            "Stale volume keeps old files: 'my code changes don't appear'."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Hardening A Mount",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run --read-only \\",
+            "  -v conf:/etc/app:ro \\",
+            "  --tmpfs /run app   # writable scratch"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`-v /data` with no name makes a random-hash anonymous volume.",
+            "Dockerfile `VOLUME /data` does that on every single run.",
+            "They pile up silently until you prune."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Picking Between Them",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Volume",
+            "Bind"
+          ],
+          "rows": [
+            [
+              "Portability",
+              "wins",
+              "host-tied"
+            ],
+            [
+              "Live editing",
+              "no",
+              "wins"
+            ],
+            [
+              "Linux speed",
+              "equal",
+              "equal"
+            ],
+            [
+              "Desktop speed",
+              "fast",
+              "much slower"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Decision Line",
+          "text": "Bind mount for dev source and host config; named volume for databases and production; tmpfs for secrets and scratch."
+        },
+        {
+          "type": "heading",
+          "text": "3. The CLI Surface"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker volume create|ls|inspect|rm|prune",
+            "docker volume inspect myvol   # Mountpoint",
+            "# /var/lib/docker/volumes/myvol/_data"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Volumes outlive containers by design; `docker rm c` keeps them.",
+            "`docker rm -v c` drops that container's ANONYMOUS volumes only.",
+            "`volume prune` deletes anything no container references.",
+            "Compose prefixes names with the project; `down -v` deletes them."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker volume ls -f dangling=true  # check first",
+            "docker volume prune                # then destroy"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Sharing And Inheriting",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One volume, many containers is normal — app writes, sidecar backs up.",
+            "No cross-container locking; coordinate writers in the app.",
+            "`--volumes-from other` inherits all mounts (old data-container trick)."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Named Volumes: Lifecycle, Drivers, Sharing",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Drivers And Labels"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker volume create --driver local \\",
+            "  --opt type=nfs --opt device=:/exp/data \\",
+            "  --opt o=addr=10.0.0.5,rw nfsvol",
+            "docker volume ls -f label=project=app"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "6. Backup Idiom"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run --rm -v myvol:/data \\",
+            "  -v $(pwd):/backup alpine \\",
+            "  tar czf /backup/vol.tgz -C /data .",
+            "# restore: untar into a fresh volume"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Don't `cp` into /var/lib/docker/volumes as a workflow.",
+            "It bypasses bookkeeping and breaks on non-local drivers.",
+            "DB data dirs (`/var/lib/mysql`) = named volume, never Desktop bind.",
+            "Shared filesystems break fsync and locking semantics."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Numbers, Not Names",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Mounts carry numeric UID/GID; the kernel only checks numbers.",
+            "The container's /etc/passwd names mean nothing to the host.",
+            "UID 1000 inside is UID 1000 outside — `appuser` there, you here."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec c ls -lan /data",
+            "# drwxr-xr-x 2 1000 1000 ...  numeric!",
+            "# Permission denied = UID mismatch"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "2. Three Ways To Fix It"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Fix",
+            "Where"
+          ],
+          "rows": [
+            [
+              "--user $(id -u):$(id -g)",
+              "run time"
+            ],
+            [
+              "adduser -u 1000 + USER",
+              "Dockerfile"
+            ],
+            [
+              "chown -R 1000:1000 ./data",
+              "host dir"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "docker",
+          "lines": [
+            "RUN adduser -u 1000 -D app",
+            "COPY --chown=app:app . /srv",
+            "USER app"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`--user` with an unknown UID: `whoami` fails, `$HOME` unset.",
+            "It cannot be changed after the container starts.",
+            "It breaks images that drop privileges themselves.",
+            "Official Postgres starts as root then `su-exec` to postgres."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "UID, GID, and the Permissions Problem",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Volumes Are Gentler",
+          "text": "First use copies the image's content AND its ownership into the empty volume — a correctly-owned image dir just works. Bind mounts get no help."
+        },
+        {
+          "type": "heading",
+          "text": "3. Root Is Root",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "By default container root IS host root on a bind-mounted file.",
+            "Only `userns-remap` in daemon.json breaks that equivalence.",
+            "This is a genuine privilege-escalation path, not a theory."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Never Mount The Socket",
+          "text": "Bind-mounting /var/run/docker.sock into an untrusted container is equivalent to handing it root on the host."
+        },
+        {
+          "type": "heading",
+          "text": "4. Two Platform Traps"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "-v ./data:/data:Z   # SELinux private",
+            "-v ./data:/data:z   # SELinux shared",
+            "# without it: Permission denied on RHEL"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Desktop bind mounts pass a translation layer, reporting 0777.",
+            "So permission bugs first surface on the Linux deploy.",
+            "Test ownership on Linux before you trust it."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Compose Networking",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One default bridge per project; every service joins it.",
+            "Services resolve each other by service name. No `links` needed.",
+            "Extra networks: top-level `networks:` plus a per-service list."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Ports And Volumes Keys",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "ports:",
+            "  - \"8080:80\"      # quote it, always",
+            "expose:",
+            "  - \"80\"           # documents only"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Unquoted `5432:5432`-style values get parsed oddly by YAML.",
+            "Top-level `volumes:` declares the named volumes.",
+            "`external: true` means it exists — don't create or delete it."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Compose: Networks and Volumes Declared",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "2. Same Slot, Two Meanings",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "volumes:",
+            "  - ./src:/app          # bind mount",
+            "  - appdata:/var/lib/data  # named volume"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Waiting Properly"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`depends_on` waits for start, never for readiness.",
+            "Pair it with a `healthcheck` and `condition: service_healthy`.",
+            "Otherwise the app dials a database that isn't listening yet."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Two Patterns Worth Stealing",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Base file mounts nothing; override adds source bind + hot reload.",
+            "Production runs the base file alone.",
+            "`network_mode: host` kills Compose networking and voids `ports:`."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "volumes:",
+            "  - ./app:/app",
+            "  - /app/node_modules   # anon vol shields it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Removes"
+          ],
+          "rows": [
+            [
+              "down",
+              "containers + network"
+            ],
+            [
+              "down -v",
+              "also named volumes"
+            ],
+            [
+              "down --remove-orphans",
+              "deleted services"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Debug Step One"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker inspect c   # read .NetworkSettings",
+            "#                  # and .Mounts",
+            "docker port c      # published, for real",
+            "ss -ltnp           # host is listening?"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Meant vs Wired",
+          "text": "`inspect` shows what actually got wired. Your compose file only shows what you meant to wire."
+        },
+        {
+          "type": "heading",
+          "text": "1. Refused Versus Timeout",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause"
+          ],
+          "rows": [
+            [
+              "Refused from host",
+              "app bound to 127.0.0.1"
+            ],
+            [
+              "Refused between containers",
+              "different networks"
+            ],
+            [
+              "Refused, right net",
+              "used host port, not real one"
+            ],
+            [
+              "Timeout",
+              "firewall, routing, MTU"
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your container can't be reached and your database just vanished — same root cause: namespaces gave it a private network and a disposable filesystem. This handbook walks the whole path: veth pairs and bridges, what `-p` really writes into iptables, embedded DNS at 127.0.0.11, volumes vs bind mounts vs tmpfs, and the numeric UID traps that only break after you deploy. Ten pages of study notes — save it before the next Permission denied.",
+    "hashtags": [
+      "#docker",
+      "#devops",
+      "#containers",
+      "#linux",
+      "#networking",
+      "#dockercompose",
+      "#sysadmin",
+      "#backend",
+      "#cloudnative",
+      "#studynotes",
+      "#100daysofcode",
+      "#softwareengineering"
+    ]
+  }
+}

@@ -1,0 +1,632 @@
+{
+  "brand": "iolar",
+  "template": "sticky-wall",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES EXPLAIN ANALYZE — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Reading Real Plans: Worked Diagnoses",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Three Steps",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "biggest time x loops",
+              "rows vs actual",
+              "read BUFFERS",
+              "fix"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Find the node with largest actual time x loops, not largest cost",
+            "Check that node's estimate against its actual",
+            "`shared read` went to disk, `shared hit` came from cache"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Inclusive Time",
+          "text": "A node's `actual time` INCLUDES all its children. Subtract the children to get self-time."
+        },
+        {
+          "type": "heading",
+          "text": "Signatures",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Diagnosis"
+          ],
+          "rows": [
+            [
+              "`loops=48000`",
+              "48000 x 0.03ms = 1.4s hidden"
+            ],
+            [
+              "`Rows Removed by Filter: 4900000`",
+              "index the filtered column"
+            ],
+            [
+              "`external merge Disk: 180MB`",
+              "raise work_mem or index the order"
+            ],
+            [
+              "`Batches: 16`",
+              "build side underestimated"
+            ],
+            [
+              "`Heap Fetches: 890000`",
+              "VACUUM to refresh the VM"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "-> Index Scan on orders",
+            "     (actual time=0.02..0.03 rows=1 loops=48000)",
+            "-- per-loop time looks trivial; total is not"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Workers Planned: 4 Workers Launched: 0` — pool exhausted",
+            "`Rows Removed by Join Filter` — non-equi condition after the join",
+            "`Rows Removed by Index Recheck` — lossy bitmap pages burning CPU"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Reading Real Plans: Worked Diagnoses (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Not In Node Times",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Trigger time is reported separately after the plan",
+            "It is not included in any node's actual time",
+            "Always run the query twice",
+            "First run is cold cache, second run is the plan"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Visualizers",
+          "items": [
+            "`explain.depesz.com` colours estimate drift",
+            "`explain.dalibo.com` gives a tree view",
+            "Both highlight mismatches automatically"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Huge cost node, tiny actual time. Chase it?",
+          "a_bullets": [
+            "No — cost is an estimate, not a measurement",
+            "Rank nodes by actual time x loops instead",
+            "Only then check whether its estimate broke"
+          ],
+          "example_code": [
+            "Hash Join (cost=98000..120000 rows=12)",
+            "           (actual time=1.1..1.3 rows=11 loops=1)"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "BUFFERS First",
+          "text": "Millions of `shared read` blocks means the data is not cached — no plan change fixes cold IO."
+        },
+        {
+          "type": "heading",
+          "text": "Scan Comparison",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Scan",
+            "Cost shape",
+            "IO"
+          ],
+          "rows": [
+            [
+              "Seq",
+              "O(pages)",
+              "sequential"
+            ],
+            [
+              "Index",
+              "O(log n + k)",
+              "random"
+            ],
+            [
+              "Bitmap",
+              "index + heap",
+              "page order"
+            ],
+            [
+              "Index Only",
+              "index alone",
+              "no heap"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Join Comparison",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Join",
+            "Complexity",
+            "Memory"
+          ],
+          "rows": [
+            [
+              "Nested Loop",
+              "O(N x M)",
+              "none"
+            ],
+            [
+              "Nested Loop idx",
+              "O(N log M)",
+              "none"
+            ],
+            [
+              "Hash",
+              "O(N + M)",
+              "work_mem"
+            ],
+            [
+              "Merge",
+              "O(N log N + M log M)",
+              "low"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Merge is near free when both sides are pre-sorted",
+            "Index Only Scan is the only scan that skips the heap",
+            "Worth designing schemas and indexes around"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Index Economics",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every index speeds reads, taxes INSERT/UPDATE/DELETE",
+            "It also lengthens every VACUUM",
+            "Composite order: equality, then range, then ORDER BY",
+            "Partial index can be a fraction of the size",
+            "Small index stays hot in cache"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX act_ord ON orders (created_at)",
+            "  WHERE status = 'active';  -- partial"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Trade-offs, Comparisons, and Tuning Levers",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Config Levers"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Knob",
+            "Move"
+          ],
+          "rows": [
+            [
+              "`random_page_cost`",
+              "4.0 to 1.1 on SSD"
+            ],
+            [
+              "`effective_cache_size`",
+              "50-75% of RAM, allocates nothing"
+            ],
+            [
+              "`work_mem`",
+              "low = disk sorts, high = OOM"
+            ],
+            [
+              "`default_statistics_target`",
+              "100 to 500 on skewed cols"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`random_page_cost` on SSD is the highest-leverage change",
+            "work_mem risk is connections times nodes multiplying",
+            "Higher statistics target costs ANALYZE time, buys accuracy"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rewrites That Unlock Plans"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "EXISTS instead of IN on large subqueries",
+            "LATERAL instead of a correlated scalar subquery",
+            "Never wrap the indexed column in a function",
+            "Keyset `WHERE id > last_id` instead of `OFFSET N`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "OFFSET Tax",
+          "text": "`OFFSET 100000` scans and discards 100,000 rows every page. Keyset pagination stays constant time."
+        },
+        {
+          "type": "sidebox",
+          "title": "When No Plan Is Enough",
+          "items": [
+            "Denormalize, or add a materialized view",
+            "Refresh cost is the trade you accept",
+            "Partitioning helps only if the key is in WHERE",
+            "Otherwise every partition is scanned"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Where vs Why",
+          "text": "`pg_stat_statements` tells you WHICH query to EXPLAIN. EXPLAIN tells you why it is slow."
+        },
+        {
+          "type": "heading",
+          "text": "Standard Invocation",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "EXPLAIN (ANALYZE, BUFFERS, VERBOSE,",
+            "         SETTINGS, FORMAT TEXT)",
+            "SELECT ... ;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Whole Discipline",
+          "text": "Find the node where estimated rows and actual rows diverge most. Everything after that is follow-up."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cost is the planner's opinion, actual time is the truth",
+            "`EXPLAIN` alone shows only the opinion",
+            "Actual time and rows are per-loop — always multiply"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Triage Order",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "pg_stat_statements",
+              "EXPLAIN ANALYZE BUFFERS",
+              "pg_stats",
+              "fix"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Field Checklist and Summary",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Fix Ladder, Cheapest First",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ANALYZE the table",
+            "Extended statistics on correlated columns",
+            "Raise the per-column statistics target",
+            "Add an index, then rewrite the query",
+            "Config change, and only then a hint"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Never Ship Flashlights",
+          "text": "An `enable_*` setting left off in production is a debugging tool you forgot to put down."
+        },
+        {
+          "type": "heading",
+          "text": "Cheat Sheets"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Rows matched",
+            "Scan"
+          ],
+          "rows": [
+            [
+              "under 1%",
+              "Index"
+            ],
+            [
+              "1-10%",
+              "Bitmap"
+            ],
+            [
+              "over 10%",
+              "Seq"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Shape",
+            "Join"
+          ],
+          "rows": [
+            [
+              "tiny outer + indexed inner",
+              "Nested Loop"
+            ],
+            [
+              "big equality",
+              "Hash"
+            ],
+            [
+              "both sorted",
+              "Merge"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Red Flag List",
+          "items": [
+            "`Batches` over 1, `Sort Method: external`",
+            "Lossy `Heap Blocks`, high `Heap Fetches`",
+            "`Rows Removed by Filter` in the millions",
+            "`loops` in the thousands"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Flags Worth Adding",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Adds"
+          ],
+          "rows": [
+            [
+              "BUFFERS",
+              "hit/read counts"
+            ],
+            [
+              "VERBOSE",
+              "output columns"
+            ],
+            [
+              "SETTINGS",
+              "changed GUCs"
+            ],
+            [
+              "TIMING OFF",
+              "less overhead"
+            ],
+            [
+              "FORMAT JSON",
+              "machine parsing"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`BUFFERS` is the single most useful extra flag",
+            "`TIMING OFF` when gettimeofday distorts a fast query",
+            "`Planning Time` above `Execution Time` means planning is the cost"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Diagnostic Flashlights",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SET enable_nestloop = off;  -- prove it",
+            "EXPLAIN ANALYZE SELECT ... ;",
+            "RESET enable_nestloop;"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Field Checklist and Summary (cont.)",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Toggles prove which plan you wanted, they never fix it",
+            "`pg_hint_plan` for real hints when nothing else lands",
+            "`join_collapse_limit` 8 caps exhaustive join-order search"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "ANALYZE ran, estimate still 100x low. Next?",
+          "a_bullets": [
+            "Columns are correlated — independence assumption lies",
+            "Add extended statistics on the pair",
+            "Re-ANALYZE, then re-read the node"
+          ],
+          "example_code": [
+            "CREATE STATISTICS s (dependencies, mcv)",
+            "  ON city, state FROM addr;"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Stats Are The Cheap Win",
+          "text": "`ALTER TABLE t ALTER COLUMN c SET STATISTICS 1000;` then re-ANALYZE — cheaper than any new index."
+        },
+        {
+          "type": "heading",
+          "text": "When Stats Are Missing",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Case",
+            "Planner guess"
+          ],
+          "rows": [
+            [
+              "equality",
+              "0.5%"
+            ],
+            [
+              "range",
+              "33%"
+            ],
+            [
+              "fresh restore",
+              "nothing"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Check `last_analyze` in `pg_stat_user_tables` first",
+            "Expression indexes carry their own statistics",
+            "A bare `lower(email)` filter falls back to the default guess"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Loops Reminder",
+          "items": [
+            "`actual rows` and `actual time` are per loop",
+            "Multiply by `loops` for the real total",
+            "Parallel node rows are per worker too"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Before You Benchmark"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ANALYZE after every bulk load, restore, or data shift",
+            "Test on production-sized data",
+            "A plan right for 1,000 rows is wrong for 10,000,000",
+            "`auto_explain` with `log_min_duration` catches the rest"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "BEGIN;",
+            "EXPLAIN ANALYZE DELETE FROM t WHERE id < 100;",
+            "ROLLBACK;  -- safe on INSERT/UPDATE/DELETE"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Not Your Adversary",
+          "text": "The planner is a cost model running on statistics. Give it better statistics and it makes better choices."
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of POSTGRES EXPLAIN ANALYZE. Your query is slow and the plan is 40 lines of indented noise — here is how to read it in three moves. Ten pages on every scan and join node, where cost numbers actually come from, how the planner guesses row counts, and the exact signatures that tell you it guessed wrong. Save it for the next 2am incident.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#sql",
+      "#database",
+      "#queryoptimization",
+      "#explainanalyze",
+      "#backenddev",
+      "#dataengineering",
+      "#devnotes",
+      "#performancetuning",
+      "#softwareengineering",
+      "#codingnotes"
+    ]
+  }
+}

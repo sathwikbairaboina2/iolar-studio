@@ -1,0 +1,137 @@
+{
+  "title": "Injection Attacks: A Field Handbook",
+  "summary": "How untrusted input becomes executed code across SQL, HTML/JS, and OS shells, and the two defenses that actually work: parameterisation and context-aware output encoding.",
+  "chapters": [
+    {
+      "title": "What Injection Is",
+      "points": [
+        "Definition: attacker-supplied data crosses a boundary and gets interpreted as code/commands instead of inert data",
+        "Root cause: mixing untrusted data with a control string (query, markup, shell command) using string concatenation",
+        "The confusion: an interpreter cannot tell where developer intent ends and attacker input begins when both arrive as one flat string",
+        "Trust boundary: any point where data from an untrusted source (HTTP params, headers, cookies, uploaded files, upstream services) enters an interpreter",
+        "Interpreter examples: SQL engine, HTML/JS parser in browser, OS shell (/bin/sh, cmd.exe), LDAP, XPath, NoSQL, template engines",
+        "Impact spectrum: data theft, auth bypass, data tampering, remote code execution, full host compromise, lateral movement",
+        "Injection sits at/near the top of OWASP Top 10 for over a decade; A03:2021 folds XSS into Injection",
+        "Core insight for the whole handbook: the fix is structural separation of code from data, not filtering 'bad characters'"
+      ]
+    },
+    {
+      "title": "SQL Injection — Mechanics",
+      "points": [
+        "Vulnerable pattern: \"SELECT * FROM users WHERE name='\" + input + \"'\" concatenates input into query text",
+        "Classic auth bypass payload: ' OR '1'='1 makes the WHERE clause always true",
+        "Comment truncation: input like admin'-- cuts off the rest of the query (password check) using -- or #",
+        "UNION-based extraction: ' UNION SELECT username,password FROM users-- pulls data from other tables (needs matching column count/types)",
+        "Stacked queries: '; DROP TABLE users-- runs a second statement where the driver allows multiple statements",
+        "Blind boolean SQLi: no data returned, but page differs on true vs false (AND 1=1 vs AND 1=2) to infer data bit by bit",
+        "Blind time-based SQLi: inject SLEEP(5)/pg_sleep(5)/WAITFOR DELAY to read data via response latency when there is zero visible feedback",
+        "Error-based SQLi: force DB error messages that leak column names, versions, and data",
+        "Second-order SQLi: payload stored safely, then later concatenated into a query on a different code path",
+        "Reconnaissance: version() / @@version, information_schema.tables/columns to map the database"
+      ]
+    },
+    {
+      "title": "Parameterised Queries — The Real Fix",
+      "points": [
+        "Prepared statement: query template with placeholders (? or :name) sent to DB separately from the values",
+        "Why it works: the SQL structure is parsed and compiled before values bind, so a value can never become new syntax",
+        "Bound values are always treated as literal data — ' OR '1'='1 becomes a literal string searched for, not logic",
+        "Placeholder styles: positional (?) vs named (:id, @id, $1) depending on driver",
+        "Example (Python): cursor.execute(\"SELECT * FROM users WHERE name=%s\", (name,)) — never % string formatting",
+        "Example (Java): PreparedStatement with setString(1, name)",
+        "Limitation: placeholders bind values only, NOT identifiers (table/column names) or keywords like ASC/DESC",
+        "Dynamic identifiers must use a strict allowlist mapping user choice to a fixed set of known-safe names",
+        "ORMs (Hibernate, SQLAlchemy, ActiveRecord) parameterise by default — but raw()/text()/string interpolation reopens the hole",
+        "Stored procedures help only if they themselves parameterise; dynamic SQL inside a proc is still vulnerable",
+        "Least privilege as defense-in-depth: app DB account should not own DROP/DDL or read other schemas"
+      ]
+    },
+    {
+      "title": "Cross-Site Scripting (XSS)",
+      "points": [
+        "Definition: attacker JavaScript executes in a victim's browser in the trusted origin of the vulnerable site",
+        "Reflected XSS: payload in the request (URL/param) echoed straight into the response, delivered via a crafted link",
+        "Stored/persistent XSS: payload saved server-side (comment, profile, message) and served to every viewer — highest blast radius",
+        "DOM-based XSS: vulnerability is client-side; JS writes untrusted data (location.hash) into a sink like innerHTML with no server round-trip",
+        "Dangerous sinks: innerHTML, outerHTML, document.write, eval, setTimeout(string), element.setAttribute('href', ...) for javascript: URIs",
+        "Impact: session cookie theft (document.cookie), session riding, keylogging, credential phishing, CSRF token theft, worm propagation",
+        "Sources of untrusted data in the DOM: location, document.referrer, window.name, postMessage, and stored server data",
+        "Mutation XSS (mXSS): browser re-parses/normalises HTML so a sanitised-looking string becomes executable after insertion",
+        "HttpOnly cookies blunt cookie theft but not other XSS actions (making requests as the user, defacement, keylogging)"
+      ]
+    },
+    {
+      "title": "Output Encoding & Preventing XSS",
+      "points": [
+        "Core rule: encode untrusted data at output time, for the exact context it lands in — encoding is context-specific",
+        "HTML body context: encode < > & \" ' to &lt; &gt; &amp; &quot; &#39; so text can't open tags",
+        "HTML attribute context: quote the attribute and entity-encode; unquoted attributes are exploitable with spaces/event handlers",
+        "JavaScript context: use JS string escaping or, better, inject data as JSON via a data-* attribute and read it, never build script from strings",
+        "URL context: percent-encode (encodeURIComponent) and validate the scheme — block javascript:/data: in href/src",
+        "CSS context: encode within style values; untrusted CSS enables data exfiltration and expression()-style abuse",
+        "Prefer safe sinks: textContent/innerText over innerHTML; createElement + setAttribute over building HTML strings",
+        "Framework auto-escaping (React JSX, Angular, Vue, Django/Jinja templates) encodes by default — the danger is the escape hatch (dangerouslySetInnerHTML, v-html, |safe, bypassSecurityTrust)",
+        "When you must accept HTML: sanitise with a vetted allowlist library (DOMPurify), never a hand-rolled regex blocklist",
+        "Content-Security-Policy (CSP) as defense-in-depth: restrict script sources, block inline script; not a substitute for encoding",
+        "Encode on output, not input: the same data may be rendered into multiple contexts, each needing different encoding"
+      ]
+    },
+    {
+      "title": "Command Injection",
+      "points": [
+        "Definition: untrusted input reaches an OS shell command, letting attacker run arbitrary system commands",
+        "Vulnerable pattern: os.system(\"ping \" + host) / exec(\"convert \" + filename) via a shell",
+        "Shell metacharacters that chain commands: ; | & && || $(...) `...` newline > <",
+        "Example payload: host = \"8.8.8.8; cat /etc/passwd\" runs the second command as the app user",
+        "Argument injection: even without a shell, leading - lets input pose as a flag (e.g. a filename starting with --) changing program behavior",
+        "The fix: don't invoke a shell — use array/exec APIs that pass args directly to the process (execve, subprocess with a list, no shell=True)",
+        "Python: subprocess.run(['ping','-c','1', host]) with shell=False — never shell=True with concatenation",
+        "Node: execFile/spawn with an args array instead of exec(cmd_string)",
+        "If a shell is unavoidable: strict allowlist of permitted values and proper quoting/escaping (shlex.quote) — blocklists leak",
+        "Prefer native language libraries over shelling out (HTTP client vs curl, file APIs vs cp) to remove the interpreter entirely",
+        "Run with least privilege and in a sandbox/container so a breakout is contained"
+      ]
+    },
+    {
+      "title": "Input Validation vs Encoding vs Parameterisation",
+      "points": [
+        "Three distinct controls, often confused: validation (is this data acceptable?), parameterisation (separate code from data at the DB), encoding (make data safe for one output context)",
+        "Validation is defense-in-depth, NOT a primary injection defense — valid data can still be a valid attack (O'Brien is a legitimate name and a SQL breaker)",
+        "Allowlist (accept only known-good: pattern, type, range, set) beats blocklist (reject known-bad), which always misses encodings/variants",
+        "Canonicalisation first: decode to one form before validating, or attackers slip past with %3C, double-encoding, unicode homoglyphs, overlong UTF-8",
+        "Parameterisation is the primary fix for SQL; array-exec is the primary fix for commands; context encoding is the primary fix for XSS",
+        "Right layer matters: escaping for SQL does not make data safe for HTML, and vice versa — no universal 'sanitise' function",
+        "Type coercion as a free defense: casting an id to int makes SQLi in that field structurally impossible",
+        "Combine layers: validate at entry, parameterise/encode at each interpreter boundary, least privilege underneath"
+      ]
+    },
+    {
+      "title": "Common Mistakes & Anti-Patterns",
+      "points": [
+        "Blocklist filtering (stripping quotes/keywords): bypassed via case, comments (SEL/**/ECT), encoding, and whitespace tricks",
+        "Escaping quotes by hand: misses numeric contexts (no quotes needed), backslash edge cases, and charset-based bypasses",
+        "'Sanitise once on input' then reuse everywhere: wrong context on output re-introduces the flaw",
+        "Trusting client-side validation: attacker sends raw requests bypassing the browser entirely",
+        "Parameterising values but concatenating table/column/ORDER BY from user input — the classic remaining hole",
+        "Using shell=True / exec(string) 'because the args are internal' — internal today, user-influenced tomorrow (second-order)",
+        "Assuming an ORM is automatically safe while using raw query escape hatches",
+        "Disabling framework auto-escaping (dangerouslySetInnerHTML, |safe) for convenience without sanitising",
+        "Relying on WAF as the fix rather than a stopgap — WAFs are bypassable and buy time, not safety",
+        "Verbose DB/stack error messages in production that hand attackers schema and version details"
+      ]
+    },
+    {
+      "title": "Summary & Defense Checklist",
+      "points": [
+        "One mental model: every injection is code/data confusion at an interpreter boundary — keep them separate",
+        "SQL: always parameterise; allowlist identifiers; least-privilege DB account; never concatenate",
+        "XSS: context-aware output encoding; safe sinks (textContent); sanitise HTML with DOMPurify; CSP + HttpOnly as depth",
+        "Command: avoid the shell, pass args as an array; allowlist + sandbox + least privilege when a shell is unavoidable",
+        "Validation is a supporting layer (allowlist, canonicalise first), never the sole defense",
+        "Encode/parameterise at output/boundary time and per-context, not once at input",
+        "Defense in depth: layer validation, parameterisation, encoding, least privilege, and CSP so one failure isn't fatal",
+        "Verify continuously: code review of query/exec/render sinks, SAST/DAST, and dependency updates for the interpreters and libraries you rely on"
+      ]
+    }
+  ]
+}

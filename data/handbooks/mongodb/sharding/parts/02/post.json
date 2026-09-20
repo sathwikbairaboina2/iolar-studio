@@ -1,0 +1,528 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "MONGODB SHARDING — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Zones, Tags & Adding/Removing Shards",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "A new shard starts empty and fills gradually",
+            "Expect hours of background migration, not seconds"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Removing A Shard"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`removeShard` starts draining, poll it until done",
+            "First `movePrimary` any unsharded DBs it owns",
+            "`movePrimary` is a blocking full copy: schedule it",
+            "Survivors need room for the data plus migration headroom"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Hardware Never Fixes A Key",
+          "text": "Adding shards does not retroactively re-split jumbo chunks. A bad key choice stays bad no matter how many machines you buy."
+        },
+        {
+          "type": "heading",
+          "text": "Five Checks In Order",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "List top query patterns by volume and latency need",
+            "Cardinality: distinct values past every chunk you will need",
+            "Aim for millions of distinct values, not dozens",
+            "Frequency: hunt the fat tail before production finds it",
+            "Monotonicity: time-derived means hash or compound prefix"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "candidate key",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2",
+                "b3"
+              ],
+              [
+                "c0_0"
+              ],
+              [
+                "c1_0"
+              ],
+              [
+                "c2_0"
+              ],
+              [
+                "c3_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "candidate key",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "cardinality"
+              },
+              "b1": {
+                "text": "frequency"
+              },
+              "b2": {
+                "text": "monotonic"
+              },
+              "b3": {
+                "text": "hot query"
+              },
+              "c0_0": {
+                "text": "millions ok"
+              },
+              "c1_0": {
+                "text": "flat tail"
+              },
+              "c2_0": {
+                "text": "hash it"
+              },
+              "c3_0": {
+                "text": "prefix present"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "n0",
+                "to": "b3"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              },
+              {
+                "from": "b3",
+                "to": "c3_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.orders.aggregate([",
+            "  { $group: { _id: \"$customerId\",",
+            "      n: { $sum: 1 } } },",
+            "  { $sort: { n: -1 } }, { $limit: 10 }])"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Then verify write distribution, not just stored bytes",
+            "Simulate inserts and measure per-shard write rate",
+            "Byte balance can hide a shard taking every write"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keys That Work",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Shape",
+            "Key",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Multi-tenant",
+              "{tenantId,_id}",
+              "tenant-local reads"
+            ],
+            [
+              "Time series",
+              "{deviceId,ts}",
+              "history contiguous"
+            ],
+            [
+              "Raw logs",
+              "{_id: hashed}",
+              "pure write spread"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`_id` suffix splits a whale tenant into many chunks",
+            "`deviceId` prefix spreads devices, keeps a device together",
+            "Hashed logs accept scatter-gather reads on purpose"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Choosing a Shard Key: A Decision Framework",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Keys That Burn",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Anti-key",
+            "Failure",
+            "Result"
+          ],
+          "rows": [
+            [
+              "{createdAt:1}",
+              "max-key chunk",
+              "one shard's speed"
+            ],
+            [
+              "{status:1}",
+              "low cardinality",
+              "jumbo forever"
+            ],
+            [
+              "random UUID",
+              "no locality",
+              "every read broadcast"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Compound Trade"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Prefix controls locality and targeting",
+            "Suffix controls splittability inside the prefix",
+            "A prefix you never filter on buys you scatter-gather"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Write The Choice Down",
+          "text": "Record the key with its assumptions about traffic shape. When the shape changes, that note tells you whether it is time to reshard."
+        },
+        {
+          "type": "heading",
+          "text": "Process Errors",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sharding too early: one replica set carries more than you think",
+            "Sharding too late: a full hot cluster has no I/O headroom",
+            "Reading chunk counts as if they were bytes per shard",
+            "Connecting straight to a shard's `mongod` for reads"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Expecting global unique indexes to exist",
+            "Only shard-key-prefixed unique indexes work at all",
+            "Leaving the balancer on during a snapshot backup",
+            "That snapshot captures an inconsistent chunk map"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Symptom To Cause"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "What you see",
+            "Root cause"
+          ],
+          "rows": [
+            [
+              "One shard 90% CPU, rest idle",
+              "hot chunk, monotonic key"
+            ],
+            [
+              "Jumbo chunks in `sh.status()`",
+              "cardinality too low"
+            ],
+            [
+              "Every query touches all shards",
+              "key absent from hot path"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Repair Tools"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`refineCollectionShardKey` appends a high-cardinality suffix",
+            "Appending `_id` breaks up jumbo chunks; build the index first",
+            "`reshardCollection` (5.0+) rewrites under a whole new key",
+            "It duplicates the data while running: plan disk headroom"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Common Mistakes, Diagnosis & Repair",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.adminCommand({",
+            "  reshardCollection: \"app.orders\",",
+            "  key: { tenantId: 1, orderId: 1 } })",
+            "// online, but commit pauses writes"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Resharding Is Not Free",
+          "text": "It runs online, yet the commit holds a short critical section. Expect a write pause at the very end of the operation."
+        },
+        {
+          "type": "heading",
+          "text": "Orphan Cleanup"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`cleanupOrphaned` and the range deleter remove strays",
+            "4.4+ filters orphans automatically on shard reads",
+            "Application logic still enforces non-prefixed uniqueness"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Watch These Five"
+        },
+        {
+          "type": "sidebox",
+          "title": "Monitoring Set",
+          "items": [
+            "Per-shard write ops and per-shard data size",
+            "Chunk migration counts over time",
+            "Balancer round failures",
+            "Jumbo chunk count, alert on any increase"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "qa",
+          "q": "Cluster is slow. First command?",
+          "a_bullets": [
+            "`sh.status()` for keys, jumbo flags, balancer state",
+            "`getShardDistribution()` for real bytes per shard",
+            "`explain(\"executionStats\").shards` on the hot query"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Whole Chain",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "shard key",
+              "chunk",
+              "shard",
+              "one hop"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cluster = shards + config servers (CSRS) + `mongos`",
+            "Only `mongos` holds the whole routing map",
+            "Key to chunk to shard is the model; the rest is bookkeeping"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Key Quality"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "High cardinality, flat frequency, non-monotonic",
+            "And present in the queries you actually run",
+            "Miss any one of the four and you pay for it daily"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Recap: The Sharding Cheat Sheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Ranged Or Hashed"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Inserts",
+            "Range reads"
+          ],
+          "rows": [
+            [
+              "Ranged",
+              "hotspot risk",
+              "targeted"
+            ],
+            [
+              "Hashed",
+              "even",
+              "broadcast"
+            ],
+            [
+              "Compound hashed",
+              "even",
+              "zone-able prefix"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`{ region: 1, userId: \"hashed\" }` is the middle path",
+            "Shard key present = one shard = one hop",
+            "Key absent = every shard = slowest-shard latency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Balancer And Zones"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Chunk default 128 MB in 6.0+; jumbo means unsplittable",
+            "Balancer runs on the config primary, sizes data in 6.0+",
+            "Confine it with `activeWindow` during peak hours",
+            "Migration blocks the moving range only, briefly",
+            "Zones win before evenness: residency and tiered disks"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Escape Routes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`refineCollectionShardKey`: append a suffix (4.4+)",
+            "`reshardCollection`: full rewrite (5.0+)",
+            "Neither is cheap, both beat living with a jumbo chunk"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.status()",
+            "db.coll.getShardDistribution()",
+            "db.currentOp({ desc: /Migration/ })",
+            "use config; db.chunks.find({ jumbo: true })"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Buy Hardware Last",
+          "text": "Adding shards fixes capacity and never fixes a bad key. Get the key right, then scale the machine count."
+        },
+        {
+          "type": "sidebox",
+          "title": "Final Rule",
+          "items": [
+            "Pick the key for the query you run a million times a day",
+            "Verify it against real data volumes and real skew",
+            "Only then commit: the decision is close to permanent"
+          ],
+          "ink": "red"
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of MONGODB SHARDING. Your shard key is the one decision MongoDB will not let you take back cheaply, and most teams pick it from the field that felt like the natural primary key. This handbook walks the full chain: cluster anatomy, how keys turn documents into chunks, ranged vs hashed, why a missing key turns every read into a scatter-gather, and what the balancer is actually doing while your p99 spikes. Ends with the decision framework and the repair commands you hope you never need.",
+    "hashtags": [
+      "#mongodb",
+      "#sharding",
+      "#databases",
+      "#nosql",
+      "#backend",
+      "#systemdesign",
+      "#scalability",
+      "#distributedsystems",
+      "#devops",
+      "#dataengineering",
+      "#softwareengineering",
+      "#techstudynotes"
+    ]
+  }
+}

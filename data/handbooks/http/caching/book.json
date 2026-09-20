@@ -1,0 +1,195 @@
+{
+  "title": "HTTP Caching: The Field Handbook",
+  "summary": "A practical deep-dive into how HTTP caching actually works — freshness and Cache-Control directives, validators and conditional revalidation, Vary and content negotiation, immutable fingerprinted assets, and how CDNs and shared caches change the rules. Ends with the mistakes that bite in production and a one-page cheat sheet.",
+  "chapters": [
+    {
+      "title": "Why Caching Exists & Where Caches Live",
+      "points": [
+        "Caching = storing a response so a later equivalent request is served without a full origin round-trip",
+        "Three wins: latency (no RTT), bandwidth (no bytes), origin load (no compute/DB hit)",
+        "Private cache = browser HTTP cache, per-user, per-profile, on disk/memory",
+        "Shared cache = CDN edge, reverse proxy (nginx/Varnish), corporate forward proxy — serves many users",
+        "Cache hierarchy on a real request: memory cache → browser disk cache → Service Worker Cache API → CDN edge → shard/origin shield → origin",
+        "Only safe methods are cacheable by default: GET (and HEAD); POST is cacheable only with explicit freshness and is rarely done",
+        "Cache key by default = method + full URL (scheme, host, path, query string); ?v=2 is a different resource entirely",
+        "Vary headers extend the cache key with named request headers (Chapter 6)",
+        "Cacheable-by-default status codes: 200, 203, 204, 206, 300, 301, 308, 404, 405, 410, 414, 501 — yes, errors cache",
+        "Heuristic caching: with no Cache-Control and no Expires, a cache MAY guess freshness, commonly 10% of (Date − Last-Modified)",
+        "Gotcha: 'no cache headers' does not mean 'not cached' — it means 'cached by heuristic you don't control'",
+        "Caching is a correctness/performance trade: every cached byte is a bet that the origin hasn't changed",
+        "Terms: fresh (usable without asking), stale (past lifetime, must revalidate or be allowed to serve stale)"
+      ]
+    },
+    {
+      "title": "Freshness: Cache-Control Lifetime Directives",
+      "points": [
+        "Cache-Control is the modern control surface; response directives are comma-separated, order-insensitive",
+        "max-age=N — response is fresh for N seconds after it was generated (age-relative, not clock-relative)",
+        "s-maxage=N — overrides max-age for shared caches only; browser keeps max-age, CDN uses s-maxage",
+        "Classic split: `Cache-Control: max-age=0, s-maxage=600` — browser always asks, CDN absorbs the load for 10 min",
+        "Expires: <HTTP-date> is the HTTP/1.0 predecessor; Cache-Control: max-age wins whenever both are present",
+        "Pragma: no-cache is a request-side HTTP/1.0 relic; never send it on responses, it does nothing useful",
+        "Age header = seconds the response has been sitting in shared caches; remaining freshness = max-age − Age",
+        "Freshness lifetime is computed from Date, not from when your browser received it — a CDN hit can arrive already 500s old",
+        "public — explicitly cacheable by shared caches, even for requests with Authorization headers",
+        "private — only the browser may store it; CDNs must not. Use for per-user HTML and dashboards",
+        "no-store — never write to any cache, memory or disk. The only real 'do not keep this' directive",
+        "no-cache is a lie by name: it means store it, but revalidate every time before reuse",
+        "must-revalidate — once stale, a cache must not serve it without checking origin (kills stale-on-error fallbacks)",
+        "proxy-revalidate = must-revalidate, but only binding on shared caches",
+        "Rule of thumb: `no-store` for secrets, `no-cache` for HTML, `max-age=31536000, immutable` for hashed assets"
+      ]
+    },
+    {
+      "title": "Validators: ETag and Last-Modified",
+      "points": [
+        "A validator is a token the client sends back so the origin can answer 'unchanged' cheaply",
+        "ETag: opaque server-chosen version tag, e.g. `ETag: \"a4f2c9\"` — quoted string, contents meaningless to the client",
+        "Strong ETag `\"abc\"` = byte-for-byte identical; required for Range requests and safe partial reassembly",
+        "Weak ETag `W/\"abc\"` = semantically equivalent, bytes may differ (whitespace, timestamp comment, different gzip level)",
+        "Last-Modified: <HTTP-date> — 1-second resolution, so sub-second edits are invisible to it",
+        "Last-Modified fails on: files touched by deploy/rsync, content generated per-request, clock skew across origin servers",
+        "ETag beats Last-Modified on precision; Last-Modified beats ETag on multi-server consistency if ETags are inode-derived",
+        "Send both when you can — clients echo both, and the origin can pick the cheaper comparison",
+        "Common generation strategies: content hash (best), version+path, mtime+size (nginx default), DB row updated_at + id",
+        "Anti-pattern: inode-based ETags across a load-balanced fleet — same file, different ETag per box, zero hit rate",
+        "nginx generates `ETag: \"mtime-hex-size-hex\"`; Apache's FileETag INode is the classic multi-server footgun",
+        "Compression changes bytes: gzip and brotli variants need distinct strong ETags or a weak ETag",
+        "Cost model: computing a content-hash ETag per request can cost more than just sending the body — hash at build/write time"
+      ]
+    },
+    {
+      "title": "Revalidation: The Conditional Request Dance",
+      "points": [
+        "When a stored response goes stale, the cache revalidates instead of refetching blind",
+        "If-None-Match: \"a4f2c9\" — echoes the stored ETag; the primary conditional header",
+        "If-Modified-Since: <date> — echoes the stored Last-Modified; used only when no ETag exists",
+        "If both are sent, the origin MUST evaluate If-None-Match and ignore If-Modified-Since",
+        "304 Not Modified = empty body, and the cache refreshes stored headers from the 304 and restarts the clock",
+        "A 304 must carry updated Cache-Control/ETag/Date; forgetting this makes the entry re-stale immediately, revalidating on every hit",
+        "200 with a full body = the resource changed; the cache replaces the entry wholesale",
+        "Comparison: strong compare (byte-identical, needed for Range) vs weak compare (used by If-None-Match on GET)",
+        "If-Match / If-Unmodified-Since are the write-side twins: optimistic concurrency for PUT/PATCH/DELETE",
+        "412 Precondition Failed = someone else wrote first; this is how you avoid lost updates on a REST API",
+        "`If-Match: *` means 'must already exist'; `If-None-Match: *` on PUT means 'create only if absent'",
+        "Revalidation still costs a full RTT — it saves bytes, not latency; that's why immutable assets matter",
+        "Request-side Cache-Control: no-cache is what a browser hard-reload (Ctrl+Shift+R) sends; max-age=0 is a normal reload",
+        "Example round trip: GET /app.css → 200 + ETag → later GET with If-None-Match → 304, ~200 bytes on the wire"
+      ]
+    },
+    {
+      "title": "Stale Serving: SWR, stale-if-error, and Collapsing",
+      "points": [
+        "stale-while-revalidate=N — serve the stale copy instantly, refresh in the background for up to N seconds past expiry",
+        "`Cache-Control: max-age=60, stale-while-revalidate=300` — one user pays the miss, everyone else gets an instant hit",
+        "SWR removes revalidation latency from the critical path; the cost is a bounded window of stale content",
+        "stale-if-error=N — if the origin returns 5xx/times out, keep serving the stale copy for N seconds",
+        "stale-if-error turns an origin outage into slightly-old content instead of a 502 wall",
+        "must-revalidate disables both stale behaviours — never pair it with stale-if-error and expect a fallback",
+        "Request collapsing / coalescing: N concurrent misses for the same key become 1 origin request",
+        "Cache stampede (dogpile): a hot key expires and thousands of requests hit the origin in the same instant",
+        "Stampede defences: collapsing, SWR, jittered TTLs, early recomputation before expiry, origin shield tier",
+        "Jitter example: max-age = 3600 + rand(0..600) so a mass-populated cache doesn't expire in lockstep",
+        "Negative caching: cache 404s and 5xx briefly (5–30s) so a broken path can't hammer the origin",
+        "Trade-off: negative caching a 500 during a deploy can pin the error in place — keep those TTLs tiny",
+        "Serving stale is a product decision, not just an engineering one: agree what staleness is acceptable per route"
+      ]
+    },
+    {
+      "title": "Vary and Content Negotiation",
+      "points": [
+        "Vary lists request headers that are part of the cache key: `Vary: Accept-Encoding`",
+        "Without Vary: Accept-Encoding, a brotli body can be served to a client that only accepts gzip — corrupted page",
+        "Vary: Accept-Encoding is the near-universal correct default whenever you compress",
+        "Each distinct header value creates a separate stored variant — cardinality is multiplicative across listed headers",
+        "Vary: User-Agent is a hit-rate catastrophe: thousands of UA strings, effectively one variant per visitor",
+        "Vary: Cookie is nearly as bad — every session ID is its own variant; usually you wanted `private` instead",
+        "Vary: * means 'never reusable' — equivalent to opting out of shared caching entirely",
+        "Vary: Accept-Language is legitimate but should be normalized to a small set (en, fr, de) before it hits the key",
+        "Vary: Origin is required when you reflect an Origin into Access-Control-Allow-Origin, or you leak CORS grants across sites",
+        "Normalize at the edge: collapse Accept-Encoding to gzip|br|none, then Vary on the normalized value",
+        "CDNs often let you define the cache key directly (device class, country, a single cookie) — safer than raw Vary",
+        "Content negotiation alternative: separate URLs per variant (/img/hero.avif vs /img/hero.jpg) — no Vary, perfect hit rate",
+        "Debug rule: if hit rate is mysteriously ~0%, print the response Vary header first"
+      ]
+    },
+    {
+      "title": "Immutable Assets & Cache Busting",
+      "points": [
+        "The core pattern: content-hash the filename, then cache the file forever — app.9f2c1a.js",
+        "`Cache-Control: public, max-age=31536000, immutable` — one year (the practical max) plus a no-revalidate promise",
+        "immutable tells the browser: do not even revalidate on reload; without it, a plain refresh still fires If-None-Match on every asset",
+        "Content changes ⇒ the hash changes ⇒ the URL changes ⇒ a new cache entry. Old entries just age out harmlessly",
+        "Query-string busting (app.js?v=3) is weaker: some intermediary proxies refuse to cache URLs with query strings",
+        "Never fingerprint your HTML entry point — it's the mutable index that points at the immutable assets",
+        "Canonical two-tier policy: HTML `no-cache` (or max-age=0, must-revalidate), assets `max-age=31536000, immutable`",
+        "Atomicity rule: deploy new assets BEFORE flipping HTML, and keep old assets live for at least one TTL window",
+        "Skipping that ordering = a client on old HTML requests a deleted chunk → chunk-load-error white screen",
+        "Version your API responses with ETags instead of hashed URLs — endpoints are addressed by meaning, not by build",
+        "Purging vs busting: purge is an out-of-band CDN API call, fragile and eventually-consistent; busting is inherent and instant",
+        "Purge by surrogate key/tag (Fastly, Cloudflare Enterprise): tag responses at edge, invalidate a whole content group in one call",
+        "Service Worker adds a fourth cache you own in JS — it can serve a stale app forever if you never call skipWaiting/claim",
+        "Sanity check: `curl -I` the asset and confirm age climbs on repeat calls while the ETag stays fixed"
+      ]
+    },
+    {
+      "title": "CDN Behaviour and the Edge Layer",
+      "points": [
+        "A CDN is a shared cache with PoPs near users; a hit avoids both the origin RTT and the origin work",
+        "Cache states in headers: HIT, MISS, EXPIRED (revalidated), STALE, BYPASS, DYNAMIC — read x-cache / cf-cache-status / x-served-by",
+        "Origin shield: one designated mid-tier PoP fronts the origin so 200 edges produce 1 miss, not 200",
+        "Tiered caching turns hit ratio math around: edge hit ratio and origin offload ratio are different numbers, track both",
+        "Surrogate-Control and CDN-Cache-Control are edge-only headers, stripped before the browser sees them",
+        "Precedence at a well-behaved CDN: CDN-Cache-Control > Surrogate-Control > s-maxage > max-age",
+        "This lets you say 'edge caches 1 day, browser caches 60s' without a single custom rule in the CDN UI",
+        "Most CDNs bypass cache by default when a Set-Cookie is present on the response — one stray cookie kills your hit rate",
+        "Many CDNs also bypass when the request carries Authorization, unless the response is explicitly `public`",
+        "Cache key control: strip tracking params (utm_*, fbclid, gclid) or they shard one page into a thousand entries",
+        "Normalize before keying: lowercase host, sort query params, drop trailing slash inconsistencies",
+        "ESI / edge fragments and CDN-side HTML caching let you cache the shell and hole-punch the personalized parts",
+        "Cache poisoning: an unkeyed input (X-Forwarded-Host, X-Original-URL) reflected into the response, stored, then served to everyone",
+        "Defence: never reflect unkeyed request headers into cached output; key on anything that changes the body",
+        "Measure it: hit ratio, origin offload %, p50/p99 by cache state, bytes served from edge"
+      ]
+    },
+    {
+      "title": "Trade-offs, Comparisons and Cost Models",
+      "points": [
+        "Latency ladder: memory cache ~0ms, disk cache ~1ms, CDN edge ~10–30ms, cross-region origin ~150ms+",
+        "Cost of a 304: full RTT + ~200 bytes. Cost of a fresh hit: 0. That gap is the entire argument for immutable",
+        "Long TTL = high hit rate + slow invalidation. Short TTL = fast propagation + heavy origin load. Pick per route",
+        "Expiration (TTL) vs invalidation (purge): expiration is cheap and eventual; invalidation is precise and operationally expensive",
+        "ETag vs Last-Modified: precision and per-request cost vs cheapness and 1s granularity",
+        "no-store vs no-cache vs max-age=0: never store / store-but-always-ask / stale immediately, then normal stale rules apply",
+        "private vs no-store: private still writes to the user's disk — not good enough for tokens on a shared machine",
+        "max-age vs s-maxage: the standard way to give browsers a short leash and CDNs a long one",
+        "Hashed URLs vs purge API: build-time correctness vs runtime coordination; prefer hashing whenever the client can be told a new URL",
+        "SWR vs must-revalidate: availability and speed vs strict freshness — a correctness decision per resource",
+        "Hit ratio is not the goal: origin offload and p99 latency are. A 99% hit rate on tiny assets can hide a hot uncached HTML route",
+        "Cache size is finite — LRU eviction means a huge long-tail asset set can push out your hot files",
+        "Rough capacity math: 1M req/day at 90% hit = 100k origin req/day ≈ ~1.2 rps; at 50% it's 500k ≈ ~6 rps",
+        "Every caching layer you add is another place truth can diverge — count your layers before adding one more"
+      ]
+    },
+    {
+      "title": "Common Mistakes + Cheat Sheet",
+      "points": [
+        "Caching authenticated HTML on a shared cache — user A sees user B's dashboard. Use `private, no-store` for personalized pages",
+        "Assuming no-cache means don't cache; it means always revalidate. `no-store` is the one you wanted",
+        "Setting max-age=31536000 on a non-fingerprinted URL — you just pinned bad content on real browsers for a year with no recall",
+        "Forgetting Vary: Accept-Encoding — clients receive a body in an encoding they can't decode",
+        "Vary: User-Agent or Vary: Cookie 'to be safe' — you've disabled shared caching and doubled origin load",
+        "Returning a 304 without refreshed Cache-Control/ETag — the entry stays stale and revalidates on every single request",
+        "Inode-derived ETags across a fleet — same content, different validator per server, near-zero revalidation savings",
+        "Set-Cookie on a static asset response — most CDNs will refuse to cache it, silently",
+        "Deleting old build artifacts on deploy — in-flight clients on the old HTML hit 404 chunks and white-screen",
+        "Purging as a routine workflow instead of an emergency tool — it doesn't scale and it's eventually consistent",
+        "Not caching 404s at all — a scanner or broken link becomes free origin load",
+        "Trusting a hard-reload to test caching: Ctrl+Shift+R sends `Cache-Control: no-cache` and bypasses the very thing you're testing",
+        "Debug toolkit: `curl -svo /dev/null -H 'If-None-Match: \"x\"' URL`, DevTools Network size column ('disk cache'/'304'), and Chrome's net-export log",
+        "Cheat sheet — HTML: `no-cache`; hashed asset: `public, max-age=31536000, immutable`; API GET: `private, no-cache` + ETag; secrets: `no-store`; CDN-heavy page: `max-age=0, s-maxage=600, stale-while-revalidate=60, stale-if-error=86400`",
+        "Closing rule: name the cache key, name the TTL, name the invalidation path. If you can't state all three, you don't have a caching strategy"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1097 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "REDIS STREAMS & PUB/SUB",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Two Messaging Models in One Server",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Two Systems, One Server",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pub/Sub (2.0) and Streams (5.0) share no commands, no keyspace",
+            "Channel names are not keys — invisible to `KEYS` and `SCAN`",
+            "Channels never reach RDB or AOF; there is nothing to persist",
+            "A stream IS a key: has a TTL, dumps to RDB, replays from AOF",
+            "Streams replicate as ordinary key data, like a hash or a list"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "PUBLISH jobs \"resize:42\"   # 0 = nobody heard",
+            "XADD jobs * task resize id 42  # 1757-0",
+            "SCAN 0 MATCH jobs          # stream key shows",
+            "PUBSUB CHANNELS jobs       # channel lives here"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Delivery Semantics"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Pub/Sub",
+                "lines": [
+                  "at-most-once",
+                  "fire-and-forget",
+                  "zero history",
+                  "always broadcast"
+                ]
+              },
+              {
+                "title": "Streams",
+                "lines": [
+                  "at-least-once",
+                  "explicit `XACK`",
+                  "replay any window",
+                  "broadcast or balance"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Server pushes to whoever is connected now, then forgets",
+            "Entry stays in the log until you trim it",
+            "Entry stays in the PEL until you `XACK` it",
+            "A subscriber joining at t+1 can never see t's message"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Comparison Rows"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Pub/Sub",
+            "Streams"
+          ],
+          "rows": [
+            [
+              "Retention",
+              "nothing, O(1)",
+              "until MAXLEN/MINID"
+            ],
+            [
+              "Fan-out",
+              "always all",
+              "all, or one group"
+            ],
+            [
+              "Ordering",
+              "per publisher",
+              "plus sortable ID"
+            ],
+            [
+              "Slow client",
+              "buffer full, killed",
+              "falls behind cursor"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Random Access"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Append-only log: `XRANGE` any past window on demand",
+            "Many independent readers replay the same entries",
+            "Pub/Sub memory is freed the instant the push completes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Lineage And Limits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Borrows Kafka's log model, but one key, in memory",
+            "No partitions, no per-topic disk segments",
+            "Neither is a broker: no exchanges, no routing keys",
+            "No built-in dead-letter queue — you build that yourself"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rule Of Thumb",
+          "text": "Pub/Sub for ephemeral live signals — cache invalidation, presence, tickers. Streams for work that must not be lost — jobs, events, orders."
+        }
+      ]
+    },
+    {
+      "page_title": "Pub/Sub Mechanics: SUBSCRIBE, PUBLISH, Patterns",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Two Commands",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "SUBSCRIBE news.tech      # conn enters sub mode",
+            "PUBLISH news.tech \"redis 8\"  # -> (integer) 2",
+            "PSUBSCRIBE news.*        # glob, all news topics"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`PUBLISH` returns receivers, not deliveries confirmed",
+            "That count excludes shard-channel receivers entirely",
+            "RESP2 subscriber mode allows only SUBSCRIBE, PING, QUIT, RESET",
+            "RESP3 lifts it — push is a distinct protocol type, so normal commands work"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Push Message Shape"
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "\"message\"",
+              "channel",
+              "payload",
+              "\"pmessage\"",
+              "pattern",
+              "channel",
+              "payload"
+            ],
+            "caption": "message vs pmessage"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Patterns use glob syntax: `*`, `?`, `[abc]`",
+            "Subscribed directly AND by pattern? You get it twice",
+            "`PUBLISH` is O(N+M): N subscribers plus M registered patterns",
+            "Heavy pattern use slows down every single publish"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Introspection"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Answers"
+          ],
+          "rows": [
+            [
+              "`PUBSUB CHANNELS p`",
+              "live channels"
+            ],
+            [
+              "`PUBSUB NUMSUB ch`",
+              "subs per channel"
+            ],
+            [
+              "`PUBSUB NUMPAT`",
+              "pattern count"
+            ],
+            [
+              "`PUBSUB SHARDNUMSUB`",
+              "sharded subs"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keyspace Notifications"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "CONFIG SET notify-keyspace-events KEA",
+            "SUBSCRIBE __keyspace@0__:mykey   # what happened",
+            "SUBSCRIBE __keyevent@0__:expired # who expired"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Expiry fires on actual deletion, not at the TTL instant",
+            "Lazy access or the active cycle deletes — delay can be seconds",
+            "RESP3 client-side caching rides `__redis__:invalidate`",
+            "Same mechanism means the same at-most-once caveat"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cache Invalidation"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "SET user:42 '{...}'",
+            "PUBLISH cache:invalidate user:42  # nodes drop it"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Pub/Sub Mechanics: SUBSCRIBE, PUBLISH, Patterns (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Buffer Limits Kill",
+          "items": [
+            "`client-output-buffer-limit pubsub 32mb 8mb 60`",
+            "Over the limit, Redis kills the connection",
+            "Everything queued is silently lost",
+            "Reconnect must re-issue SUBSCRIBE — the gap is gone"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "MULTI Does Not Help",
+          "text": "Subscribers see the messages after `EXEC`, but no subscriber ever confirms receipt. Transactions bound the publisher, never the delivery."
+        },
+        {
+          "type": "heading",
+          "text": "Loss Causes 1-3",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Cause",
+            "What happens"
+          ],
+          "rows": [
+            [
+              "No subscriber",
+              "returns 0, gone"
+            ],
+            [
+              "Restart/deploy",
+              "window is a black hole"
+            ],
+            [
+              "Slow consumer",
+              "32mb hard kill"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "There is no queue sitting behind a channel",
+            "Nothing tells you how many messages fell in the deploy gap",
+            "Soft limit 8mb for 60s kills the client mid-stream"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Loss Causes 4-6",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Cause",
+            "What happens"
+          ],
+          "rows": [
+            [
+              "Partition",
+              "half-open socket eats it"
+            ],
+            [
+              "Failover",
+              "in-flight dropped"
+            ],
+            [
+              "Consumer crash",
+              "read, then died"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "TCP takes seconds to notice; the publisher sees no error",
+            "Replicas propagate Pub/Sub, but promotion drops in-flight messages",
+            "Delivered off the socket = done, as far as Redis is concerned"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Never Persisted"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "AOF and RDB never record a published message",
+            "A restart replays keys and replays no messages at all",
+            "`PUBLISH`'s return counts buffered clients, not processed work"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "In Cluster"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "PUBLISH",
+              "cluster bus",
+              "every node",
+              "subscribers"
+            ]
+          }
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "When Pub/Sub Loses Messages",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Plain `PUBLISH` is correct but costs O(nodes) traffic",
+            "A known scaling bottleneck on wide clusters",
+            "`SPUBLISH`/`SSUBSCRIBE` (7.0) confine a channel to one slot's shard",
+            "Price of that: your client must be slot-aware"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Anti-Cases"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "PUBLISH jobs \"charge:42\"  # both workers",
+            "# worker-a: charged 42",
+            "# worker-b: charged 42   # broadcast, not LB"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Job dispatch on Pub/Sub double-runs every job",
+            "Pub/Sub as sole invalidation transport with no TTL fallback",
+            "One missed message means a permanently stale cache entry"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Treat It As A Hint",
+          "text": "Pair Pub/Sub with a short TTL, a version counter, or a periodic reconcile sweep. The moment you need 'did anyone actually handle this?', you need Streams — no tuning buys guarantees."
+        },
+        {
+          "type": "heading",
+          "text": "XADD And Entry IDs",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XADD orders * id 42 amt 19.99  # * = server ID",
+            "XADD orders 1526919030474-* id 43  # pin the ms",
+            "XLEN orders                    # O(1)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ID is `<ms>-<seq>`: epoch millis plus a 64-bit counter",
+            "The seq disambiguates entries inside one millisecond",
+            "IDs are strictly monotonic per stream, never reused",
+            "Partial IDs give deterministic time bucketing"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "The Backwards-ID Error",
+          "items": [
+            "`ERR The ID specified in XADD is equal or`",
+            "`smaller than the target stream top item`",
+            "Seen when replaying a backup with explicit IDs",
+            "Fix the cursor with `XSETID`, not with retries"
+          ],
+          "ink": "red"
+        }
+      ]
+    },
+    {
+      "page_title": "Streams: The Append-Only Log",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Entry Shape"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An entry is a flat field-value map, like a small hash",
+            "No nesting exists at any depth",
+            "Serialize structured payloads to JSON or MessagePack",
+            "Put that blob in one field — keeps field names stable"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reading The Log"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Walks"
+          ],
+          "rows": [
+            [
+              "`XRANGE s - +`",
+              "oldest to newest"
+            ],
+            [
+              "`XREVRANGE s + -`",
+              "newest first, args flipped"
+            ],
+            [
+              "`XRANGE s (id + COUNT 10`",
+              "cursor page"
+            ],
+            [
+              "`XREAD ... STREAMS s 0`",
+              "from the head"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`-` is the smallest ID, `+` is the largest",
+            "A `(` prefix makes a range bound exclusive",
+            "`$` means only entries arriving after this call"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XREAD BLOCK 5000 STREAMS orders $  # wait 5s",
+            "XREAD BLOCK 0 STREAMS orders $     # forever",
+            "XREAD COUNT 10 STREAMS orders 0    # replay"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`XREAD` is pure fan-out — every reader keeps its own last ID",
+            "That cursor lives client-side; Redis stores nothing",
+            "N readers all see all entries, and nothing is acknowledged"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Inside The Structure"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "rax radix tree",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1"
+              ],
+              [
+                "c0_0",
+                "c0_1"
+              ],
+              [
+                "c1_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "rax radix tree",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "macro-node"
+              },
+              "b1": {
+                "text": "listpack"
+              },
+              "c0_0": {
+                "text": "master entry"
+              },
+              "c0_1": {
+                "text": "many entries"
+              },
+              "c1_0": {
+                "text": "delta-compressed"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Entries share one master entry of field names per node",
+            "Identical field names are dramatically cheaper than varying ones",
+            "`XDEL key id` flags the entry; memory frees when the node empties",
+            "`XINFO STREAM key` shows length, nodes, last-generated-id, entries-added"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rebuilding A Stream",
+          "text": "`XSETID key id [ENTRIESADDED n] [MAXDELETEDID id]` forcibly rewrites the cursor — the one tool for restoring a stream from a backup without breaking monotonicity."
+        }
+      ]
+    },
+    {
+      "page_title": "Consumer Groups: XGROUP and XREADGROUP",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What A Group Is",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A named cursor plus a delivery ledger, stored in the key",
+            "One shared last-delivered-id for the whole group",
+            "Per-consumer sets of unacknowledged entries alongside it"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XGROUP CREATE orders g $ MKSTREAM  # tail only",
+            "XGROUP CREATE orders g2 0          # replay all",
+            "XREADGROUP GROUP g w1 COUNT 10 STREAMS orders >"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`$` starts at the tail, `0` replays every entry in the log",
+            "Without `MKSTREAM`: `ERR The XGROUP subcommand requires the key to exist`",
+            "`>` means entries never delivered to any consumer in this group",
+            "Any other ID (usually `0`) reads that consumer's OWN pending entries"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Consumers Appear By Typing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Consumers are created implicitly on first `XREADGROUP`",
+            "No registration step exists at all",
+            "A typo'd name silently creates a consumer that owns nothing",
+            "`XGROUP CREATECONSUMER` / `DELCONSUMER` manage them explicitly"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "How Work Splits"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Within one group",
+                "lines": [
+                  "entry to exactly one",
+                  "load balanced",
+                  "PEL per consumer"
+                ]
+              },
+              {
+                "title": "Across groups",
+                "lines": [
+                  "each group sees all",
+                  "independent cursors",
+                  "own PEL each"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`NOACK` skips PEL insertion — at-most-once with group ergonomics",
+            "Use `NOACK` only when losing a message is genuinely acceptable",
+            "`DELCONSUMER` returns how many pending entries died with it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cursor Surgery"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`XGROUP SETID s g 0`",
+              "rewind, PEL kept"
+            ],
+            [
+              "`XGROUP DESTROY s g`",
+              "group + all PELs gone"
+            ],
+            [
+              "`XINFO GROUPS s`",
+              "pending, lag, last-id"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`SETID` does NOT clear the PEL — old pending entries remain",
+            "`DESTROY` leaves stream entries, so another group still reads them",
+            "`XINFO GROUPS` reports consumers, pending, entries-read, lag",
+            "`lag` = added but not yet delivered; NULL once trimming outran it"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Consumer Groups: XGROUP and XREADGROUP (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Worker Loop"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XREADGROUP GROUP g pod-7 BLOCK 2000 STREAMS s 0",
+            "# drain own backlog first, then switch to >",
+            "XACK s g 1757-0     # only after work succeeded"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Name Consumers Stably",
+          "text": "Derive the consumer name from a stable identity — pod name, worker index. A random UUID per process start orphans that consumer's PEL entries on every restart."
+        },
+        {
+          "type": "heading",
+          "text": "The PEL, Defined",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "entry ID",
+                "owner"
+              ],
+              [
+                "delivery time",
+                "delivery count"
+              ]
+            ],
+            "caption": "one PEL row"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per-group table of delivered-but-unacked entries",
+            "An entry enters the PEL the instant `XREADGROUP` returns it",
+            "That is before your code has seen the bytes on the wire"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "XACK Is Idempotent"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XACK orders g 1757-0 1757-1   # -> 2 removed",
+            "XACK orders g 1757-0          # -> 0, no error",
+            "# 0 means already acked, or never pending"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Acking an unknown ID is not an error — retry-safe cleanup",
+            "At-least-once: crash after work, before ack, means redelivery",
+            "Handlers must therefore be idempotent, no exceptions",
+            "No exactly-once exists: keep a processed-ID set or a unique constraint"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Inspecting Pending Work"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XPENDING orders g            # summary, cheap",
+            "XPENDING orders g - + 10     # per-entry detail",
+            "XPENDING orders g IDLE 60000 - + 100 pod-7"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Form",
+            "Returns"
+          ],
+          "rows": [
+            [
+              "summary",
+              "total, min, max, per-consumer"
+            ],
+            [
+              "extended",
+              "ID, owner, idle ms, count"
+            ],
+            [
+              "`IDLE` filter",
+              "stuck work only"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The summary form is cheap and safe to poll for monitoring",
+            "`IDLE` plus a consumer name is the standard stuck-work query",
+            "Delivery count rises on every claim or redelivery",
+            "Count above ~5 marks a poison message bound for a DLQ stream"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Acknowledgement and the Pending Entries List",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "PEL Memory Is Real"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Millions of unacked entries cost memory even after trimming",
+            "Trimming the stream does NOT remove PEL references",
+            "A trimmed entry still in the PEL becomes a phantom",
+            "`XCLAIM`/`XAUTOCLAIM` return that ID with a nil entry body"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Redis 7.0 Cleanup",
+          "text": "`XAUTOCLAIM` now deletes phantom IDs from the PEL and reports them in its third reply element. On 6.2 you clear them by hand with `XACK`."
+        },
+        {
+          "type": "qa",
+          "q": "Does a group process entries in order?",
+          "a_bullets": [
+            "No — the PEL breaks strict ordering",
+            "A redelivered old entry can land after newer ones",
+            "Design handlers to tolerate out-of-order arrival"
+          ],
+          "example_code": [
+            "XINFO CONSUMERS orders g",
+            "# pending, idle, and (7.2+) inactive time"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Nobody Rescues You",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A dead consumer's pending entries are simply stranded",
+            "Nothing in Redis reassigns them automatically, ever",
+            "Recovery is an explicit application job you must write"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "XCLAIM"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XCLAIM orders g pod-9 60000 1757-0",
+            "XCLAIM orders g pod-9 60000 1757-0 JUSTID",
+            "# JUSTID: no bodies, no retry increment"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Transfers ownership of listed IDs idle past min-idle-time",
+            "min-idle-time is the safety interlock between racing rescuers",
+            "Only the first claim wins — it resets idle to 0",
+            "`JUSTID` is the cheap option for bulk ownership moves"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Does"
+          ],
+          "rows": [
+            [
+              "`IDLE ms`",
+              "set new idle clock"
+            ],
+            [
+              "`TIME unix-ms`",
+              "set clock absolutely"
+            ],
+            [
+              "`RETRYCOUNT n`",
+              "overwrite counter"
+            ],
+            [
+              "`FORCE`",
+              "create PEL entry for unpending ID"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "XAUTOCLAIM Wins"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XAUTOCLAIM orders g pod-9 60000 0 COUNT 100",
+            "# 1) next cursor 2) entries 3) deleted IDs",
+            "# loop until cursor comes back 0-0"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Recovering Stuck Work: XCLAIM and XAUTOCLAIM",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "cursor 0",
+              "claim COUNT",
+              "next cursor",
+              "repeat",
+              "0-0 done"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "6.2+, scans the PEL and claims everything past the threshold",
+            "One call covers only COUNT entries — the rest stay stranded",
+            "One round trip beats `XPENDING` then `XCLAIM`",
+            "No risk of the ID list going stale between read and claim"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Tuning The Sweep"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Set min-idle-time well above your slowest legitimate job",
+            "Too low and you steal work from a consumer that is merely busy",
+            "Run the sweep from every worker on a 30s timer",
+            "A single leader sweeper is a single point of failure"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XADD orders:dlq * src 1757-0 tries 6",
+            "XACK orders g 1757-0   # leaves the PEL now"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Scale-Down Hygiene",
+          "items": [
+            "`XAUTOCLAIM ... JUSTID` for a fast rebalance",
+            "Skips bodies and skips retry increments",
+            "`DELCONSUMER` retired names only AFTER claiming away their PEL",
+            "Reverse that order and you destroy the pending work"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Dead-Letter Rule",
+          "text": "When the delivery count crosses your limit, `XADD` the payload to `mystream:dlq`, then `XACK` the original. Ack last, so a crash mid-way retries instead of dropping."
+        },
+        {
+          "type": "heading",
+          "text": "Unbounded Means OOM",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Streams grow forever by default — no implicit cap exists",
+            "The #1 cause of Redis OOM in production event pipelines",
+            "At 1 KB per entry and 10k/sec, that is ~36 GB per hour",
+            "Decide retention before launch, not during the alert"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Trim At Write Time"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XADD s MAXLEN 1000 * k v      # exact, costly",
+            "XADD s MAXLEN ~ 1000 * k v    # node boundary",
+            "XADD s MAXLEN ~ 1000 LIMIT 100 * k v"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Exact `MAXLEN` trims to roughly 1000 on every append",
+            "`~` stops at a macro-node boundary, so it keeps a few extra",
+            "`LIMIT n` caps work per call and is legal only with `~`",
+            "That bounds latency spikes when a huge backlog exists"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "`PUBLISH` returning 2 does not mean two workers did the job — it means two sockets got the bytes, and Redis stopped caring. This ten-page field handbook walks the whole Redis messaging surface: why Pub/Sub loses messages six different ways, how consumer groups split work with XREADGROUP and the Pending Entries List, and how to rescue stuck entries with XAUTOCLAIM before your trim policy deletes work nobody ran. Save it before your next queue outage, not after.",
+    "hashtags": [
+      "#redis",
+      "#redisstreams",
+      "#pubsub",
+      "#backend",
+      "#distributedsystems",
+      "#systemdesign",
+      "#messagequeue",
+      "#devnotes",
+      "#backendengineering",
+      "#databases",
+      "#softwareengineering",
+      "#iolar"
+    ]
+  }
+}

@@ -1,0 +1,1209 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES TXN & LOCKING",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Transactions & ACID: The Ground Rules",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "All Or Nothing",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A transaction is one unit of work.",
+            "`BEGIN ... COMMIT` applies everything.",
+            "`ROLLBACK` applies nothing at all.",
+            "Autocommit default: bare statement = own txn."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "BEGIN;",
+            "UPDATE accounts SET bal=bal-100 WHERE id=1;",
+            "UPDATE accounts SET bal=bal+100 WHERE id=2;",
+            "COMMIT;  -- both land, or neither does"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Letter",
+            "Guarantee"
+          ],
+          "rows": [
+            [
+              "Atomicity",
+              "all or nothing"
+            ],
+            [
+              "Consistency",
+              "constraints hold at commit"
+            ],
+            [
+              "Isolation",
+              "no peeking at others' mess"
+            ],
+            [
+              "Durability",
+              "committed data survives crash"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Only One Dial",
+          "text": "Isolation is the only ACID property you can tune. `SET TRANSACTION ISOLATION LEVEL` trades concurrency for correctness; the other three are not negotiable."
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Poisoned Transaction",
+          "text": "Any error inside a block aborts it: `current transaction is aborted, commands ignored until end of transaction block`. Only `ROLLBACK` clears the session."
+        },
+        {
+          "type": "heading",
+          "text": "Savepoints",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SAVEPOINT sp1;",
+            "UPDATE accounts SET bal = 0 WHERE id = 9;",
+            "ROLLBACK TO sp1;  -- undo only that part",
+            "COMMIT;           -- rest still applies"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Powers psql `\\set ON_ERROR_ROLLBACK`.",
+            "Powers ORM 'nested transactions'.",
+            "Each savepoint burns a subtransaction XID.",
+            "Over 64 subxacts per txn spills the cache.",
+            "Thousands = SubtransSLRU contention."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Four Levels, Three Behaviors",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Standard: Read Uncommitted, Read Committed, Repeatable Read, Serializable.",
+            "Postgres has only three distinct behaviors.",
+            "Read Uncommitted parses, acts as Read Committed.",
+            "Dirty reads are impossible in Postgres."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "UPDATE docs SET body=$1, v = v + 1",
+            "WHERE id = 1 AND v = 7;  -- optimistic",
+            "-- 0 rows: someone else bumped v, retry"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pid, pg_blocking_pids(pid), query",
+            "FROM pg_stat_activity",
+            "WHERE cardinality(",
+            "  pg_blocking_pids(pid)) > 0;  -- blockers"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Transactions & ACID: The Ground Rules (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Four Anomalies",
+          "items": [
+            "dirty read: see uncommitted data",
+            "non-repeatable read: row changes between reads",
+            "phantom read: new rows match a re-run query",
+            "serialization anomaly: result matches no serial order"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Non-rep.",
+            "Phantom",
+            "Anomaly"
+          ],
+          "rows": [
+            [
+              "Read Committed",
+              "allowed",
+              "allowed",
+              "allowed"
+            ],
+            [
+              "Repeatable Read",
+              "blocked",
+              "blocked",
+              "write skew"
+            ],
+            [
+              "Serializable",
+              "blocked",
+              "blocked",
+              "blocked"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Choosing The Level",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "BEGIN ISOLATION LEVEL REPEATABLE READ;",
+            "-- or once, for the whole session:",
+            "SET SESSION CHARACTERISTICS AS",
+            "  TRANSACTION ISOLATION LEVEL SERIALIZABLE;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Gotchas",
+          "items": [
+            "Level cannot change after the first query runs.",
+            "Default is Read Committed: chosen for throughput.",
+            "`SET TRANSACTION READ ONLY` blocks writes.",
+            "READ ONLY DEFERRABLE + SERIALIZABLE never aborts."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Readers Never Block Writers",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "MVCC = Multi-Version Concurrency Control.",
+            "Writers never block readers; readers never block writers.",
+            "Every row version is kept until no snapshot needs it."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Hidden System Columns",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`xmin`",
+              "XID that inserted it"
+            ],
+            [
+              "`xmax`",
+              "XID that deleted or locked it"
+            ],
+            [
+              "`ctid`",
+              "physical (page, offset)"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT xmin, xmax, ctid, *",
+            "FROM accounts WHERE id = 1;",
+            "-- xmin | xmax | ctid  | bal",
+            "--  812 |    0 | (0,3) | 100"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "MVCC: How Postgres Sees the Past",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "UPDATE is never in-place.",
+            "It stamps the old `xmax`, inserts a new tuple.",
+            "DELETE only stamps `xmax`.",
+            "`ctid` moves on every UPDATE: unsafe as row identity."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Snapshots",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "xmin horizon 810",
+                "xmax next 818"
+              ],
+              [
+                "xip 812",
+                "xip 815"
+              ]
+            ],
+            "caption": "snapshot triple"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Triple: oldest running XID, next unassigned XID, in-progress list.",
+            "Visible if `xmin` committed and in snapshot.",
+            "And `xmax` null, aborted, or not yet visible.",
+            "XIDs are lazy: read-only txns get a virtual xid.",
+            "Compare `txid_current()` vs `pg_current_xact_id()`."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Commit Log & Hint Bits",
+          "items": [
+            "Commit status lives in `pg_xact` (CLOG).",
+            "Hint bits get written back onto tuples.",
+            "Later reads then skip the CLOG lookup.",
+            "Why the first SELECT after a big write dirties pages."
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "Bloat & Cleanup",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "VACUUM reclaims dead tuples only when no snapshot sees them.",
+            "One long transaction pins the horizon database-wide.",
+            "Bloat is the direct cost of MVCC.",
+            "Watch `n_dead_tup` in `pg_stat_user_tables`."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "HOT Updates",
+          "items": [
+            "No new index entry if no indexed column changed.",
+            "New version must fit on the same page.",
+            "Major reason not to index hot columns."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Wraparound",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "XIDs are 32-bit and wrap around.",
+            "`VACUUM FREEZE` rewrites old `xmin` as frozen.",
+            "Ignore autovacuum and the DB shuts down to protect itself."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "MVCC: How Postgres Sees the Past (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Isolation = Snapshot Timing",
+          "text": "An isolation level is essentially just a policy for WHEN a new snapshot is taken. `pg_export_snapshot()` + `SET TRANSACTION SNAPSHOT` lets parallel workers and `pg_dump` share one exact view."
+        },
+        {
+          "type": "heading",
+          "text": "A New Snapshot Per Statement",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fresh snapshot at the start of every statement, not at BEGIN.",
+            "Sees only data committed before the statement began.",
+            "Never sees uncommitted or mid-statement commits.",
+            "So two identical SELECTs can disagree."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Non-Repeatable Read, Live",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Session A",
+            "Session B"
+          ],
+          "rows": [
+            [
+              "`BEGIN; SELECT bal` = 100",
+              "idle"
+            ],
+            [
+              "waits",
+              "`UPDATE bal=500; COMMIT;`"
+            ],
+            [
+              "same `SELECT bal` = 500",
+              "done"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Writes Block, Then Re-Check",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "UPDATE hits locked row",
+              "block till txn ends",
+              "blocker commits",
+              "EPQ re-check",
+              "apply or skip"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Blocker commits: EPQ re-reads the newest version, re-runs WHERE.",
+            "Blocker rolled back: proceed on the original version.",
+            "Blocker DELETEd the row: waiter silently skips it.",
+            "Only WHERE is re-checked; the rest of the snapshot stays old."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Safe vs Unsafe Write",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Safe",
+                "lines": [
+                  "`bal = bal - 100`",
+                  "predicate re-checked by EPQ",
+                  "value computed from current row"
+                ]
+              },
+              {
+                "title": "Unsafe",
+                "lines": [
+                  "`SET bal = 400`",
+                  "value read in an earlier SELECT",
+                  "overwrite goes unreported"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Read Committed: The Default and Its Surprises",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "UPDATE accounts SET bal = bal - 100",
+            "WHERE id = 1 AND bal >= 100;  -- safe",
+            "-- 0 rows means the check failed:",
+            "-- treat it as a business failure"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "What It Still Allows",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Non-repeatable reads, by design.",
+            "Phantom reads: `count(*) WHERE user_id=7` grows.",
+            "Lost updates via read-modify-write in app code.",
+            "But never a serialization failure, so no retry loop."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Good Fit",
+          "items": [
+            "Short OLTP statements.",
+            "Single-row self-referencing updates.",
+            "Web request handlers."
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "sidebox",
+          "title": "Bad Fit",
+          "items": [
+            "Multi-statement reports.",
+            "Any invariant spanning more than one row.",
+            "A balance check split across SELECT then UPDATE."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Why It Stays Default",
+          "text": "No 40001 means no retries anywhere in your stack. That operational appeal is the whole trade: you pay for it by designing around anomalies yourself."
+        },
+        {
+          "type": "heading",
+          "text": "One Snapshot, Whole Txn",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One snapshot at the FIRST statement, reused until COMMIT.",
+            "Every SELECT returns the same rows and same values.",
+            "Taken at the first statement, not at BEGIN.",
+            "`BEGIN;` then sleep 10s: the SELECT still sees fresh data."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Stricter Than The Standard",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Postgres RR is true Snapshot Isolation.",
+            "Phantoms are prevented too, not only non-repeatable reads.",
+            "And with no predicate-locking cost."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Writes See The Present",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An UPDATE cannot silently overwrite a post-snapshot change.",
+            "First-updater-wins: the first committer survives.",
+            "The other is told to retry, not merged.",
+            "`SELECT ... FOR UPDATE` also raises 40001 if the row moved."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "ERROR:  could not serialize access",
+            "  due to concurrent update",
+            "-- SQLSTATE 40001",
+            "-- cure: ROLLBACK and re-run from scratch"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Repeatable Read: One Snapshot for the Whole Transaction",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "No Partial Recovery",
+          "text": "40001 poisons the whole transaction. Savepoints do not save you: there is nothing to roll back to that is still valid."
+        },
+        {
+          "type": "heading",
+          "text": "Retry Loop Is Mandatory",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "for attempt in range(5):",
+            "    try:",
+            "        run_txn(); break     # committed",
+            "    except SerializationFailure:",
+            "        rollback()           # then retry"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Without one, you turn race bugs into user-visible 500s.",
+            "Retry the whole transaction body unchanged.",
+            "Count retries per endpoint as a metric."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where It Shines",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Use",
+            "Why"
+          ],
+          "rows": [
+            [
+              "reports, exports",
+              "internally consistent"
+            ],
+            [
+              "backups",
+              "one stable view"
+            ],
+            [
+              "batch reads",
+              "same data read twice"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Cost",
+          "items": [
+            "A long RR txn pins the vacuum horizon.",
+            "Dead tuples pile up; bloat grows.",
+            "Keep them short or accept storage churn."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Remaining Hole",
+          "text": "RR still allows WRITE SKEW: two txns read overlapping data, write disjoint rows, and together break an invariant neither broke alone. That gap is exactly why Serializable exists."
+        },
+        {
+          "type": "heading",
+          "text": "Serializable, Defined",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Any set of concurrent txns gives a result identical to SOME serial order of them.",
+            "Postgres builds it as SSI: Serializable Snapshot Isolation.",
+            "Layered on RR's snapshot, not on two-phase locking."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Optimistic, Not Blocking",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Txns never block each other for isolation reasons.",
+            "Conflicts are detected at read time or at commit.",
+            "One victim is aborted; the rest sail through."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "SIREAD Predicate Locks",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Non-blocking marks: 'this txn read this data'.",
+            "Granularity: tuple, page, or relation.",
+            "Memory pressure escalates them upward.",
+            "Escalation = more false-positive aborts."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Serializable (SSI): Correct by Construction",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Knob",
+            "Scope"
+          ],
+          "rows": [
+            [
+              "`max_pred_locks_per_transaction`",
+              "per txn"
+            ],
+            [
+              "`max_pred_locks_per_relation`",
+              "per table"
+            ],
+            [
+              "`max_pred_locks_per_page`",
+              "per page"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Dangerous Structure",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "Tin",
+              "rw-antidep",
+              "pivot",
+              "rw-antidep",
+              "Tout",
+              "abort pivot"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "ERROR:  could not serialize access due to",
+            "  read/write dependencies among txns",
+            "HINT:  The transaction might succeed if",
+            "  retried.  -- SQLSTATE 40001"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two rw-antidependencies in a row is the signature.",
+            "The pivot is both read-by and reads-from concurrent txns.",
+            "Retries usually succeed: contention has cleared.",
+            "Measure your 40001 rate before rejecting SSI."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "All Must Participate",
+          "text": "Every txn touching the invariant must run SERIALIZABLE. One Read Committed writer sneaking in breaks the guarantee entirely."
+        },
+        {
+          "type": "heading",
+          "text": "Costs & Fits",
+          "ink": "blue"
+        },
+        {
+          "type": "sidebox",
+          "title": "What It Costs",
+          "items": [
+            "Extra memory for predicate locks.",
+            "CPU for conflict tracking.",
+            "False-positive aborts rise with contention."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Best fit: invariants no single row can enforce.",
+            "Scheduling, double-booking, on-call, cross-row inventory.",
+            "`SERIALIZABLE READ ONLY DEFERRABLE` waits for an abort-proof snapshot.",
+            "Cheaper than the bugs it prevents when writes are low-contention."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Serializable (SSI): Correct by Construction (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Side Effects Escape",
+          "text": "SSI cannot protect anything outside the database. A retried transaction re-sends the email you already sent: keep external effects out of retryable bodies."
+        },
+        {
+          "type": "heading",
+          "text": "Lost Update",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Both txns read the same value.",
+            "Both compute a new one from it.",
+            "Both write; the second erases the first.",
+            "Under Read Committed nobody is told."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT bal INTO x WHERE id=1;  -- 500",
+            "-- x = x - 100 in application code",
+            "UPDATE accounts SET bal = x WHERE id=1;",
+            "-- concurrency bug, zero errors"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Four Fixes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Fix",
+            "Mechanism"
+          ],
+          "rows": [
+            [
+              "atomic SQL",
+              "DB computes from current row"
+            ],
+            [
+              "pessimistic",
+              "`FOR UPDATE`, others wait"
+            ],
+            [
+              "optimistic",
+              "version column + row count"
+            ],
+            [
+              "raise level",
+              "RR turns silence into 40001"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "UPDATE accounts SET bal = bal - 100",
+            "WHERE id = 1 AND bal >= 100;  -- atomic",
+            "SELECT bal FROM accounts",
+            "WHERE id = 1 FOR UPDATE;  -- pessimistic"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Check The Row Count",
+          "text": "Always inspect affected rows on a conditional UPDATE. A 0-row UPDATE is a failed business operation, not a no-op."
+        },
+        {
+          "type": "heading",
+          "text": "Write Skew",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two txns read an overlapping set.",
+            "Each writes a DIFFERENT row.",
+            "The combination breaks a constraint neither violated alone."
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Why does Repeatable Read miss it?",
+          "a_bullets": [
+            "The two txns never update the same row.",
+            "So first-updater-wins never fires.",
+            "Both snapshots were valid when read.",
+            "Only SSI, or a shared lock row, sees the pair."
+          ],
+          "example_code": [
+            "-- both txns see count(oncall) = 2",
+            "A: UPDATE docs SET oncall=false WHERE id=1;",
+            "B: UPDATE docs SET oncall=false WHERE id=2;",
+            "-- hospital now has zero doctors on call"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Phantom-Driven Skew",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "'Insert a meeting if no overlapping one exists.'",
+            "Both txns see an empty result set.",
+            "Both insert; the room is double-booked."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Lost Updates & Write Skew: The Anomalies That Bite",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "cross-row invariant",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0"
+              ],
+              [
+                "c1_0",
+                "c1_1"
+              ],
+              [
+                "c2_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "cross-row invariant",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "Serializable"
+              },
+              "b1": {
+                "text": "materialize it"
+              },
+              "b2": {
+                "text": "real constraint"
+              },
+              "c0_0": {
+                "text": "SSI aborts one"
+              },
+              "c1_0": {
+                "text": "row per room/day"
+              },
+              "c1_1": {
+                "text": "lock `FOR UPDATE`"
+              },
+              "c2_0": {
+                "text": "EXCLUDE with `&&`"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "ALTER TABLE bookings ADD CONSTRAINT no_dbl",
+            "  EXCLUDE USING gist (room WITH =,",
+            "    during WITH &&);",
+            "-- holds at ANY isolation level"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Decision Rule",
+          "text": "Single-row invariant: atomic UPDATE. Cross-row invariant: Serializable or a materialized lock row. Uniqueness or overlap: a real DB constraint, always preferred over transaction ceremony."
+        },
+        {
+          "type": "heading",
+          "text": "When MVCC Isn't Enough",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "MVCC handles reads. Explicit locks handle the cases where you must serialize writers by hand."
+        },
+        {
+          "type": "heading",
+          "text": "Row Lock Modes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Blocks",
+            "Taken by"
+          ],
+          "rows": [
+            [
+              "`FOR KEY SHARE`",
+              "key changes",
+              "FK check on parent"
+            ],
+            [
+              "`FOR SHARE`",
+              "writers",
+              "'must not change'"
+            ],
+            [
+              "`FOR NO KEY UPDATE`",
+              "FOR UPDATE",
+              "plain UPDATE"
+            ],
+            [
+              "`FOR UPDATE`",
+              "all writers",
+              "explicit"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Weakest to strongest, top to bottom.",
+            "`FOR UPDATE` never blocks a plain SELECT.",
+            "KEY SHARE is why child inserts no longer block parent updates.",
+            "Locks live in `xmax` + multixacts, held until COMMIT.",
+            "Never released early, not even after the statement."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "NOWAIT & SKIP LOCKED",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`NOWAIT` raises 'could not obtain lock on row' at once.",
+            "Good for interactive UIs: fail, do not queue.",
+            "`SKIP LOCKED` skips rows another txn holds.",
+            "That is the standard way to build a work queue."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "UPDATE jobs SET state='running'",
+            "WHERE id IN (SELECT id FROM jobs",
+            "  WHERE state='queued' ORDER BY id",
+            "  FOR UPDATE SKIP LOCKED LIMIT 1)",
+            "RETURNING *;  -- one worker, one job"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Explicit Locks: Rows, Tables, and When to Reach for Them",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Table Lock Modes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Taken by"
+          ],
+          "rows": [
+            [
+              "ACCESS SHARE",
+              "SELECT"
+            ],
+            [
+              "ROW EXCLUSIVE",
+              "INSERT/UPDATE/DELETE"
+            ],
+            [
+              "SHARE UPDATE EXCL.",
+              "VACUUM, CREATE INDEX CONCURRENTLY"
+            ],
+            [
+              "ACCESS EXCLUSIVE",
+              "ALTER, DROP, TRUNCATE"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "How Migrations Kill Sites",
+          "text": "ACCESS EXCLUSIVE conflicts with everything. An ALTER waiting on it queues every later query behind the request, and the site is down while nothing is even running."
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SET lock_timeout = '2s';",
+            "ALTER TABLE orders ADD COLUMN note text;",
+            "-- blocked ALTER fails fast, no queue"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Diagnosing Waits",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Join `pg_locks` to `pg_stat_activity`.",
+            "`pg_blocking_pids(pid)` gives the chain directly.",
+            "`wait_event_type = 'Lock'` marks the victims."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Guardrails",
+          "items": [
+            "`lock_timeout`: caps waiting for a lock.",
+            "`statement_timeout`: caps total statement runtime.",
+            "`idle_in_transaction_session_timeout`: kills the abandoned txn holding everything hostage."
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "The Cycle",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A holds row 1 and wants row 2.",
+            "B holds row 2 and wants row 1.",
+            "Neither can ever proceed."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "A locks 1",
+              "B locks 2",
+              "A waits on 2",
+              "B waits on 1",
+              "cycle found",
+              "victim killed"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your Postgres default silently allows lost updates and write skew, and it never tells you. This 10-page field handbook walks the whole stack: MVCC internals and xmin/xmax, what each of the three real isolation levels still permits, row locks and SKIP LOCKED queues, deadlock causes with their fixes, and advisory locks for the things that aren't rows. Ends with a decision tree, a retry contract, and the monitoring queries to prove you got it right.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#sql",
+      "#databases",
+      "#mvcc",
+      "#transactions",
+      "#backendengineering",
+      "#concurrency",
+      "#systemdesign",
+      "#devnotes",
+      "#studynotes",
+      "#softwareengineering"
+    ]
+  }
+}

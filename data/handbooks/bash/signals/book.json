@@ -1,0 +1,182 @@
+{
+  "title": "Bash Traps & Signals: Cleanup That Actually Runs",
+  "summary": "A dense field guide to trapping signals in Bash — EXIT and ERR traps, temp-file cleanup, killing child processes, and handling Ctrl-C — from signal fundamentals through subshell pitfalls and production-grade patterns.",
+  "chapters": [
+    {
+      "title": "Signals 101: What Bash Is Reacting To",
+      "points": [
+        "A signal is an async notification the kernel delivers to a process; the process runs a handler, ignores it, or dies with the default action",
+        "`kill -l` lists all signal names and numbers on the current system",
+        "SIGINT (2) = Ctrl-C from the terminal, sent to the whole foreground process group, not just your script",
+        "SIGTERM (15) = polite 'please exit', default of plain `kill PID`; SIGKILL (9) = unblockable, uncatchable, no cleanup runs",
+        "SIGHUP (1) = controlling terminal went away (SSH drop, terminal closed); SIGQUIT (3) = Ctrl-\\, dumps core by default",
+        "Exit status encodes signal death as 128 + signal number: Ctrl-C gives 130, SIGTERM gives 143, SIGKILL gives 137",
+        "Only SIGKILL and SIGSTOP cannot be caught, blocked, or ignored — every cleanup design must assume they can happen",
+        "Bash also has pseudo-signals that aren't real signals: EXIT, ERR, DEBUG, RETURN — trap uses the same syntax for both",
+        "Signals arriving while a foreground command runs are handled AFTER that command completes, unless the command itself dies from it",
+        "`trap` with no arguments prints the currently installed traps in re-usable form: `trap -- 'cleanup' EXIT`",
+        "Process groups matter: Ctrl-C hits every process in the foreground group, so children may already be dying when your handler runs",
+        "Distinguish 'the terminal sent it' (SIGINT via Ctrl-C) from 'someone scripted it' (`kill -INT $$`) — same signal, same handler"
+      ]
+    },
+    {
+      "title": "trap: Syntax, Scope, and Reset",
+      "points": [
+        "Form: `trap 'commands' SIGSPEC...` — the action string is re-evaluated each time the signal fires, not at trap-definition time",
+        "Single quotes vs double quotes: `trap \"rm $tmp\" EXIT` expands `$tmp` NOW; `trap 'rm $tmp' EXIT` expands at fire time — usually you want single quotes",
+        "`trap - SIGSPEC` restores the default action; `trap '' SIGSPEC` ignores the signal entirely and children inherit that ignore",
+        "Signal names work with or without the SIG prefix, and numbers work too: `trap cleanup INT`, `TERM`, `2`, `15` all valid",
+        "One trap per signal — a second `trap ... INT` silently replaces the first; there is no handler chaining",
+        "Best practice: point traps at a named function (`trap cleanup EXIT`) so logic is testable and not stuffed in a quoted string",
+        "`trap -p EXIT` prints just that trap; useful to save and restore a handler around a critical section",
+        "Traps are NOT inherited by subshells for ERR/DEBUG/RETURN unless `set -E`/`set -T` is on; EXIT traps also reset in subshells",
+        "Functions do not get their own trap scope by default — traps are per-shell, so a function's `trap` overwrites the script's",
+        "Command substitution `$(...)` runs a subshell with traps reset to default — a trap set there dies with the subshell",
+        "`trap` inside a `( ... )` subshell fires when the subshell exits, which is a useful scoped-cleanup trick",
+        "Multiple signals in one call: `trap cleanup EXIT INT TERM HUP` — the common four-signal safety net"
+      ]
+    },
+    {
+      "title": "The EXIT Trap: Cleanup That Always Runs",
+      "points": [
+        "EXIT fires on ANY shell termination: normal end of script, explicit `exit`, `set -e` abort, or an uncaught fatal signal",
+        "Because EXIT covers signal-caused exits too, `trap cleanup EXIT` alone catches most cases — INT/TERM traps mainly add custom messaging",
+        "EXIT does NOT fire on SIGKILL (-9) or on a hard `exec` replacing the shell — design for the leak, don't assume you'll always clean",
+        "Set the trap IMMEDIATELY after creating the resource, never before it exists and never several lines later",
+        "Inside an EXIT trap, `$?` holds the script's exit status — capture it first: `local rc=$?` before running anything else",
+        "The exit status of the script is the status at trap entry, unless the trap itself calls `exit N` with a new value",
+        "EXIT handler code must be idempotent and non-failing: use `rm -f`, guard with `[[ -n $tmp ]]`, redirect noise to /dev/null",
+        "`set -e` does not apply to a failure inside the EXIT trap the way you expect — an error mid-cleanup can skip the rest; use `|| true`",
+        "Ordering: only one EXIT trap exists, so a multi-resource script needs one cleanup function that tears down in reverse creation order",
+        "A common pattern is a cleanup stack: append commands to an array, then have the EXIT trap iterate the array backwards",
+        "EXIT traps run in subshells too, so `( trap 'echo sub' EXIT; ... )` prints when the parentheses close",
+        "Careless `exit` inside a trap that also has traps set can recurse — reset the trap at the top of cleanup: `trap - EXIT`",
+        "code: `cleanup(){ local rc=$?; rm -rf \"${tmpdir:-}\"; exit \"$rc\"; }; trap cleanup EXIT`"
+      ]
+    },
+    {
+      "title": "Temp Files: Create, Trap, Delete",
+      "points": [
+        "Never hardcode `/tmp/myfile.$$` — predictable names are a symlink-attack vector and collide across users",
+        "`mktemp` creates a file with a random name and 0600 permissions atomically; `mktemp -d` creates a 0700 directory",
+        "Prefer one temp DIRECTORY over many temp files: a single `rm -rf \"$tmpdir\"` cleans everything, one trap covers all",
+        "Idiom: `tmpdir=$(mktemp -d)` then immediately `trap 'rm -rf \"$tmpdir\"' EXIT`",
+        "Use a template for debuggability: `mktemp -d -t myscript.XXXXXX` so leaked dirs are traceable to the script",
+        "Quote the variable in the trap — an unquoted empty `$tmpdir` turns `rm -rf $tmpdir/` into `rm -rf /`, a classic catastrophic bug",
+        "Guard the removal: `[[ -n ${tmpdir:-} && -d $tmpdir ]] && rm -rf -- \"$tmpdir\"`",
+        "`TMPDIR` env var controls where mktemp puts things; honor it rather than assuming /tmp exists and is writable",
+        "Deleting an open file on Linux is safe — the inode survives until the fd closes, so cleanup can run while a reader still holds it",
+        "Alternative: `exec 3<>\"$file\"; rm \"$file\"` — the file is unlinked immediately and vanishes even on SIGKILL",
+        "Never `rm -rf` a path built from unvalidated user input inside a trap; the trap runs at the worst possible moment",
+        "On failure you often want the temp dir KEPT for debugging: `[[ $rc -eq 0 ]] && rm -rf \"$tmpdir\" || echo \"kept: $tmpdir\"`",
+        "Named pipes and lock files need the same treatment: `mkfifo` + trap, or `flock` on a file descriptor that closes on exit"
+      ]
+    },
+    {
+      "title": "Killing Children: Jobs, PIDs, and Process Groups",
+      "points": [
+        "Background a job with `&`; `$!` holds its PID — capture it right away, it's overwritten by the next background job",
+        "Killing the parent does NOT kill children; orphaned children get reparented to init and keep running",
+        "`jobs -p` lists PIDs of this shell's jobs; `kill $(jobs -p)` is a quick but non-recursive sweep",
+        "Grandchildren are the real problem: killing a child that spawned its own children leaves the grandchildren alive",
+        "Process-group kill: `kill -- -$PGID` sends to the entire group; `kill -- -$$` targets the script's own group",
+        "Make your script its own group leader with `set -m` (job control) so group signaling doesn't hit the caller's shell",
+        "`pkill -P $$` kills direct children by parent PID; still not recursive without walking the tree",
+        "Two-phase kill is the correct pattern: send TERM, wait a grace period, then send KILL to whatever survives",
+        "`wait` blocks until children finish; `wait -n` returns when any one finishes; `wait $pid` gives that child's exit status",
+        "Important: `wait` is interruptible — a trapped signal arriving during `wait` runs the handler, then `wait` returns non-zero",
+        "`timeout 10 cmd` sends TERM at the deadline; `timeout -k 5 10 cmd` follows with KILL 5s later — reuse instead of hand-rolling",
+        "Disown (`disown -h %1`) removes a job from HUP delivery when you deliberately want it to survive the shell",
+        "code: `kill -TERM \"$pid\" 2>/dev/null; sleep 2; kill -KILL \"$pid\" 2>/dev/null; wait \"$pid\" 2>/dev/null`"
+      ]
+    },
+    {
+      "title": "Ctrl-C and Interrupt Handling",
+      "points": [
+        "Ctrl-C sends SIGINT to the entire foreground process group — your script AND every child it started in the foreground",
+        "A script that traps INT but does not exit becomes un-interruptible from the keyboard — a serious usability bug",
+        "Correct interrupt semantics: clean up, then kill yourself with the same signal so the parent sees a real signal death",
+        "Self-signal idiom: `trap - INT; kill -INT \"$$\"` — restore the default, re-raise, so exit status is truly 130",
+        "Returning a plain `exit 1` from an INT trap lies to the caller: shell wrappers and CI can't tell interrupt from failure",
+        "`trap '' INT` makes a critical section uninterruptible; restore with `trap - INT` immediately after, and keep it short",
+        "Long-running loops should check a flag set by the handler rather than doing heavy work inside the handler itself",
+        "During a foreground child, SIGINT usually kills the child first; your trap runs after the child returns, so check `$?` for 130",
+        "`read -t` and `sleep` in the foreground are interruptible; use `sleep 30 & wait $!` so a trap can fire promptly during long waits",
+        "Double Ctrl-C should force-exit: count invocations, and on the second one skip graceful cleanup and hard-kill",
+        "SIGHUP handling matters for SSH sessions — trap HUP alongside INT/TERM, or use `nohup`/`setsid` to survive it deliberately",
+        "Ctrl-Z (SIGTSTP) is separate: it stops the process, and cleanup should NOT run — do not trap TSTP for cleanup"
+      ]
+    },
+    {
+      "title": "The ERR Trap and set -e",
+      "points": [
+        "`trap handler ERR` fires when a command returns non-zero, following the same rules that would trigger `set -e`",
+        "ERR is a bash pseudo-signal, not POSIX — dash/sh will not honor it, so shebang must be `#!/usr/bin/env bash`",
+        "ERR does NOT fire for: conditions in `if`/`while`, operands of `&&`/`||`, any command negated with `!`, or when `set -e` rules exempt it",
+        "By default ERR traps are NOT inherited by functions, command substitutions, or subshells — `set -E` (`errtrace`) fixes that",
+        "`set -e` alone is unreliable: it silently skips failures inside conditions, and functions called in a test context lose it entirely",
+        "The strict-mode triple: `set -euo pipefail` — exit on error, error on unset variable, and propagate pipeline failures",
+        "Without `pipefail`, `false | true` succeeds — the pipeline's status is the last command's, so errors vanish mid-pipe",
+        "`PIPESTATUS` array holds each pipeline element's status; read it immediately, it's clobbered by the next command",
+        "Rich ERR handler: report `$?`, `$LINENO`, and `${BASH_SOURCE[0]}` plus `${FUNCNAME[@]}` for a usable stack trace",
+        "ERR and EXIT both fire on a `set -e` abort: ERR runs first for diagnostics, then EXIT runs for cleanup — split those jobs",
+        "Use `|| true` to deliberately exempt a command from `set -e` and ERR, and comment WHY, or you'll re-break it later",
+        "Explicit error checking (`cmd || die \"msg\"`) is more predictable than `set -e` for scripts where every failure has a distinct response",
+        "code: `set -Eeuo pipefail; trap 'echo \"FAIL line $LINENO: $BASH_COMMAND (rc=$?)\" >&2' ERR`"
+      ]
+    },
+    {
+      "title": "Subshells, Inheritance, and Where Traps Vanish",
+      "points": [
+        "A subshell is a forked copy of the shell: `( ... )`, `$( ... )`, pipeline segments, and background `&` all create one",
+        "Rule: on fork, traps for signals that were CAUGHT are reset to default in the child; signals set to IGNORE stay ignored",
+        "This is why a trap set in `$(...)` never affects the parent, and why the parent's EXIT trap doesn't run when a subshell exits",
+        "`set -E` (errtrace) makes ERR traps inherit into functions, command substitutions, and subshells",
+        "`set -T` (functrace) does the same for DEBUG and RETURN traps",
+        "Each pipeline element runs in its own subshell (unless `lastpipe` + job control off), so `while read` in a pipeline can't set parent variables OR parent traps",
+        "Background jobs (`cmd &`) reset SIGINT and SIGQUIT to ignore in non-job-control shells — a background child may survive your Ctrl-C",
+        "A subshell's EXIT trap fires at subshell exit, giving you scoped cleanup: `( trap 'rm -f \"$f\"' EXIT; work )`",
+        "`exec cmd` replaces the shell image entirely — no EXIT trap runs, all handlers are gone",
+        "`$$` stays the parent's PID inside a subshell; use `$BASHPID` for the actual current subshell PID when signaling",
+        "Sourced scripts share the caller's trap table — a `trap ... EXIT` in a sourced file hijacks the caller's cleanup",
+        "Comparison row: `set -e` scope = current shell + inherited by subshells; ERR trap scope = current shell only unless `set -E`"
+      ]
+    },
+    {
+      "title": "Trade-offs, Costs, and Common Mistakes",
+      "points": [
+        "Mistake: setting the trap before creating the resource, so a failure in between leaves the handler referencing an unset variable",
+        "Mistake: double quotes in the trap string, freezing the value at definition time instead of at fire time",
+        "Mistake: unquoted `$tmpdir` in `rm -rf` — an empty variable turns cleanup into a filesystem wipe",
+        "Mistake: trapping INT without re-raising, so the script reports success (0) after being interrupted",
+        "Mistake: assuming EXIT covers everything — SIGKILL, power loss, and `exec` all bypass it; add a startup sweep of stale temp dirs",
+        "Mistake: overwriting an earlier trap because there's only one handler slot per signal — compose into one cleanup function",
+        "Mistake: cleanup functions that themselves fail under `set -e`, silently skipping the rest of the teardown",
+        "Mistake: expensive work inside a handler — signals can arrive again mid-handler; keep handlers short and re-entrant safe",
+        "Trade-off: `trap cleanup EXIT` is simple but non-composable; a cleanup-stack array is composable but more machinery",
+        "Trade-off: killing the process group is thorough but can hit the interactive shell that launched you if you're not group leader",
+        "Trade-off: `set -euo pipefail` catches more bugs but breaks scripts that rely on non-zero returns as data — retrofit carefully",
+        "Re-entrancy: a signal arriving while the EXIT trap runs can re-enter cleanup — disarm first with `trap - EXIT INT TERM`",
+        "Race window: between `mktemp` and `trap` there are microseconds where a signal leaks the resource — it's small but real",
+        "Debug tooling: `set -x` inside the trap, or `trap 'echo DEBUG: $BASH_COMMAND' DEBUG` to trace what ran before the failure"
+      ]
+    },
+    {
+      "title": "Production Patterns and Summary",
+      "points": [
+        "Canonical script skeleton: `set -Eeuo pipefail`, define `cleanup`, `mktemp -d`, `trap cleanup EXIT INT TERM HUP`, then do work",
+        "Disarm-first cleanup: start the handler with `trap - EXIT INT TERM` so re-entry and recursion are impossible",
+        "Preserve exit status: `cleanup(){ local rc=$?; ...; return $rc; }` — never let cleanup mask the real failure code",
+        "Signal-faithful exit: for INT, finish with `trap - INT; kill -INT \"$$\"` so callers see 130, not a fabricated code",
+        "Child reaping pattern: collect PIDs in an array, TERM them all, `sleep` a grace period, KILL survivors, then `wait`",
+        "Lock-file pattern: `exec 9>/var/lock/my.lock; flock -n 9 || exit 1` — the lock releases automatically when the shell dies, even on SIGKILL",
+        "Startup sweep: on launch, delete stale temp dirs older than N days matching your template, covering past SIGKILL leaks",
+        "Idempotency rule: every cleanup action must be safe to run twice and safe to run when the resource was never created",
+        "Testing traps: run the script, `kill -TERM` it from another terminal, and assert the temp dir is gone and the status is 143",
+        "`shellcheck` catches unquoted trap variables, double-quoted trap strings, and missing `set -E` — run it in CI",
+        "Summary table — EXIT: always, use for cleanup | ERR: on failure, use for diagnostics | INT: Ctrl-C, clean and re-raise | TERM: shutdown, graceful stop | KILL: uncatchable, plan for the leak",
+        "Rule of thumb: acquire, then immediately trap; disarm on entry; preserve status on exit; assume SIGKILL will eventually win"
+      ]
+    }
+  ]
+}

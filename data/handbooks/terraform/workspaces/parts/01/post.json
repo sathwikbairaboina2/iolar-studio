@@ -1,0 +1,1655 @@
+{
+  "brand": "iolar",
+  "template": "studygram-pastel",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "TERRAFORM ENVIRONMENTS",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "State, Backends & the Environment Problem",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Terraform state is a JSON map from config addresses to real resource IDs. No state means no knowledge of what exists."
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "\"aws_instance.web\"   -> \"i-0abc123\"",
+            "\"aws_db_instance.db\" -> \"db-prod-1\"",
+            "# that mapping IS the state file"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Why Environments Hurt",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One state file = exactly one deployed instance of a config",
+            "That single fact is the root of the whole problem",
+            "`environment` is not a first-class Terraform concept",
+            "It is only a separate state file plus separate input variables"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where State Lives"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Backend",
+            "State lives in",
+            "Locking"
+          ],
+          "rows": [
+            [
+              "local",
+              "`terraform.tfstate`",
+              "none"
+            ],
+            [
+              "s3",
+              "bucket key",
+              "lockfile (1.10+) or DynamoDB"
+            ],
+            [
+              "azurerm",
+              "blob",
+              "blob lease"
+            ],
+            [
+              "gcs / http",
+              "object / endpoint",
+              "backend-native"
+            ],
+            [
+              "remote / HCP",
+              "platform",
+              "automatic"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Locking stops two concurrent applies corrupting state",
+            "Backend config is block-level: no variables, no interpolation",
+            "That one restriction forces the workspace-vs-directory choice"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform init -backend-config=prod.hcl",
+            "# partial backend config, supplied at",
+            "# init time - never at plan time"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Who Owns State"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Root module = the directory you run `terraform` in",
+            "Child modules are called from it and own no state",
+            "`terraform.tfstate.backup` written before every mutation",
+            "On a remote backend the provider keeps versions instead"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "State Identity",
+          "items": [
+            "Serial number increments per write",
+            "Lineage UUID identifies the state's ancestry",
+            "Mismatched lineage = foreign state, Terraform refuses"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Secrets Land Here"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "RDS passwords and generated keys sit in state in plaintext",
+            "Encrypt at rest: S3 SSE or KMS on the bucket",
+            "Restrict bucket reads per environment, not per team"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform state list",
+            "terraform state show aws_instance.web",
+            "terraform state mv <src> <dst>",
+            "terraform state rm aws_s3_bucket.old",
+            "# rm forgets it, does not destroy it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Local state",
+                "lines": [
+                  "fast",
+                  "no locking",
+                  "no sharing",
+                  "no audit"
+                ]
+              },
+              {
+                "title": "Remote state",
+                "lines": [
+                  "locking",
+                  "sharing",
+                  "audit trail",
+                  "network on every cmd"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Blast radius = one state file",
+          "text": "Splitting environments is really splitting blast radius. Every pattern in this handbook is a way of drawing that line."
+        }
+      ]
+    },
+    {
+      "page_title": "CLI Workspaces: Mechanics",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Whole Command Surface",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform workspace new dev",
+            "terraform workspace select prod",
+            "terraform workspace list   # * = current",
+            "terraform workspace show",
+            "terraform workspace delete dev"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every config starts with one workspace named `default`",
+            "`default` cannot be deleted, ever",
+            "Only the state file swaps - nothing else does"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where The State Files Go"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Backend",
+            "default",
+            "named workspace"
+          ],
+          "rows": [
+            [
+              "local",
+              "`terraform.tfstate`",
+              "`terraform.tfstate.d/<name>/`"
+            ],
+            [
+              "s3",
+              "`<key>`",
+              "`env:/<name>/<key>`"
+            ],
+            [
+              "s3 + prefix",
+              "`<key>`",
+              "`<prefix>/<name>/<key>`"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "`workspace_key_prefix` defaults to the literal string `env:`. That colon in your bucket listing is the giveaway."
+        },
+        {
+          "type": "heading",
+          "text": "The Interpolation Hook"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "name = \"app-${terraform.workspace}\"",
+            "locals { env = {",
+            "  dev  = { size = \"t3.micro\", n = 1 }",
+            "  prod = { size = \"m5.large\", n = 6 }",
+            "} }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Look up settings with `local.env[terraform.workspace]`",
+            "One config, one backend, one provider block, one module set",
+            "Size and name vary; structure cannot"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What They Do Not Isolate"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Same AWS profile, same account, same region by default",
+            "Credentials are shared unless you deliberately vary them",
+            "`workspace delete` refuses while the state is non-empty",
+            "`-force` deletes the state and orphans live infrastructure"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "The Invisible File",
+          "items": [
+            "Selection lives in `.terraform/environment`",
+            "Local, untracked, invisible in code review",
+            "CI must run `terraform workspace select <env>`",
+            "Forget it and you apply to whatever was last selected"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Fresh clone lands in default",
+          "text": "`terraform init` in a new checkout puts you in `default`, not your last workspace. Nothing in the plan header warns you."
+        },
+        {
+          "type": "heading",
+          "text": "Two Things Named Workspace"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "CLI workspaces: state keys under one backend",
+            "HCP / Terraform Cloud workspaces: own variables, credentials, run history",
+            "Named `environments` in 0.9, renamed in 0.10",
+            "HashiCorp's own docs now warn against using them for environments"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Directory-per-Environment: Mechanics",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Layout",
+          "ink": "accent"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "repo/",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0",
+                "c0_1",
+                "c0_2"
+              ],
+              [
+                "c1_0",
+                "c1_1"
+              ],
+              [
+                "c2_0",
+                "c2_1",
+                "c2_2"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "repo/",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "envs/"
+              },
+              "b1": {
+                "text": "modules/"
+              },
+              "b2": {
+                "text": "each env root"
+              },
+              "c0_0": {
+                "text": "dev/"
+              },
+              "c0_1": {
+                "text": "staging/"
+              },
+              "c0_2": {
+                "text": "prod/"
+              },
+              "c1_0": {
+                "text": "network/"
+              },
+              "c1_1": {
+                "text": "app/"
+              },
+              "c2_0": {
+                "text": "main.tf"
+              },
+              "c2_1": {
+                "text": "backend.tf"
+              },
+              "c2_2": {
+                "text": "terraform.tfvars"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b0",
+                "to": "c0_2"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_2"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every environment directory is its own root module",
+            "Shared logic lives once in `modules/network`, `modules/app`",
+            "Each root calls those modules with different inputs"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Literal, Greppable Backends"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "terraform {",
+            "  backend \"s3\" {",
+            "    key = \"prod/app/terraform.tfstate\"",
+            "  }",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Real Credential Isolation"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "provider \"aws\" {",
+            "  region = \"eu-west-1\"",
+            "  assume_role {",
+            "    role_arn = var.prod_role_arn",
+            "  }",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per-environment account, `role_arn` and region",
+            "Diffs are reviewable: `m5.large -> m5.xlarge` in the PR",
+            "Environments may legitimately diverge - no conditional needed",
+            "Prod gets a WAF and multi-AZ RDS; dev does not"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What It Costs You"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Cost",
+            "Mitigation"
+          ],
+          "rows": [
+            [
+              "N near-identical roots",
+              "keep roots thin"
+            ],
+            [
+              "new output = edit N files",
+              "one module call + backend + tfvars"
+            ],
+            [
+              "`init` per directory",
+              "accept it; lockfiles are per-dir too"
+            ],
+            [
+              "symlinked `.tf` files",
+              "breaks on Windows, confuses `fmt`"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Single-Root Hybrid"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform init -backend-config=prod.hcl",
+            "terraform plan -var-file=envs/prod.tfvars",
+            "# one dir, per-env tfvars, but state",
+            "# still has to be swapped by hand"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Pinning Per Stage",
+          "items": [
+            "`.terraform/` and lockfiles are per-directory",
+            "Prod pins provider `5.31.0`",
+            "Dev can test `5.40.0` in isolation",
+            "Upgrade risk stops being all-or-nothing"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Promotion is a diff",
+          "text": "Bump the module version in dev tfvars, then staging, then prod. Explicit, auditable, and reversible by revert."
+        },
+        {
+          "type": "paragraph",
+          "text": "This is the layout HashiCorp, Gruntwork and most large teams recommend for real long-lived environments."
+        }
+      ]
+    },
+    {
+      "page_title": "Workspaces vs Directories: Head to Head",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Isolation",
+          "ink": "accent"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Workspaces",
+            "Directories"
+          ],
+          "rows": [
+            [
+              "State",
+              "same backend, new key",
+              "independent backends"
+            ],
+            [
+              "Credentials",
+              "none by default",
+              "full, per provider"
+            ],
+            [
+              "Code drift",
+              "forbidden structurally",
+              "permitted"
+            ],
+            [
+              "Divergence",
+              "conditionals",
+              "plain separate files"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "count = terraform.workspace == \"prod\"",
+            "        ? 3 : 1",
+            "# multiply these and they rot"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Humans And Blast Radius"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Workspaces",
+            "Directories"
+          ],
+          "rows": [
+            [
+              "Review",
+              "hidden in locals maps",
+              "plain diff"
+            ],
+            [
+              "Mistake",
+              "wrong workspace, prod state",
+              "you had to `cd` there"
+            ],
+            [
+              "Onboarding",
+              "tribal CLI knowledge",
+              "obvious from `ls`"
+            ],
+            [
+              "Boilerplate",
+              "near zero",
+              "O(N) files"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fit And Anti-Fit"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Workspaces fit",
+                "lines": [
+                  "per-branch previews",
+                  "developer sandboxes",
+                  "test fixtures",
+                  "short-lived copies"
+                ]
+              },
+              {
+                "title": "Workspaces misfit",
+                "lines": [
+                  "separate cloud accounts",
+                  "different compliance",
+                  "long-lived prod",
+                  "different shapes"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Hybrid that works: directories for the stage boundary",
+            "Workspaces inside a stage for ephemeral feature stacks",
+            "Never the reverse"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Ways Out Of O(N)"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Terragrunt sits on top of directories",
+            "`terragrunt.hcl` generates the backend block and injects inputs",
+            "HCP inverts it: one directory, many named cloud workspaces",
+            "Each cloud workspace owns its variable set and credentials"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Which do I pick?",
+          "a_bullets": [
+            "Differ in identity - account, credentials, compliance - use directories",
+            "Differ only in size and name - workspaces are defensible",
+            "Unsure? Directories. The cost is files, not incidents"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Read it as a question of identity",
+          "text": "Not \"how much boilerplate do I save\" but \"are these the same system twice, or two systems that rhyme\"."
+        }
+      ]
+    },
+    {
+      "page_title": "Remote Runs & Remote State",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Two Meanings Of Remote",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Remote state: the backend stores the state file",
+            "Remote runs: plan and apply execute on a server",
+            "People say `remote` and mean either one",
+            "A `cloud {}` block or `backend \"remote\"` enables the second"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "cloud {",
+            "  organization = \"iolar\"",
+            "  workspaces { name = \"app-prod\" }",
+            "}",
+            "# plan now streams a remote run"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Execution Modes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Config runs on",
+            "Credentials live"
+          ],
+          "rows": [
+            [
+              "Remote",
+              "the platform",
+              "on the platform"
+            ],
+            [
+              "Local",
+              "laptop or CI runner",
+              "on that machine"
+            ],
+            [
+              "Agent",
+              "self-hosted runner",
+              "inside your VPC"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "In remote mode the config is uploaded, the run happens there, and output streams back to your terminal. Local mode stores state only."
+        },
+        {
+          "type": "heading",
+          "text": "Run Lifecycle"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "plan queued",
+              "policy check",
+              "cost estimate",
+              "awaiting confirm",
+              "applied"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Policy check = Sentinel or OPA gate",
+            "Speculative plan: triggered by a PR, never applyable",
+            "It exists purely for review",
+            "The run is bound to a named workspace, not a local file"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Secrets never touch a laptop",
+          "text": "Remote runs solve the credential problem workspaces cannot, and the workspace-selection footgun disappears with it."
+        },
+        {
+          "type": "heading",
+          "text": "Reading Another Stack"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "data \"terraform_remote_state\" \"net\" {",
+            "  backend = \"s3\"",
+            "  config = { bucket = var.b,",
+            "    key = \"prod/net.tfstate\" }",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Coupling Tax",
+          "items": [
+            "Reading state grants the whole file, secrets included",
+            "Prefer published outputs, SSM parameters, or a data lookup",
+            "Network must apply before app",
+            "No dependency graph exists across state files"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "The CI Alternative"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Atlantis: comment `atlantis plan -d envs/prod` on the PR",
+            "Plan runs in a controlled runner, diff posted back",
+            "Cost of remote runs: queueing latency",
+            "No local `-target` debugging; egress from someone else's VPC"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Drift: What It Is and Where It Comes From",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Drift is divergence between three things that should agree: the configuration, the state file, and the real infrastructure."
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Drift",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0",
+                "c0_1"
+              ],
+              [
+                "c1_0",
+                "c1_1"
+              ],
+              [
+                "c2_0",
+                "c2_1"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "Drift",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "infra drift"
+              },
+              "b1": {
+                "text": "state drift"
+              },
+              "b2": {
+                "text": "code drift"
+              },
+              "c0_0": {
+                "text": "console change"
+              },
+              "c0_1": {
+                "text": "real != state"
+              },
+              "c1_0": {
+                "text": "deleted out of band"
+              },
+              "c1_1": {
+                "text": "plan proposes create"
+              },
+              "c2_0": {
+                "text": "prod .tf != staging .tf"
+              },
+              "c2_1": {
+                "text": "same name, different system"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_1"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "How It Is Detected",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Refresh reads every resource from the provider API before diffing",
+            "`-refresh=false` skips it: faster plans, stale comparison",
+            "You are then diffing against a state that may be fiction"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -refresh-only",
+            "# shows drift, proposes no config change",
+            "terraform apply -refresh-only",
+            "# writes reality into state = accept it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Where It Comes From"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Console hotfixes during an incident",
+            "Autoscaling changing `desired_count` underneath you",
+            "A cloud provider defaulting a field you left blank",
+            "Another Terraform config touching the same resource"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Provider-Injected Drift",
+          "items": [
+            "AWS adds default tags",
+            "A security group grows a description",
+            "The plan shows a change you never wrote",
+            "Nobody touched anything - the API did"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Dangerous Shapes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Shape",
+            "Symptom",
+            "Why it bites"
+          ],
+          "rows": [
+            [
+              "Stage drift",
+              "staging passes, prod fails",
+              "prod hand-patched months ago"
+            ],
+            [
+              "Deleted-outside",
+              "plan proposes create",
+              "a create in prod mid-incident"
+            ],
+            [
+              "Silent drift",
+              "plan stays empty",
+              "attribute is unmanaged"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Silent drift covers an EBS volume's actual data",
+            "And any tag or field Terraform does not manage",
+            "It will never appear in any plan, ever"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Drift is not always a bug",
+          "text": "A break-glass fix at 3am is legitimate engineering. The bug is failing to reconcile it afterwards."
+        },
+        {
+          "type": "qa",
+          "q": "Why is code drift the sneaky one?",
+          "a_bullets": [
+            "No refresh detects it - both stages are internally consistent",
+            "It only surfaces when a promotion fails",
+            "Comparing states, not resources, is the only way to see it"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Detecting & Reconciling Drift",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Scheduled Detection",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -refresh-only \\",
+            "  -detailed-exitcode",
+            "# 0 = no changes",
+            "# 1 = error",
+            "# 2 = changes present"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Run it nightly, once per environment",
+            "The exit code is the alerting hook - alert on 2",
+            "HCP Terraform ships this as health assessments per workspace"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Machine-Readable Drift"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -out=tfplan",
+            "terraform show -json tfplan | jq '",
+            "  .resource_changes[]",
+            "  | select(.change.actions != [\"no-op\"])'"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Four Ways To Reconcile"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Action",
+            "Use when"
+          ],
+          "rows": [
+            [
+              "A revert",
+              "`terraform apply`",
+              "correct default"
+            ],
+            [
+              "B adopt",
+              "edit `.tf`, apply",
+              "reality is right"
+            ],
+            [
+              "C accept",
+              "`apply -refresh-only`",
+              "externally owned"
+            ],
+            [
+              "D ignore",
+              "`lifecycle` block",
+              "another system owns it"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "lifecycle {",
+            "  ignore_changes = [desired_count,",
+            "    tags[\"LastScanned\"]]",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Option B ends with an empty plan - that is how you know the adoption is complete, not merely applied."
+        },
+        {
+          "type": "heading",
+          "text": "Adopting The Unmanaged"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "import {",
+            "  to = aws_s3_bucket.logs",
+            "  id = \"my-logs\"",
+            "}",
+            "# 1.5+ form, visible in the plan"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`terraform import` is the older imperative equivalent",
+            "`terraform state rm` releases a resource to another config",
+            "It stops managing it without destroying it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Finding Code Drift"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Diff `terraform show -json` across the dev and prod states",
+            "That finds code drift, not just infra drift",
+            "Nothing else will surface it before a failed promotion"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Alerts That Work",
+          "items": [
+            "`prod: 3 resources drifted` is actionable",
+            "`drift detected` is noise",
+            "Always name the environment",
+            "Every console change gets a follow-up PR this sprint"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Unreconciled drift becomes permanent",
+          "text": "A hotfix without a follow-up PR stops being a hotfix. It quietly becomes the design, discovered a year later."
+        }
+      ]
+    },
+    {
+      "page_title": "Preventing Divergence Between Stages",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "The root cause of stage drift is people, not tooling. Fix the write path, not just the detector."
+        },
+        {
+          "type": "heading",
+          "text": "Close The Write Path",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Remove human write access to prod entirely",
+            "Apply only through a CI role",
+            "Developers get read-only plus a break-glass procedure",
+            "Immutable prod: replace infrastructure, never mutate it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Version Everything"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "module \"app\" {",
+            "  source =",
+            "    \"git::$ORG/inf//modules/app?ref=v1.4.2\"",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Promotion becomes a version bump, not a copy-paste",
+            "Same module version everywhere: the diff is only tfvars",
+            "Pin providers in `.terraform.lock.hcl` and commit it",
+            "Unpinned providers drift environments apart on their own"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Promote the artifact",
+          "text": "The module ref that passed staging is the ref that goes to prod. Never re-run a build to produce prod's version."
+        },
+        {
+          "type": "heading",
+          "text": "Data, Not Structure"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Keep in data",
+                "lines": [
+                  "tfvars",
+                  "settings map",
+                  "sizes and counts",
+                  "names and tags"
+                ]
+              },
+              {
+                "title": "Never in structure",
+                "lines": [
+                  "different resource blocks",
+                  "stage-only modules",
+                  "forked file trees"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Gates Before Merge"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Check",
+            "Catches"
+          ],
+          "rows": [
+            [
+              "`terraform fmt -check`",
+              "noise diffs"
+            ],
+            [
+              "`terraform validate`",
+              "broken config"
+            ],
+            [
+              "`tflint` / `checkov`",
+              "bad patterns, insecure defaults"
+            ],
+            [
+              "Sentinel / conftest",
+              "untagged prod, public buckets"
+            ],
+            [
+              "plan review",
+              "everything else"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Make prod plans empty by default",
+            "A non-empty prod plan on an unrelated PR is a signal",
+            "Investigate it before merging anything"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Give Them A Sandbox"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bake preview environments from workspaces",
+            "Cheap, disposable, per-branch",
+            "Nobody hand-builds a test environment inside prod",
+            "Terragrunt DRY: root `terragrunt.hcl` holds `remote_state`, children supply inputs"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Make It A Metric",
+          "items": [
+            "Track days since last unreverted drift",
+            "Per environment, on the reliability dashboard",
+            "Unmeasured discipline decays quietly"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Common Mistakes & Gotchas",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Aiming At The Wrong Target",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`.terraform/environment` left on `prod` - nothing in the plan header stops you",
+            "`default` holding real prod state because nobody created one",
+            "`workspace delete -force` orphaning live resources",
+            "One S3 key shared across environments - two applies race, state corrupts"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Copying a state file",
+          "text": "Best case a lineage mismatch stops you. Worst case dev silently adopts prod's resource IDs and the next destroy is real."
+        },
+        {
+          "type": "heading",
+          "text": "Configuration Rot"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Workspaces across AWS accounts: one bucket now holds every environment's secrets",
+            "Fifteen `terraform.workspace` ternaries in one file, none tested for dev",
+            "Secrets in tfvars committed to git",
+            "State already leaks them - the repo does not need to as well"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "count    = length(var.envs)  # indexes",
+            "for_each = toset(var.envs)   # keys",
+            "# drop the middle item of a count list",
+            "# and it destroys the wrong resource"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Process Holes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Forgetting `init` after switching directories: stale modules, or a hard error",
+            "`-target` as a routine tool - skips dependents, leaves state half-applied",
+            "`-refresh=false` in CI to save time, then no drift noticed for months",
+            "Auto-apply on merge to main for prod with no manual gate"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Shortcut",
+            "Bill arrives as"
+          ],
+          "rows": [
+            [
+              "`-refresh=false`",
+              "silent months of drift"
+            ],
+            [
+              "routine `-target`",
+              "partially applied state"
+            ],
+            [
+              "auto-apply prod",
+              "a bad plan ships at 2am"
+            ],
+            [
+              "`-force` delete",
+              "resources with no state"
+            ]
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "An empty plan means healthy, right?",
+          "a_bullets": [
+            "No. Unmanaged resources never appear in a plan",
+            "Neither do fields covered by `ignore_changes`",
+            "Empty means \"nothing I manage changed\", not \"nothing changed\""
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Orphan Move"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Deleting a module from code without applying first",
+            "State keeps the resource; the config no longer describes it",
+            "The plan can no longer manage or destroy it",
+            "Order matters: apply the removal, then delete the code"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Cheap Guardrails",
+          "items": [
+            "Print the workspace in the CI log header",
+            "Require a manual approval step on prod applies",
+            "Fail the pipeline if `-refresh=false` appears"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Summary & Decision Playbook",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Environments in Terraform are just separate state files plus separate inputs. Every pattern here is a way to arrange those two things."
+        },
+        {
+          "type": "heading",
+          "text": "The Default",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Directory-per-environment for dev, staging, prod",
+            "Workspaces only for ephemeral copies",
+            "Terragrunt or HCP workspaces when duplication becomes the bottleneck"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Do they differ in identity?",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0"
+              ],
+              [
+                "c1_0"
+              ],
+              [
+                "c2_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "Do they differ in identity?",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "yes: accounts, compliance"
+              },
+              "b1": {
+                "text": "no: only names and sizes"
+              },
+              "b2": {
+                "text": "duplication hurts"
+              },
+              "c0_0": {
+                "text": "directories"
+              },
+              "c1_0": {
+                "text": "workspaces defensible"
+              },
+              "c2_0": {
+                "text": "Terragrunt / HCP"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choose",
+            "When"
+          ],
+          "rows": [
+            [
+              "Workspaces",
+              "same account, same shape, short-lived"
+            ],
+            [
+              "Directories",
+              "different creds or legitimate divergence"
+            ],
+            [
+              "Terragrunt",
+              "generated backends, injected inputs"
+            ],
+            [
+              "HCP workspaces",
+              "per-workspace variables and credentials"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Remote, Both Kinds"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Remote state gives locking and sharing",
+            "Remote runs give credential isolation and reviewable plans",
+            "Adopt both for prod",
+            "Consume other stacks deliberately: outputs or SSM, not raw state"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Drift In One Card"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Three flavours: infra vs state, state vs reality, code vs code",
+            "Detect: scheduled `plan -refresh-only -detailed-exitcode`",
+            "Alert on exit code 2, named per environment",
+            "Reconcile deliberately: revert, adopt, accept, or ignore"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# nightly, per environment",
+            "terraform workspace select prod",
+            "terraform plan -refresh-only \\",
+            "  -detailed-exitcode || alert prod"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Prevention Checklist"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Versioned modules, committed lockfiles",
+            "No human write access to prod",
+            "Policy-as-code gates before merge",
+            "Differences live in tfvars, never in structure"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Two health checks for any setup",
+          "a_bullets": [
+            "Can a new engineer tell which environment they will change, from the files alone?",
+            "Is the prod plan empty right now - and do you have evidence it was empty yesterday?"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The tool enforces nothing",
+          "text": "Terraform will happily apply dev's config to prod's state. Repository layout and the CI pipeline are the only real discipline."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Terraform has no concept of an \"environment\" — it only has state files and input variables, and every pattern you have ever argued about is a way to arrange those two. This handbook walks CLI workspaces vs directory-per-environment vs Terragrunt, how remote runs change the credential story, and the three flavours of drift that quietly split staging from prod. Ends with a decision tree and two health checks you can run on your repo tonight.",
+    "hashtags": [
+      "#terraform",
+      "#infrastructureascode",
+      "#devops",
+      "#platformengineering",
+      "#hashicorp",
+      "#aws",
+      "#sre",
+      "#cloudengineering",
+      "#terragrunt",
+      "#cicd",
+      "#techstudygram"
+    ]
+  }
+}

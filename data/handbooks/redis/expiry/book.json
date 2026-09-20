@@ -1,0 +1,197 @@
+{
+  "title": "Redis Expiry & Eviction: TTLs, Lazy/Active Expiry, and the maxmemory Policies",
+  "summary": "A field guide to how Redis makes keys disappear — the TTL API and its exact semantics, the lazy and active expiry cycles that reclaim expired keys, and how maxmemory triggers eviction under approximated LRU and LFU. Covers internals, tuning knobs, replica/persistence behavior, complexity trade-offs, and the mistakes that cause silent data loss or memory blowups.",
+  "chapters": [
+    {
+      "title": "Two Ways Keys Die: Expiry vs Eviction",
+      "points": [
+        "Expiry = key removed because its TTL passed; deterministic, opt-in per key, part of your data model.",
+        "Eviction = key removed because the server hit maxmemory; nondeterministic, global, part of your capacity plan.",
+        "Expiry can happen with maxmemory unset; eviction can happen to keys that have no TTL at all (policy-dependent).",
+        "Redis is not a cache by default — with no maxmemory and no TTLs it is an unbounded in-memory store that will OOM.",
+        "Key lifetime states: no TTL (persistent), TTL set (volatile), logically expired but still in RAM, physically deleted.",
+        "'Logically expired' is the key idea: after the deadline the key is invisible to clients but may still occupy memory for a while.",
+        "`DBSIZE` and `INFO keyspace` count keys that are logically expired but not yet reclaimed — counts can exceed what reads can see.",
+        "Memory is only returned to the allocator on physical delete, so expiry alone gives no instant memory drop.",
+        "`INFO stats` exposes `expired_keys` and `evicted_keys` — two separate counters, never conflate them in dashboards.",
+        "`INFO memory`: `used_memory` (allocator view) vs `maxmemory` (your ceiling) vs `used_memory_rss` (OS view); eviction compares against `used_memory`.",
+        "Rule of thumb: TTLs express correctness (this data is stale after N seconds); eviction expresses survival (I must not OOM).",
+        "Both mechanisms are cooperative, not real-time — Redis is single-threaded for commands and will never preempt a running command to expire something.",
+        "Design consequence: never assume a key vanished at the exact millisecond of its deadline on every node in the cluster.",
+        "Mental model to carry through the handbook: TTL = a promise about visibility, not a promise about memory."
+      ]
+    },
+    {
+      "title": "The TTL Command Surface",
+      "points": [
+        "`EXPIRE key seconds` — relative TTL in seconds; returns 1 if set, 0 if key missing.",
+        "`PEXPIRE key ms` — same in milliseconds; internal storage is always a millisecond Unix timestamp.",
+        "`EXPIREAT key unix-seconds` / `PEXPIREAT key unix-ms` — absolute deadline; the primitive all others reduce to.",
+        "`TTL key` returns remaining seconds; `-1` = key exists with no TTL; `-2` = key does not exist. Confusing these two is a classic bug.",
+        "`PTTL` for millisecond precision; `EXPIRETIME`/`PEXPIRETIME` (7.0+) return the absolute deadline instead of the remainder.",
+        "`PERSIST key` removes the TTL, turning a volatile key persistent; returns 1 only if a TTL was actually removed.",
+        "`SET key val EX 60` / `PX` / `EXAT` / `PXAT` sets value and TTL atomically — one round trip, no window where the key is immortal.",
+        "`SET key val KEEPTTL` preserves the existing TTL on overwrite; plain `SET` **clears** it.",
+        "`GETEX key EX 60` reads and refreshes in one command; `GETEX key PERSIST` reads and strips the TTL.",
+        "Redis 7 flags: `EXPIRE key 60 NX` (only if no TTL), `XX` (only if TTL exists), `GT` (only extend), `LT` (only shorten).",
+        "`GT`/`LT` treat a persistent key as infinite TTL: `GT` never sets a TTL on a persistent key; `LT` always does.",
+        "Negative TTL or a past `EXPIREAT` deletes the key immediately and the command reports success.",
+        "Idiom — extend a session only forward, never accidentally shorten it: `EXPIRE sess:42 1800 GT`.",
+        "`SETEX key sec val` is legacy sugar for `SET ... EX`; errors if seconds <= 0."
+      ]
+    },
+    {
+      "title": "TTL Semantics: What Resets, What Survives",
+      "points": [
+        "Write commands that fully replace a value (`SET`, `GETSET`, `SETRANGE` via SET path) clear the TTL unless `KEEPTTL` is used.",
+        "Commands that modify a value in place (`INCR`, `APPEND`, `LPUSH`, `HSET`, `SADD`, `ZADD`) do **not** touch the TTL.",
+        "The counter trap: `INCR` then `EXPIRE` on every request keeps resetting the window — a rate limiter that never resets. Set the TTL only when `INCR` returns 1.",
+        "`RENAME src dst` carries the source's TTL to the destination and destroys any TTL the destination had.",
+        "`DEL` then recreate = TTL gone. Recreation always starts persistent unless you set a TTL again.",
+        "`COPY src dst` does not copy the TTL by default; the destination is persistent.",
+        "TTLs are per-key only — you cannot expire a single hash field, list element, or set member (until per-field hash TTLs in Redis 7.4's `HEXPIRE`).",
+        "Consequence: a giant hash or sorted set is all-or-nothing; model per-item expiry as separate keys or sweep manually with a ZSET score = deadline.",
+        "The ZSET sweeper pattern: `ZADD idx <deadline> member`, then periodically `ZRANGEBYSCORE idx -inf <now>` and delete — gives you per-member expiry with explicit control.",
+        "Reading a key never extends its TTL; Redis has no sliding expiration. Use `GETEX ... EX n` if you want touch-to-refresh.",
+        "`FLUSHDB`/`FLUSHALL` remove everything including TTLs; `SWAPDB` moves the whole keyspace, deadlines intact (they are absolute).",
+        "TTL is stored in a separate `expires` dict inside the DB, keyed by pointer to the same key object — so a persistent key costs no TTL memory at all.",
+        "Cost of a TTL: roughly one extra dict entry (~tens of bytes) per volatile key; millions of short TTLs is a real memory line item.",
+        "Absolute-deadline storage means a server clock jump forward mass-expires keys, and a jump backward strands them."
+      ]
+    },
+    {
+      "title": "Lazy Expiry: Expire-on-Access",
+      "points": [
+        "Every keyspace lookup calls `expireIfNeeded()` before returning the value.",
+        "If the deadline has passed, the key is deleted right there and the command behaves as if the key never existed.",
+        "Cost model: O(1) amortized per access, zero background work — this is why lazy expiry is the primary mechanism.",
+        "The flaw: a key that is never touched again is never lazily expired. Write-once, never-read keys leak memory forever without active expiry.",
+        "Lazy deletion propagates: the primary sends an explicit `DEL` (or `UNLINK`) to replicas and the AOF, so the removal is a real replicated write.",
+        "Since Redis 6, that propagated command is `UNLINK` when `lazyfree-lazy-expire yes`, otherwise `DEL`.",
+        "Replicas never expire keys on their own. A replica finds a logically expired key, hides it from reads, but waits for the primary's `DEL`.",
+        "Therefore a replica's `DBSIZE` can legitimately exceed its primary's — not a bug, not drift.",
+        "Read-only replica behavior before Redis 3.2 was a real correctness hazard: stale reads of expired keys. Modern replicas filter them out at read time.",
+        "Writable replicas keep their own local expires dict for locally-written keys — a rarely used, easily-misunderstood corner.",
+        "During a Lua/Function script, time is frozen at script start so the same key cannot expire mid-script — scripts stay deterministic for replication.",
+        "`MULTI`/`EXEC` gives the same guarantee: expiry is evaluated once, not between queued commands.",
+        "Big-value trap: synchronous deletion of a 10-million-element set blocks the event loop for hundreds of ms. `lazyfree-lazy-expire yes` moves the free to a background thread.",
+        "Debug aid: `OBJECT FREQ`/`DEBUG SLEEP` aside, `INFO stats` `expired_keys` rising without `evicted_keys` means expiry, not pressure."
+      ]
+    },
+    {
+      "title": "Active Expiry: The Background Sampling Cycle",
+      "points": [
+        "`activeExpireCycle()` runs inside `serverCron` (default `hz 10`, so ~10 times per second) to catch keys nobody reads.",
+        "Per database, it samples up to `ACTIVE_EXPIRE_CYCLE_KEYS_PER_LOOP` (20) random keys from the `expires` dict — not the main dict, so cost scales with volatile keys only.",
+        "It deletes the expired ones from the sample, then measures the expired ratio.",
+        "If more than 25% of the sample was expired, it immediately repeats the loop on that DB; below 25% it moves on.",
+        "That 25% rule is a probabilistic guarantee: at steady state, expected expired-but-present keys stay under ~25% of the volatile keyspace.",
+        "Fast cycle: runs before each event-loop iteration, capped at ~1000 microseconds, to shave latency spikes between cron ticks.",
+        "Slow cycle: runs in `serverCron`, capped by `ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC` = 25% of CPU time, so expiry can never starve command processing.",
+        "Raising `hz` (10 → 100) makes expiry more responsive and memory smoother, at the cost of steady background CPU. `dynamic-hz yes` auto-scales it with client count.",
+        "Redis 6+ adds an effort dial and a check for keys about to expire so the cycle can bail out early when there is nothing to do.",
+        "Sampling is random, so expiry is unordered — a key with a 1-second TTL is not guaranteed to be reclaimed before one with a 10-minute TTL.",
+        "The pathological case: millions of keys with the same absolute deadline. All expire at once, the cycle burns 25% CPU for seconds, and latency spikes.",
+        "Fix: jitter your TTLs — `EXPIRE key (base + rand(0, base/10))` — the same trick that prevents cache stampedes.",
+        "Active expiry does its deletion on the primary only, and every deletion is replicated, so a mass expiry is also a replication-traffic burst.",
+        "Together, lazy + active give the actual contract: a key becomes *invisible* at its deadline and *reclaimed* soon after, with no upper bound guaranteed."
+      ]
+    },
+    {
+      "title": "maxmemory: When Eviction Starts",
+      "points": [
+        "`maxmemory <bytes>` sets the ceiling; `maxmemory 0` (default on most builds) means unlimited — the setting most production incidents trace back to.",
+        "Units accepted in config: `maxmemory 2gb`. Changeable at runtime with `CONFIG SET maxmemory 2gb`, which can trigger immediate mass eviction.",
+        "The comparison is against `used_memory` (jemalloc-reported), minus replication buffers and AOF buffer overhead, not against process RSS.",
+        "Eviction is checked in `performEvictions()`, called before executing each command that may increase memory usage.",
+        "Loop: while over the limit, pick a victim by policy, delete it, propagate a `DEL`/`UNLINK`, add to `evicted_keys`, re-check.",
+        "If the policy cannot free enough (e.g. `noeviction`, or every key is protected), the write command returns `OOM command not allowed when used memory > 'maxmemory'`.",
+        "Reads and `DEL` still succeed under OOM — only commands flagged as `may-replicate`/denyoom are rejected.",
+        "Sizing rule: leave headroom. Copy-on-write during `BGSAVE`/`BGREWRITEAOF` can double RSS on a write-heavy instance; set maxmemory to ~50-60% of box RAM if you fork.",
+        "`maxmemory-clients` (Redis 7) separately caps client output buffers so a slow consumer cannot count against your data budget.",
+        "Fragmentation matters: `mem_fragmentation_ratio` = rss / used_memory. Eviction will not help when the problem is fragmentation; `activedefrag yes` will.",
+        "`lazyfree-lazy-eviction yes` frees evicted values in a background thread — essential when values are large collections.",
+        "Eviction is synchronous with command execution, so a big eviction storm shows up directly as p99 latency in `SLOWLOG` and `LATENCY HISTORY`.",
+        "Cluster note: maxmemory is per-node, so an unbalanced slot distribution evicts hot nodes while others sit idle.",
+        "Watch `evicted_keys` rate + `keyspace_hits`/`keyspace_misses` together: rising evictions with falling hit rate = the cache is too small, not misconfigured."
+      ]
+    },
+    {
+      "title": "The Eight maxmemory-policy Options",
+      "points": [
+        "`noeviction` — never evict; writes fail with OOM once full. Correct for a Redis used as a database or a queue.",
+        "`allkeys-lru` — evict the approximated least-recently-used key from the whole keyspace. The default choice for a pure cache.",
+        "`allkeys-lfu` — evict the approximated least-frequently-used key. Better when access is skewed and some items are permanently hot.",
+        "`allkeys-random` — uniform random victim. Cheap, surprisingly acceptable when access is uniform, and useful as a baseline.",
+        "`volatile-lru` — LRU restricted to keys that have a TTL.",
+        "`volatile-lfu` — LFU restricted to keys that have a TTL.",
+        "`volatile-random` — random victim among keys with a TTL.",
+        "`volatile-ttl` — evict the key with the shortest remaining TTL first; approximated by the same sampling machinery, not a true sorted order.",
+        "The `volatile-*` trap: if no key has a TTL, there is nothing to evict and the policy degrades to `noeviction` — writes start failing while memory looks 'evictable'.",
+        "Use `volatile-*` for a mixed instance: persistent config/session data alongside disposable cached data marked with TTLs.",
+        "`allkeys-*` gives up the ability to pin anything; nothing in the instance is safe.",
+        "Set with `CONFIG SET maxmemory-policy allkeys-lfu`; persist it in redis.conf or it is lost on restart.",
+        "Decision heuristic: pure cache → `allkeys-lru`; skewed hot set → `allkeys-lfu`; mixed durable+cache → `volatile-lru`; source of truth → `noeviction`.",
+        "Managed-service default is often `noeviction` — verify, don't assume, before treating an instance as a cache."
+      ]
+    },
+    {
+      "title": "Approximated LRU: 24 Bits and a Sample Pool",
+      "points": [
+        "True LRU requires a doubly-linked list touched on every access — extra pointers per object and cache-hostile pointer chasing. Redis refuses to pay it.",
+        "Instead each `robj` carries a 24-bit `lru` field holding a coarse clock: Unix time in seconds, truncated to 24 bits.",
+        "24 bits of seconds wraps every ~194 days; the comparison code handles wraparound, and idle time is computed modulo that range.",
+        "Clock resolution is `LRU_CLOCK_RESOLUTION` = 1000 ms, and the value is read from a cached global updated by `serverCron` — no `gettimeofday` per access.",
+        "On eviction Redis samples `maxmemory-samples` random keys (default 5) and evicts the one with the oldest clock.",
+        "Redis 3.0 added an eviction **pool**: a 16-entry buffer of the best candidates seen so far, refilled each round, so good victims survive across sampling passes.",
+        "Accuracy vs cost: samples=5 is visibly worse than true LRU; samples=10 is close to indistinguishable at roughly 2x the sampling CPU; higher gains almost nothing.",
+        "`OBJECT IDLETIME key` reports seconds since last access — only meaningful under an LRU policy, and reading it does not itself count as an access for this purpose in `DEBUG` paths.",
+        "LRU's structural weakness: a single scan (a batch job doing `KEYS`-style traversal or a big `MGET` sweep) touches everything once and evicts your genuinely hot set. This is scan resistance failure.",
+        "LRU also cannot distinguish 'accessed once, recently' from 'accessed 10,000 times, recently' — recency alone throws away frequency information.",
+        "Under `volatile-ttl` the same pool machinery runs but ranks by nearest deadline instead of oldest access.",
+        "The `lru` field is shared storage: under an LFU policy the identical 24 bits are reinterpreted as counter + timestamp — you get one or the other, never both.",
+        "Tuning: `CONFIG SET maxmemory-samples 10` is the single highest-value LRU knob; measure hit ratio before and after.",
+        "Redis ships an LRU quality visualizer (`utils/lru/test-lru.rb`) that renders true-LRU vs approximated victims — worth citing when someone claims the approximation is 'basically random'."
+      ]
+    },
+    {
+      "title": "Approximated LFU: Morris Counters and Decay",
+      "points": [
+        "Added in Redis 4.0 to fix LRU's blind spot: an item hit thousands of times should outrank an item hit once ten seconds ago.",
+        "The same 24 bits are split: 16 bits of last-decrement time (minutes) + 8 bits of a logarithmic access counter.",
+        "8 bits cannot hold a real count, so the counter is probabilistic (a Morris counter): on access it increments with probability `1 / (old_counter * lfu-log-factor + 1)`.",
+        "Result: the counter grows fast at first, then slower and slower — it saturates at 255, which maps to roughly a million accesses at the default log factor of 10.",
+        "New keys start at `LFU_INIT_VAL` = 5, not 0, so a fresh key is not instantly evicted before it has a chance to prove itself.",
+        "Without decay, LFU is history-bound: yesterday's hot key stays untouchable forever. So the counter is halved (or decremented) over time.",
+        "`lfu-decay-time` (default 1 minute) = how many minutes of idleness cost one halving/decrement of the counter.",
+        "Decay is lazy — applied when a key is next touched or sampled, not by a sweeping background pass, so it costs nothing when idle.",
+        "`lfu-log-factor` (default 10) controls counter saturation: lower = counter climbs quickly, distinguishes low-traffic keys; higher = wider dynamic range for very hot keys.",
+        "`OBJECT FREQ key` returns the raw counter, valid only under an `*-lfu` policy; `OBJECT IDLETIME` errors out there. Use it to inspect whether your hot set is actually registering as hot.",
+        "LFU is scan-resistant where LRU is not: a one-pass batch job leaves counters near 5, so its keys are evicted first and your hot set survives.",
+        "LFU costs the same per-access work as LRU (one field update) — the trade-off is tuning complexity, not throughput.",
+        "Failure mode of LFU: a sudden legitimate traffic shift (new feature, new tenant) is slow to promote because the incumbent counters are high. Shorten `lfu-decay-time`.",
+        "Comparison row to memorize — LRU: recency, 1 knob (`maxmemory-samples`), loses to scans. LFU: frequency + decay, 3 knobs, resists scans, adapts slowly to shifts."
+      ]
+    },
+    {
+      "title": "Gotchas, Persistence, and the Cheat Sheet",
+      "points": [
+        "RDB stores absolute expiry timestamps; keys already expired at load time are dropped by the primary and kept by a replica until told otherwise.",
+        "AOF never records an expiry implicitly — expiry and eviction are both written into the AOF as explicit `DEL`/`UNLINK`, so replay is deterministic.",
+        "Failover hazard: after a replica is promoted, its own clock and its inherited-but-unexpired keys govern; a large clock skew between nodes changes what is visible.",
+        "Keyspace notifications let you react to removal: `CONFIG SET notify-keyspace-events Ex` gives `__keyevent@0__:expired`. It fires on *reclamation*, not on the deadline — delay is unbounded and delivery is fire-and-forget (pub/sub, no persistence). Never build a job scheduler on it alone.",
+        "Cluster + TTL: keys expire independently per shard, so 'expire this set of related keys together' is not a thing you can rely on. Hash-tag them and delete explicitly.",
+        "Mistake — `SET` after `EXPIRE`: the write clears the TTL and the key becomes immortal. Use `SET ... KEEPTTL` or set both atomically.",
+        "Mistake — `EXPIRE` on every `INCR`: the rate-limit window slides forever. Guard with `if INCR == 1 then EXPIRE`.",
+        "Mistake — `volatile-lru` with no TTLs anywhere: OOM errors on an instance that appears to have plenty of evictable data.",
+        "Mistake — assuming a TTL frees memory on time: memory drops when the key is reclaimed, which lazy+active only promise 'soon'.",
+        "Mistake — uniform TTLs causing synchronized expiry, a CPU spike, a replication burst, and a cache stampede at the backend. Jitter.",
+        "Mistake — treating `DBSIZE` as authoritative: it counts logically-expired keys and differs between primary and replica by design.",
+        "Monitoring set: `evicted_keys`, `expired_keys`, `used_memory` vs `maxmemory`, `mem_fragmentation_ratio`, `keyspace_hits`/`misses`, `latency` percentiles.",
+        "Config cheat sheet: `maxmemory`, `maxmemory-policy`, `maxmemory-samples`, `lfu-log-factor`, `lfu-decay-time`, `hz`/`dynamic-hz`, `lazyfree-lazy-expire`, `lazyfree-lazy-eviction`, `activedefrag`.",
+        "One-line summary: TTLs make keys invisible on time and reclaimed approximately; maxmemory turns approximate reclamation into a hard budget; LRU and LFU are both sampled guesses, tuned by `maxmemory-samples` and the two `lfu-*` dials.",
+        "Final checklist before shipping: maxmemory set, policy matched to workload, TTLs jittered, `KEEPTTL` audited, lazyfree on for big values, eviction counters on a dashboard."
+      ]
+    }
+  ]
+}

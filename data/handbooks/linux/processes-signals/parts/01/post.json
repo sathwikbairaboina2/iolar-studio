@@ -1,0 +1,1403 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "LINUX PROCESSES & SIGNALS",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "What Is a Process, Really?",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Program vs Process",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "A program is bytes on disk. A process is that program plus its execution state — a running instance."
+        },
+        {
+          "type": "heading",
+          "text": "2. Address Space Map"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "text = code, data = initialised globals",
+            "BSS = zero-initialised globals",
+            "heap grows up, stack grows down",
+            "mmap'd regions sit between the two",
+            "every process gets its own private map"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Kernel View: task_struct"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each process is a task_struct in the task list",
+            "Holds PID, state, saved registers, credentials",
+            "Plus fd table, signal handlers, mm pointer"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. State Machine",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "STAT",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "R",
+              "running / runnable"
+            ],
+            [
+              "S",
+              "interruptible sleep"
+            ],
+            [
+              "D",
+              "uninterruptible (disk I/O)"
+            ],
+            [
+              "T",
+              "stopped by signal"
+            ],
+            [
+              "Z",
+              "zombie, awaiting reap"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "I = idle kernel thread, never counted as load",
+            "D-state task sits inside the kernel",
+            "It checks no signals until the I/O returns"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "D-State Trap",
+          "text": "This is the classic 'kill -9 does nothing' case — the task is blocked in kernel code, so the signal only lands once I/O finishes."
+        },
+        {
+          "type": "heading",
+          "text": "5. Identity Numbers"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "PID = self, PPID = parent",
+            "PGID = process group, SID = session",
+            "UID/EUID and GID/EGID drive permissions"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Threads Are Tasks"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A thread is a process sharing an address space",
+            "Same TGID, different task id",
+            "getpid() gives the TGID, gettid() the real task"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "7. Introspection via /proc"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "ls /proc/$$/          # status cmdline environ",
+            "cat /proc/$$/maps     # address space layout",
+            "ls /proc/$$/fd/       # open descriptors",
+            "ps -eo pid,ppid,pgid,sid,stat,comm"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Keep This",
+          "text": "The kernel schedules tasks, not programs. A 'process' is the accounting unit wrapped around one or more schedulable tasks."
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "trap 'kill -TERM $child; wait $child' TERM",
+            "grep -E 'SigBlk|SigIgn|SigCgt' /proc/$$/status"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "PIDs, PPIDs and the Process Tree",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. The Two Numbers",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "PID = positive integer assigned at creation",
+            "PPID = PID of the creating parent",
+            "Read them with getpid() and getppid()"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. PID 1 Is Special"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "init/systemd, started directly by the kernel",
+            "Parent of every orphan on the box",
+            "Ordinary signals cannot kill it",
+            "If it dies the kernel panics"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "PID 0, Two Meanings",
+          "items": [
+            "The swapper/idle task, not userspace",
+            "In kill(): pid 0 = my own process group"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "3. Allocation and Wrap"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "PIDs are handed out sequentially, then wrap",
+            "Ceiling is /proc/sys/kernel/pid_max",
+            "Default 32768, raisable to 4194304"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "cat /proc/sys/kernel/pid_max   # 32768",
+            "ps -p 4711 -o lstart=          # verify age"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Reuse Race",
+          "text": "After a wrap, a PID you cached may now name a different process. Never kill an old saved PID without re-checking its start time."
+        },
+        {
+          "type": "heading",
+          "text": "4. The Forest"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Strictly a forest rooted at PID 1",
+            "pstree -p draws it with numbers",
+            "ps -ejH prints an indented listing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. PID Namespaces",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Viewpoint",
+            "PID seen"
+          ],
+          "rows": [
+            [
+              "Inside container",
+              "1"
+            ],
+            [
+              "On the host",
+              "24831"
+            ],
+            [
+              "Reality",
+              "one task, two numbers"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Your app becomes PID 1 inside the container",
+            "So it inherits reaping duty for all orphans",
+            "It must handle SIGTERM itself",
+            "Otherwise the container never stops cleanly"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Finding Processes"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "pgrep -f 'worker --queue=mail'  # by cmdline",
+            "pidof nginx                     # by name",
+            "kill -0 4711 && echo alive      # probe"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Modern Handle",
+          "text": "pidfd_open() returns a descriptor bound to that exact process; pidfd_send_signal() then targets it with no PID-reuse window."
+        },
+        {
+          "type": "heading",
+          "text": "1. Called Once, Returns Twice",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "pid_t fork(void) makes a near-identical copy of the caller. One call, two returning processes."
+        }
+      ]
+    },
+    {
+      "page_title": "fork(): Cloning a Process",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Return",
+            "Where you are"
+          ],
+          "rows": [
+            [
+              "0",
+              "the child"
+            ],
+            [
+              "> 0",
+              "parent, value = child PID"
+            ],
+            [
+              "-1",
+              "failed, EAGAIN or ENOMEM"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Canonical Skeleton"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "pid_t p = fork();",
+            "if (p < 0) perror(\"fork\");",
+            "else if (p == 0) run_child();   // child",
+            "else waitpid(p, &st, 0);        // parent"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. What Crosses Over"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Inherited",
+            "Not inherited"
+          ],
+          "rows": [
+            [
+              "open fds + offsets",
+              "pending signals"
+            ],
+            [
+              "environ, cwd, umask",
+              "timers"
+            ],
+            [
+              "signal dispositions",
+              "file locks"
+            ],
+            [
+              "resource limits",
+              "the PID itself"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Child gets a fresh PID, PPID = parent's PID",
+            "Dispositions survive, pending signals are cleared"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Copy-On-Write",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No physical copy of memory is made",
+            "Pages are shared read-only after the fork",
+            "A page is duplicated only when someone writes",
+            "That is why forking a 4 GB process is cheap"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Ordering Is Undefined"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Never Assume Who Runs",
+          "text": "Nothing guarantees parent or child goes first. If order matters, synchronise explicitly with a pipe, a lock or waitpid."
+        },
+        {
+          "type": "heading",
+          "text": "6. Shared Offsets Bite"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "printf(\"hello\\n\");   // still in buffer",
+            "fflush(NULL);        // flush BEFORE fork",
+            "fork();              // else printed twice"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Parent and child share one file offset per fd",
+            "Concurrent writes to the same fd interleave"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "7. Limits and Cousins",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            ":(){ :|:& };:    # fork bomb, do not run",
+            "ulimit -u        # RLIMIT_NPROC ceiling"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Related Calls",
+          "items": [
+            "vfork(): borrows parent memory, legacy",
+            "clone(): the real primitive, flag-driven",
+            "posix_spawn(): fork+exec, cheap on big procs"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "exec(): Replacing the Program",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Same Process, New Program",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "exec overwrites the process image: same PID and PPID, brand new code, data, heap and stack."
+        },
+        {
+          "type": "heading",
+          "text": "2. Success Means No Return"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "execvp(\"ls\", argv);   // no return if ok",
+            "perror(\"exec\");       // reached = failure",
+            "_exit(127);           // 127 = not found"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Reading The Names"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Letter",
+            "Means"
+          ],
+          "rows": [
+            [
+              "l",
+              "arg list, NULL-terminated"
+            ],
+            [
+              "v",
+              "arg vector array"
+            ],
+            [
+              "p",
+              "search $PATH"
+            ],
+            [
+              "e",
+              "explicit envp"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "execl, execv, execlp, execvp, execle, execve",
+            "execve(path, argv, envp) is the only syscall",
+            "Every other form is a libc wrapper on it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. argv[0] Is A Convention"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "It is not read from the filename",
+            "Shells set it to the typed command name",
+            "A login shell gets a leading '-' as the marker"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Crosses vs Resets",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Survives exec",
+            "Wiped by exec"
+          ],
+          "rows": [
+            [
+              "PID, PPID",
+              "signal handlers"
+            ],
+            [
+              "open fds (no CLOEXEC)",
+              "memory mappings"
+            ],
+            [
+              "cwd, umask, nice",
+              "all other threads"
+            ],
+            [
+              "PGID, session",
+              "handler functions"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Ignored Stays Ignored",
+          "text": "Handlers reset to SIG_DFL, but SIG_IGN carries across exec. A parent that ignored SIGINT hands you a child nobody can Ctrl-C."
+        },
+        {
+          "type": "heading",
+          "text": "6. Close-On-Exec"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "int fd = open(p, O_RDONLY | O_CLOEXEC);",
+            "fcntl(fd, F_SETFD, FD_CLOEXEC);  // or here",
+            "// unmarked fds leak into every child"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "exec(): Replacing the Program (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "7. Why Redirection Works",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "if (fork() == 0) {",
+            "  dup2(fd, STDOUT_FILENO);  // rewire first",
+            "  execvp(\"ls\", argv);       // then replace",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The new program simply sees stdout already set",
+            "Shebang: kernel execs the interpreter instead",
+            "#!/usr/bin/env python3 gets the script appended"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Death Needs A Witness",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "A terminated child is not fully gone until the parent collects its status. That collection is reaping."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "child exits",
+              "status kept",
+              "parent waits",
+              "slot freed"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. The Three Calls"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "wait(&st) blocks for any child",
+            "waitpid(pid, &st, 0) targets one child or group",
+            "waitpid(-1, &st, WNOHANG) polls, returns 0 if none",
+            "WNOHANG is what makes event loops possible"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Decoding Status"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Test",
+            "Then read"
+          ],
+          "rows": [
+            [
+              "WIFEXITED",
+              "WEXITSTATUS = exit code"
+            ],
+            [
+              "WIFSIGNALED",
+              "WTERMSIG = killing signal"
+            ],
+            [
+              "WIFSTOPPED",
+              "WSTOPSIG = stopping signal"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Exit Codes Are 8 Bits",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "0",
+              "success"
+            ],
+            [
+              "1-125",
+              "application defined"
+            ],
+            [
+              "126",
+              "found, not executable"
+            ],
+            [
+              "127",
+              "command not found"
+            ],
+            [
+              "128+N",
+              "killed by signal N"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "sh -c 'exit 42'; echo $?     # 42",
+            "sh -c 'kill -9 $$'; echo $?  # 137 = 128+9",
+            "false | true; echo ${PIPESTATUS[@]}  # 1 0"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "wait(), Exit Status and Reaping",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "143 = 128+15 = SIGTERM, 137 = SIGKILL",
+            "$? holds the last status only",
+            "${PIPESTATUS[@]} holds every pipeline stage"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. SIGCHLD And The Loop"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "void on_chld(int s) {",
+            "  int st;",
+            "  while (waitpid(-1, &st, WNOHANG) > 0)",
+            "    ;   // drain, deliveries coalesce",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Why The Loop",
+          "text": "SIGCHLD is not queued. Four children dying at once can produce one delivery, so the handler must drain until waitpid returns 0 or -1."
+        },
+        {
+          "type": "heading",
+          "text": "6. Richer And Lazier"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SIGCHLD fires on terminate, stop and continue",
+            "waitid() returns a full siginfo_t",
+            "waitid WNOWAIT peeks without reaping",
+            "signal(SIGCHLD, SIG_IGN) auto-reaps, kills status"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. What A Zombie Is",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "State Z, shown as <defunct>: exited, but the parent has not called wait. The kernel keeps only its status and accounting."
+        },
+        {
+          "type": "heading",
+          "text": "2. The Real Cost"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No memory, no CPU, no scheduling",
+            "One PID table slot each",
+            "Failure mode is PID exhaustion, not RAM"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Can you kill a zombie?",
+          "a_bullets": [
+            "No — it is already dead",
+            "kill -9 <zombie> is a plain no-op",
+            "Make the parent reap it, or kill the parent",
+            "Killing the parent re-parents it to PID 1"
+          ],
+          "example_code": [
+            "kill -9 8842      # nothing happens",
+            "kill -TERM $(ps -o ppid= -p 8842)"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "PID 1 waits in a loop and reaps immediately",
+            "So the re-parented zombie disappears at once"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Orphans Are The Inverse",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "Zombie",
+            "Orphan"
+          ],
+          "rows": [
+            [
+              "Alive?",
+              "no",
+              "yes"
+            ],
+            [
+              "Parent",
+              "alive, negligent",
+              "dead"
+            ],
+            [
+              "Fix",
+              "reap it",
+              "nothing, adopted"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An orphan is re-parented and keeps running",
+            "It goes to init/systemd, or the nearest subreaper"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Zombies and Orphans",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Subreapers"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "prctl(PR_SET_CHILD_SUBREAPER, 1);",
+            "// adopts the whole descendant subtree"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "This is how systemd keeps a unit's tree",
+            "Container managers use the same hook"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Double-Fork Daemonising"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "fork, then the parent exits right away",
+            "Child calls setsid() for a new session",
+            "It forks again and the middle process exits",
+            "Grandchild is orphaned on purpose, init reaps it",
+            "It can never acquire a controlling terminal"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Spotting Them",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "ps -eo pid,ppid,stat,comm |",
+            "  awk '$3 ~ /^Z/'   # list zombies",
+            "top                 # zombie count line"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Container Fix",
+          "text": "A shell or app as PID 1 that never waits piles up zombies from every subprocess. Use --init, tini, dumb-init, or a real reaper loop. Many zombies means a buggy parent — fix its SIGCHLD logic, don't schedule reboots."
+        },
+        {
+          "type": "heading",
+          "text": "1. An Async Interrupt",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "A signal is a small integer delivered to a process to notify it of an event — a software interrupt, not a message."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "generated",
+              "pending",
+              "delivered",
+              "handled"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Generated by the kernel, another process, or itself",
+            "Pending while blocked, never lost",
+            "Handled according to its disposition"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Three Dispositions"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Disposition",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "SIG_DFL",
+              "kernel default action"
+            ],
+            [
+              "SIG_IGN",
+              "discarded on delivery"
+            ],
+            [
+              "handler fn",
+              "your code runs"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "The Signal Model",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. Default Actions"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Action",
+            "Result"
+          ],
+          "rows": [
+            [
+              "Term",
+              "process terminates"
+            ],
+            [
+              "Core",
+              "terminates + dumps core"
+            ],
+            [
+              "Ign",
+              "discarded"
+            ],
+            [
+              "Stop",
+              "suspended"
+            ],
+            [
+              "Cont",
+              "resumed"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Queued vs Collapsed",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Standard signals 1-31 are NOT queued",
+            "Two arrivals while blocked collapse into one",
+            "SIGRTMIN..SIGRTMAX (32-64) ARE queued",
+            "Real-time signals arrive in order",
+            "sigqueue() can attach a value to each"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Blocking, Not Losing"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "sigset_t s; sigemptyset(&s);",
+            "sigaddset(&s, SIGINT);",
+            "sigprocmask(SIG_BLOCK, &s, NULL);",
+            "// blocked signals stay pending"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "pthread_sigmask() is the per-thread form",
+            "Unblocking delivers whatever piled up"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Always sigaction()"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "signal() has inconsistent historical semantics",
+            "It may reset the handler or change restart rules",
+            "SA_RESTART auto-restarts blocking syscalls",
+            "Without it, read/accept fail with EINTR"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "7. Safe Handler Shape",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "volatile sig_atomic_t stop = 0;",
+            "void on_term(int s) { stop = 1; }",
+            "// write() is safe here, printf() is not"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Async-Signal-Safety",
+          "text": "malloc and printf take locks the interrupted code may already hold — calling them in a handler can deadlock. Set a flag or write one byte to a self-pipe or eventfd, then do the real work in the main loop."
+        },
+        {
+          "type": "sidebox",
+          "title": "Synchronous Alternatives",
+          "items": [
+            "signalfd(): signals as a readable fd",
+            "sigwaitinfo() / sigtimedwait(): a waiter thread",
+            "Both drop straight into an epoll loop"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Signal Catalog: The Ones You Use",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Terminal And Control",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Signal",
+            "No",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "SIGHUP",
+              "1",
+              "hang-up / leader died"
+            ],
+            [
+              "SIGINT",
+              "2",
+              "Ctrl-C, catchable"
+            ],
+            [
+              "SIGQUIT",
+              "3",
+              "Ctrl-\\, dumps core"
+            ],
+            [
+              "SIGKILL",
+              "9",
+              "instant, uncatchable"
+            ],
+            [
+              "SIGTERM",
+              "15",
+              "polite stop request"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Daemons repurpose SIGHUP as 'reload config'",
+            "In Java, SIGQUIT prints a thread dump instead",
+            "SIGKILL is unblockable and unignorable too",
+            "SIGTERM is the default for bare kill"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Hardware Faults",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Signal",
+            "No",
+            "Cause"
+          ],
+          "rows": [
+            [
+              "SIGSEGV",
+              "11",
+              "invalid memory access"
+            ],
+            [
+              "SIGBUS",
+              "7",
+              "misaligned / bad address"
+            ],
+            [
+              "SIGFPE",
+              "8",
+              "integer divide by zero"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. I/O And Timers"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SIGPIPE (13): wrote to a pipe with no reader",
+            "Default action kills you outright",
+            "Servers SIG_IGN it and check write for EPIPE",
+            "SIGALRM (14): alarm() or setitimer() expired"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "c",
+          "lines": [
+            "signal(SIGPIPE, SIG_IGN);   // survive it",
+            "if (write(fd,b,n) < 0 && errno == EPIPE)",
+            "  drop_client();            // handle inline"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Children And Stops"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Signal",
+            "No",
+            "Note"
+          ],
+          "rows": [
+            [
+              "SIGCHLD",
+              "17",
+              "child died/stopped/cont"
+            ],
+            [
+              "SIGCONT",
+              "18",
+              "resume a stopped task"
+            ],
+            [
+              "SIGSTOP",
+              "19",
+              "suspend, uncatchable"
+            ],
+            [
+              "SIGTSTP",
+              "20",
+              "Ctrl-Z, catchable stop"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SIGCHLD's default action is to ignore",
+            "SIGSTOP is uncatchable exactly like SIGKILL",
+            "SIGTSTP is the polite variant you can trap"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Application-Defined",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SIGUSR1 (10) and SIGUSR2 (12) mean what you say",
+            "nginx: USR1 reopens logs",
+            "nginx: USR2 starts a binary upgrade",
+            "SIGWINCH (28): terminal was resized",
+            "TUIs use WINCH to re-layout the screen"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Signal Catalog: The Ones You Use (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Names, Never Numbers",
+          "text": "Signal numbers differ across architectures — SIGBUS and friends move. Write kill -TERM, not kill -15, and check the local table with kill -l."
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kill -l            # full name/number table",
+            "kill -l 137        # KILL, decodes 128+N",
+            "trap -l            # same list, shell side"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "1. Request vs Order",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "SIGTERM is a request the process may answer. SIGKILL is an order the kernel carries out for you."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Property",
+            "TERM",
+            "KILL"
+          ],
+          "rows": [
+            [
+              "Catchable",
+              "yes",
+              "no"
+            ],
+            [
+              "Blockable",
+              "yes",
+              "no"
+            ],
+            [
+              "Data-safe",
+              "yes",
+              "no"
+            ],
+            [
+              "Guaranteed",
+              "no",
+              "yes"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. What TERM Buys You"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Flush buffers and fsync open files",
+            "Close DB connections cleanly",
+            "Finish in-flight requests",
+            "Remove the PID file",
+            "Deregister from the load balancer"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. What KILL Skips",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No handler, no atexit, no destructors",
+            "No flush — buffered writes are simply lost",
+            "Temp files, lock files, shm segments left behind"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Correct Sequence"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "SIGTERM",
+              "grace period",
+              "still alive?",
+              "SIGKILL"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Not A Shortcut",
+          "text": "kill -9 first is the mistake, not the fast path. Send TERM, wait the grace period, escalate only if the process is still there."
+        },
+        {
+          "type": "heading",
+          "text": "5. Even KILL Has Limits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A D-state task cannot be killed immediately",
+            "The kill is marked pending in the task",
+            "It lands once the task leaves the kernel",
+            "A wedged driver can hold it there forever"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Platform Defaults",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "System",
+            "Grace before KILL"
+          ],
+          "rows": [
+            [
+              "systemd",
+              "TimeoutStopSec=90s"
+            ],
+            [
+              "docker stop",
+              "-t, default 10s"
+            ],
+            [
+              "Kubernetes",
+              "grace period, default 30s"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "7. The PID 1 Catch"
+        },
+        {
+          "type": "code",
+          "lang": "docker",
+          "lines": [
+            "CMD [\"myapp\"]        # exec form, app is PID 1",
+            "# CMD myapp          # sh is PID 1, eats TERM",
+            "# or in a script:  exec myapp"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "kill -9 didn't work? The process was in D state, sitting inside the kernel, not reading signals until its disk I/O returned. 14 pages of handwritten notes on how Linux really creates, runs and kills processes: fork returning twice, exec never returning, the zombie you cannot kill, why your container takes exactly 10 seconds to stop, and the full signal catalog. Save it for the next time a daemon won't die.",
+    "hashtags": [
+      "#linux",
+      "#systemsprogramming",
+      "#processes",
+      "#signals",
+      "#unix",
+      "#devops",
+      "#sre",
+      "#kernel",
+      "#backend",
+      "#cprogramming",
+      "#docker",
+      "#studynotes"
+    ]
+  }
+}

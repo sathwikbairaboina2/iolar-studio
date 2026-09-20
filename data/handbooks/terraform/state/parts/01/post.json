@@ -1,0 +1,1159 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "TERRAFORM STATE: FIELD NOTES",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "What State Is and Why It Exists",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "State is a JSON map from config addresses (`aws_instance.web`) to real object IDs (`i-0abc123`). It also caches that object's attributes."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "config",
+              "state map",
+              "provider",
+              "real infra"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cloud APIs can't say which of 400 instances is yours",
+            "No cross-provider ownership tag standard exists",
+            "So Terraform records the binding itself"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Four Jobs of State"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Job",
+            "Why"
+          ],
+          "rows": [
+            [
+              "identity map",
+              "config ↔ real ID"
+            ],
+            [
+              "attribute cache",
+              "no N API reads"
+            ],
+            [
+              "dependency order",
+              "correct destroy"
+            ],
+            [
+              "outputs",
+              "other configs read"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Declarative but not stateless",
+            "No state = apply recreates everything",
+            "Nothing else links config to reality"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Why Store the Graph"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "On destroy, resources are gone from config",
+            "Old graph knows subnet dies after its instance",
+            "Recomputing from a deleted config is impossible"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Files on Disk"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform.tfstate         # working dir",
+            "terraform.tfstate.backup  # prior write",
+            "terraform.tfstate.d/staging/  # workspace",
+            "terraform plan -refresh=false # cache only"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`terraform workspace new staging` = separate state",
+            "Remote backends key the workspace into the path",
+            "Same config, isolated state"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Hard Rules",
+          "items": [
+            "Never hand-edit `terraform.tfstate`",
+            "`serial` + `lineage` + schemas must stay consistent",
+            "One root module = one state = one lock",
+            "One state = one blast radius"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "What State Is and Why It Exists (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Belief vs Reality",
+          "text": "State is what Terraform believes exists. Reality is what does exist. The gap is drift."
+        },
+        {
+          "type": "qa",
+          "q": "Lost the state file — is my infra gone?",
+          "a_bullets": [
+            "No. State is not a backup of infrastructure",
+            "You lost the mapping, not the resources",
+            "They keep running, orphaned and unmanaged",
+            "Re-import by ID to rebuild the map"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Address Is the Key"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "# rename web -> api, no state move",
+            "resource \"aws_instance\" \"api\" {}",
+            "# plan: -/+ destroy and create",
+            "# 5000 resources = plans in minutes"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Top-Level Fields",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "json",
+          "lines": [
+            "{ \"version\": 4,",
+            "  \"terraform_version\": \"1.9.5\",",
+            "  \"serial\": 87, \"lineage\": \"3f2a-...\",",
+            "  \"outputs\": {}, \"resources\": [],",
+            "  \"check_results\": null }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`serial`",
+              "bumped every write"
+            ],
+            [
+              "`lineage`",
+              "UUID at creation"
+            ],
+            [
+              "`version`",
+              "on-disk format, 4"
+            ],
+            [
+              "`terraform_version`",
+              "last writer binary"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Remote backends reject writes with a stale `serial`",
+            "Different lineage = unrelated state, refused without `-force`",
+            "Older binaries refuse newer state; upgrades are one-way"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "resources[] Entries"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`mode`: \"managed\" or \"data\"",
+            "`type`, `name`, and full `provider` address",
+            "`instances[]` holds the actual objects"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "schema_version",
+                "attributes"
+              ],
+              [
+                "dependencies",
+                "private"
+              ],
+              [
+                "index_key"
+              ]
+            ],
+            "caption": "one instance"
+          }
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Anatomy of the State File",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`index_key`: int for `count`, string for `for_each`",
+            "That is why count→for_each forces address changes",
+            "`attributes` holds computed ARNs, IDs, DNS names",
+            "Interpolation reads them with zero API calls"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`private`: opaque base64 provider blob",
+            "Holds timeouts and create-before-destroy bookkeeping",
+            "`dependencies`: addresses resolved at apply time",
+            "Destroy order survives deleting the config"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Outputs and Deposed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`outputs` stores `value` plus a `sensitive` flag",
+            "`terraform_remote_state` reads exactly this section",
+            "Failed create_before_destroy parks the old object",
+            "It lands under a `deposed` key with a random ID"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Inspect, Never Edit"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform state list        # addresses",
+            "terraform state show aws_instance.web",
+            "terraform show -json | jq \\",
+            "  '.values.root_module.resources[].address'"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Not a Public API",
+          "text": "Raw state JSON is internal. The documented, versioned interface is `terraform show -json`."
+        },
+        {
+          "type": "sidebox",
+          "title": "Plaintext Secrets",
+          "items": [
+            "`sensitive = true` does not encrypt anything",
+            "It only masks CLI output",
+            "Passwords and keys sit in state as plain JSON",
+            "Clearing a deposed object needs `-force`"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Three Inputs to a Plan",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "config (desired)",
+              "state (last known)",
+              "refresh (actual)",
+              "diff"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Refresh, Plan, Apply",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Refresh calls the provider's ReadResource per managed resource",
+            "It passes the stored ID, gets live attributes back",
+            "Cached attributes are replaced with the answer"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Refresh Flags"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "default",
+              "in-memory since 0.15.4"
+            ],
+            [
+              "`-refresh-only`",
+              "state moves, infra doesn't"
+            ],
+            [
+              "`-refresh=false`",
+              "no reads, stale attrs"
+            ],
+            [
+              "`terraform refresh`",
+              "deprecated command"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Prefer `terraform apply -refresh-only` over `refresh`",
+            "`-refresh=false` saves huge states from rate limits",
+            "Cost: the plan is built on stale values"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Diff Outcomes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Four per resource: no-op, update, replace, destroy",
+            "Replacement is forced by `ForceNew` schema attributes",
+            "Refresh returning null drops it from state",
+            "It then reappears in the plan as a create"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symbol",
+            "Action"
+          ],
+          "rows": [
+            [
+              "`+`",
+              "create"
+            ],
+            [
+              "`-`",
+              "destroy"
+            ],
+            [
+              "`~`",
+              "update in place"
+            ],
+            [
+              "`-/+`",
+              "replace"
+            ],
+            [
+              "`<=`",
+              "read data source"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Escape Hatches"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -target=aws_instance.web",
+            "terraform apply -replace=aws_instance.web",
+            "# -replace superseded `terraform taint`",
+            "# targeted apply leaves rest unrefreshed"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Saved Plans"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -out=tf.plan",
+            "terraform apply tf.plan  # exactly reviewed",
+            "# plan file embeds the state serial",
+            "# fails if state moved on"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Interrupt Safety",
+          "items": [
+            "State is written after each resource, not at the end",
+            "An interrupted apply still records what was created",
+            "Ctrl-C once = graceful, finishes in-flight work",
+            "Ctrl-C twice = hard kill, orphaned resources"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Refresh, Plan, Apply (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Partial Create",
+          "text": "Provider returns an ID plus an error. Terraform stores the object and taints it, so the next plan replaces it."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Data sources live in state as `mode: \"data\"`",
+            "They are re-read every plan",
+            "They never produce create or destroy actions"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Local Backend",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "local disk",
+                "lines": [
+                  "zero setup",
+                  "no sharing",
+                  "no locking",
+                  "no history"
+                ]
+              },
+              {
+                "title": "remote",
+                "lines": [
+                  "durable store",
+                  "locking",
+                  "encryption",
+                  "versioning"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A laptop failure loses the mapping outright",
+            "Committing state to Git is an anti-pattern",
+            "Plaintext secrets land in the history forever",
+            "JSON merge conflicts are unresolvable by hand"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Backend Block Rules"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "terraform {",
+            "  backend \"s3\" {",
+            "    bucket = \"tf-state\"   # no variables",
+            "    key = \"prod/terraform.tfstate\"",
+            "    region = \"eu-west-1\"",
+            "    encrypt = true",
+            "  }",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No variables, no interpolation in the block",
+            "It is evaluated before the rest of the language",
+            "Partial config passes the rest at init time"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform init -backend-config=prod.hcl",
+            "terraform init \\",
+            "  -backend-config=\"key=prod/terraform.tfstate\"",
+            "# enable S3 bucket versioning: every write recoverable"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Lock Primitives"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Backend",
+            "Lock"
+          ],
+          "rows": [
+            [
+              "s3 (classic)",
+              "DynamoDB `LockID`"
+            ],
+            [
+              "s3 (modern)",
+              "`use_lockfile = true`"
+            ],
+            [
+              "azurerm",
+              "blob lease"
+            ],
+            [
+              "gcs",
+              "object generation"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Local State vs Remote Backends",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "HTTP backend: any REST GET/POST/LOCK/UNLOCK endpoint",
+            "That is what GitLab managed state uses",
+            "Consul, Kubernetes secrets, Postgres, OSS also exist",
+            "Postgres uses advisory locks — good if a DB exists"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The cloud Block"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`cloud {}` replaces the old `remote` backend",
+            "Adds remote plan/apply execution and run history",
+            "Plus policy enforcement, RBAC and a UI"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Nothing Phones Home",
+          "text": "With object backends the CLI reads and writes S3 directly. Only HCP Terraform stores state on their servers."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Lock",
+            "Audit",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "local",
+              "none",
+              "none",
+              "free"
+            ],
+            [
+              "S3+DynamoDB",
+              "yes",
+              "versions",
+              "cents"
+            ],
+            [
+              "HCP Terraform",
+              "yes",
+              "full RBAC",
+              "money"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Chicken and Egg",
+          "items": [
+            "The bucket holding state must exist first",
+            "Bootstrap with local state, then migrate",
+            "Or create it out-of-band with a script"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`terraform_remote_state` reads another state",
+            "It exposes only that state's outputs",
+            "A deliberately narrow cross-config interface"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "init Configures the Backend",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Editing the backend block alone does nothing",
+            "You get \"Backend initialization required\"",
+            "Terraform then offers to copy state over",
+            "Confirm the new location before deleting the old"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "migrate vs reconfigure"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Does"
+          ],
+          "rows": [
+            [
+              "`-migrate-state`",
+              "copies state across"
+            ],
+            [
+              "`-reconfigure`",
+              "discards association"
+            ],
+            [
+              "neither",
+              "interactive prompt"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Backend Mechanics and Environments",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The Silent Abandon",
+          "text": "`-reconfigure` starts from whatever the new backend already holds. Mixing it up with `-migrate-state` orphans your old state without an error."
+        },
+        {
+          "type": "heading",
+          "text": "Back Up First"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform state pull > backup.tfstate",
+            "terraform state push backup.tfstate",
+            "# push refuses on lineage mismatch",
+            "# or lower serial, unless -force"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Backend credentials use the normal provider chain",
+            "Env vars, shared config, instance roles",
+            "Resolved separately from the provider block",
+            "A provider `assume_role` does not reach the backend"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Environment Separation"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "workspaces",
+                "lines": [
+                  "one backend",
+                  "key per workspace",
+                  "cheap",
+                  "wrong-workspace risk"
+                ]
+              },
+              {
+                "title": "dir per env",
+                "lines": [
+                  "separate keys",
+                  "separate creds",
+                  "more files",
+                  "true isolation"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Workspaces: short-lived identical copies, dev sandboxes",
+            "Directory-per-env when prod needs other permissions",
+            "Or when prod simply has different resources"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keys and Access"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# S3 key that scales with IAM",
+            "<team>/<service>/<env>/terraform.tfstate",
+            "# workspace prefix defaults to env:",
+            "workspace_key_prefix = \"env:\""
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bucket policy grants per-prefix access",
+            "Read access to state = read access to every secret",
+            "The S3 `key` is not templated per workspace"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Files, Sorted",
+          "items": [
+            "`.terraform.lock.hcl` — commit it",
+            "`.terraform/` — never commit it",
+            "`terraform init -backend=false` for CI validate",
+            "No credentials needed for that path"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`terraform_remote_state` couples states at read time",
+            "SSM Parameter Store or Consul decouples them",
+            "Cost: you lose type checking on the values"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Locking and Concurrency",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Why Locking Exists",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two applies read the same state at once",
+            "Both create resources; the second write wins",
+            "First run's resources exist, state never heard of them"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "acquire lock",
+              "read state",
+              "apply",
+              "write state",
+              "release"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "When the Lock Is Taken"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Before anything that writes state",
+            "`apply`, `destroy`, `state mv`, `rm`, `push`",
+            "And `plan` when the backend persists refresh writes"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Lock Info Fields",
+          "items": [
+            "ID (UUID) and Operation",
+            "Who: user@host",
+            "Version and Created timestamp",
+            "Path to the state object"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Primitives"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Backend",
+            "Mechanism"
+          ],
+          "rows": [
+            [
+              "DynamoDB",
+              "conditional PutItem"
+            ],
+            [
+              "S3 native",
+              "`.tflock` If-None-Match"
+            ],
+            [
+              "Azure",
+              "blob lease"
+            ],
+            [
+              "GCS",
+              "generation precondition"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "DynamoDB LockID item is `<bucket>/<key>`",
+            "Condition fails if it exists — mutual exclusion",
+            "Table needs only a `LockID` string partition key",
+            "On-demand billing costs pennies; also stores a digest"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Flags That Matter"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform apply -lock-timeout=5m  # retry",
+            "terraform apply -lock=false      # danger",
+            "terraform force-unlock 8c2f1d4a-...",
+            "# verify the holder is dead first"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`-lock-timeout` is essential in queued CI pipelines",
+            "`-lock=false` is for single-user lockless backends only",
+            "Never use it to shove past a stuck lock"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Locking and Concurrency (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Stuck Locks"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Crashed runs, killed CI jobs, network partitions",
+            "The process died before releasing",
+            "Read `Who` and `Created` before force-unlocking"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Force-Unlock Is a Loaded Gun",
+          "text": "Force-unlocking a still-running apply reintroduces the exact race locking prevents."
+        },
+        {
+          "type": "qa",
+          "q": "Locked state, so we're safe?",
+          "a_bullets": [
+            "Locks protect state writes, not the cloud API",
+            "Two states owning one resource still fight",
+            "Serialize applies with a CI concurrency group",
+            "S3 is strongly consistent since Dec 2020"
+          ],
+          "example_code": [
+            "Error acquiring the state lock",
+            "Lock Info: ID: 8c2f... Who: ci@runner-3"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Drift is any difference between real infrastructure and what state records. It comes from changes made outside Terraform."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Console hotfixes during incidents",
+            "Auto-scaling and controllers mutating tags",
+            "Cloud provider defaults being applied late",
+            "Another IaC tool touching the same resource"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Detection"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -refresh-only",
+            "terraform plan -detailed-exitcode",
+            "# 0 no changes, 1 error, 2 changes",
+            "# nightly job, alert on exit 2"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Exit code 2 is the CI-friendly drift signal",
+            "HCP Terraform ships this as Drift Detection",
+            "A schedule beats noticing during an outage"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Responses"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "accept reality",
+                "lines": [
+                  "`-refresh-only` apply",
+                  "state moves to world",
+                  "infra untouched"
+                ]
+              },
+              {
+                "title": "reassert config",
+                "lines": [
+                  "normal apply",
+                  "world moves to config",
+                  "infra changes"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Safe Absorb",
+          "text": "A refresh-only apply never changes infrastructure — the correct way to keep an out-of-band change you've decided to accept."
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Drift: Causes and Reconciliation",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Perpetual Diffs"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Same change every run, never converges",
+            "Provider normalizing uppercase ARNs or JSON key order",
+            "A mutating webhook rewriting the field back",
+            "Or a genuine provider bug"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "lifecycle {",
+            "  ignore_changes = [tags[\"LastModified\"]]",
+            "}",
+            "# policies: jsonencode(jsondecode(x))"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "ignore_changes = all",
+          "items": [
+            "Freezes the whole resource against config",
+            "Silently disables Terraform for it",
+            "Use sparingly and document why"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Read Plans Carefully"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Deleted-out-of-band resources vanish on refresh",
+            "They reappear as creates, with no error",
+            "Rotated passwords cascade into dependent updates",
+            "`~` shows drift and config change alike"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Only `-refresh-only` isolates world-changed from repo-changed",
+            "Prevention beats detection: deny console writes in prod",
+            "`prevent_destroy = true` guards the crown jewels",
+            "Split large states instead of disabling refresh"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Rule",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "State is keyed by resource address. Renaming a resource or moving it into a module is destroy+create unless you move it in state too."
+        },
+        {
+          "type": "heading",
+          "text": "state mv Forms"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform state mv aws_instance.web \\",
+            "  aws_instance.api          # rename",
+            "terraform state mv aws_instance.web \\",
+            "  module.compute.aws_instance.web",
+            "terraform state mv module.old module.new"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Serial bumps, no infrastructure is touched",
+            "Quote addresses so the shell keeps the brackets",
+            "`-state-out` extracts into another state file",
+            "Wrap remote moves in `state pull` / `state push`"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Terraform doesn't remember your infrastructure — a JSON file does, and everything you fear about Terraform is really a fear about that file. These 10 pages cover what state actually stores, how backends lock it, why drift happens, and how to move, import and recover it without destroying prod. Save it before your next `state rm`.",
+    "hashtags": [
+      "#terraform",
+      "#terraformstate",
+      "#devops",
+      "#infrastructureascode",
+      "#iac",
+      "#platformengineering",
+      "#aws",
+      "#sre",
+      "#cloudengineering",
+      "#opentofu",
+      "#devopsengineer",
+      "#backendengineering"
+    ]
+  }
+}

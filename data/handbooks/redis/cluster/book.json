@@ -1,0 +1,204 @@
+{
+  "title": "Redis Cluster & Sentinel: A Field Handbook",
+  "summary": "A ten-page study series on how Redis Cluster shards data across 16384 hash slots, how resharding and failover actually move data and roles, and why multi-key commands, client redirection, and Sentinel topologies behave the way they do in production.",
+  "chapters": [
+    {
+      "title": "1. Why Cluster Exists: Scaling Past One Node",
+      "points": [
+        "Single Redis instance limits: one CPU core for command execution, RAM bounded by one machine, one point of failure",
+        "Vertical scaling ceiling — a 512 GB instance means 512 GB of RDB fork copy-on-write pressure and hour-long restarts",
+        "Three distinct problems people conflate: sharding (capacity), replication (durability/read-scale), failover (availability)",
+        "Replication alone: full dataset on every node, so it scales reads, never writes or memory",
+        "Redis Cluster = sharding + replication + automatic failover in one built-in system, no proxy required",
+        "Redis Sentinel = replication + automatic failover only; dataset is NOT sharded",
+        "Client-side sharding (pre-2015 style): app hashes keys itself; breaks the moment you add a node",
+        "Proxy sharding (twemproxy, Codis): extra hop, extra failure domain, no live resharding in twemproxy",
+        "Cluster is shared-nothing: each master owns a disjoint subset of the keyspace, no cross-node coordination per write",
+        "Minimum viable production cluster: 3 masters + 3 replicas = 6 nodes (3 masters alone cannot survive a failure)",
+        "Why 3 masters minimum: majority quorum for failure detection needs > half the masters alive",
+        "CAP position: Redis Cluster chooses availability of the majority partition, and can lose acknowledged writes — it is NOT a CP store",
+        "Rule of thumb: reach for Sentinel if your data fits one node; reach for Cluster only when memory or write throughput forces sharding",
+        "Cost of Cluster: no multi-key ops across slots, no SELECT/multiple DBs, no cross-slot transactions, cluster-aware clients required"
+      ]
+    },
+    {
+      "title": "2. Hash Slots: The 16384 Buckets",
+      "points": [
+        "Keyspace is split into exactly 16384 hash slots, numbered 0..16383",
+        "slot = CRC16(key) mod 16384 — the CRC16 variant is XMODEM/CCITT with polynomial 0x1021, init 0x0000",
+        "Every master owns a contiguous-or-not set of slots; the union of all owned slots must be 16384 or the cluster is down",
+        "Why slots instead of consistent hashing rings: slots are a small fixed integer space, so ownership fits in a 2 KB bitmap gossiped between nodes",
+        "Why 16384 and not 65536: the slot bitmap rides in every gossip heartbeat — 16384 bits = 2 KB per packet vs 8 KB, and Redis targets ~1000 nodes max",
+        "Slots are the unit of migration, not keys — you reshard by moving slot ownership, then the keys inside",
+        "`CLUSTER KEYSLOT mykey` returns the computed slot; use it to debug placement",
+        "`CLUSTER COUNTKEYSINSLOT <slot>` and `CLUSTER GETKEYSINSLOT <slot> <count>` inspect a slot's contents",
+        "Default even split across 3 masters: 0-5460, 5461-10922, 10923-16383",
+        "Each node stores its own slot bitmap plus its view of every other node's bitmap in `clusterState`",
+        "Slot-to-node map is eventually consistent across the cluster; a stale map is what produces MOVED redirects",
+        "Empty masters (zero slots) are legal and useful — you add a node empty, then assign slots to it",
+        "`CLUSTER SLOTS` (legacy) and `CLUSTER SHARDS` (7.0+) expose the map to clients; `CLUSTER SHARDS` also reports replica health",
+        "Gotcha: uneven key distribution is possible even with even slot distribution — one hot slot can hold a 10 GB list"
+      ]
+    },
+    {
+      "title": "3. Hash Tags: Forcing Keys Together",
+      "points": [
+        "Hash tag = if the key contains `{...}` with a non-empty substring between the first `{` and the first following `}`, only that substring is hashed",
+        "`user:{1000}:profile` and `user:{1000}:sessions` both hash on `1000`, so both land in the same slot",
+        "Only the FIRST `{` and the FIRST `}` after it count: `{a}{b}` hashes `a`",
+        "Empty tag `{}` is ignored — `foo{}bar` hashes the whole string `foo{}bar`",
+        "Unclosed brace is ignored — `foo{bar` hashes the whole string",
+        "`{` immediately followed by `}` with nothing between falls back to full-key hashing, a classic silent bug",
+        "Hash tags are the ONLY supported way to guarantee co-location for multi-key commands",
+        "Design pattern: tag by tenant, user, or entity id — the natural transaction boundary of your domain",
+        "Anti-pattern: tagging by a low-cardinality value like `{prod}` — every key collapses into one slot on one node",
+        "A single overloaded tag creates a hot slot that resharding CANNOT split; slots are indivisible",
+        "Rebalancing cannot rescue a hot tag — the fix is a schema change and a data migration",
+        "Deliberate skew is sometimes right: co-locating a small tenant's whole working set gives you MULTI/Lua on it",
+        "Check before shipping: `CLUSTER KEYSLOT 'user:{1000}:profile'` equals `CLUSTER KEYSLOT '{1000}'`",
+        "Lua scripts must declare all touched keys in KEYS[] and all must share a slot — hash tags are how you satisfy that"
+      ]
+    },
+    {
+      "title": "4. Client Redirection: MOVED, ASK, and Smart Clients",
+      "points": [
+        "Any node accepts any command, but serves only keys in slots it owns; otherwise it replies with a redirect error",
+        "`-MOVED 3999 127.0.0.1:6381` = permanent ownership change; client must update its cached slot map and retry",
+        "`-ASK 3999 127.0.0.1:6381` = temporary, this-key-only hint during migration; client must NOT update its map",
+        "ASK protocol: client sends `ASKING` then the command, as two commands in the same connection, to the target node",
+        "`ASKING` sets a one-shot flag that makes the target serve a key in a slot it is only IMPORTING",
+        "Dumb client: connects to one node, follows every redirect, pays an extra round trip on most requests",
+        "Smart client: fetches `CLUSTER SLOTS`/`CLUSTER SHARDS` at startup, keeps a slot→node table, hits the right node first try",
+        "Smart clients refresh the map on MOVED, on connection errors, and on a periodic timer",
+        "`-TRYAGAIN` error: a multi-key command whose keys are split across migrating/importing during resharding — retry after a short backoff",
+        "`-CLUSTERDOWN` : the slot is unassigned or a majority of masters are unreachable; the cluster refuses to serve",
+        "Redirect storm anti-pattern: a client that refreshes the whole map on every single MOVED during a big reshard",
+        "`READONLY` command on a replica connection allows serving reads from that replica instead of redirecting to the master",
+        "`READWRITE` reverts a connection to the default redirect-to-master behaviour",
+        "Reads from replicas are asynchronous and may be stale — you trade consistency for read throughput, explicitly",
+        "Client library maturity matters more than server config here: check that yours implements ASK + ASKING, not just MOVED"
+      ]
+    },
+    {
+      "title": "5. Multi-Key Limits: What Cluster Takes Away",
+      "points": [
+        "Rule: every key in a single command must live in the same hash slot, or you get `CROSSSLOT Keys in request don't hash to the same slot`",
+        "Affected commands: MSET, MGET, DEL (multi-arg), SUNION, SINTER, ZUNIONSTORE, RENAME, SMOVE, BITOP, PFMERGE, GETDEL patterns",
+        "Same slot, not just same node — two slots that happen to be on one master are still rejected",
+        "MULTI/EXEC works only if every key in the transaction shares a slot",
+        "Lua via EVAL: all KEYS must be in one slot; touching an undeclared key is undefined behaviour and breaks on migration",
+        "Redis 7 Functions (FUNCTION LOAD / FCALL) follow the same single-slot key rule",
+        "MGET workaround: group keys by slot client-side, issue one pipelined MGET per node, merge results in the app",
+        "Most smart clients do this grouping for you — check whether yours fans out or just throws CROSSSLOT",
+        "SCAN is per-node: you must iterate every master to see the whole keyspace, and cursors are not portable between nodes",
+        "KEYS, DBSIZE, FLUSHALL are also per-node — a monitoring script that hits one node reports one shard",
+        "No SELECT: cluster mode has database 0 only, so multi-tenant DB-index tricks must become key prefixes",
+        "Pub/Sub is broadcast cluster-wide (pre-7.0), which costs bandwidth on every node",
+        "Redis 7.0 sharded pub/sub: `SSUBSCRIBE`/`SPUBLISH` route by channel-name slot, so traffic stays on one shard",
+        "Design consequence: model your data so that atomic groups share a hash tag before you migrate, not after",
+        "Blocking commands (BLPOP) work but only against keys in one slot; cross-shard work queues need per-shard workers"
+      ]
+    },
+    {
+      "title": "6. Resharding: Moving Slots Without Downtime",
+      "points": [
+        "Resharding = transferring ownership of slots (and their keys) from a source master to a target master while serving traffic",
+        "Step 1 target: `CLUSTER SETSLOT <slot> IMPORTING <source-node-id>`",
+        "Step 2 source: `CLUSTER SETSLOT <slot> MIGRATING <target-node-id>`",
+        "Step 3 loop: `CLUSTER GETKEYSINSLOT <slot> <count>` then `MIGRATE <host> <port> \"\" 0 <timeout> KEYS k1 k2 ...`",
+        "Step 4 finalize: `CLUSTER SETSLOT <slot> NODE <target-node-id>` on both nodes, then on the other masters",
+        "During migration the source serves keys it still has, and answers `-ASK` for keys already moved",
+        "MIGRATE is atomic per batch: serialize with DUMP semantics, send, restore on target, delete on source — the key exists on exactly one node",
+        "MIGRATE blocks both nodes for the duration of the batch — big keys (a 2 GB list) stall the server, so keep batch sizes small",
+        "`redis-cli --cluster reshard <host>:<port>` drives the whole loop interactively",
+        "`redis-cli --cluster rebalance --cluster-use-empty-masters` spreads slots evenly, including onto freshly added nodes",
+        "Adding a node: `--cluster add-node`, then reshard slots onto it; a new node starts with zero slots and serves nothing",
+        "Removing a node: reshard all its slots away FIRST, then `--cluster del-node`; deleting a node that owns slots breaks the cluster",
+        "`redis-cli --cluster check` and `--cluster fix` detect and repair open/stuck slots after a failed migration",
+        "Stuck-slot symptom: a slot left in MIGRATING/IMPORTING after a crash; fix clears the flag or completes the move",
+        "Cost profile: resharding is O(keys in slot) network + O(1) ownership metadata, and is throughput-limited by MIGRATE round trips",
+        "Never reshard during a failover or with a node in a fail state — finish one topology change before starting another"
+      ]
+    },
+    {
+      "title": "7. Failure Detection and Cluster Failover",
+      "points": [
+        "Nodes gossip over the cluster bus on port + 10000 using a binary protocol, separate from the client port",
+        "PFAIL (possible fail): a node has not answered PING within `cluster-node-timeout`, marked locally only",
+        "FAIL: a majority of masters independently report PFAIL for the node, so the flag is promoted and broadcast",
+        "Only masters vote; replicas gossip but do not count toward the failure quorum",
+        "Replica promotion: an eligible replica of the failed master requests votes, and a majority of masters must grant them",
+        "Replica eligibility rules out replicas disconnected for longer than roughly `cluster-node-timeout * cluster-replica-validity-factor`",
+        "Rank ordering: the replica with the most up-to-date replication offset waits the shortest delay before campaigning, so it usually wins",
+        "configEpoch is a monotonically increasing number; the highest epoch wins conflicting claims to the same slots",
+        "The old master, when it returns, sees a higher epoch owning its slots and reconfigures itself as a replica",
+        "`cluster-node-timeout` is the master dial: too low causes spurious failovers on GC pauses, too high stretches your outage",
+        "`cluster-require-full-coverage yes` (default) stops the WHOLE cluster when any slot is uncovered — set `no` for partial availability",
+        "`CLUSTER FAILOVER` on a replica = planned, coordinated handoff with no data loss; `FORCE` skips master handshake; `TAKEOVER` skips the vote entirely",
+        "Replica migration: a master with several replicas can donate one to an orphaned master automatically (`cluster-migration-barrier`)",
+        "Minority partition behaviour: masters that cannot reach a majority stop accepting writes, which limits (does not eliminate) split-brain",
+        "Write loss window: replication is async, so writes acked by the old master but not yet shipped are lost on promotion"
+      ]
+    },
+    {
+      "title": "8. Sentinel: Failover Without Sharding",
+      "points": [
+        "Sentinel is a separate process that monitors master/replica sets, elects a new master, and tells clients about it",
+        "Deploy an odd number, at least 3 Sentinels, on separate failure domains — never co-locate all three with the Redis nodes on one host",
+        "`sentinel monitor <name> <ip> <port> <quorum>` — quorum = how many Sentinels must agree the master is down",
+        "SDOWN (subjectively down): one Sentinel sees no reply within `down-after-milliseconds`",
+        "ODOWN (objectively down): `quorum` Sentinels report SDOWN, so failover becomes eligible",
+        "Two different majorities: quorum authorizes the failure verdict, but a MAJORITY of all Sentinels must elect the leader that performs it",
+        "Consequence: quorum 2 of 5 detects fast, but you still need 3 of 5 alive to actually fail over",
+        "Leader election uses a Raft-like term/vote per failover epoch; only the leader promotes",
+        "Promotion sequence: pick best replica (by priority, offset, then run-id), `REPLICAOF NO ONE`, then repoint remaining replicas",
+        "`replica-priority 0` marks a replica as never-promotable — use it for a backup or analytics node",
+        "Sentinel auto-discovers replicas and other Sentinels via the master's `INFO` and the `__sentinel__:hello` pub/sub channel",
+        "Sentinel rewrites its own config file on state change — never hand-edit a running Sentinel's config",
+        "Clients use `SENTINEL get-master-addr-by-name <name>` at connect time and subscribe to `+switch-master` for changes",
+        "`parallel-syncs` limits how many replicas resync at once, trading recovery speed against master load",
+        "Sentinel does NOT shard: one dataset, one master — Sentinel and Cluster are alternatives, and Cluster does not use Sentinel"
+      ]
+    },
+    {
+      "title": "9. Consistency, Trade-offs, and Common Mistakes",
+      "points": [
+        "Redis replication is asynchronous by default: the master replies OK before the replica has the write",
+        "Lost-write scenario: master acks, master dies, replica missing the last writes is promoted — the ack was a lie",
+        "`WAIT <numreplicas> <ms>` blocks until N replicas ack; it improves the odds but is not a consensus commit",
+        "`min-replicas-to-write` / `min-replicas-max-lag` make the master refuse writes when it cannot see enough healthy replicas",
+        "`WAITAOF` (7.0+) waits for local/replica AOF fsync, which is about durability on disk, not about consensus",
+        "Split-brain window: an isolated master keeps accepting writes for up to `cluster-node-timeout` before it stops",
+        "Redlock and distributed locking on Redis are contested — do not assume a lock survives a failover",
+        "Mistake: assuming a MULTI transaction is atomic across shards — it is rejected, not silently split",
+        "Mistake: using KEYS or FLUSHDB against one node and believing you touched the cluster",
+        "Mistake: a hash tag with cardinality 1, producing one giant hot slot that no rebalance can fix",
+        "Mistake: `cluster-node-timeout` set to 500 ms on a host that does 2-second GC pauses, causing failover flapping",
+        "Mistake: deleting a node before resharding its slots away, leaving the keyspace uncovered",
+        "Mistake: pointing a non-cluster-aware client at a cluster and seeing MOVED errors surface as application exceptions",
+        "Mistake: running 3 Sentinels on the same 3 machines as 3 Redis nodes, so one rack loss takes out both quorums",
+        "Mistake: big keys — a multi-GB hash makes MIGRATE stall and makes replica full-sync brutal; shard the value, not just the keyspace",
+        "Operational rule: test failover on purpose, on a schedule, before it happens to you at 3 a.m."
+      ]
+    },
+    {
+      "title": "10. Summary: The Whole Model on One Page",
+      "points": [
+        "Sharding unit: 16384 hash slots; slot = CRC16(key) mod 16384; hash tag `{...}` overrides what gets hashed",
+        "Ownership: each master owns a set of slots; all 16384 must be covered or the cluster refuses writes (default)",
+        "Redirection: MOVED = permanent, update your map; ASK = one key, one time, send ASKING first; TRYAGAIN = retry",
+        "Multi-key rule: same slot or rejected with CROSSSLOT — hash tags are the only sanctioned workaround",
+        "Resharding: SETSLOT IMPORTING on target, MIGRATING on source, MIGRATE the keys, SETSLOT NODE to finalize",
+        "Failover in Cluster: PFAIL → majority-of-masters FAIL → replica campaigns → majority vote → new configEpoch",
+        "Failover in Sentinel: SDOWN → quorum agrees ODOWN → Sentinel majority elects a leader → REPLICAOF NO ONE",
+        "Two different quorums to keep straight: Cluster votes among MASTERS; Sentinel votes among SENTINELS",
+        "Availability sizing: 3 masters + 3 replicas minimum for Cluster; 3 Sentinels minimum on separate hosts",
+        "Key config dials: cluster-node-timeout, cluster-require-full-coverage, cluster-migration-barrier, down-after-milliseconds, quorum, replica-priority",
+        "Consistency ceiling: async replication means a bounded window of acknowledged-but-lost writes; WAIT narrows it, nothing removes it",
+        "Choose Sentinel when the dataset fits one node and you only need HA; choose Cluster when memory or write throughput forces sharding",
+        "Choose neither when you need cross-key ACID transactions across a large keyspace — that is a job for a different database",
+        "Pre-launch checklist: cluster-aware client, hash tags designed, no big keys, monitoring per node, failover drill run"
+      ]
+    }
+  ]
+}

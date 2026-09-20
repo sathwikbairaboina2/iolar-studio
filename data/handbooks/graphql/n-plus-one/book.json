@@ -1,0 +1,462 @@
+{
+  "title": "GraphQL N+1: DataLoader, Caching & Cost Limits",
+  "summary": "A dense field guide to the GraphQL N+1 problem — why resolver-per-field execution explodes into hundreds of database round trips, how DataLoader batches and caches them away, and how query cost limits stop hostile or accidental queries before they run.",
+  "chapters": [
+    {
+      "title": "Why GraphQL Explodes: The N+1 Problem",
+      "points": [
+        "Definition: N+1 = 1 query fetches N parents, then N extra queries fetch each parent's child — total N+1 round trips instead of 2",
+        "GraphQL executes per-field, not per-query: every field gets its own resolver invocation, so nesting multiplies calls",
+        "Concrete shape: `{ posts(first:50) { author { name } } }` = 1 query for posts + 50 queries for authors = 51 round trips",
+        "REST hides this behind hand-written endpoints; GraphQL exposes it because clients pick the shape at runtime",
+        "The server author cannot pre-optimize: the join set is unknown until the query arrives",
+        "Nesting compounds: posts → author → company → employees is 1 + 50 + 50 + 50N; depth multiplies, it does not add",
+        "Latency math: 51 queries × 8ms round trip = 408ms of pure network wait, even if each query is a 0.2ms indexed lookup",
+        "The database is usually not the bottleneck — round-trip count is; the same rows fetched in one `IN` query take ~10ms",
+        "Duplicate work is common: 50 posts by 5 authors still issues 50 author queries without deduplication",
+        "N+1 is not GraphQL-specific — ORMs (ActiveRecord, Hibernate lazy loading, Django) have the same failure — but GraphQL makes it the default",
+        "Symptom in logs: hundreds of identical `SELECT * FROM users WHERE id = ?` lines with different ids, same request id",
+        "Why naive fixes fail: eager-loading everything wastes work when the client didn't ask for the field",
+        "Cost is per-request and scales with page size: doubling `first:` doubles the query count linearly",
+        "Key insight to hold: the fix is not fewer resolvers — it is deferring and grouping the loads resolvers request"
+      ],
+      "source_page": 1,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Why GraphQL Explodes: The N+1 Problem"
+        },
+        {
+          "type": "paragraph",
+          "note": "Define N+1 and state that per-field resolver execution is the root cause"
+        },
+        {
+          "type": "code",
+          "note": "The 51-query GraphQL query: posts(first:50) { author { name } }"
+        },
+        {
+          "type": "bullets",
+          "note": "How nesting compounds, duplicate loads, why REST hides it"
+        },
+        {
+          "type": "sidebox",
+          "note": "Latency math: 51 × 8ms = 408ms vs one IN query at 10ms"
+        },
+        {
+          "type": "callout",
+          "note": "Round-trip count is the bottleneck, not the database"
+        }
+      ]
+    },
+    {
+      "title": "How Resolvers Actually Execute",
+      "points": [
+        "Every field in a GraphQL schema has a resolver; unspecified fields get the default resolver `(parent) => parent[fieldName]`",
+        "Resolver signature: `(parent, args, context, info)` — parent is the resolved value one level up",
+        "Execution is depth-first over the query AST but breadth-parallel across sibling fields at the same level",
+        "List fields fan out: resolving `[Post]` of length 50 calls the child `author` resolver 50 separate times",
+        "Each of those 50 calls is independent — it has no visibility into its 49 siblings, which is exactly why naive code re-queries",
+        "Resolvers may return promises; the executor awaits them, so sibling resolvers all start before any completes",
+        "That parallel start is the batching window: all 50 `author` resolvers fire in the same tick of the event loop",
+        "`context` is constructed once per request and passed to every resolver — the natural home for per-request loaders",
+        "`info` carries the AST, the field path, and the return type — the basis for lookahead/projection optimizations",
+        "Trivial resolvers still cost: property access on an already-loaded parent is free, a network call is not",
+        "The executor gives no built-in coordination between resolvers — batching must be added by you or a library",
+        "Mental model: GraphQL execution is a tree walk where each node may perform I/O; DataLoader turns per-node I/O into per-level I/O",
+        "Common misread: 'my resolver only runs once' — it runs once per parent object, not once per query"
+      ],
+      "source_page": 2,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "How Resolvers Actually Execute"
+        },
+        {
+          "type": "code",
+          "note": "Resolver signature and default resolver"
+        },
+        {
+          "type": "diagram",
+          "note": "Tree walk showing query root → 50 posts → 50 author resolver calls"
+        },
+        {
+          "type": "bullets",
+          "note": "Depth-first, sibling parallelism, promises, the batching window"
+        },
+        {
+          "type": "sidebox",
+          "note": "context is per-request; info carries the AST"
+        },
+        {
+          "type": "callout",
+          "note": "Resolver runs once per parent object, not once per query"
+        }
+      ]
+    },
+    {
+      "title": "DataLoader: The Batching Primitive",
+      "points": [
+        "DataLoader is a per-request utility that coalesces individual `.load(key)` calls into one `batchLoadFn(keys)` call",
+        "Created by Facebook, ~400 lines, transport-agnostic — works with SQL, Redis, HTTP, gRPC, anything keyed",
+        "Constructor: `new DataLoader(keys => batchFn(keys), options)`",
+        "API surface: `load(key)`, `loadMany(keys)`, `clear(key)`, `clearAll()`, `prime(key, value)`",
+        "`load(key)` returns a Promise immediately and queues the key; nothing is fetched yet",
+        "Batch function contract: given `keys: K[]`, return `Promise<(V | Error)[]>` of the SAME length, in the SAME order",
+        "Order contract is the #1 source of bugs: `SELECT ... WHERE id IN (...)` returns rows in arbitrary order and omits misses",
+        "Correct batch function remaps results: build a `Map` by id, then `keys.map(k => map.get(k) ?? null)`",
+        "Missing keys must yield `null` or an `Error` in the slot — never silently shorten the array",
+        "Returning an `Error` instance in a slot rejects only that key's promise, leaving siblings resolved",
+        "Minimal example: 50 `.load(authorId)` calls become one `SELECT * FROM users WHERE id IN (1..12)`",
+        "`loadMany` never rejects — it resolves to an array that may contain Error values, unlike `Promise.all`",
+        "DataLoader is not a data-fetching library; it wraps whatever fetch you already have",
+        "Rule of thumb: one loader per (entity, access pattern) pair — `userById`, `postsByAuthorId`, not one god loader"
+      ],
+      "source_page": 3,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "DataLoader: The Batching Primitive"
+        },
+        {
+          "type": "paragraph",
+          "note": "What DataLoader is and what it coalesces"
+        },
+        {
+          "type": "code",
+          "note": "new DataLoader with a correct order-preserving batch function using a Map"
+        },
+        {
+          "type": "table",
+          "note": "API methods: load, loadMany, clear, clearAll, prime — what each does"
+        },
+        {
+          "type": "callout",
+          "note": "Batch function MUST return same length, same order as keys"
+        },
+        {
+          "type": "bullets",
+          "note": "Missing keys, Error slots, loadMany vs Promise.all, one loader per access pattern"
+        }
+      ]
+    },
+    {
+      "title": "Inside the Batch: Ticks, Queues & Scheduling",
+      "points": [
+        "Mechanism: `.load()` pushes {key, resolve, reject} onto a queue and schedules a dispatch if none is pending",
+        "Default scheduler is `process.nextTick` (Node) — dispatch happens after the current synchronous frame drains",
+        "This means every `.load()` made in the same tick lands in one batch; loads in a later tick form a new batch",
+        "Why it works with GraphQL: sibling resolvers all fire synchronously in the same tick before any await resolves",
+        "`batchScheduleFn` option overrides the scheduler, e.g. `fn => setTimeout(fn, 10)` to widen the window across ticks",
+        "`maxBatchSize` splits a large batch into chunks — essential when the DB has a parameter limit (Postgres ~65535, SQL Server 2100)",
+        "`batch: false` disables batching entirely, leaving only the cache — useful for debugging or single-key sources",
+        "Sequential awaits break batching: `for (const id of ids) await loader.load(id)` produces N batches of 1",
+        "Fix: `await Promise.all(ids.map(id => loader.load(id)))` so all loads queue in one tick",
+        "Deeper levels batch per level, not globally: level-2 loads dispatch after level-1 resolves, so depth D costs D batches",
+        "That is the win: D round trips instead of N^D",
+        "Await ordering trap: awaiting a non-loader promise between loads pushes later loads into a new tick and a new batch",
+        "Deduplication happens at queue time — two `.load(7)` calls in one tick share a single promise and a single key in the batch"
+      ],
+      "source_page": 4,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Inside the Batch: Ticks, Queues & Scheduling"
+        },
+        {
+          "type": "diagram",
+          "note": "Timeline: loads queue during tick, nextTick fires dispatch, one batch call"
+        },
+        {
+          "type": "bullets",
+          "note": "Queue mechanics, nextTick default, dedup at queue time"
+        },
+        {
+          "type": "code",
+          "note": "Sequential await anti-pattern vs Promise.all fix"
+        },
+        {
+          "type": "table",
+          "note": "Options: batchScheduleFn, maxBatchSize, batch:false — effect and when to set"
+        },
+        {
+          "type": "callout",
+          "note": "Depth D costs D batches, not N^D queries"
+        }
+      ]
+    },
+    {
+      "title": "Per-Request Caching: Identity & Lifetime",
+      "points": [
+        "DataLoader's second job: a memoization cache keyed by `load()` key, checked before queueing",
+        "Cache hit returns the SAME promise object — repeated `.load(7)` anywhere in the request costs zero extra I/O",
+        "Solves the diamond problem: post.author and comment.author both resolving user 7 fetch it once",
+        "Scope is one request, by construction — create loaders inside the per-request context factory, never at module scope",
+        "Module-scope loader = cross-request cache = users see each other's data; this is a real security bug, not a style nit",
+        "Per-request lifetime also means no invalidation problem: the cache dies with the request",
+        "Keys are compared by `===` (strict identity) — object keys never hit unless you pass the same reference",
+        "`cacheKeyFn` normalizes composite keys: `key => JSON.stringify([key.tenantId, key.id])` or a stable string",
+        "`cache: false` disables memoization but keeps batching — right for mutations that must see fresh rows",
+        "`clear(key)` after a mutation forces a refetch of that entity later in the same request",
+        "`prime(key, value)` seeds the cache from data you already have, e.g. after a list query returns full user rows",
+        "`prime` is a no-op if the key exists; `clear(key).prime(key, v)` to force an overwrite",
+        "Errors are cached too — a rejected load stays rejected for the request unless you clear it in the batch function's catch",
+        "`cacheMap` option accepts a custom Map-like store — the hook for LRU or a shared cross-request cache (with the risks above)"
+      ],
+      "source_page": 5,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Per-Request Caching: Identity & Lifetime"
+        },
+        {
+          "type": "paragraph",
+          "note": "Memoization cache checked before the queue; same promise returned"
+        },
+        {
+          "type": "diagram",
+          "note": "Diamond: post.author and comment.author both hit user 7, one fetch"
+        },
+        {
+          "type": "code",
+          "note": "Per-request context factory creating fresh loaders per request"
+        },
+        {
+          "type": "callout",
+          "note": "Module-scope loaders leak data across requests — security bug"
+        },
+        {
+          "type": "bullets",
+          "note": "cacheKeyFn, cache:false, clear, prime, cached errors, cacheMap"
+        }
+      ]
+    },
+    {
+      "title": "Wiring DataLoader Into a Real Server",
+      "points": [
+        "Build loaders in the server's context function: `context: ({req}) => ({ user: auth(req), loaders: createLoaders(db) })`",
+        "`createLoaders(db)` returns a fresh object of loaders per call — the factory is the whole pattern",
+        "Resolver becomes one line: `author: (post, _, {loaders}) => loaders.userById.load(post.authorId)`",
+        "One-to-many needs a different batch function: group rows by foreign key, return an array per key, `[]` for no matches",
+        "Example: `postsByAuthorId` runs `WHERE author_id IN (...)`, then buckets rows into a `Map<authorId, Post[]>`",
+        "Pass tenant/auth scope into the loader factory so batched SQL stays scoped — never batch across tenants",
+        "Authorization must be re-checked per key: a batch that fetches 50 rows can leak rows the viewer may not see",
+        "Prime the loader from list queries: after `SELECT * FROM users`, `users.forEach(u => loaders.userById.prime(u.id, u))`",
+        "Mutations: `clear(id)` the mutated entity so later reads in the same response see the new value",
+        "Federation/microservices: batch the downstream HTTP call too — a `POST /users/batch` endpoint beats 50 GETs",
+        "Testing: assert on the number of batch-function invocations, not just on returned data — that is the regression that matters",
+        "Instrument: log `keys.length` per batch call; a histogram stuck at 1 means batching is broken somewhere upstream",
+        "Subscriptions and long-lived operations need a loader per event, not per socket — otherwise the cache goes stale forever"
+      ],
+      "source_page": 6,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Wiring DataLoader Into a Real Server"
+        },
+        {
+          "type": "code",
+          "note": "createLoaders factory + context function + one-line resolver"
+        },
+        {
+          "type": "code",
+          "note": "One-to-many batch function grouping rows by foreign key into a Map"
+        },
+        {
+          "type": "bullets",
+          "note": "Tenant scoping, per-key authorization, priming from list queries, mutation clears"
+        },
+        {
+          "type": "sidebox",
+          "note": "Test by counting batch-function invocations"
+        },
+        {
+          "type": "callout",
+          "note": "Subscriptions: one loader per event, not per socket"
+        }
+      ]
+    },
+    {
+      "title": "Alternatives & Comparisons",
+      "points": [
+        "DataLoader: batches by key, per-request cache, ORM-agnostic — but still one query per level and per entity type",
+        "JOIN-based / lookahead resolvers: read `info` to project the requested fields into a single SQL JOIN — 1 query total",
+        "Lookahead wins on round trips, loses on complexity: you hand-write projection logic and duplicate the schema shape",
+        "Row multiplication: a JOIN across two one-to-many edges returns N×M rows and inflates payload; DataLoader does not",
+        "Join Monster / Prisma / Hasura / PostGraphile compile the GraphQL AST to SQL automatically — least code, least control",
+        "Prisma's fluent API batches `findUnique` calls automatically, giving DataLoader-like behavior without the wiring",
+        "Eager loading everything (`include: {author: true}` always) over-fetches when the client omits the field",
+        "Batching at the HTTP layer (persisted queries, `@defer`) reduces client round trips but does nothing for server N+1",
+        "Caching layers (Redis, `@cacheControl`, CDN on persisted queries) cut repeat cost across requests; DataLoader only helps within one",
+        "Comparison row — round trips: naive N+1, DataLoader D (depth), JOIN/lookahead 1",
+        "Comparison row — code cost: naive lowest, DataLoader medium, compiled-SQL layer highest lock-in",
+        "Comparison row — cache reuse: naive none, DataLoader per-request, Redis cross-request with invalidation burden",
+        "Rule: DataLoader is the default because it is correct everywhere; add lookahead only for proven hot paths",
+        "They compose — use lookahead on the top-level list query and DataLoader for everything the projection missed"
+      ],
+      "source_page": 7,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Alternatives & Comparisons"
+        },
+        {
+          "type": "table",
+          "note": "Naive vs DataLoader vs JOIN/lookahead vs compiled SQL — round trips, code cost, cache reuse, lock-in"
+        },
+        {
+          "type": "bullets",
+          "note": "Lookahead via info, row multiplication problem, Prisma auto-batching"
+        },
+        {
+          "type": "sidebox",
+          "note": "HTTP-layer batching and Redis solve different axes than DataLoader"
+        },
+        {
+          "type": "callout",
+          "note": "DataLoader as default; lookahead only for proven hot paths; they compose"
+        }
+      ]
+    },
+    {
+      "title": "Query Cost Limits: Stopping the Blast Radius",
+      "points": [
+        "Batching bounds round trips, not work: `{a{b{c{d{e}}}}}` with `first:100` at each level is still millions of rows",
+        "GraphQL's flexibility is a DoS surface — one small query string can request unbounded work",
+        "Depth limiting: reject queries nesting deeper than N (typical 7-12); cheapest control, catches recursive cycles",
+        "Cyclic schemas make unbounded depth trivial: `user { friends { user { friends ... } } }` repeated 20 times",
+        "Breadth/node limiting: cap total nodes = product of list sizes along each path",
+        "Complexity/cost analysis: assign each field a cost, multiply list fields by their `first`/`limit` argument, sum, compare to budget",
+        "Static analysis runs before execution — the query is rejected without touching the database",
+        "Cost formula shape: `cost(field) = fieldCost + multiplier × Σ cost(children)` where multiplier comes from pagination args",
+        "Require pagination arguments: a list field with no `first`/`last` has an unknown multiplier — treat as infinite or reject",
+        "Cost directives put the number in the schema: `@cost(complexity: 10)` on expensive fields like full-text search",
+        "Per-client budgets: give trusted internal clients a higher ceiling than public tokens",
+        "Rate limit on cost points consumed per minute, not on request count — 1 request can cost 10,000 points",
+        "Timeouts and query-level row caps as the backstop when static cost underestimates reality",
+        "Persisted/allowlisted queries are the strongest control: production clients may only send pre-registered documents, making arbitrary cost impossible",
+        "Also cap: aliases (same field 1000× under different aliases), introspection in production, and `@skip`/`@include` abuse",
+        "Always return the cost in the error so clients can self-correct: `{extensions: {cost: 5200, max: 1000}}`"
+      ],
+      "source_page": 8,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Query Cost Limits: Stopping the Blast Radius"
+        },
+        {
+          "type": "callout",
+          "note": "Batching bounds round trips, not total work — cost limits are a separate axis"
+        },
+        {
+          "type": "code",
+          "note": "Malicious deeply nested cyclic query with first:100 at each level"
+        },
+        {
+          "type": "bullets",
+          "note": "Depth limit, node limit, complexity analysis, required pagination args"
+        },
+        {
+          "type": "code",
+          "note": "Cost formula and @cost directive on an expensive field"
+        },
+        {
+          "type": "table",
+          "note": "Control vs what it stops vs cost to implement: depth, node, complexity, persisted queries, rate limit"
+        },
+        {
+          "type": "sidebox",
+          "note": "Alias abuse, introspection in prod, cost returned in error extensions"
+        }
+      ]
+    },
+    {
+      "title": "Gotchas, Anti-Patterns & Debugging",
+      "points": [
+        "Batch function returns wrong-length array — DataLoader throws; always remap through a `Map`, never return raw rows",
+        "Batch function returns rows in DB order — silently returns the wrong user for every key; the worst bug in this space",
+        "Module-scope loader — cross-request cache leak; loaders must be created per request",
+        "Sequential `await` in a loop — batching silently degrades to N queries of size 1 with no error",
+        "Loader created inside a resolver — a new loader per call, so no batching and no cache at all",
+        "Object keys without `cacheKeyFn` — every load misses the cache because `{id:1} !== {id:1}`",
+        "Batching across tenants — one `IN` query spanning tenants leaks data if the WHERE clause loses the scope",
+        "Caching authorization-dependent results by id alone — viewer A's permission-filtered result served to viewer B",
+        "Forgetting `clear()` after a mutation — the rest of the response shows stale pre-mutation values",
+        "Cached rejections — a transient error poisons every later load of that key in the request",
+        "`maxBatchSize` unset against a parameter-limited driver — a 5000-key batch blows up the SQL parameter cap",
+        "Debug technique: log every SQL statement with the request id; repeated identical statements = a missing loader",
+        "Debug technique: count batch invocations in tests; add an assertion so a refactor cannot silently reintroduce N+1",
+        "Apollo Studio / OpenTelemetry traces show resolver spans — a wall of thin parallel spans at one level is the N+1 signature",
+        "Watch p99 not p50: N+1 hides at small page sizes and appears only when a client asks for `first: 100`"
+      ],
+      "source_page": 9,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Gotchas, Anti-Patterns & Debugging"
+        },
+        {
+          "type": "table",
+          "note": "Anti-pattern vs symptom vs fix — wrong order, module scope, sequential await, object keys"
+        },
+        {
+          "type": "code",
+          "note": "Wrong batch function (raw rows) next to correct Map-remapped version"
+        },
+        {
+          "type": "bullets",
+          "note": "Tenant leaks, auth-dependent caching, missing clear after mutation, cached rejections"
+        },
+        {
+          "type": "sidebox",
+          "note": "Debugging: log SQL with request id, count batch invocations in tests, read traces"
+        },
+        {
+          "type": "callout",
+          "note": "Watch p99 — N+1 only shows at large page sizes"
+        }
+      ]
+    },
+    {
+      "title": "Summary: The Complete Defense",
+      "points": [
+        "Layer 1 — schema design: require pagination args, avoid gratuitous cycles, keep expensive fields explicit",
+        "Layer 2 — static limits: depth, node count, complexity budget, checked before execution touches I/O",
+        "Layer 3 — DataLoader: batching turns N queries into 1 per level; caching dedupes within the request",
+        "Layer 4 — targeted lookahead/JOINs on measured hot paths only",
+        "Layer 5 — cross-request caching (Redis, cache-control hints) for data that tolerates staleness",
+        "Layer 6 — runtime backstops: timeouts, row caps, cost-based rate limits, persisted query allowlists",
+        "Complexity recap: naive nesting is O(N^D) queries; DataLoader makes it O(D) queries; compiled SQL makes it O(1)",
+        "Rows fetched does not shrink with DataLoader — only round trips do; cost limits are what bound rows",
+        "Checklist: loaders in context factory, order-preserving batch functions, `Promise.all` not sequential await, `clear()` after mutations",
+        "Checklist: `cacheKeyFn` for composite keys, `maxBatchSize` for driver limits, tenant scope inside the loader factory",
+        "Checklist: authorization enforced per key, never assumed from the batch",
+        "Test discipline: assert batch-call counts, not just response shape — that is what regresses",
+        "Measure before optimizing: log SQL per request, look at p99 with realistic page sizes",
+        "One-line takeaway: batch and cache per request to make queries cheap, then cap cost so no query can be expensive anyway"
+      ],
+      "source_page": 10,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Summary: The Complete Defense"
+        },
+        {
+          "type": "diagram",
+          "note": "Six defense layers stacked from schema design to runtime backstops"
+        },
+        {
+          "type": "table",
+          "note": "Complexity recap: naive O(N^D), DataLoader O(D), compiled SQL O(1) queries"
+        },
+        {
+          "type": "bullets",
+          "note": "Production checklist: context factory, order, Promise.all, clear, cacheKeyFn, maxBatchSize, per-key authz"
+        },
+        {
+          "type": "callout",
+          "note": "Batch and cache to make queries cheap; cap cost so none can be expensive"
+        }
+      ]
+    }
+  ]
+}

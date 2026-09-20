@@ -1,0 +1,1102 @@
+{
+  "brand": "iolar",
+  "template": "blackboard",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "TERRAFORM DEEP DIVE",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Plan & Apply: The Core Model",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Declarative Convergence",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "You declare desired state; Terraform computes the actions.",
+            "Not a script — you never order the steps yourself.",
+            "Apply is not a transaction: there is no rollback.",
+            "A failed apply leaves partial infrastructure recorded in state."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "config HCL",
+              "prior state",
+              "refresh real",
+              "diff",
+              "proposal"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Plan Is Read-Only"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`terraform plan` never writes managed infrastructure.",
+            "Modern versions never persist the refreshed state either.",
+            "Output is a proposal, not a promise.",
+            "Unknowns can resolve at apply into values the API rejects."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Saved Plan Files"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -out=tfplan   # binary file",
+            "terraform apply tfplan       # no re-plan",
+            "# exact reviewed diff, no yes prompt"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bare `terraform apply` plans internally and prompts `yes`.",
+            "`-auto-approve` skips that prompt.",
+            "The plan file embeds the state snapshot it used.",
+            "Serial moved since? `Saved plan is stale` — re-plan."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Never Commit tfplan",
+          "text": "A plan file is not encrypted: variable values, resource attributes and secrets sit in it in plaintext."
+        },
+        {
+          "type": "heading",
+          "text": "Exit Codes And Modes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`-detailed-exitcode`",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "0",
+              "no changes"
+            ],
+            [
+              "1",
+              "error"
+            ],
+            [
+              "2",
+              "changes present"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Plans"
+          ],
+          "rows": [
+            [
+              "normal",
+              "converge"
+            ],
+            [
+              "`-destroy`",
+              "teardown"
+            ],
+            [
+              "`-refresh-only`",
+              "state only"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "CI Pipeline"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -out=tfplan -detailed-exitcode",
+            "terraform show -json tfplan > plan.json",
+            "conftest test plan.json   # OPA / Sentinel",
+            "terraform apply tfplan"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Plan & Apply: The Core Model (cont.)",
+      "blocks": [
+        {
+          "type": "qa",
+          "q": "How do I prove there is no perpetual diff?",
+          "a_bullets": [
+            "Apply, then immediately plan again.",
+            "The second plan must say `No changes.`",
+            "A non-empty second plan is a perpetual-diff bug."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Nodes And Edges",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every run builds a fresh directed acyclic graph.",
+            "Nodes: resources, data sources, providers, variables, locals.",
+            "Outputs and module calls are nodes too.",
+            "Edges come from references, never from file order."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "resource \"aws_instance\" \"web\" {",
+            "  subnet_id = aws_subnet.a.id  # implicit edge",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "`depends_on` Edges"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Explicit edge for hidden runtime dependencies.",
+            "Classic: an IAM policy the instance needs at boot.",
+            "Must be a static reference list, never a computed expression.",
+            "On a `module` block it applies to every resource inside."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Coarse And Slow",
+          "text": "Module-level `depends_on` serializes the walk. Prefer real attribute references wherever one exists."
+        },
+        {
+          "type": "heading",
+          "text": "Cycles Are Bugs"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "Error: Cycle: aws_security_group.a,",
+            "  aws_security_group.b",
+            "# mutual refs or a depends_on loop"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fix by splitting into `aws_security_group_rule` resources.",
+            "Standalone rules break the mutual reference.",
+            "`terraform graph` prints DOT; pipe it to Graphviz.",
+            "`terraform graph -type=plan` shows the plan-time graph."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Walk Order"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Create",
+                "lines": [
+                  "reverse topological",
+                  "dependencies first",
+                  "vpc, subnet, instance"
+                ]
+              },
+              {
+                "title": "Destroy",
+                "lines": [
+                  "inverted order",
+                  "dependents first",
+                  "instance, subnet, vpc"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Independent nodes run concurrently: default 10.",
+            "Tune with `-parallelism=n`.",
+            "`create_before_destroy` inverts that pair's edge direction.",
+            "New object exists before the old one is removed."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "The Dependency Graph (DAG)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Expansion And Addresses"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Form",
+            "Address"
+          ],
+          "rows": [
+            [
+              "`count`",
+              "`aws_subnet.this[0]`"
+            ],
+            [
+              "`for_each`",
+              "`aws_subnet.this[\"a\"]`"
+            ],
+            [
+              "in module",
+              "`module.network.aws_subnet.this[\"public-a\"]`"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Provider Nodes",
+          "items": [
+            "Dependency of every resource that uses them.",
+            "Provider configured from a resource attribute = chicken-and-egg.",
+            "Break it with a separate bootstrap root module."
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "When is a data source node read?",
+          "a_bullets": [
+            "At plan time when its arguments are known.",
+            "Deferred to apply when it depends on unknowns.",
+            "The graph itself is never persisted — rebuilt every run."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What State Holds",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Maps config addresses to real object IDs.",
+            "Plus the last-known attribute values of each object.",
+            "It is the only link between HCL and reality.",
+            "Sensitive attributes are stored in plaintext."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Encrypt The Backend",
+          "text": "S3 with SSE or Terraform Cloud, and restrict read access the way you would a secret store."
+        },
+        {
+          "type": "heading",
+          "text": "Refresh"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "read config",
+              "ReadResource",
+              "update memory",
+              "diff",
+              "plan"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Provider `ReadResource` runs per managed resource.",
+            "Updates in-memory state before the diff is computed.",
+            "Cost is O(number of resources) in API calls.",
+            "It dominates plan runtime on large root modules.",
+            "Data sources are not refreshed — re-evaluated from scratch."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "State & Refresh",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Drift"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Drift = a resource changed outside Terraform.",
+            "Plan prints `Note: Objects have changed outside of Terraform`.",
+            "Deleted outside? Refresh marks it gone, plan proposes create.",
+            "`terraform refresh` is deprecated since 0.15.4."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform plan -refresh-only    # inspect drift",
+            "terraform apply -refresh-only   # accept it",
+            "terraform plan -refresh=false   # emergency"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "`-refresh=false`",
+          "text": "Skips every read: much faster, but plans against possibly stale attributes. An emergency flag, not a habit."
+        },
+        {
+          "type": "heading",
+          "text": "Locks And Serial"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Backends lock state for the whole write-capable run.",
+            "`Error acquiring the state lock` = another run holds it.",
+            "Every state write increments the serial.",
+            "The plan file records it — that is staleness detection."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "force-unlock",
+          "items": [
+            "`terraform force-unlock <LOCK_ID>` only when certain nothing is applying.",
+            "Otherwise you invite concurrent writes and corruption."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Surgical Tools"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Use"
+          ],
+          "rows": [
+            [
+              "`state list` / `show`",
+              "inspect"
+            ],
+            [
+              "`state mv`",
+              "re-address"
+            ],
+            [
+              "`state rm`",
+              "forget object"
+            ],
+            [
+              "`import`",
+              "adopt existing"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`import` blocks (1.5+) are declarative and reviewable.",
+            "`plan -generate-config-out=gen.tf` scaffolds the HCL.",
+            "`moved` blocks preserve identity across renames.",
+            "They survive module extraction with no destroy + create."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Symbol Table",
+          "ink": "accent"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symbol",
+            "Action"
+          ],
+          "rows": [
+            [
+              "`+`",
+              "create"
+            ],
+            [
+              "`-`",
+              "destroy"
+            ],
+            [
+              "`~`",
+              "update in place"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symbol",
+            "Action"
+          ],
+          "rows": [
+            [
+              "`-/+`",
+              "replace"
+            ],
+            [
+              "`+/-`",
+              "create then destroy"
+            ],
+            [
+              "`<=`",
+              "read data source"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Reading a Plan Diff",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Read Top Down"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Headline first: `Plan: 2 to add, 1 to change, 3 to destroy.`",
+            "No-op resources are hidden from the body entirely.",
+            "`Changes to Outputs:` is a separate trailing section.",
+            "An output-only diff still counts as a change."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "~ instance_type = \"t3.micro\" -> \"t3.small\"",
+            "+ id = (known after apply)",
+            "~ ami = \"ami-a\" -> \"ami-b\" # forces replace"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`# forces replacement` names the exact triggering field.",
+            "`(known after apply)` means the provider computes it later.",
+            "One unknown poisons every expression downstream.",
+            "An ID inside a template makes the whole string unknown."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "(sensitive value)",
+          "text": "Masks console output only. The value still exists inside the plan file and the JSON plan."
+        },
+        {
+          "type": "heading",
+          "text": "Drift And Reasons"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Objects have changed outside of Terraform` is the drift block.",
+            "Listed apart from planned actions — never scroll past it.",
+            "`will be replaced, as requested` came from your `-replace`.",
+            "Also `is tainted, so must be replaced` and `has been deleted`."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`# module.db.aws_instance.this has moved to ...`",
+            "That is `moved` block resolution, zero infrastructure action.",
+            "No API calls at all — only a state re-address."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Reading a Plan Diff (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "JSON Plan"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`change.actions`",
+            "Means"
+          ],
+          "rows": [
+            [
+              "`[\"create\"]`",
+              "create"
+            ],
+            [
+              "`[\"update\"]`",
+              "in place"
+            ],
+            [
+              "`[\"delete\",\"create\"]`",
+              "replace"
+            ],
+            [
+              "`[\"create\",\"delete\"]`",
+              "CBD replace"
+            ],
+            [
+              "`[\"no-op\"]`",
+              "unchanged"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`replace_paths` is the machine form of `# forces replacement`.",
+            "Feed `terraform show -json` to OPA or Conftest.",
+            "Gate on `delete` against protected resource types.",
+            "CI hygiene: `-no-color` and `-compact-warnings`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Review Discipline"
+        },
+        {
+          "type": "sidebox",
+          "title": "Scan Order",
+          "items": [
+            "Search `must be replaced` first.",
+            "Then `will be destroyed`.",
+            "Then the drift note.",
+            "Only then read attribute diffs."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Plugin Call Order",
+          "ink": "accent"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "GetProviderSchema",
+              "ValidateResourceConfig",
+              "ReadResource",
+              "PlanResourceChange",
+              "ApplyResourceChange"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "PlanResourceChange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Input",
+            "Is"
+          ],
+          "rows": [
+            [
+              "prior state",
+              "last known"
+            ],
+            [
+              "proposed new",
+              "config over prior"
+            ],
+            [
+              "config",
+              "raw HCL"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The provider — not core — decides in-place vs replacement.",
+            "It signals by returning `RequiresReplace` attribute paths.",
+            "SDKv2 sets them with `ForceNew: true`.",
+            "Plugin Framework uses `RequiresReplace()` plan modifiers."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "How a Plan Is Computed",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Unknowns Are Values"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Values are `cty` values; unknown is a first-class value.",
+            "It propagates through every expression that touches it.",
+            "A data source with unknown args is deferred to apply.",
+            "Everything it feeds becomes unknown in the plan."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Inconsistent Final Plan",
+          "text": "`Provider produced inconsistent final plan` means an applied value differed from a known planned one — a provider bug, not user error."
+        },
+        {
+          "type": "heading",
+          "text": "Diffing And Lifecycle"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Diffing is whole-object: nested blocks and sets elementwise.",
+            "Which is why set ordering changes look like churn.",
+            "`ignore_changes` drops attributes from the diff.",
+            "`ignore_changes = all` freezes everything after create."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "lifecycle {",
+            "  ignore_changes  = [tags[\"LastModified\"]]",
+            "  prevent_destroy = true  # destroy = error",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`prevent_destroy` fails any plan proposing destruction.",
+            "That includes a `-replace` you asked for yourself.",
+            "`precondition` / `postcondition` assert your own invariants.",
+            "`check` blocks run after apply and only ever warn."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Plan Cannot See"
+        },
+        {
+          "type": "sidebox",
+          "title": "Blind Spots",
+          "items": [
+            "Provisioners are apply-time only.",
+            "They never appear as detail in the plan.",
+            "That is one reason they undermine plan review."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The plan file is an internal binary archive.",
+            "Plan plus the state snapshot it was based on.",
+            "`terraform show -json` is the only stable tooling contract.",
+            "Never parse human plan output in CI."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Targeting Does",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`-target=aws_instance.web` prunes the graph to that node.",
+            "Plus everything it depends on, pulled in automatically.",
+            "Dependents are excluded — the reverse of most expectations.",
+            "Terraform warns every run: resulting state may be incomplete."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "aws_instance.web",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1"
+              ],
+              [
+                "c0_0",
+                "c0_1"
+              ],
+              [
+                "c1_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "aws_instance.web",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "pulled in (deps)"
+              },
+              "b1": {
+                "text": "left out (dependents)"
+              },
+              "c0_0": {
+                "text": "aws_subnet.a"
+              },
+              "c0_1": {
+                "text": "aws_vpc.main"
+              },
+              "c1_0": {
+                "text": "aws_lb_target_group.web"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Targeted Apply (`-target`)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Syntax"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform apply -target=aws_instance.a \\",
+            "  -target=aws_instance.b   # repeat the flag",
+            "terraform apply -target=module.vpc"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Indexed addresses need quoting or the shell eats brackets.",
+            "bash: `-target='aws_instance.web[0]'`.",
+            "PowerShell: `-target=\"aws_instance.web[0]\"`.",
+            "`-target=module.vpc` covers every resource inside it."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Limits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Plan-time flag: it cannot be applied to a saved plan file.",
+            "Works on `plan`, `apply`, `destroy` and `-refresh-only`.",
+            "Provider configuration and variable evaluation still run.",
+            "Required variables are still required."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Stale Outputs",
+          "text": "Outputs are not fully evaluated in a targeted run, so downstream consumers can read old output values."
+        },
+        {
+          "type": "heading",
+          "text": "When It Is Right"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Case",
+            "Verdict"
+          ],
+          "rows": [
+            [
+              "failed apply recovery",
+              "legit"
+            ],
+            [
+              "provider bug workaround",
+              "legit"
+            ],
+            [
+              "bootstrap chicken-egg",
+              "legit"
+            ],
+            [
+              "one drifted resource",
+              "legit"
+            ],
+            [
+              "routine workflow",
+              "never"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Routine targeting hides broken configuration.",
+            "It produces state no full apply can reproduce.",
+            "Always follow with an untargeted `terraform plan`.",
+            "Confirm it converges to `No changes.`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Emergency Loop"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform apply -target=aws_instance.web \\",
+            "  -refresh=false   # skip the O(n) refresh",
+            "terraform plan     # must say: No changes."
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Newer Flags",
+          "items": [
+            "`-exclude` is the inverse: everything but these addresses.",
+            "Chronic targeting is a structure problem, not a flag problem.",
+            "Split the root module so blast radius matches the change."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Forcing A Replace",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "terraform apply -replace=aws_instance.web",
+            "# destroy then create a healthy resource",
+            "terraform plan -replace=a -replace=b"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Replace, Taint & Lifecycle",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "The modern \"turn it off and on again\".",
+            "Plan-time: the replacement shows in a reviewable plan first.",
+            "Repeatable, and combines with `-target` for surgery.",
+            "Provider schema decides update vs replace; this is the only override."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Taint Is Legacy"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "`taint`",
+                "lines": [
+                  "mutates state",
+                  "no plan to review",
+                  "deprecated 0.15.2"
+                ]
+              },
+              {
+                "title": "`-replace`",
+                "lines": [
+                  "plan-time",
+                  "reviewable",
+                  "undo by not applying"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`terraform untaint <address>` still clears legacy marks.",
+            "Resources taint automatically when creation partially fails.",
+            "Also when a creation-time provisioner errors.",
+            "The object exists but is not trustworthy."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "`create_before_destroy`"
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "lifecycle {",
+            "  create_before_destroy = true",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Builds the new object before removing the old one.",
+            "Required for zero-downtime swaps.",
+            "It propagates: dependencies needing recreation inherit the flag.",
+            "That inheritance is the usual surprising cascade."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Unique Names Break",
+          "text": "S3 buckets and IAM roles collide under create_before_destroy — use `name_prefix` or a random suffix."
+        },
+        {
+          "type": "sidebox",
+          "title": "Deposed Objects",
+          "items": [
+            "An old instance left behind when CBD's destroy step failed.",
+            "Shows as `(deposed)` in the plan.",
+            "Cleaned up on the next apply."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "`prevent_destroy`"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Blocks replacement too, not only a plain destroy.",
+            "Remove the lifecycle block before `-replace` will run.",
+            "Guard the data stores you cannot afford to lose."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cascades"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Dependents referencing computed attributes get their own changes.",
+            "Some update, some replace — read the whole plan.",
+            "Force downstream re-runs with `terraform_data`.",
+            "`triggers_replace` (1.4+) succeeds `null_resource`."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "hcl",
+          "lines": [
+            "resource \"terraform_data\" \"bump\" {",
+            "  triggers_replace = [var.app_version]",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Everyone reads the plan output. Almost nobody reads the graph underneath it — which is why `-target` surprises people, why cycles appear out of nowhere, and why a failed apply leaves half a VPC behind. 10 pages on what really happens between plan and apply: the DAG, refresh, every diff symbol, and when `-replace` beats `taint`. Save it for the next 3 a.m. apply.",
+    "hashtags": [
+      "#terraform",
+      "#infrastructureascode",
+      "#devops",
+      "#platformengineering",
+      "#cloudengineering",
+      "#sre",
+      "#hashicorp",
+      "#aws",
+      "#gitops",
+      "#techstudynotes",
+      "#backendengineering"
+    ]
+  }
+}

@@ -1,0 +1,1440 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "GO GOROUTINES",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "What a Goroutine Actually Is",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A function executing concurrently, managed by the Go runtime.",
+            "Not a kernel thread — the OS never sees it.",
+            "`go f(x)` returns immediately; `f`'s return value is discarded.",
+            "`main` itself runs on a goroutine."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "go f(x)        // starts, returns instantly",
+            "v := f(x)      // blocks, gives you v",
+            "go func(){ … }()  // closure form"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "It Is Just a Struct"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`g` lives in `runtime/runtime2.go`.",
+            "Holds stack bounds, PC, status, scheduling links.",
+            "A few hundred bytes of bookkeeping — that is all.",
+            "Dead `g`s go on a per-P free list (`gFree`) and recycle."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Steady state allocates ~0",
+          "text": "Spawn-and-die churn reuses `g` structs off `gFree`, so the allocator barely notices."
+        },
+        {
+          "type": "heading",
+          "text": "Why So Cheap"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Thing",
+            "Goroutine",
+            "OS thread"
+          ],
+          "rows": [
+            [
+              "Initial stack",
+              "2 KB",
+              "1–8 MB virt"
+            ],
+            [
+              "Create",
+              "~1–2 µs",
+              "~10–100 µs"
+            ],
+            [
+              "Switch",
+              "~tens of ns",
+              "~1–2 µs"
+            ],
+            [
+              "Scheduler",
+              "userspace",
+              "kernel"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`_StackMin = 2048` — the 2 KB constant.",
+            "A switch swaps a few registers: plain function call.",
+            "No `syscall`, no kernel mode transition, ever.",
+            "~1000x cheaper to start than a thread."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "States in a Trace"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "State",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`_Grunnable`",
+              "queued, wants a thread"
+            ],
+            [
+              "`_Grunning`",
+              "on a thread now"
+            ],
+            [
+              "`_Gsyscall`",
+              "inside a syscall"
+            ],
+            [
+              "`_Gwaiting`",
+              "parked: chan/mutex/timer"
+            ],
+            [
+              "`_Gdead`",
+              "finished, on free list"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rules and Gotchas",
+          "ink": "red"
+        },
+        {
+          "type": "sidebox",
+          "title": "Memorise these four",
+          "items": [
+            "`main` returns = process exits, all goroutines die mid-flight.",
+            "No defers run for those killed goroutines.",
+            "No goroutine ID in the public API — no goroutine-local storage.",
+            "So `context.Context` must be passed explicitly."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Nothing waits implicitly: use `WaitGroup`, a channel, or `errgroup`.",
+            "Otherwise the work silently vanishes at exit.",
+            "No user pooling: `sync.Pool` pools objects, not goroutines.",
+            "Spawning one per request is idiomatic Go."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for i := range 3 {",
+            "    go func(){ fmt.Println(i) }()  // 1.22+: safe",
+            "}  // pre-1.22 printed 3,3,3"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "What a Goroutine Actually Is (cont.)",
+      "blocks": [
+        {
+          "type": "qa",
+          "q": "Concurrency or parallelism?",
+          "a_bullets": [
+            "Concurrency: goroutines express independent work.",
+            "Parallelism: `GOMAXPROCS` decides how much runs at the same instant.",
+            "One goroutine on one core is still concurrent, never parallel."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Three Letters",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Letter",
+            "Is",
+            "Role"
+          ],
+          "rows": [
+            [
+              "`G`",
+              "goroutine",
+              "the work"
+            ],
+            [
+              "`M`",
+              "machine",
+              "OS thread, the worker"
+            ],
+            [
+              "`P`",
+              "processor",
+              "permit + queue"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "M:N = M goroutines multiplexed onto N OS threads.",
+            "The runtime decides the mapping, not the kernel.",
+            "Hard rule: an M must hold a P to run Go code.",
+            "No P means the M parks or spins."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "scheduler",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0",
+                "c0_1",
+                "c0_2"
+              ],
+              [
+                "c1_0",
+                "c1_1"
+              ],
+              [
+                "c2_0",
+                "c2_1"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "scheduler",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "P (fixed count)"
+              },
+              "b1": {
+                "text": "M (elastic)"
+              },
+              "b2": {
+                "text": "G (millions)"
+              },
+              "c0_0": {
+                "text": "local runq"
+              },
+              "c0_1": {
+                "text": "runnext"
+              },
+              "c0_2": {
+                "text": "mcache"
+              },
+              "c1_0": {
+                "text": "docks into P"
+              },
+              "c1_1": {
+                "text": "g0 stack"
+              },
+              "c2_0": {
+                "text": "stack"
+              },
+              "c2_1": {
+                "text": "status"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b0",
+                "to": "c0_2"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_1"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The GOMAXPROCS Knob"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`len(allp) == GOMAXPROCS`, fixed at startup.",
+            "Change with `runtime.GOMAXPROCS(n)`.",
+            "It is the parallelism knob, not a thread limit.",
+            "Defaults to `runtime.NumCPU()` since Go 1.5."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Go 1.25: cgroup-aware",
+          "text": "`GOMAXPROCS` now reads the container CPU quota, so a 0.5-CPU pod stops provisioning 64 Ps."
+        },
+        {
+          "type": "heading",
+          "text": "Threads Are Separate"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Thread count is elastic — Ms come and go freely.",
+            "`runtime.SetMaxThreads` defaults to 10,000.",
+            "Exceeding it is a fatal error, not a block.",
+            "Ps stay put; Ms dock into them."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Why P Exists At All"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "P owns the local run queue: lock-free fast path.",
+            "P owns the per-P `mcache` allocator: no lock to malloc.",
+            "Pre-1.1 scheduler had one global lock — it did not scale.",
+            "P is the unit of \"right to run Go code\"."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Run Queues",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "runnext",
+              "g",
+              "g",
+              "g",
+              "…",
+              "g",
+              "→ global"
+            ],
+            "caption": "P local runq (256 ring)"
+          }
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "The M:N Model — G, M, and P",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "256-slot lock-free ring, plus one `runnext` slot.",
+            "`runnext` holds the most recently readied goroutine.",
+            "It runs next: cache-warm, inherits the rest of the slice.",
+            "Classic case: the channel receiver you just woke."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One global queue `sched.runq` is the overflow backstop.",
+            "Guarded by the global scheduler lock.",
+            "On local overflow: move half (128) plus the new G, in one batch.",
+            "Global queue also serves fairness, not just overflow."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "`g0`, the odd one",
+          "items": [
+            "A special per-M goroutine.",
+            "Runs scheduler and runtime code on the system stack.",
+            "Fixed stack, never grows.",
+            "Every schedule decision happens on it."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Diagram to memorise",
+          "text": "Many G circles; N P boxes each holding a queue; M threads docking into P boxes. Ms come and go, Ps stay put."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Handoff: M blocks in a syscall, its P is detached.",
+            "P is handed to another M immediately.",
+            "Other goroutines keep running on that P.",
+            "A blocked thread never idles a core."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Core Loop",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`schedule()`: find a runnable G, then `execute()` it.",
+            "Every scheduling decision funnels through here.",
+            "Runs on `g0`, never on your goroutine's stack."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "runnext",
+              "local runq",
+              "global runq",
+              "netpoller",
+              "steal"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "findRunnable() Order"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Source",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "1",
+              "`runnext`",
+              "atomic load"
+            ],
+            [
+              "2",
+              "local runq",
+              "lock-free"
+            ],
+            [
+              "3",
+              "global runq",
+              "global lock"
+            ],
+            [
+              "4",
+              "netpoller",
+              "epoll check"
+            ],
+            [
+              "5",
+              "steal from Ps",
+              "4 passes"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "The 61 tick",
+          "text": "Every 61st schedule (`schedtick%61 == 0`) the P checks the global queue first — a busy local queue can never starve global Gs."
+        },
+        {
+          "type": "heading",
+          "text": "Work Stealing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An idle P picks victims in random order, 4 passes.",
+            "Takes half of the victim's local queue per steal.",
+            "Last pass also takes the victim's `runnext`…",
+            "…but only after a brief spin, so you do not snatch an about-to-run G."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Inside schedule(): Finding Work",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Spinning and Wakeups",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A few Ms spin looking for work before sleeping.",
+            "Newly readied Gs skip the thread wake-up (~tens of µs saved).",
+            "Invariant: work submitted while an idle P exists must call `wakep()`.",
+            "Miss that and the runtime hangs with work sitting in a queue."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Where the global lock is taken",
+          "items": [
+            "Global run queue access.",
+            "Idle P lists.",
+            "Thread parking / unparking.",
+            "Nowhere on the hot path."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Parking Is One Mechanism"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`gopark()`: G to `_Gwaiting`, unlink from M, back to `schedule()`.",
+            "`goready()`: put the G back on a run queue.",
+            "Channels, mutexes, `WaitGroup`, timers, netpoll — all built on this pair.",
+            "One parking mechanism, many APIs."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Blocked costs nothing",
+          "text": "A parked goroutine holds no thread and is never polled. It sits on the wait queue of whatever blocked it until someone readies it."
+        },
+        {
+          "type": "heading",
+          "text": "Seeing It Live"
+        },
+        {
+          "type": "code",
+          "lang": "sh",
+          "lines": [
+            "GODEBUG=schedtrace=1000 ./app  # 1 line/sec",
+            "GODEBUG=scheddetail=1 ./app    # + per G/M/P"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Reads as"
+          ],
+          "rows": [
+            [
+              "`runqueue=`",
+              "global queue depth"
+            ],
+            [
+              "`[2 0 5 1]`",
+              "per-P queue lengths"
+            ],
+            [
+              "`idleprocs`",
+              "Ps with no work"
+            ],
+            [
+              "`spinningthreads`",
+              "Ms hunting work"
+            ]
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Why did my deadlock not get caught?",
+          "a_bullets": [
+            "`fatal error: all goroutines are asleep - deadlock!` fires only when EVERY goroutine sleeps.",
+            "Two goroutines blocking each other while `main` serves traffic: silent.",
+            "Partial deadlock is a leak, not a panic — see the leak page."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "sysmon, the Watcher",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A monitor thread that runs without a P.",
+            "Sleeps adaptively, 20 µs to 10 ms.",
+            "Jobs: retake Ps, flag preemption, netpoll, force GC.",
+            "Time slice: over 10 ms running gets you flagged."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Preemptions"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Cooperative (all)",
+                "lines": [
+                  "Prologue checks SP vs `stackguard0`",
+                  "Runtime writes `stackPreempt`",
+                  "Yields at next call",
+                  "Dies on a call-free loop"
+                ]
+              },
+              {
+                "title": "Async (1.14+)",
+                "lines": [
+                  "`SIGURG` to the thread",
+                  "Handler pushes `asyncPreempt`",
+                  "Even `for {}` yields",
+                  "Needs precise register maps"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Preemption, Syscalls, and the Netpoller",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Cooperative gap: tight loop, no calls, no allocation = never yields.",
+            "One such loop could hang a stop-the-world GC forever.",
+            "Async preemption needed a compiler change, not just a runtime one.",
+            "Register maps at every instruction is the price paid."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for { x++ }   // pre-1.14: hangs GC forever",
+            "              // 1.14+: SIGURG preempts it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Syscall Path",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "entersyscall",
+              "P = _Psyscall",
+              "fast? same M resumes",
+              "slow? sysmon retake",
+              "exit: grab P or global runq"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`entersyscall` marks the P `_Psyscall`.",
+            "Returns fast: the M reacquires the same P, nothing happens.",
+            "Runs long: `sysmon` calls `retake`, hands the P to another M.",
+            "So a blocked thread never idles a core."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Where jitter comes from",
+          "text": "On return from a long syscall the goroutine has no P. It grabs an idle one or queues globally — syscall-heavy code sees latency jitter for this reason."
+        },
+        {
+          "type": "heading",
+          "text": "The Netpoller"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "OS",
+            "Backend"
+          ],
+          "rows": [
+            [
+              "Linux",
+              "`epoll`"
+            ],
+            [
+              "BSD / macOS",
+              "`kqueue`"
+            ],
+            [
+              "Windows",
+              "IOCP"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Network reads and writes park the goroutine, not the thread.",
+            "`conn.Read(buf)` looks blocking, is async underneath.",
+            "That is how one process holds 100k connections.",
+            "Synchronous API, event-driven engine."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Still Eats a Thread"
+        },
+        {
+          "type": "sidebox",
+          "title": "Three M-hogs",
+          "items": [
+            "Regular file I/O on Linux: not pollable, genuinely blocks an M.",
+            "Heavy disk work therefore inflates thread count.",
+            "cgo calls occupy an M for their whole duration.",
+            "A slow C call costs a thread and can starve you of them."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "runtime.LockOSThread()",
+            "defer runtime.UnlockOSThread()",
+            "// OpenGL ctx, Linux namespaces, UI toolkits"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Preemption, Syscalls, and the Netpoller (cont.)",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`LockOSThread` pins a goroutine to its M.",
+            "Needed for OS thread-local state only.",
+            "Always pair with `UnlockOSThread` in a `defer`.",
+            "Forget it and that M is retired, not reused."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Start Tiny",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every goroutine gets its own contiguous, heap-allocated stack.",
+            "Starts at 2 KB — no `pthread` 8 MB reservation.",
+            "A million goroutines therefore fits in a few GB.",
+            "Compiler inserts a bounds check in any non-tiny prologue."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Grow By Copying"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "prologue check",
+              "morestack",
+              "newstack",
+              "alloc 2x",
+              "copy + fix ptrs",
+              "resume"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "On overflow the prologue calls `morestack`, which calls `newstack`.",
+            "Allocate bigger, copy the old stack, fix up pointers, resume.",
+            "Policy: double each time — 2 KB, 4 KB, 8 KB, 16 KB …",
+            "Doubling makes growth amortized O(1) per byte."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Why copying is legal",
+          "text": "Go has precise stack maps: the GC knows every pointer slot in every frame, so pointers into the old stack can be rewritten safely."
+        },
+        {
+          "type": "heading",
+          "text": "The Segmented Past"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Version",
+            "Stack model"
+          ],
+          "rows": [
+            [
+              "pre-1.3",
+              "segmented (split)"
+            ],
+            [
+              "1.3",
+              "copying stacks"
+            ],
+            [
+              "1.4",
+              "initial 8 KB → 2 KB"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Segmented = a linked list of chunks.",
+            "Hot-split problem: a call at a chunk boundary inside a loop…",
+            "…allocated and freed a segment every single iteration.",
+            "Performance tanked; copying replaced it in Go 1.3."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "They Shrink Too"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "At GC: uses under 1/4 of its stack? Runtime halves it.",
+            "Long-lived goroutines that spiked once give the memory back.",
+            "So a one-off deep parse does not cost you forever."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Hard Limits",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Arch",
+            "Max stack"
+          ],
+          "rows": [
+            [
+              "64-bit",
+              "1 GB"
+            ],
+            [
+              "32-bit",
+              "250 MB"
+            ],
+            [
+              "tune",
+              "`debug.SetMaxStack`"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "runtime: goroutine stack exceeds",
+            "  1000000000-byte limit",
+            "fatal error: stack overflow"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Stacks That Grow",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Unrecoverable",
+          "items": [
+            "Blowing the limit is fatal, not a panic.",
+            "`recover()` cannot catch a stack overflow.",
+            "Infinite recursion kills the whole process.",
+            "No deferred cleanup runs anywhere."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Measuring and Shrinking"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stack memory is NOT in `HeapAlloc`.",
+            "Read `MemStats.StackInuse` and `StackSys`.",
+            "Cross-check the `goroutine` and `heap` pprof profiles together.",
+            "Flat heap plus rising RSS points here."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sh",
+          "lines": [
+            "go build -gcflags='-m' ./...",
+            "# \"moved to heap: buf\" = escaped"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Escape analysis: values outliving the frame move to the heap.",
+            "That keeps stacks small on purpose.",
+            "Deep recursive parsers and big stack arrays cause copy-and-grow churn.",
+            "Fix: hoist the big buffer to the heap or reuse it."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "`g0` is exempt",
+          "text": "The scheduler stack never grows, so runtime code on it must have bounded frames — that is what `//go:nosplit` marks."
+        },
+        {
+          "type": "heading",
+          "text": "A Channel Is hchan",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "buf ring",
+              "elemsize",
+              "count",
+              "lock",
+              "sendq",
+              "recvq"
+            ],
+            "caption": "hchan"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ring buffer, element size and count, a lock, two wait queues.",
+            "`sendq` and `recvq` hold `sudog` records.",
+            "A `sudog` pairs a parked G with the value it wants to move.",
+            "One G can sit on several wait queues — that is how `select` works."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Unbuffered = Rendezvous"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sender parks until a receiver arrives (or vice versa).",
+            "Value is copied sender-to-receiver directly, skipping the buffer.",
+            "Direct handoff: sender writes into the receiver's stack slot.",
+            "Then calls `goready` — no intermediate copy at all."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Buffered Path"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Send on a full buffer parks the sender on `sendq`.",
+            "A receive drains one slot, then moves a parked sender's value in.",
+            "`close(ch)` readies every G on both queues at once.",
+            "Receivers then get the zero value with `ok == false`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Panic Rules",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Operation",
+            "Result"
+          ],
+          "rows": [
+            [
+              "send on closed",
+              "panic"
+            ],
+            [
+              "close of closed",
+              "panic"
+            ],
+            [
+              "close of nil",
+              "panic"
+            ],
+            [
+              "recv from closed",
+              "zero, `ok=false`"
+            ],
+            [
+              "op on nil chan",
+              "blocks forever"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Channels, sync, and Parking",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for { select {",
+            "case v := <-in: use(v)",
+            "case <-done: in = nil  // disable case",
+            "} }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "nil is a feature",
+          "text": "Blocking forever is deliberately useful: set a `select` case's channel to nil to switch that case off for good."
+        },
+        {
+          "type": "heading",
+          "text": "select Semantics"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Multiple ready cases: picks uniformly at random.",
+            "That randomness prevents systematic starvation of one case.",
+            "A `default` case means it never parks.",
+            "So `default` is how you write a non-blocking send or receive."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Mutex and WaitGroup"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`sync.Mutex` fast path: one atomic CAS, runtime not involved.",
+            "Slow path parks on a runtime semaphore.",
+            "Starvation mode: waiting over 1 ms flips to FIFO handoff.",
+            "Trades throughput for bounded tail latency."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "wg.Add(1)        // BEFORE the go statement",
+            "go func(){ defer wg.Done(); work() }()",
+            "wg.Wait()        // parks on a semaphore"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Add-before-go",
+          "items": [
+            "`Wait()` callers park on a semaphore.",
+            "`Add` inside the goroutine races the `Wait`.",
+            "`Wait` can then return before work starts.",
+            "Rule: `Add` on the spawning side, always."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Costs To Remember"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`time.After` allocates a timer not collected until it fires.",
+            "In a hot `select` loop that is a real leak — see the leaks page.",
+            "Use `time.NewTimer` + `Stop`, or `context.WithTimeout`.",
+            "Channel op is ~100 ns: for a shared counter, prefer mutex or atomic."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Worker Pool",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for w := 0; w < N; w++ {",
+            "    go func(){ for j := range jobs {",
+            "        results <- do(j) } }()",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "N goroutines ranging over one jobs channel.",
+            "Results land on a second channel.",
+            "Bounds concurrency with no extra machinery.",
+            "Close `jobs` to end every worker at once."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Semaphore"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "sem := make(chan struct{}, N)",
+            "sem <- struct{}{}          // acquire",
+            "defer func(){ <-sem }()    // release"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Patterns That Hold Up in Production",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "A buffered channel of size N is the whole implementation.",
+            "Use when you want unbounded goroutines, bounded parallelism.",
+            "Different goal than a pool: one goroutine per item still.",
+            "Only N of them run inside the critical section."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fan-out / Fan-in"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "source",
+              "fan-out N",
+              "work",
+              "merge chan",
+              "consumer"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Split work to many goroutines, merge into one output channel.",
+            "A `sync.WaitGroup` closes the merged channel — in its own goroutine.",
+            "Pipeline stage: takes an input chan, returns an output chan.",
+            "Each stage closes its output when done; closure flows downstream."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "errgroup Is The Default"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "g, ctx := errgroup.WithContext(ctx)",
+            "g.SetLimit(8)               // bounded",
+            "g.Go(func() error { … })",
+            "err := g.Wait()             // first error"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Propagates the first error and cancels the shared context.",
+            "`Wait` collects everyone before returning.",
+            "`SetLimit(n)` replaces hand-rolled semaphores.",
+            "`golang.org/x/sync/errgroup` — reach for it first."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Ownership Rules",
+          "ink": "red"
+        },
+        {
+          "type": "sidebox",
+          "title": "Non-negotiable",
+          "items": [
+            "The sender closes the channel, never the receiver.",
+            "Closing from the receive side races in-flight sends and panics.",
+            "Never `go` inside a library API the caller cannot stop.",
+            "Return a stop func, or take a `context.Context`."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`context.Context` is always the first parameter.",
+            "Select on `ctx.Done()` in every loop that can block.",
+            "`defer cancel()` after every `WithCancel` / `WithTimeout`.",
+            "Skipping it leaks the timer and goroutine until the parent dies."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Patterns That Hold Up in Production (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Pick The Primitive"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Use"
+          ],
+          "rows": [
+            [
+              "lazy singleton",
+              "`sync.Once`"
+            ],
+            [
+              "join N tasks",
+              "`errgroup` / `WaitGroup`"
+            ],
+            [
+              "broadcast stop",
+              "close a `done` chan"
+            ],
+            [
+              "rate limit",
+              "`time.Ticker` / `x/time/rate`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Closing a `done chan struct{}` wakes every receiver at once.",
+            "Always `defer ticker.Stop()` on a `time.Ticker`.",
+            "`runtime.Gosched()` yields voluntarily — almost never needed now.",
+            "Its presence in code usually marks a hidden bug."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Graceful shutdown order",
+          "text": "Close the input channel, `Wait` for workers, then close outputs. A hard `os.Exit` skips every deferred cleanup in every goroutine."
+        },
+        {
+          "type": "heading",
+          "text": "The Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A goroutine permanently `_Gwaiting`, or looping with no exit.",
+            "Unreachable by any code that could ever finish it.",
+            "The GC collects unreachable memory — never a goroutine.",
+            "A running goroutine is a GC root by definition."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "A goroutine leak is a memory leak",
+          "text": "It holds its stack, its captured variables, and everything those reference. Ten thousand leaked handlers pin ten thousand request bodies."
+        },
+        {
+          "type": "heading",
+          "text": "Nine Causes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Cause",
+            "Blocks on"
+          ],
+          "rows": [
+            [
+              "1",
+              "send, no receiver",
+              "`ch <- v`"
+            ],
+            [
+              "2",
+              "recv, nobody closes",
+              "`range ch`"
+            ],
+            [
+              "3",
+              "`select` with no `Done`",
+              "forever"
+            ],
+            [
+              "4",
+              "no `defer cancel()`",
+              "timer alive"
+            ],
+            [
+              "5",
+              "`Ticker` no `Stop()`",
+              "fires into void"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "1: `ch <- v` unbuffered, reader returned early on an error path.",
+            "That is the classic HTTP-handler-with-timeout leak.",
+            "2: producer died from a panic or an early return; `range` never ends.",
+            "3: the only sender disappears and the goroutine waits out the process."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Cause",
+            "Blocks on"
+          ],
+          "rows": [
+            [
+              "6",
+              "`WaitGroup` mismatch",
+              "`Wait()`"
+            ],
+            [
+              "7",
+              "unclosed `resp.Body`",
+              "conn reader"
+            ],
+            [
+              "8",
+              "jobs chan never closed",
+              "`range jobs`"
+            ],
+            [
+              "9",
+              "mutual block",
+              "each other"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "A goroutine costs 2 KB and about a microsecond — until one blocks forever, and then it costs you a stack, its captured variables, and eventually the pod. This handbook walks the whole runtime: G/M/P, what `schedule()` does 61 ticks at a time, how stacks grow by copying, the nine ways goroutines leak, and the pprof ladder for finding them. Save it for the next time RSS climbs while your heap stays flat.",
+    "hashtags": [
+      "#golang",
+      "#goroutines",
+      "#concurrency",
+      "#gointerview",
+      "#backenddev",
+      "#systemsprogramming",
+      "#softwareengineering",
+      "#devnotes",
+      "#programmingtips",
+      "#codenewbie",
+      "#techstudy",
+      "#learntocode"
+    ]
+  }
+}

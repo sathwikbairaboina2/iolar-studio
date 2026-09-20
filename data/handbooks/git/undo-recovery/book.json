@@ -1,0 +1,212 @@
+{
+  "title": "Git Undo: The Field Manual",
+  "summary": "A dense, example-driven handbook on every way Git lets you take something back — reset (soft/mixed/hard), revert, restore, reflog, stash, and object recovery. Covers the three-trees model underneath them all, when each command is safe, what is truly unrecoverable, and how to rescue commits you thought were gone.",
+  "chapters": [
+    {
+      "title": "The Three Trees: Everything Undo Rests On",
+      "points": [
+        "Git undo is not one command — it is a choice of which of three 'trees' you move: HEAD (commit), Index (staging area), Working Tree (files on disk).",
+        "HEAD = pointer to the current commit, usually via a branch ref; `cat .git/HEAD` shows `ref: refs/heads/main`.",
+        "Index (a.k.a. staging area / cache) = a binary file at `.git/index` holding the proposed next commit's full tree, not a diff.",
+        "Working tree = the actual files you edit; Git compares it against the index to report 'not staged for commit'.",
+        "`git status` reads left column = Index vs HEAD (staged), right column = Working tree vs Index (unstaged).",
+        "Every commit is a snapshot of a full tree plus parent pointer(s) — not a delta; this is why restoring old state is cheap.",
+        "Mental rule: every undo command answers 'which trees do I rewind, and do I write history or add to it?'",
+        "Inspect trees directly: `git diff --cached` (Index vs HEAD), `git diff` (Working vs Index), `git diff HEAD` (Working vs HEAD).",
+        "Content is stored as blobs/trees/commits in `.git/objects`, addressed by SHA-1 (SHA-256 in newer repos); refs are just files containing a SHA.",
+        "Key consequence: as long as a commit object exists, it is recoverable — losing a commit means losing the *reference* to it, not the data (until gc)."
+      ]
+    },
+    {
+      "title": "git reset: One Command, Three Depths",
+      "points": [
+        "`git reset [mode] <commit>` moves the current branch ref to `<commit>`, then optionally updates Index and Working tree.",
+        "`--soft`: moves HEAD only. Index and working tree untouched — all changes appear staged.",
+        "`--mixed` (default): moves HEAD and resets Index. Changes appear as unstaged modifications.",
+        "`--hard`: moves HEAD, Index, and working tree. Uncommitted changes are destroyed.",
+        "Depth ladder table: soft = HEAD | mixed = HEAD+Index | hard = HEAD+Index+Working.",
+        "Squash last 3 commits into one: `git reset --soft HEAD~3 && git commit -m \"one clean commit\"`.",
+        "Unstage a file without losing edits: `git reset HEAD file.txt` (modern spelling: `git restore --staged file.txt`).",
+        "Nuke local mess back to remote: `git reset --hard origin/main` — discards local commits AND local edits.",
+        "Path form is different: `git reset <commit> -- <path>` never moves HEAD; it only rewrites index entries for those paths, and `--hard` is illegal with paths.",
+        "`--merge` and `--keep` are safer middle grounds: they abort rather than clobber local modifications that would be lost.",
+        "Reset rewrites branch history — never reset a branch others have pulled unless you agree to force-push.",
+        "Reset is O(size of changed tree) — it rewrites index entries and checks out files; it does not copy repo history."
+      ]
+    },
+    {
+      "title": "reset --soft in Practice",
+      "points": [
+        "Semantics: 'un-commit but keep everything ready to re-commit'.",
+        "`git reset --soft HEAD~1` — undo the last commit, its changes stay staged.",
+        "Primary use: fix a bad commit message alternative to `--amend` when you also want to re-split the change.",
+        "Squash workflow: `git reset --soft <base>` then one commit — a rebase-free way to collapse a branch.",
+        "Safe by construction: nothing on disk changes, so no uncommitted work can be lost.",
+        "Gotcha: the orphaned commit still exists; find it in reflog if you want it back.",
+        "Combine with `git commit -c ORIG_HEAD` to reuse the old commit message and authorship metadata.",
+        "`ORIG_HEAD` is written by reset/merge/rebase — a one-step undo pointer: `git reset --soft ORIG_HEAD`.",
+        "Does NOT undo a push — history diverges and the next push is rejected as non-fast-forward.",
+        "Anti-pattern: soft-resetting across a merge commit flattens the merge into a giant staged diff."
+      ]
+    },
+    {
+      "title": "reset --mixed and --hard: Where Work Dies",
+      "points": [
+        "`--mixed` is the default: `git reset HEAD~1` == `git reset --mixed HEAD~1`.",
+        "Mixed = 'un-commit and unstage' — the changes drop to the working tree as modified files.",
+        "Classic use: `git reset` (no args) to unstage everything after an over-eager `git add -A`.",
+        "`--hard` is the only reset mode that destroys uncommitted work — there is no reflog for the working tree.",
+        "Rule: uncommitted changes have no safety net. Commit or stash before any `--hard`.",
+        "`git reset --hard` with no commit arg = discard all local modifications, stay on the current commit.",
+        "Untracked files survive `--hard` — remove them separately with `git clean -fd` (preview with `git clean -nd`).",
+        "Recovery from `--hard` is only possible if the content was ever staged: `git fsck --lost-found` can surface dangling blobs from the index.",
+        "`git reset --hard <commit> -- path` is an error; use `git checkout <commit> -- path` or `git restore --source=<commit> path`.",
+        "Safety habit: run `git status` and `git stash list` before every hard reset; make `git reset --hard` a two-keystroke pause, not muscle memory."
+      ]
+    },
+    {
+      "title": "git revert: Undo Without Rewriting History",
+      "points": [
+        "`git revert <commit>` computes the inverse diff of that commit and creates a NEW commit applying it.",
+        "History is append-only — safe for shared/public branches where reset is forbidden.",
+        "The original commit stays in history; the revert commit sits on top with message `Revert \"<subject>\"`.",
+        "Range form: `git revert HEAD~3..HEAD` reverts three commits, newest first, one revert commit each.",
+        "Batch into a single commit: `git revert --no-commit A B C` then `git commit`.",
+        "Reverting a merge needs `-m <parent-number>`: `git revert -m 1 <merge-sha>` keeps mainline (parent 1) and undoes the side branch.",
+        "The merge-revert trap: after reverting a merge, re-merging the same branch brings nothing back — you must revert the revert (`git revert <revert-sha>`) before re-merging.",
+        "Conflicts happen when later commits touched the same lines — resolve, `git add`, then `git revert --continue`.",
+        "Escape hatches: `git revert --abort` (bail out), `git revert --skip` (drop the current one).",
+        "A revert of a revert restores the change — reverts compose like double negation.",
+        "Revert does not remove secrets from history — the bad content is still in the old commit and still fetchable."
+      ]
+    },
+    {
+      "title": "reset vs revert vs amend",
+      "points": [
+        "Comparison row 1 — reset: rewrites history, moves the branch ref backward, best for local/unpushed work.",
+        "Comparison row 2 — revert: adds history, branch ref moves forward, the only safe choice for pushed/shared commits.",
+        "Comparison row 3 — `commit --amend`: replaces the tip commit with a new SHA; for fixing the most recent commit only.",
+        "Decision rule: 'Did anyone else pull this?' Yes → revert. No → reset.",
+        "Amend is a mini-rewrite: the old commit is orphaned, the new one has a different SHA and a fresh committer date.",
+        "`git commit --amend --no-edit` adds forgotten files to the last commit without touching the message.",
+        "Amend after push requires `git push --force-with-lease` — never plain `--force` on a shared branch.",
+        "`--force-with-lease` refuses to overwrite if the remote moved since your last fetch; `--force` doesn't check.",
+        "Audit/compliance angle: revert leaves a trail of what was undone and when; reset erases the evidence.",
+        "Cost note: revert is O(diff size) and creates one new commit; reset is a ref write plus a checkout, creating no object."
+      ]
+    },
+    {
+      "title": "git restore and git switch: The Modern Split",
+      "points": [
+        "Git 2.23 split the overloaded `git checkout` into `git switch` (move branches) and `git restore` (restore file contents).",
+        "`git restore <path>` — discard unstaged changes, copying the file from the Index.",
+        "`git restore --staged <path>` — unstage, copying from HEAD into the Index; working tree untouched. Equals old `git reset HEAD <path>`.",
+        "`git restore --staged --worktree <path>` — nuke both: file returns to its HEAD state.",
+        "`git restore --source=HEAD~2 <path>` — pull one file's content from an older commit into the working tree.",
+        "`git restore .` in the repo root discards all unstaged modifications — destructive, no reflog protection.",
+        "Deleted a tracked file by accident? `git restore <path>` brings it back; if the delete was staged, add `--staged`.",
+        "Old equivalents to know for legacy docs: `git checkout -- <path>`, `git checkout <commit> -- <path>`.",
+        "`git switch -c <branch>` replaces `git checkout -b`; `git switch -` jumps to the previous branch.",
+        "Why the split matters: `git checkout <name>` was ambiguous between a branch and a file path — a real footgun that `--` used to disambiguate.",
+        "Restore never moves HEAD and never touches history — the least dangerous undo family."
+      ]
+    },
+    {
+      "title": "git reflog: Git's Black Box Recorder",
+      "points": [
+        "The reflog records every movement of HEAD and of each branch ref, locally, with a timestamp and reason.",
+        "Stored as plain text at `.git/logs/HEAD` and `.git/logs/refs/heads/<branch>` — human-readable, one line per move.",
+        "`git reflog` lists HEAD's history: `abc1234 HEAD@{2}: reset: moving to HEAD~3`.",
+        "`HEAD@{n}` = the nth-previous position of HEAD; `HEAD@{2.hours.ago}` and `HEAD@{yesterday}` also work.",
+        "`main@{1}` = where branch `main` pointed one move ago — distinct from `HEAD@{1}`.",
+        "`git reflog show <branch>` scopes the log to one branch's ref.",
+        "Reflog is strictly local and never pushed or cloned — a fresh clone has an empty reflog.",
+        "Entries expire: 90 days for reachable, 30 days for unreachable (`gc.reflogExpire`, `gc.reflogExpireUnreachable`).",
+        "The reflog is the reason 'I lost my commits with reset --hard' is almost always false — the commits are still there.",
+        "Undo an undo: `git reset --hard HEAD@{1}` puts you back where you were before the last ref-moving command.",
+        "Bare repos have reflogs disabled by default (`core.logAllRefUpdates`)."
+      ]
+    },
+    {
+      "title": "Recovering Lost Commits",
+      "points": [
+        "Step 1 — find the SHA: `git reflog` and look for the operation just before the loss (reset, rebase, checkout, branch -D).",
+        "Step 2 — inspect before committing to it: `git show <sha>` or `git log <sha> -3`.",
+        "Step 3 — recover: `git branch rescue <sha>` (safest) or `git reset --hard <sha>` (if you're sure).",
+        "Cherry-pick individual lost work: `git cherry-pick <sha>` copies one commit onto the current branch.",
+        "Deleted branch? Its tip SHA is in the reflog line `branch: Created from…` or in `git fsck`.",
+        "When reflog can't help (fresh clone, expired entries): `git fsck --full --no-reflogs --unreachable --lost-found`.",
+        "`fsck` writes findings to `.git/lost-found/` — commits as refs, dangling blobs as files named by SHA.",
+        "Dangling blobs come from `git add`ed content that was never committed — the only way to recover a lost `reset --hard` on staged work.",
+        "Botched rebase: `git rebase --abort` mid-flight, or after the fact `git reset --hard ORIG_HEAD`.",
+        "Time limit: `git gc` / `git prune` permanently deletes unreachable objects past `gc.pruneExpire` (default 2 weeks) — recover fast, and don't run `git gc --prune=now` while panicking.",
+        "Truly unrecoverable: working-tree edits never staged and never committed. Nothing in Git ever saw them."
+      ]
+    },
+    {
+      "title": "git stash: Park Work Without Committing",
+      "points": [
+        "`git stash` (alias for `git stash push`) saves working tree + index changes, then resets the working tree to HEAD.",
+        "Internally a stash is real commits: a commit with the working-tree state whose parents are HEAD and a hidden index commit — stored under the ref `refs/stash`.",
+        "Because it's commit objects, a stash is durable and recoverable, unlike raw uncommitted edits.",
+        "`git stash list` shows the stack: `stash@{0}` is most recent; each new stash pushes down the old ones.",
+        "`git stash pop` = apply + drop; `git stash apply` = apply and keep the entry (safer when the apply may conflict).",
+        "`git stash push -m \"wip auth\"` labels it; unlabeled stashes get useless auto messages like `WIP on main: abc123 …`.",
+        "Untracked files are NOT stashed by default: use `-u`/`--include-untracked`, or `-a`/`--all` to include ignored files too.",
+        "Partial stash: `git stash push -p` (interactive hunks) or `git stash push <pathspec>` for specific files.",
+        "`git stash show -p stash@{1}` displays the full diff; `git stash branch <name>` creates a branch from the stash's base commit and applies it — the clean fix for a stash that no longer applies.",
+        "`git stash drop stash@{0}` deletes one entry; `git stash clear` deletes them all — and clear is the classic silent data loss.",
+        "Recover a dropped stash: the commit is unreachable but alive — `git fsck --unreachable | grep commit`, then `git stash apply <sha>`.",
+        "Pop can conflict: conflicts are staged for resolution, and a conflicting `pop` does NOT drop the stash entry."
+      ]
+    },
+    {
+      "title": "Undoing Published Work and Other Danger Zones",
+      "points": [
+        "The golden rule: never rewrite history that others have based work on — public branch → revert, private branch → reset/rebase.",
+        "After a rewrite, publish with `git push --force-with-lease`, never bare `--force`.",
+        "`--force-with-lease` compares the remote ref to your remote-tracking ref; a bare `git fetch` can silently defeat it — prefer `--force-with-lease=<ref>:<expected-sha>`.",
+        "Undo a merge you haven't pushed: `git reset --hard ORIG_HEAD`. Already pushed: `git revert -m 1 <merge-sha>`.",
+        "Undo a pull: `git reset --hard @{u}` to match upstream, or `git reset --hard ORIG_HEAD` to go back before the pull.",
+        "Committed a secret? Revert is not enough — the blob stays in history. Rewrite with `git filter-repo` (or BFG), force-push, and rotate the credential — assume it is already compromised.",
+        "Protected branches on the host (GitHub/GitLab) reject force-pushes by policy — plan on revert for main.",
+        "Detached HEAD: commits made there are orphaned when you switch away; Git warns and prints the SHA — `git branch <name> <sha>` to keep them.",
+        "`git clean -fdx` deletes untracked AND ignored files, including `.env` and build caches. Always dry-run with `-n` first.",
+        "Submodules and worktrees don't follow a parent reset — `git submodule update --init --recursive` after resetting."
+      ]
+    },
+    {
+      "title": "Common Mistakes and Their Exact Fix",
+      "points": [
+        "Staged a file by mistake → `git restore --staged <file>`.",
+        "Want to throw away local edits to one file → `git restore <file>`.",
+        "Committed too early, keep the changes staged → `git reset --soft HEAD~1`.",
+        "Bad commit message on the tip → `git commit --amend`.",
+        "Committed to the wrong branch → `git reset --soft HEAD~1`, `git stash`, `git switch right-branch`, `git stash pop`, commit.",
+        "Committed a huge file → amend it out if it's the tip, otherwise `git filter-repo` and force-push.",
+        "Reset too far with `--hard` → `git reflog`, then `git reset --hard HEAD@{1}`.",
+        "Broke main with a bad merge that's already pushed → `git revert -m 1 <merge-sha>`.",
+        "Rebase went sideways → `git rebase --abort`, or after finishing, `git reset --hard ORIG_HEAD`.",
+        "Popped a stash into conflicts → resolve, `git add`, then `git stash drop` (pop does not auto-drop on conflict).",
+        "`git stash clear` regret → `git fsck --unreachable`, find the commit, `git stash apply <sha>`.",
+        "Deleted a branch with `-D` → find the tip in `git reflog`, then `git branch <name> <sha>`."
+      ]
+    },
+    {
+      "title": "Cheat Sheet and Mental Model",
+      "points": [
+        "One question decides everything: is the change unstaged, staged, committed-local, or committed-and-pushed?",
+        "Unstaged → `git restore <path>` | Staged → `git restore --staged <path>` | Committed local → `git reset` | Pushed → `git revert`.",
+        "Depth table: soft = HEAD | mixed = HEAD + Index | hard = HEAD + Index + Working tree.",
+        "Safety ranking, safest to most destructive: revert < restore --staged < reset --soft < reset --mixed < restore < reset --hard < clean -fdx.",
+        "Reflog is your undo-of-undo for anything that moved a ref; there is no reflog for working-tree content.",
+        "`ORIG_HEAD` = the one-step undo pointer written by reset, merge, rebase, and pull.",
+        "Stash is commits in disguise — durable, listable, and recoverable via fsck even after drop.",
+        "Recovery window: unreachable objects survive ~30 days (reflog) / 2 weeks (prune) by default, until `git gc` runs.",
+        "Habit that prevents most disasters: commit early and often on a local branch — a commit makes every mistake reversible.",
+        "Cheap insurance before anything scary: `git branch backup-$(date +%s)` or `git stash -u`.",
+        "Everything Git tracks is recoverable except working-tree changes that were never added or committed — that is the one true point of no return."
+      ]
+    }
+  ]
+}

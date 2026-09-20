@@ -1,0 +1,611 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA FIELD NOTES — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Consumer Groups & Rebalancing",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Skipping The Rebalance"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Static membership: set `group.instance.id`.",
+            "A short restart within `session.timeout.ms` triggers none.",
+            "Manual `assign()` pins partitions, no group, no failover."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Timeouts"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Config",
+            "Covers"
+          ],
+          "rows": [
+            [
+              "`session.timeout.ms`",
+              "heartbeat liveness"
+            ],
+            [
+              "`max.poll.interval.ms`",
+              "slow processing"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Classic Bug",
+          "text": "Slow per-record work exceeds max.poll.interval.ms, the consumer is evicted mid-batch, the work is reprocessed, and lag grows further."
+        },
+        {
+          "type": "heading",
+          "text": "Offsets & Semantics"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Auto-commit: at-most or at-least-once, depends on failure point.",
+            "`commitSync()` after processing: at-least-once.",
+            "Exactly-once needs a transactional producer.",
+            "Set `transactional.id` plus `isolation.level=read_committed`."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Health Metric",
+          "text": "Consumer lag per partition = end offset minus committed offset. Watch MAX lag across partitions, never the average."
+        },
+        {
+          "type": "heading",
+          "text": "Three Cleanup Policies",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "cleanup.policy",
+            "Keeps"
+          ],
+          "rows": [
+            [
+              "`delete` (default)",
+              "recent window of events"
+            ],
+            [
+              "`compact`",
+              "latest value per key, forever"
+            ],
+            [
+              "`compact,delete`",
+              "latest per key, aged out"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`delete` drops whole segments past retention.ms/bytes.",
+            "`compact` turns the log into a changelog or table.",
+            "`compact,delete` suits Streams changelogs with bounded history."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "How The Cleaner Runs"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compaction runs per partition, independently.",
+            "It never touches the active segment.",
+            "So the newest records are always uncompacted.",
+            "`min.cleanable.dirty.ratio` default 0.5 gates the work."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Why Partition Count Is Frozen",
+          "text": "Compaction is per-partition and keyed. Changing the count splits one key's history across two partitions and corrupts the table view."
+        }
+      ]
+    },
+    {
+      "page_title": "Consumer Groups & Rebalancing (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Tombstones"
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "// delete-this-key marker",
+            "producer.send(new ProducerRecord<>(",
+            "    \"users\", userId, null));  // null VALUE",
+            "// kept for delete.retention.ms (24h)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "retention.bytes Is Per Partition"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Partitions",
+            "Real size"
+          ],
+          "rows": [
+            [
+              "10 GB",
+              "12",
+              "120 GB per copy"
+            ],
+            [
+              "10 GB",
+              "12, RF=3",
+              "360 GB cluster"
+            ],
+            [
+              "1 GB",
+              "24, RF=3",
+              "72 GB cluster"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Common Mistake",
+          "text": "Sizing disk with retention.bytes read as a topic total, then filling the disk twelve times over."
+        },
+        {
+          "type": "heading",
+          "text": "Time & Segment Granularity"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Time retention keys off the record timestamp.",
+            "A backfill with old create-times can be deleted on arrival.",
+            "`segment.bytes` and `segment.ms` set deletion granularity.",
+            "Huge segments delay reclaiming space."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Tiered Storage (KIP-405)",
+          "items": [
+            "Cold segments move to object storage.",
+            "Partition retention exceeds local disk.",
+            "Replay is slower but far cheaper."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "delete topic",
+                "lines": [
+                  "Event stream",
+                  "Facts over time",
+                  "Replay = window",
+                  "Null keys fine"
+                ]
+              },
+              {
+                "title": "compacted topic",
+                "lines": [
+                  "Latest-state table",
+                  "Materializable",
+                  "Replay = full state",
+                  "Key every record"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Reprocessing Limit",
+          "text": "`seekToBeginning()` only replays what retention still holds on disk. Beginning means oldest surviving offset, not offset zero."
+        },
+        {
+          "type": "heading",
+          "text": "Skew & Keys",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Hot key: one partition at 90% of traffic, eleven idle.",
+            "Check per-partition byte rate, never the topic rate.",
+            "Null keys where order mattered: sticky scattered a user.",
+            "That user's events lost their sequence permanently."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The Destructive Alter",
+          "text": "Increasing partitions on a live keyed topic: the same key now hashes elsewhere, so ordering and compaction history both break."
+        },
+        {
+          "type": "heading",
+          "text": "Durability Theatre"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Config",
+            "What really happens"
+          ],
+          "rows": [
+            [
+              "acks=all, min.isr=1",
+              "one replica satisfies \"all\""
+            ],
+            [
+              "unclean election on",
+              "stale replica truncates data"
+            ],
+            [
+              "retries, no idempotence",
+              "batch reorders a partition"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "With in-flight > 1 and no idempotence, a retried batch lands after a later batch and the partition order is gone."
+        },
+        {
+          "type": "heading",
+          "text": "auto.offset.reset Traps"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Value",
+            "New group",
+            "After expiry"
+          ],
+          "rows": [
+            [
+              "`latest`",
+              "skips backlog",
+              "silent gap"
+            ],
+            [
+              "`earliest`",
+              "reads all",
+              "floods downstream"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Retention, Compaction & Lifecycle",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Pick The Reset On Purpose",
+          "text": "The default only applies when no committed offset exists. Decide per group whether a first start should replay history or start clean."
+        },
+        {
+          "type": "heading",
+          "text": "App Throws Order Away"
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "// WRONG: pool per record, order gone",
+            "pool.submit(() -> handle(rec));",
+            "// RIGHT: shard by key hash",
+            "workers[hash(rec.key()) % N].submit(...);"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Partition Count, Both Ways"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Too many: slow controller failover, heavy producer memory.",
+            "Long rebalances that look like a broker outage.",
+            "Too few: consumers cannot scale out at all.",
+            "And the fix, adding partitions, is the destructive op above."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rebalance Storm",
+          "text": "max.poll.interval.ms set too low for real processing time: each eviction adds lag, and more lag causes more evictions."
+        },
+        {
+          "type": "heading",
+          "text": "Two Bad Assumptions"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cross-partition order in a join or aggregation.",
+            "Correct only if both sides are co-partitioned.",
+            "Same key AND same partition count on both sides.",
+            "A consumer read is durable forever: retention may delete it."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Monitoring Gaps To Close",
+          "items": [
+            "`UnderReplicatedPartitions`, `OfflinePartitionsCount`.",
+            "`IsrShrinksPerSec`.",
+            "Max consumer lag, per partition.",
+            "Per-partition byte rate for skew."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "The Four Rules",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ordering: guaranteed per partition. Want it? Give a stable key.",
+            "Parallelism: bounded by partition count per group.",
+            "Want more consumers? More partitions first.",
+            "Keyed placement: `murmur2(key) % numPartitions`.",
+            "Unkeyed: sticky batching, partition undefined."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Durability Defaults"
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "replication.factor=3",
+            "min.insync.replicas=2",
+            "acks=all",
+            "enable.idempotence=true"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Failure Modes & Anti-Patterns",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Uptime-first pipeline? min.insync.replicas=1.",
+            "Accept possible loss on leader failure, in writing.",
+            "Never enable unclean leader election unless availability",
+            "strictly outranks correctness, and document that choice."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "acks Table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "acks",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "0",
+              "no wait, can lose everything"
+            ],
+            [
+              "1",
+              "leader only, loses on leader failure"
+            ],
+            [
+              "all",
+              "full ISR, bounded by min.insync"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "ISR Table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "State",
+            "Consequence"
+          ],
+          "rows": [
+            [
+              "in ISR",
+              "counts for acks=all and HW"
+            ],
+            [
+              "out of ISR",
+              "ignored, no clean leadership"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Availability vs Durability"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "RF=3, min.isr=2",
+              "durable, one loss OK"
+            ],
+            [
+              "RF=3, min.isr=1",
+              "uptime first, can lose"
+            ],
+            [
+              "RF=3, min.isr=3",
+              "writes stop on one loss"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Raising min.insync.replicas always costs write availability.",
+            "Lowering it always costs durability. There is no free setting."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sizing & Key Design"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Partitions = target throughput / per-partition consumer rate.",
+            "Round up for headroom, then live with it for a year.",
+            "Key cardinality must be far above partition count.",
+            "The entity that needs order must BE the key."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Cheat Sheet & Decision Rules",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Worked Example: Sizing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Target 60k records/s, one consumer handles 5k/s.",
+            "60k / 5k = 12 partitions, the bare minimum.",
+            "Round up to 16 for headroom and growth.",
+            "16 partitions at RF=3 = 48 replicas on disk."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Compacted Topic Rule",
+          "items": [
+            "Pick the partition count once.",
+            "Never change it.",
+            "Always key every record.",
+            "retention.bytes is per partition: x parts x RF."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Hot Key Fixes",
+          "text": "Composite key (`userId#bucket`), key salting, or a two-stage aggregate. Each one buys throughput and costs strict per-user order."
+        },
+        {
+          "type": "heading",
+          "text": "Ordering Quick Rules",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No global order across partitions. Ever, at any config.",
+            "Multi-topic order is undefined, always.",
+            "Timestamps do not restore order: create time is client-supplied.",
+            "Co-partition both sides before any join."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Debug Order"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "partition skew",
+              "lag per partition",
+              "ISR shrinks",
+              "rebalance rate",
+              "disk/retention"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-topics.sh --describe  # leaders, ISR",
+            "kafka-consumer-groups.sh --describe  # lag",
+            "kafka-configs.sh --describe  # topic overrides"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Whole Handbook, One Line",
+          "text": "Kafka gives ordered, replicated, per-partition logs: the key chooses the partition, the partition count caps parallelism, and ISR plus acks decides what \"written\" really means."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of KAFKA FIELD NOTES. Kafka does not order your topic. It orders a partition, and your key is what decides which one a record lands in — everything else follows from that. 10 pages of field notes: log mechanics and offsets, murmur2 partitioning, why adding partitions is a one-way destructive door, RF vs ISR vs acks, cooperative rebalancing, compaction rules, and the failure modes that look like durability but aren't. Save it before your next topic design review.",
+    "hashtags": [
+      "#kafka",
+      "#apachekafka",
+      "#distributedsystems",
+      "#backendengineering",
+      "#dataengineering",
+      "#eventdriven",
+      "#systemdesign",
+      "#streamprocessing",
+      "#softwareengineering",
+      "#devnotes",
+      "#techhandbook",
+      "#codingnotes"
+    ]
+  }
+}

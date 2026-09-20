@@ -1,0 +1,1050 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA FIELD NOTES",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Topics, Partitions & the Log",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Topic Is Not A Queue",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Topic = named logical stream of records, a category.",
+            "Not a queue with one tail; it has no single tail.",
+            "Partition = real unit of storage and parallelism.",
+            "A topic is just a set of N partitions."
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Each partition is an append-only, immutable, ordered commit log. Writes only ever land at the end."
+        },
+        {
+          "type": "heading",
+          "text": "Offsets Live In A Partition"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Offset = monotonically increasing 64-bit integer.",
+            "Assigned by the partition leader on append.",
+            "Unique WITHIN a partition, never across the topic.",
+            "Partition 0 and partition 1 both hold an offset 42."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Record field",
+            "Note"
+          ],
+          "rows": [
+            [
+              "key",
+              "nullable, picks partition"
+            ],
+            [
+              "value",
+              "nullable, null = tombstone"
+            ],
+            [
+              "timestamp",
+              "create or log-append"
+            ],
+            [
+              "headers",
+              "metadata, not keyed"
+            ],
+            [
+              "partition, offset",
+              "assigned, not sent"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reads Are Non-Destructive"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Consuming does not delete the record.",
+            "N consumer groups read the same bytes independently.",
+            "Position = one stored integer per group/topic/partition.",
+            "Stored in the `__consumer_offsets` topic."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Partition On Disk"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "ls /kafka-logs/orders-3/   # topic orders, part 3",
+            "00000000000000012345.log   # named by base offset",
+            "00000000000000012345.index    # offset -> byte pos",
+            "00000000000000012345.timeindex  # ts -> offset"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Segments",
+          "items": [
+            "Default roll at 1 GB or 7 days.",
+            "Only the newest (active) segment is written.",
+            "Older segments immutable, eligible for cleanup.",
+            "Indexes let a broker seek without scanning."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Retention Deletes Segments"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`retention.ms` and `retention.bytes` drive deletion.",
+            "Whole segments are dropped, never single records.",
+            "So you cannot delete one bad record by retention."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "40",
+              "41",
+              "42 HW",
+              "43",
+              "44 LEO"
+            ],
+            "caption": "partition log"
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Topics, Partitions & the Log (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "LEO vs HW",
+          "text": "LEO = next offset to be written. HW = highest offset replicated to all ISR. Consumers read only up to the HW, so a lost leader can never un-deliver data."
+        },
+        {
+          "type": "heading",
+          "text": "The Whole Promise",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Total order WITHIN a partition. Nothing more.",
+            "No global ordering across partitions. Ever, at any config.",
+            "Different partitions = no defined relative order.",
+            "True even if the two writes are microseconds apart."
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Corollary: order is preserved only for records that share a partition, which in practice means records that share a key."
+        },
+        {
+          "type": "heading",
+          "text": "What Still Holds"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One consumer on one partition sees exact append order.",
+            "Ordering survives replication: followers copy in order.",
+            "Plain producer: per-partition, per-producer-session only.",
+            "Retries can reorder without idempotence (see ch. 6)."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "RabbitMQ",
+                "lines": [
+                  "Per-queue FIFO",
+                  "Global order per queue",
+                  "Scale = more queues",
+                  "Order vs fanout"
+                ]
+              },
+              {
+                "title": "Kafka",
+                "lines": [
+                  "Per-partition FIFO",
+                  "No topic-wide order",
+                  "Scale = more partitions",
+                  "Order traded for scale"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Design Rule: Pick The Key"
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "// ledger: order per account, not globally",
+            "var r = new ProducerRecord<>(",
+            "  \"ledger\", txn.accountId(), txn.toJson());",
+            "// same accountId -> same partition -> ordered"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Where Order Quietly Dies"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Adding partitions re-maps keys; old and new split apart.",
+            "Multi-topic ordering is undefined: `payments` vs `orders`.",
+            "Consumer thread pool per record destroys it app-side.",
+            "Fix: a key-hash executor, one worker per key bucket."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Timestamps Do Not Save You",
+          "items": [
+            "Log-append time: monotonic per partition only.",
+            "Create time: client-supplied, can go backwards.",
+            "Sorting by timestamp is not a total order."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Ordering vs Timing"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Partition",
+            "Lag",
+            "Reader sees"
+          ],
+          "rows": [
+            [
+              "p2",
+              "0.4 s",
+              "near-live"
+            ],
+            [
+              "p5",
+              "6 min",
+              "6 min behind"
+            ],
+            [
+              "p9",
+              "0.9 s",
+              "near-live"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Ordering is not delivery timing. Lag differs per partition, so p5 can trail p2 by minutes with both perfectly ordered."
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Ordering Guarantees",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "One Line",
+          "text": "Kafka orders a key, not a topic. If two events must be sequenced, make them share a key."
+        },
+        {
+          "type": "heading",
+          "text": "The Client Decides",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The producer, not the broker, picks the partition.",
+            "Assignment happens client-side before the network call.",
+            "With a key: `murmur2(keyBytes) % numPartitions`.",
+            "Kafka's own murmur2, not Java `hashCode()`."
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Same key plus same partition count gives the same partition forever, across producers, client languages and restarts."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "key bytes",
+              "murmur2",
+              "% numPartitions",
+              "partition 7",
+              "batch",
+              "broker"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Null Key Behaviour"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Client",
+            "Rule",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "2.4+",
+              "sticky partitioner",
+              "fill one batch, switch"
+            ],
+            [
+              "<2.4",
+              "round-robin per record",
+              "many tiny batches"
+            ],
+            [
+              "any",
+              "explicit partition",
+              "overrides everything"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "new ProducerRecord<>(\"orders\",",
+            "    order.customerId(),  // key = 2nd arg",
+            "    payload);            // not a header!"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Custom Partitioner"
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "// implement Partitioner, then:",
+            "props.put(\"partitioner.class\", \"com.io.GeoP\");",
+            "// partition(topic,key,keyBytes,value,",
+            "//   valueBytes,cluster) -> int"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Use for tenant isolation or geo-affinity.",
+            "Or to pin a hot key to a dedicated partition.",
+            "Explicit partition is the escape hatch and the skew maker."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cardinality & Hot Keys"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Key cardinality must far exceed partition count.",
+            "3 keys over 12 partitions uses 3, leaves 9 empty.",
+            "Hot key = one key with a huge share of traffic.",
+            "It pins to one partition; that partition is the bottleneck."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Hot Key Fixes",
+          "items": [
+            "Composite key: `userId#bucket`.",
+            "Key salting across a small suffix range.",
+            "Two-stage aggregate, shard then combine.",
+            "Each one costs strict per-user order."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Keys & Partitioners",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Keys Drive Compaction"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compaction retains the latest value per key.",
+            "A null key makes a record uncompactable.",
+            "Tombstone = key present, VALUE null = delete this key."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Gotcha",
+          "text": "The key serializer must be stable. Switching a key from String to Avro encoding changes the bytes, so murmur2 re-partitions every key silently."
+        },
+        {
+          "type": "heading",
+          "text": "Parallelism Ceiling",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "At most one consumer per partition within a group.",
+            "20 partitions + 30 consumers = 10 idle, permanently.",
+            "Extra consumers past that buy zero throughput.",
+            "Add partitions, or split the work downstream."
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Multiple groups scale independently. Each group gets its own full assignment of all partitions."
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "topic: orders (12 parts)",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0"
+              ],
+              [
+                "c1_0"
+              ],
+              [
+                "c2_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "topic: orders (12 parts)",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "group billing"
+              },
+              "b1": {
+                "text": "group search"
+              },
+              "b2": {
+                "text": "group audit"
+              },
+              "c0_0": {
+                "text": "6 consumers, 2 each"
+              },
+              "c1_0": {
+                "text": "12 consumers, 1 each"
+              },
+              "c2_0": {
+                "text": "1 consumer, all 12"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Rough Sizing"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "parts = max(target / producer_rate,",
+            "            target / consumer_rate)",
+            "# per-partition write often 10 MB/s+",
+            "# consumer processing cost binds first"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "One-Way Door"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Partitions can only be INCREASED, never decreased.",
+            "`kafka-topics.sh --alter --partitions 24` is one-way.",
+            "Increasing re-maps the hash space; keys move.",
+            "Per-key order and compaction history both break."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Never In Place",
+          "text": "Do not increase partitions on a compacted topic. The same key can then exist in two partitions and the table view is corrupt."
+        },
+        {
+          "type": "heading",
+          "text": "What Partitions Cost"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Where",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Broker",
+              "open file handles"
+            ],
+            [
+              "Broker",
+              "index buffer memory"
+            ],
+            [
+              "Follower",
+              "one fetch stream each"
+            ],
+            [
+              "Cluster",
+              "leader election time"
+            ],
+            [
+              "Producer",
+              "`batch.size` per partition"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Partition Count & Regret",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "1000 partitions x 32 KB = 32 MB of buffer pressure.",
+            "Metadata propagation scales with total partition count.",
+            "That is a controller failover concern, not a topic one.",
+            "KRaft removes the ZooKeeper metadata bottleneck.",
+            "Per-broker file and memory cost stays regardless."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Trade-off Row"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Few partitions",
+            "Many partitions"
+          ],
+          "rows": [
+            [
+              "tighter ordering",
+              "high parallelism"
+            ],
+            [
+              "cheap metadata",
+              "slower failover"
+            ],
+            [
+              "weak parallelism",
+              "longer rebalances"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rule Of Thumb",
+          "text": "Start with a count you can live with for a year. Modest over-provisioning beats resharding a live keyed topic."
+        },
+        {
+          "type": "heading",
+          "text": "Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "RF = number of copies of each partition.",
+            "Copies are placed on distinct brokers.",
+            "Each partition has one leader and RF-1 followers.",
+            "Assignment is per-partition, not per-topic."
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "All produces and, by default, all consumes go through the leader. Followers are pure replicas with no client traffic."
+        },
+        {
+          "type": "heading",
+          "text": "How Followers Catch Up"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Followers issue normal fetch requests to the leader.",
+            "Same protocol a consumer uses. No special channel.",
+            "Leadership is spread so no broker carries them all.",
+            "3 brokers, 6 partitions = 2 leaderships each."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "RF",
+            "Use",
+            "Loss of 1 broker"
+          ],
+          "rows": [
+            [
+              "1",
+              "scratch / dev",
+              "data gone forever"
+            ],
+            [
+              "2",
+              "rare",
+              "no write headroom"
+            ],
+            [
+              "3",
+              "production default",
+              "still writable"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Fault Tolerance",
+          "text": "RF-1 broker failures are survivable for availability. Durability limits are tighter and are set by acks and ISR, not by RF alone."
+        },
+        {
+          "type": "heading",
+          "text": "Changing RF Later"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# set once at creation:",
+            "kafka-topics.sh --create --replication-factor 3",
+            "# change later only with a JSON plan:",
+            "kafka-reassign-partitions.sh --throttle 50000000"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Reassignment copies whole partitions over the network.",
+            "Throttle it or it starves live traffic.",
+            "`broker.rack` spreads replicas across racks and AZs.",
+            "One AZ loss then cannot take every copy."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Preferred Leader"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Preferred leader = first replica in the assignment list.",
+            "`auto.leader.rebalance.enable` restores it after recovery.",
+            "Without it, leaderships pile onto surviving brokers."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Replication, Leaders & Followers",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Storage Math",
+          "items": [
+            "RF multiplies disk, always.",
+            "1 TB of topic data at RF=3 = 3 TB cluster disk.",
+            "Plus retention headroom on top."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Escape Hatches"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "KIP-392 fetch",
+                "lines": [
+                  "Read nearby replica",
+                  "Cuts cross-AZ cost",
+                  "Slight staleness",
+                  "Safe trade"
+                ]
+              },
+              {
+                "title": "Unclean election",
+                "lines": [
+                  "Stale replica leads",
+                  "Availability bought",
+                  "Silent data loss",
+                  "Document it"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Watch",
+          "text": "`unclean.leader.election.enable=true` lets an out-of-sync replica take over. Committed records disappear without an error anywhere."
+        },
+        {
+          "type": "heading",
+          "text": "What ISR Means",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ISR = replicas, leader included, caught up with the leader.",
+            "Caught up = fetched within `replica.lag.time.max.ms`.",
+            "Default 30s. Time-based, not message-count-based.",
+            "Lagging follower is removed; rejoins at the leader's LEO."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Why Not Message Count",
+          "text": "Old `replica.lag.max.messages` was removed: a legitimate traffic burst falsely evicted perfectly healthy followers."
+        },
+        {
+          "type": "heading",
+          "text": "High Watermark"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "HW = min LEO across the current ISR.",
+            "Records at or below the HW are committed.",
+            "Only committed records are visible to consumers."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "L:108",
+              "F1:108",
+              "F2:105",
+              "HW=105"
+            ],
+            "caption": "ISR LEOs"
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The acks Table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "acks",
+            "Waits for",
+            "Loses on"
+          ],
+          "rows": [
+            [
+              "0",
+              "nothing",
+              "any failure"
+            ],
+            [
+              "1",
+              "leader log write",
+              "leader dies first"
+            ],
+            [
+              "all / -1",
+              "every ISR member",
+              "ISR shrunk to 1"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "`acks=0` is fire and forget: highest throughput, zero durability. `acks=all` is the same flag as `acks=-1`."
+        },
+        {
+          "type": "heading",
+          "text": "acks=all Is Not Enough"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "If ISR shrinks to just the leader, \"all\" means one replica.",
+            "`min.insync.replicas` is the guard, set per broker or topic.",
+            "ISR size below it: acks=all produces fail.",
+            "Error is `NotEnoughReplicasException`, not silent loss."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "ISR & The Durability Contract",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "replication.factor=3",
+            "min.insync.replicas=2   # refuse below 2 copies",
+            "acks=all                # producer side",
+            "enable.idempotence=true # default in 3.0+"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Picking min.insync"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "RF / min.isr",
+            "One broker down"
+          ],
+          "rows": [
+            [
+              "3 / 1",
+              "writes ok, durability theatre"
+            ],
+            [
+              "3 / 2",
+              "writes ok, 2 copies held"
+            ],
+            [
+              "3 / 3",
+              "topic stops accepting writes"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Always True",
+          "text": "Raising min.insync.replicas increases durability and decreases write availability. There is no setting where it does both."
+        },
+        {
+          "type": "heading",
+          "text": "Idempotent Producer"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Adds a producer id plus a per-partition sequence number.",
+            "Retries then cannot duplicate or reorder a record.",
+            "Requires `max.in.flight.requests.per.connection` <= 5.",
+            "Without it, in-flight > 1 plus retries can reorder."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Group Anatomy",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Group = consumers sharing a `group.id`.",
+            "The group owns every partition exactly once.",
+            "Group coordinator: a broker, tracks membership.",
+            "Group leader: a consumer, computes the assignment."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "member joins",
+              "coordinator",
+              "leader computes",
+              "assignment",
+              "fetch"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Rebalance Triggers"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A member joins the group.",
+            "A member leaves cleanly.",
+            "A member times out.",
+            "Topic metadata changes, e.g. new partitions."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Assignors"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Assignor",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "Range",
+              "contiguous per topic, skews"
+            ],
+            [
+              "RoundRobin",
+              "balanced, reshuffles all"
+            ],
+            [
+              "Sticky",
+              "keeps prior where possible"
+            ],
+            [
+              "CooperativeSticky",
+              "sticky + incremental"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Range skews when partition count is not divisible by consumer count. Sticky moves the minimum set of partitions."
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Eager (old)",
+                "lines": [
+                  "Everyone revokes all",
+                  "Stop-the-world pause",
+                  "Whole group idles"
+                ]
+              },
+              {
+                "title": "Cooperative KIP-429",
+                "lines": [
+                  "Only movers revoked",
+                  "Rest keep processing",
+                  "Two short rounds"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Kafka does not order your topic. It orders a partition, and your key is what decides which one a record lands in — everything else follows from that. 10 pages of field notes: log mechanics and offsets, murmur2 partitioning, why adding partitions is a one-way destructive door, RF vs ISR vs acks, cooperative rebalancing, compaction rules, and the failure modes that look like durability but aren't. Save it before your next topic design review.",
+    "hashtags": [
+      "#kafka",
+      "#apachekafka",
+      "#distributedsystems",
+      "#backendengineering",
+      "#dataengineering",
+      "#eventdriven",
+      "#systemdesign",
+      "#streamprocessing",
+      "#softwareengineering",
+      "#devnotes",
+      "#techhandbook",
+      "#codingnotes"
+    ]
+  }
+}

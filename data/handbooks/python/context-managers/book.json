@@ -1,0 +1,200 @@
+{
+  "title": "Python Context Managers: The with Statement Handbook",
+  "summary": "A complete study-notes guide to Python's context manager protocol — from the with statement and __enter__/__exit__ internals to contextlib decorators, suppress, ExitStack, and async with. Covers mechanics, real patterns, trade-offs, and the mistakes that silently leak resources.",
+  "chapters": [
+    {
+      "title": "Why Context Managers Exist",
+      "points": [
+        "Problem: resources (files, locks, sockets, DB connections) must be released even when code raises — forgetting release leaks handles",
+        "Naive `f = open('x'); f.read(); f.close()` skips close() if read() raises",
+        "try/finally is the correct manual fix: `f = open('x')` then `try: ... finally: f.close()` — verbose and repeated at every call site",
+        "Context manager = reusable try/finally packaged behind one keyword",
+        "`with open('x') as f:` guarantees close on normal exit, exception, `return`, `break`, and `continue`",
+        "RAII comparison: C++ destructors run at scope exit; Python has no deterministic scope destruction for locals, so `with` fills the gap",
+        "CPython refcounting often closes files early by accident — that is an implementation detail, not a guarantee; PyPy/Jython do not do it. Never rely on it",
+        "ResourceWarning: unclosed file <_io.TextIOWrapper ...> is the interpreter telling you a `with` was missing",
+        "Context managers manage more than resources: they manage *state pairs* — set/restore, enter/leave, begin/commit",
+        "PEP 343 introduced `with` in Python 2.5 (via `from __future__ import with_statement`), standard from 2.6"
+      ]
+    },
+    {
+      "title": "The with Statement: Syntax and Semantics",
+      "points": [
+        "Grammar: `with EXPR as VAR:` — EXPR evaluates to a context manager, VAR binds the *return value of __enter__*, not EXPR",
+        "`as VAR` is optional: `with lock:` is valid when __enter__ returns nothing useful",
+        "Multiple managers on one line: `with open('a') as a, open('b') as b:` — entered left-to-right, exited right-to-left",
+        "Nested `with` blocks are exactly equivalent to the comma form; the comma form does not lose exception safety if the second open() fails — the first is still closed",
+        "Parenthesized multi-line form (Python 3.10+, formally): `with (open('a') as a, open('b') as b):` — allows trailing commas and clean wrapping",
+        "VAR is a normal assignment target: tuple unpacking works — `with mgr() as (x, y):`",
+        "VAR survives the block — it is not scoped to the `with`; after `with open(p) as f:` the name `f` still exists but the file is closed",
+        "`with` is a statement, not an expression — cannot be used inline in a comprehension or lambda",
+        "Return inside `with` still runs __exit__ before the function actually returns",
+        "Common misread: `with a, b:` evaluates `b` only after `a.__enter__()` succeeds"
+      ]
+    },
+    {
+      "title": "The Protocol: __enter__ and __exit__",
+      "points": [
+        "A context manager is any object defining `__enter__(self)` and `__exit__(self, exc_type, exc_value, traceback)`",
+        "Both are looked up on the *type*, not the instance — assigning `obj.__enter__ = f` does not work (implicit special-method lookup)",
+        "__enter__ return value is what `as` binds; returning `self` is the most common choice",
+        "__exit__ receives `(None, None, None)` on clean exit, or the live exception triple on error",
+        "__exit__ returning a truthy value **suppresses** the exception; returning None/False lets it propagate",
+        "Accidental suppression bug: `return True` at the end of __exit__ swallows every error — return nothing instead",
+        "Minimal example: class Timer with `__enter__` recording `time.perf_counter()` and `__exit__` printing elapsed",
+        "typing: `contextlib.AbstractContextManager` is the ABC; it supplies a default `__enter__` returning self and requires __exit__",
+        "`__exit__` runs even for `GeneratorExit`, `KeyboardInterrupt`, and `SystemExit` (all BaseException) — cleanup code must be fast and non-throwing",
+        "Raising a *new* exception inside __exit__ replaces the original, which becomes `__context__` in the chained traceback",
+        "Type hint shape: `def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> bool | None:`"
+      ]
+    },
+    {
+      "title": "Desugaring: What with Compiles To",
+      "points": [
+        "`with EXPR as VAR: BODY` is roughly: `mgr = EXPR; exit = type(mgr).__exit__; value = type(mgr).__enter__(mgr)`",
+        "Then `try: VAR = value; BODY except: if not exit(mgr, *sys.exc_info()): raise` / `else: exit(mgr, None, None, None)`",
+        "Key detail: `__exit__` is fetched *before* `__enter__` runs — a manager missing __exit__ fails before any setup happens",
+        "If `__enter__` raises, `__exit__` is NEVER called — setup must be all-or-nothing inside __enter__",
+        "Bytecode: `BEFORE_WITH` (3.11+) pushes the exit callable and the enter result; `WITH_EXCEPT_START` invokes __exit__ on the error path",
+        "Older bytecode names: `SETUP_WITH` / `WITH_CLEANUP_START` / `WITH_CLEANUP_FINISH` (≤3.10) — same semantics",
+        "Inspect it yourself: `import dis; dis.dis(compile('with a as b: pass', '<s>', 'exec'))`",
+        "The manager object is kept alive on the stack for the whole block, so it cannot be garbage collected mid-body",
+        "The `as` binding happens *inside* the try, so a failing unpack still triggers __exit__",
+        "Because it desugars to try/finally, `with` costs roughly one extra attribute lookup + two calls — negligible vs I/O, measurable in tight loops"
+      ]
+    },
+    {
+      "title": "Writing Class-Based Context Managers",
+      "points": [
+        "Pattern: `__init__` stores config, `__enter__` acquires and returns the resource, `__exit__` releases it",
+        "Do work in __enter__ not __init__ so the object is reusable across multiple `with` blocks",
+        "Example — temporary directory chdir: save `os.getcwd()` in __enter__, `os.chdir(old)` in __exit__",
+        "Example — DB transaction: __enter__ opens transaction; __exit__ commits when exc_type is None, else rolls back and returns None to re-raise",
+        "Reentrancy: most managers are NOT reentrant; entering the same instance twice corrupts saved state (store state on a stack if you need it)",
+        "Reusable vs one-shot: `threading.Lock` is reusable; a generator-based manager is single-use",
+        "Add `__enter__`/`__exit__` to an existing class to make it `with`-able without changing its API",
+        "Subclass `contextlib.ContextDecorator` to let one manager also work as `@mgr` on a function",
+        "`contextlib.closing(obj)` wraps any object with a `.close()` — `with closing(urlopen(url)) as page:`",
+        "Idempotent release: guard __exit__ so a double-close does not raise",
+        "Store the exception in __exit__ for logging, but re-raise by returning None — never silently drop it"
+      ]
+    },
+    {
+      "title": "contextlib.contextmanager: The Generator Shortcut",
+      "points": [
+        "`@contextmanager` turns a single-yield generator into a context manager — no class needed",
+        "Shape: setup code, `yield value`, teardown code; the yielded value is bound by `as`",
+        "The generator must yield **exactly once** — zero yields raises `RuntimeError: generator didn't yield`, two raise `generator didn't stop`",
+        "Exceptions in the body are thrown *into* the generator at the yield point via `gen.throw()`",
+        "Therefore teardown after a bare `yield` is SKIPPED on exception — wrap in try/finally: `try: yield x finally: cleanup()`",
+        "To suppress an exception with @contextmanager, catch it around the yield and `return` (do not re-raise) — returning True does nothing here",
+        "Example: `@contextmanager def timed(label): t=perf_counter(); try: yield finally: print(label, perf_counter()-t)`",
+        "Objects from @contextmanager are single-use — reusing one raises `RuntimeError: generator didn't yield` on second entry",
+        "`@contextmanager` results are also decorators (they inherit ContextDecorator): `@timed('run')` on a function works, and each call makes a fresh generator",
+        "Trade-off: generator form is shorter and reads top-to-bottom; class form is reusable, reentrant, introspectable, and easier to subclass",
+        "`contextlib.nullcontext(x)` is the do-nothing manager for optional resources: `cm = open(p) if p else nullcontext(sys.stdout)`"
+      ]
+    },
+    {
+      "title": "Suppressing Exceptions Deliberately",
+      "points": [
+        "`contextlib.suppress(FileNotFoundError)` replaces the `try/except X: pass` boilerplate",
+        "`with suppress(FileNotFoundError): os.remove(path)` — clearer intent than a bare except",
+        "Accepts multiple types: `suppress(KeyError, IndexError)`",
+        "Suppression aborts the rest of the block — statements after the raising line do not run; it is not `continue`",
+        "Never use `suppress(Exception)` as a catch-all; it hides bugs and makes debugging opaque",
+        "suppress catches subclasses too — `suppress(OSError)` also swallows FileNotFoundError and PermissionError",
+        "It cannot suppress exceptions raised outside its block, and it does not retry",
+        "Under the hood it is a class whose __exit__ returns `exc_type is not None and issubclass(exc_type, self._exceptions)`",
+        "`suppress` is reentrant and reusable — safe to make one instance a module constant",
+        "Comparison row: try/except lets you log or recover; suppress only discards — choose suppress when there is genuinely nothing to do",
+        "Python 3.12+: suppress also handles matching exceptions inside an `ExceptionGroup`, re-raising the unmatched remainder"
+      ]
+    },
+    {
+      "title": "ExitStack: Dynamic and Variable-Count Cleanup",
+      "points": [
+        "Problem ExitStack solves: number of managers is unknown until runtime — you cannot write a fixed `with a, b, c:`",
+        "`with ExitStack() as stack: files = [stack.enter_context(open(p)) for p in paths]` — all closed in reverse order",
+        "`stack.enter_context(cm)` enters a manager and registers its __exit__; returns the __enter__ value",
+        "`stack.callback(fn, *args, **kwargs)` registers a plain function to run at exit — no manager needed",
+        "`stack.push(exit_callable)` registers something with an __exit__-compatible signature that can inspect/suppress the exception",
+        "`stack.pop_all()` transfers ownership to a new stack — the classic all-or-nothing pattern: build resources, then `stack.pop_all()` on success so cleanup is deferred to the caller",
+        "`stack.close()` unwinds everything immediately without leaving a `with` block",
+        "Unwinding is LIFO, mirroring nested `with` semantics exactly",
+        "Errors during unwinding are chained via `__context__`, so no cleanup failure is lost",
+        "`contextlib.AsyncExitStack` is the async twin: `enter_async_context`, `push_async_exit`, `push_async_callback`",
+        "Use case: optional resources — `if verbose: stack.enter_context(logging_ctx())` with no nesting explosion",
+        "Compare: `ExitStack` = runtime-variable, `with a, b` = compile-time-fixed"
+      ]
+    },
+    {
+      "title": "Async Context Managers",
+      "points": [
+        "Protocol: `__aenter__` and `__aexit__`, both coroutines, driven by `async with`",
+        "`async with` is only legal inside an `async def` — using it in a sync function is a SyntaxError",
+        "Same signature rules: `__aexit__(self, exc_type, exc, tb)` and a truthy return suppresses",
+        "`@contextlib.asynccontextmanager` builds one from an `async def` generator with a single `yield`",
+        "Example: `async with aiohttp.ClientSession() as session:` and `async with session.get(url) as resp:`",
+        "`asyncio.Lock`, `asyncio.Semaphore`, and `asyncio.TaskGroup` are all async context managers",
+        "`async with` supports the comma form and `AsyncExitStack` for variable counts",
+        "Cleanup in __aexit__ can await — that is the whole point vs sync __exit__ which cannot",
+        "Cancellation: `asyncio.CancelledError` reaches __aexit__ like any exception; use `asyncio.shield` or a `finally` if teardown must complete",
+        "`contextlib.aclosing(obj)` calls `await obj.aclose()` — the async-generator-safe counterpart of `closing`",
+        "Mixing rule: an object may implement both sync and async protocols, but `with` on an async-only manager raises `TypeError: object does not support the context manager protocol`",
+        "`AbstractAsyncContextManager` is the ABC for typing and isinstance checks"
+      ]
+    },
+    {
+      "title": "Standard Library Managers You Should Know",
+      "points": [
+        "`open(...)` — the canonical file manager; __enter__ returns the file object",
+        "`threading.Lock` / `RLock` / `Condition` / `Semaphore` — `with lock:` acquires and always releases",
+        "`decimal.localcontext()` — scoped precision/rounding changes that auto-restore",
+        "`tempfile.TemporaryDirectory()` and `NamedTemporaryFile()` — auto-deleted on exit",
+        "`unittest.mock.patch(...)` — patch applied inside the block, restored after",
+        "`pytest.raises(ValueError)` — asserts the block raises; `warns` and `deprecated_call` follow the same shape",
+        "`os.scandir()` — closes the directory iterator deterministically",
+        "`socket.socket()`, `sqlite3.connect()` (commits/rolls back — note: does NOT close the connection), `zipfile.ZipFile`, `subprocess.Popen`",
+        "`contextlib.redirect_stdout(buf)` / `redirect_stderr(buf)` — capture printed output",
+        "`contextlib.chdir(path)` (3.11+) — scoped working-directory change",
+        "`warnings.catch_warnings()` — scoped warning filters; pair with `simplefilter('error')` in tests",
+        "`multiprocessing.Pool` and `concurrent.futures.Executor` — `with` calls shutdown/join for you"
+      ]
+    },
+    {
+      "title": "Common Mistakes and Gotchas",
+      "points": [
+        "`with open(a), open(b):` where the second open raises — safe; but `with open(a) as f: ...` then using `f` after the block — closed file, ValueError: I/O operation on closed file",
+        "Returning `True` from __exit__ by habit — silently eats every exception in the block",
+        "Bare `yield` in an @contextmanager without try/finally — teardown skipped whenever the body raises",
+        "Reusing a single @contextmanager instance twice: `cm = mgr(); with cm: ...; with cm: ...` raises RuntimeError",
+        "Doing acquisition in `__init__` instead of `__enter__` — resource leaks if the `with` is never entered",
+        "Partial setup in __enter__ that raises after acquiring resource #1 — __exit__ never runs, #1 leaks; use an internal ExitStack",
+        "`with suppress(Exception):` around a large block — hides real failures and skips the rest of the block silently",
+        "Assuming `with` swallows exceptions — it does not; it only guarantees cleanup",
+        "Long-lived `with` around a whole function when you only need the lock for two lines — hurts concurrency",
+        "`sqlite3` connection as a manager commits but does not close — wrap with `closing()` if you also need the close",
+        "Forgetting `await` semantics: `with` on an async manager, or `async with` on a sync one — both TypeError",
+        "Nesting deeply instead of using the comma form or ExitStack — right-drift with no added safety"
+      ]
+    },
+    {
+      "title": "Choosing an Approach: Comparison and Summary",
+      "points": [
+        "try/finally — most explicit, zero abstraction, but duplicated at every call site; use for one-off cleanup",
+        "Class manager — reusable, reentrant if written for it, subclassable, best for library-facing APIs and stateful managers",
+        "@contextmanager — shortest for one-off, linear setup/teardown; single-use, harder to subclass",
+        "ExitStack — the only option when the count of resources is dynamic, or for all-or-nothing construction via pop_all()",
+        "suppress — narrow, intentional exception discarding only",
+        "Decision rule: fixed and few → `with a, b`; runtime-variable → ExitStack; simple pair of steps → @contextmanager; needs state or reuse → class",
+        "Cost: `with` adds ~2 method calls per block; irrelevant against any I/O, worth measuring only in hot inner loops",
+        "Cleanup order is always LIFO across every mechanism — nested with, comma form, and ExitStack agree",
+        "Contract to remember: __enter__ raises → no __exit__; __exit__ always runs otherwise; truthy __exit__ return = suppression",
+        "Async mirrors sync one-for-one: `__aenter__`/`__aexit__`, `@asynccontextmanager`, `AsyncExitStack`, `aclosing`",
+        "Design guidance: make managers do one thing, keep __exit__ non-throwing and idempotent, and never suppress by default",
+        "Closing takeaway: `with` is not just for files — it is Python's general mechanism for guaranteeing that a paired action completes"
+      ]
+    }
+  ]
+}

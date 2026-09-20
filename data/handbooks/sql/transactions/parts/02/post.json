@@ -1,0 +1,1323 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "SQL TRANSACTIONS & ISOLATION LEVELS — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Deadlocks: Detect, Cause, Cure",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. InnoDB Gap Locks",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- idx has 10, 20, 30",
+            "SELECT * FROM t",
+            "  WHERE id BETWEEN 12 AND 25",
+            "  FOR UPDATE;  -- locks (10,20]",
+            "-- and gap (20,30): no INSERT 22"
+          ],
+          "note": "next-key = record + gap before it"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT id FROM jobs",
+            "WHERE state='ready'",
+            "ORDER BY id LIMIT 1",
+            "FOR UPDATE SKIP LOCKED;",
+            "-- NOWAIT: error 55P03 instead"
+          ],
+          "note": "SKIP LOCKED = lock-free job queue"
+        },
+        {
+          "type": "heading",
+          "text": "1. The Minimal Example",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- T1            -- T2",
+            "UPDATE acct A;  UPDATE acct B;",
+            "UPDATE acct B;  UPDATE acct A;",
+            "-- T1 waits B   -- T2 waits A"
+          ],
+          "note": "opposite order = cycle"
+        },
+        {
+          "type": "heading",
+          "text": "2. Detection Mechanism",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Engine builds the __wait-for graph__ of blocked transactions",
+            "Finds a cycle, picks a **victim**, rolls it back",
+            "Postgres: checks only after ==deadlock_timeout== (1s default)",
+            "InnoDB: detects near-instantly on lock request",
+            "Victim = least work done / fewest undo records"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Engine",
+            "Signal",
+            "Code"
+          ],
+          "rows": [
+            [
+              "Postgres",
+              "deadlock detected",
+              "40P01"
+            ],
+            [
+              "MySQL",
+              "Deadlock found...",
+              "1213"
+            ],
+            [
+              "MySQL wait",
+              "lock wait timeout",
+              "1205"
+            ],
+            [
+              "SQL Server",
+              "chosen as victim",
+              "1205"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "3. Cure: Order, Shrink, Retry",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- always low id first",
+            "UPDATE acct WHERE id = LEAST(a,b);",
+            "UPDATE acct WHERE id = GREATEST(a,b);",
+            "-- sort IDs before the loop too"
+          ],
+          "note": "consistent order breaks the cycle"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Sort** the rows: same order everywhere, no cycle possible",
+            "**Shrink**: no HTTP call, message publish or user think-time inside",
+            "Index the WHERE — a __table scan__ locks every row it reads",
+            "Timeouts (`lock_timeout`, `innodb_lock_wait_timeout`) cap *waits*, not cycles"
+          ],
+          "style": "check"
+        }
+      ],
+      "subtitle": "Cycles in the wait-for graph"
+    },
+    {
+      "page_title": "Deadlock Triage & Serializable's Two Faces",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Deadlock vs Wait vs Livelock",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Cause",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "Deadlock",
+              "cycle",
+              "order + retry"
+            ],
+            [
+              "Lock wait",
+              "one hot row",
+              "shorten txn"
+            ],
+            [
+              "Livelock",
+              "all retry at once",
+              "jittered backoff"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Key rule",
+          "text": "Deadlocks are a **retry** case, not a crash: catch 40P01 / 1213, ROLLBACK, sleep with jitter, replay the whole transaction. Page 8 does the same for 40001."
+        },
+        {
+          "type": "sidebox",
+          "title": "Reading the evidence",
+          "items": [
+            "MySQL: `SHOW ENGINE INNODB STATUS`",
+            "section 'LATEST DETECTED DEADLOCK'",
+            "Postgres: server log deadlock DETAIL",
+            "SQL Server: XML deadlock graph (XE)"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Treating a deadlock as a fatal bug — it is **expected** under concurrency",
+            "Retrying only the failed statement, not the whole transaction",
+            "Raising `deadlock_timeout` to 'fix' it — hides the wait, keeps the cycle",
+            "Retrying instantly with no jitter — the same two collide again"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "1. Two Ways to Be Serializable",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "__SERIALIZABLE__ is a promise about the ==result==, not about the mechanism. Two engines keep it two opposite ways.",
+          "frame": "none"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Style",
+            "How",
+            "Failure mode"
+          ],
+          "rows": [
+            [
+              "Locking (strict 2PL)",
+              "range/next-key locks",
+              "blocks, deadlock"
+            ],
+            [
+              "SSI (optimistic)",
+              "tracks rw-deps",
+              "**aborts at COMMIT**"
+            ]
+          ],
+          "frame": "solid"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "ERROR:  could not serialize",
+            "  access due to read/write",
+            "  dependencies among transactions",
+            "SQLSTATE 40001"
+          ],
+          "note": "arrives at COMMIT, not at the SELECT"
+        },
+        {
+          "type": "paragraph",
+          "text": "Example : cache `bal` from attempt 1 and reuse it in attempt 2 and the ==write skew== comes straight back — you paid for SERIALIZABLE and got nothing.",
+          "frame": "dashed",
+          "ink": "pink"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "SSI, retries, engines"
+    },
+    {
+      "page_title": "SSI Internals & the 40001 Retry Loop",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "2. Mechanism: rw-Dependencies",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Postgres takes __SIREAD__ predicate locks on what you read",
+            "T1 reads what T2 later writes = one ==rw-edge==",
+            "Two rw-edges in a cycle = **dangerous structure**",
+            "Engine kills one transaction, does not wait"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "heading",
+          "text": "3. Example: The Retry Loop",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "for n in range(5):",
+            "  try:",
+            "    with db.begin():",
+            "      bal = q(\"SELECT ...\")  # re-read!",
+            "      q(\"INSERT ...\", bal)",
+            "    break",
+            "  except Serialization:",
+            "    sleep(0.05 * 2**n * random())"
+          ],
+          "note": "replay whole transaction, reads included"
+        },
+        {
+          "type": "heading",
+          "text": "4. Engine Comparison",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Engine",
+            "Level",
+            "Reality"
+          ],
+          "rows": [
+            [
+              "{icon:postgresql} PG",
+              "SERIALIZABLE",
+              "SSI, 40001 aborts"
+            ],
+            [
+              "{icon:mysql} MySQL",
+              "SERIALIZABLE",
+              "adds `LOCK IN SHARE MODE`"
+            ],
+            [
+              "SQL Server",
+              "SNAPSHOT",
+              "optimistic, update conflict"
+            ],
+            [
+              "SQL Server",
+              "SERIALIZABLE",
+              "**range locks**, blocking"
+            ]
+          ],
+          "highlightRow": 1,
+          "frame": "solid"
+        },
+        {
+          "type": "sidebox",
+          "title": "Price of SSI",
+          "items": [
+            "Predicate-lock bookkeeping per read",
+            "**False positives**: aborts on safe pairs",
+            "Abort rate climbs fast with contention",
+            "Long transactions hold SIREAD locks"
+          ],
+          "ink": "orange"
+        },
+        {
+          "type": "heading",
+          "text": "5. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`try/catch` that logs 40001 instead of retrying",
+            "Retrying forever — no attempt cap, no jitter",
+            "Reusing values read in the failed attempt",
+            "SERIALIZABLE everywhere when one query needed it"
+          ],
+          "style": "cross",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "Two strategies for the __lost update__ of page 3: ==lock first== (pessimistic) or ==check at write time== (optimistic).",
+          "frame": "dashed",
+          "ink": "green"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "SSI, retries, engines"
+    },
+    {
+      "page_title": "Locking vs Versioning: The Two Patterns",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`SELECT ... FOR UPDATE` — one hot row",
+            "__UNIQUE constraint__ — no duplicate inserts",
+            "`UPDATE t SET b=b-100 WHERE b>=100`",
+            "SERIALIZABLE only for **write-skew** rules"
+          ],
+          "style": "check",
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The rule",
+          "text": "SERIALIZABLE without a retry loop is weaker than READ COMMITTED — it just fails louder. Earn it on invariants: balances, bookings, on-call rosters."
+        },
+        {
+          "type": "heading",
+          "text": "1. Pessimistic: lock first",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "BEGIN;",
+            "SELECT qty FROM stock",
+            "  WHERE id=7 FOR UPDATE;  -- X lock",
+            "UPDATE stock SET qty=qty-1",
+            "  WHERE id=7;",
+            "COMMIT;  -- lock released here"
+          ],
+          "note": "lock held for whole transaction"
+        },
+        {
+          "type": "heading",
+          "text": "2. Optimistic: verify at write",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- read: qty=5, version=12",
+            "UPDATE stock SET qty=4,",
+            "  version=13",
+            "WHERE id=7 AND version=12;",
+            "-- rowcount 0 = someone won,",
+            "-- re-read and retry"
+          ],
+          "note": "rowcount is the whole check"
+        },
+        {
+          "type": "heading",
+          "text": "3. Same two users, both ways",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Pessimistic",
+            "Optimistic"
+          ],
+          "rows": [
+            [
+              "A reads",
+              "locks row",
+              "v=12, free"
+            ],
+            [
+              "B reads",
+              "**blocks**",
+              "v=12, free"
+            ],
+            [
+              "A writes",
+              "qty 5→4",
+              "v→13, 1 row"
+            ],
+            [
+              "B writes",
+              "sees 4, →3",
+              "**0 rows**, retry"
+            ]
+          ],
+          "highlightRow": 3,
+          "frame": "solid"
+        },
+        {
+          "type": "heading",
+          "text": "4. Compare-and-set: no read",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "UPDATE accounts",
+            "SET balance = balance - 100",
+            "WHERE id=1 AND balance>=100;",
+            "-- 0 rows = insufficient funds"
+          ],
+          "note": "one statement, no race window"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Rule of thumb",
+          "text": "Few hot rows, everyone fighting → ==pessimistic==. Many rows, conflicts rare → ==optimistic==. Retry cost above lock cost flips the choice."
+        },
+        {
+          "type": "heading",
+          "text": "1. Defaults Per Engine",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Nobody ships the same __default isolation level__. Your code is portable; its ==concurrency behaviour is not==.",
+          "frame": "dashed",
+          "ink": "green"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Two ways to win a race"
+    },
+    {
+      "page_title": "Trade-offs, ORM Traps & Advisory Locks",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Trade-offs",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Pessimistic",
+            "Optimistic"
+          ],
+          "rows": [
+            [
+              "High contention",
+              "**wins**",
+              "retry storm"
+            ],
+            [
+              "Rare conflict",
+              "wasted waits",
+              "**wins**"
+            ],
+            [
+              "Lock hold",
+              "read→commit",
+              "write only"
+            ],
+            [
+              "Deadlock risk",
+              "real",
+              "near zero"
+            ],
+            [
+              "Reader impact",
+              "blocks FOR UPDATE",
+              "none"
+            ]
+          ],
+          "frame": "solid"
+        },
+        {
+          "type": "heading",
+          "text": "6. ORM traps",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Hibernate `@Version`: adds `AND version=?`, throws on 0 rows",
+            "Django `select_for_update()`: real `FOR UPDATE`, needs `atomic()`",
+            "Rails `with_lock`: opens transaction **and** `lock!` reloads row",
+            "`optimistic_locking` silently no-ops without a version column"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "7. Locks outside the row model",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`pg_advisory_xact_lock(key)`: auto-released at COMMIT",
+            "`GET_LOCK('job',10)` in MySQL: session-scoped, **survives** rollback",
+            "Use for cron singletons, no row to lock on",
+            "Hash a string key to bigint; collisions are silent"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "sidebox",
+          "title": "Last resort: idempotency",
+          "items": [
+            "Client sends `Idempotency-Key` header",
+            "`UNIQUE(idempotency_key)` on the table",
+            "Duplicate INSERT fails 23505 → return stored result",
+            "Only the constraint truly stops the retry"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Pick one, then commit to it",
+          "text": "Pessimistic buys you blocking and deadlocks; optimistic buys you a __retry loop you must actually write__. CAS beats both when the whole update fits one statement."
+        },
+        {
+          "type": "heading",
+          "text": "2. Two Quirks That Bite",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- MySQL RR, snapshot at T0",
+            "SELECT bal FROM acct WHERE id=1;",
+            "-- 100 (snapshot)",
+            "SELECT bal FROM acct WHERE id=1",
+            "  FOR UPDATE;  -- 250 (latest!)"
+          ],
+          "note": "locking reads skip the snapshot"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Two ways to win a race"
+    },
+    {
+      "page_title": "Engine Differences & Trade-offs",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Engine",
+            "Default",
+            "Reads block?"
+          ],
+          "rows": [
+            [
+              "{icon:postgresql} Postgres",
+              "READ COMMITTED",
+              "No (MVCC)"
+            ],
+            [
+              "{icon:mysql} InnoDB",
+              "REPEATABLE READ",
+              "No (MVCC)"
+            ],
+            [
+              "SQL Server",
+              "READ COMMITTED",
+              "**Yes** (S locks)"
+            ],
+            [
+              "Oracle",
+              "READ COMMITTED",
+              "No (undo)"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "MySQL RR: `FOR UPDATE` sees ==latest committed==, not your snapshot.",
+            "Postgres RC: blocked UPDATE **re-evaluates** its `WHERE` on the new row version.",
+            "So `SET bal=bal-100 WHERE bal>=100` stays safe after the blocker commits.",
+            "But a stale value you read earlier does __not__ get re-checked."
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Highest-value knob",
+          "text": "SQL Server: `ALTER DATABASE db SET READ_COMMITTED_SNAPSHOT ON` turns the blocking default into ==versioned, non-blocking reads== — one setting, most of the win."
+        },
+        {
+          "type": "heading",
+          "text": "3. What Isolation Costs",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "You buy",
+            "You pay"
+          ],
+          "rows": [
+            [
+              "Blocking correctness",
+              "Lock waits, queueing"
+            ],
+            [
+              "Snapshot reads",
+              "Version-store I/O"
+            ],
+            [
+              "Serializable (SSI)",
+              "Aborts + retry work"
+            ],
+            [
+              "Any level",
+              "Longer txn = worse"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "diagram",
+          "kind": "chain",
+          "spec": {
+            "title": "Why long transactions hurt everything",
+            "steps": [
+              {
+                "text": "Oldest snapshot pinned",
+                "note": "VACUUM/purge stalls, bloat grows",
+                "ink": "orange"
+              },
+              {
+                "text": "Replication lag climbs",
+                "note": "replica waits or cancels queries"
+              },
+              {
+                "text": "Locks held longer",
+                "note": "blocked DDL, ALTER queues behind you",
+                "ink": "red"
+              },
+              {
+                "text": "Bigger deadlock window",
+                "note": "more cycles in the wait-for graph",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SQL Server: join `sys.dm_exec_requests` on `blocking_session_id` for the chain.",
+            "Chase the __head__ of the blocking chain, never a victim.",
+            "Postgres: `state='idle in transaction'` is the long-txn smoking gun."
+          ],
+          "style": "check",
+          "ink": "blue"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Defaults, cost, tuning"
+    },
+    {
+      "page_title": "Measuring Contention & the Lost Update",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Benchmark rule",
+          "text": "Plot **abort/retry rate** beside throughput. Retries hide as ==latency, not errors== — a green error dashboard with p99 climbing is a serialization problem."
+        },
+        {
+          "type": "sidebox",
+          "title": "Connection pools leak state",
+          "items": [
+            "Borrower left mid-txn returns the conn __dirty__.",
+            "Next borrower inherits its locks + `SET TRANSACTION` level.",
+            "Symptom: random isolation, ghost blockers on idle apps.",
+            "Fix: `ROLLBACK` on release; reset session vars."
+          ],
+          "ink": "orange"
+        },
+        {
+          "type": "heading",
+          "text": "4. Replicas Are Not Isolation",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Read replica = a cheap ==consistent snapshot== for reports.",
+            "Price: __replication lag__ — you read the past, not a level.",
+            "Write-then-read on a replica returns the pre-write row.",
+            "Never route a read-modify-write through a replica."
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "5. Measure, Don't Guess",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- PG: who waits, on what",
+            "SELECT wait_event_type, wait_event",
+            "FROM pg_stat_activity;",
+            "-- MySQL: avg lock wait ms",
+            "SHOW STATUS LIKE",
+            "'Innodb_row_lock_time_avg';"
+          ],
+          "note": "SQL Server: sys.dm_exec_requests"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every bug below is __real production__ code that passed review. Each breaks a rule from pages ==3-10==.",
+          "ink": "black"
+        },
+        {
+          "type": "heading",
+          "text": "1. Application-Side Race",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- WRONG: read-modify-write",
+            "SELECT bal FROM acct WHERE id=1;",
+            "-- app computes bal-100",
+            "UPDATE acct SET bal=900 WHERE id=1;"
+          ],
+          "note": "no version check = lost update"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fix: `UPDATE ... SET bal=bal-100` in **one** statement",
+            "Or add `AND version=?` and check row count",
+            "Or `SELECT ... FOR UPDATE` before the read"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Eleven ways to lose data"
+    },
+    {
+      "page_title": "Duplicate Myths, Swallowed Errors & Side Effects",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. Duplicate-Prevention Myths",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Belief",
+            "Reality"
+          ],
+          "rows": [
+            [
+              "`SELECT` then `INSERT`",
+              "phantom slips between"
+            ],
+            [
+              "`IF NOT EXISTS`",
+              "same race, no lock"
+            ],
+            [
+              "App-level mutex",
+              "dies with the pod"
+            ],
+            [
+              "`UNIQUE` constraint",
+              "**only** real guard"
+            ]
+          ],
+          "highlightRow": 3
+        },
+        {
+          "type": "heading",
+          "text": "2. The Open-Transaction Sins",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "HTTP call inside `BEGIN` — locks held for the timeout",
+            "Message publish, then broker is slow — snapshot pins",
+            "User prompt mid-transaction — think-time is minutes",
+            "Long analytics `SELECT` in a write txn — blocks VACUUM"
+          ],
+          "style": "cross"
+        },
+        {
+          "type": "heading",
+          "text": "4. Error-Handling Failures",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "try:",
+            "    tx.commit()",
+            "except SerializationError:",
+            "    log.warn('oops')   # SWALLOWED"
+          ],
+          "note": "work silently vanished — must retry"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Bite"
+          ],
+          "rows": [
+            [
+              "Swallow 40001",
+              "silent data loss"
+            ],
+            [
+              "SERIALIZABLE shotgun",
+              "aborts, no retry, low TPS"
+            ],
+            [
+              "Retry, no idem key",
+              "**double charge**"
+            ],
+            [
+              "ORM defaults untraced",
+              "txn ends early"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Outside-the-DB Damage",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "BEGIN",
+                "ink": "blue"
+              },
+              {
+                "text": "send email",
+                "sub": "gone forever",
+                "ink": "red"
+              },
+              {
+                "text": "enqueue job",
+                "sub": "consumer runs",
+                "ink": "red"
+              },
+              {
+                "text": "ROLLBACK",
+                "sub": "DB clean, world dirty",
+                "ink": "purple"
+              }
+            ]
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Example : ROLLBACK undoes rows, __not__ SMTP, S3 writes or Kafka. Use the {pink:outbox pattern} — write the intent as a row, publish after commit.",
+          "frame": "dashed",
+          "ink": "pink"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The rule",
+          "text": "Transactions stay short, touch only the DB, and every one that can raise 40001 sits inside a retry loop with an idempotency key."
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Eleven ways to lose data"
+    },
+    {
+      "page_title": "Cheat Sheet: ACID, Anomalies & Syntax",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Timeouts and DDL",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Missing piece"
+          ],
+          "rows": [
+            [
+              "`lock_timeout` only",
+              "runaway query still blocks"
+            ],
+            [
+              "`statement_timeout` too",
+              "caps the runaway"
+            ],
+            [
+              "MySQL DDL in txn",
+              "implicit **COMMIT**"
+            ],
+            [
+              "Postgres DDL",
+              "rolls back fine"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "heading",
+          "text": "1. ACID, One Line Each",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Atomicity== all statements land, or **none** do",
+            "==Consistency== only __valid states__ ever commit",
+            "==Isolation== runs as if it were **alone**",
+            "==Durability== committed work survives a `crash`"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Anomaly Matrix (ANSI)",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Dirty",
+            "Non-rep",
+            "Phantom"
+          ],
+          "rows": [
+            [
+              "READ UNCOMMITTED",
+              "yes",
+              "yes",
+              "yes"
+            ],
+            [
+              "READ COMMITTED",
+              "no",
+              "yes",
+              "yes"
+            ],
+            [
+              "REPEATABLE READ",
+              "no",
+              "no",
+              "yes"
+            ],
+            [
+              "SERIALIZABLE",
+              "no",
+              "no",
+              "**no**"
+            ]
+          ],
+          "highlightRow": 3,
+          "frame": "solid"
+        },
+        {
+          "type": "sidebox",
+          "title": "3. Engine Defaults",
+          "items": [
+            "{icon:postgresql} Postgres — ==READ COMMITTED==",
+            "{icon:mysql} MySQL InnoDB — ==REPEATABLE READ==",
+            "SQL Server — READ COMMITTED (locking)",
+            "Oracle — READ COMMITTED"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "4. Syntax You Retype Daily",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "BEGIN;",
+            "SET TRANSACTION ISOLATION",
+            "  LEVEL SERIALIZABLE;",
+            "SAVEPOINT sp;   -- partial undo",
+            "ROLLBACK TO sp; -- keeps txn open",
+            "COMMIT;"
+          ],
+          "note": "SET must precede first query"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "One-page revision"
+    },
+    {
+      "page_title": "Cheat Sheet: Locks, Error Codes & Level Choice",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Locking Reads",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT .. FOR UPDATE;   -- X lock",
+            "SELECT .. FOR SHARE;    -- S lock",
+            "SELECT .. FOR UPDATE NOWAIT;",
+            "SELECT .. FOR UPDATE SKIP LOCKED;"
+          ],
+          "note": "SKIP LOCKED = queue workers"
+        },
+        {
+          "type": "heading",
+          "text": "6. Retry These Codes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Engine",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "40001",
+              "PG / std",
+              "serialization fail"
+            ],
+            [
+              "40P01",
+              "Postgres",
+              "deadlock detected"
+            ],
+            [
+              "1213",
+              "MySQL",
+              "deadlock, victim"
+            ],
+            [
+              "1205",
+              "MySQL",
+              "lock wait timeout"
+            ]
+          ],
+          "frame": "solid"
+        },
+        {
+          "type": "heading",
+          "text": "7. Diagnose + Timeout Knobs",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "tables",
+          "spec": {
+            "tables": [
+              {
+                "title": "Look here",
+                "headers": [
+                  "Engine",
+                  "Command"
+                ],
+                "rows": [
+                  [
+                    "PG",
+                    "pg_locks + pg_stat_activity"
+                  ],
+                  [
+                    "MySQL",
+                    "SHOW ENGINE INNODB STATUS"
+                  ],
+                  [
+                    "MSSQL",
+                    "sys.dm_tran_locks"
+                  ],
+                  [
+                    "Any",
+                    "EXPLAIN: shrink lock footprint"
+                  ]
+                ]
+              },
+              {
+                "title": "Cap the wait",
+                "headers": [
+                  "Knob",
+                  "Caps"
+                ],
+                "rows": [
+                  [
+                    "lock_timeout",
+                    "one lock wait"
+                  ],
+                  [
+                    "statement_timeout",
+                    "one statement"
+                  ],
+                  [
+                    "idle_in_transaction_",
+                    "session_timeout"
+                  ],
+                  [
+                    "innodb_lock_wait_",
+                    "timeout (MySQL)"
+                  ]
+                ]
+              }
+            ],
+            "arrow": false
+          }
+        },
+        {
+          "type": "heading",
+          "text": "8. Which Level? Decide",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Isolation Decision",
+            "rows": [
+              [
+                "a"
+              ],
+              [
+                "b"
+              ],
+              [
+                "c",
+                "d"
+              ],
+              [
+                "e"
+              ]
+            ],
+            "nodes": {
+              "a": {
+                "text": "Start: READ COMMITTED",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "b": {
+                "text": "Invariant across rows?",
+                "shape": "diamond",
+                "ink": "blue"
+              },
+              "c": {
+                "text": "No: hot row",
+                "shape": "box"
+              },
+              "d": {
+                "text": "Yes: write skew risk",
+                "shape": "box",
+                "ink": "red"
+              },
+              "e": {
+                "text": "c: FOR UPDATE or CAS | d: SERIALIZABLE + retry",
+                "shape": "box",
+                "ink": "purple"
+              }
+            },
+            "edges": [
+              {
+                "from": "a",
+                "to": "b"
+              },
+              {
+                "from": "b",
+                "to": "c",
+                "label": "no"
+              },
+              {
+                "from": "b",
+                "to": "d",
+                "label": "yes"
+              },
+              {
+                "from": "c",
+                "to": "e"
+              },
+              {
+                "from": "d",
+                "to": "e"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "9. Five Habits",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep transactions **short** — open, write, commit",
+            "__Order writes__ the same way everywhere (sort IDs)",
+            "Retry on `40001` / `40P01`, replay reads too",
+            "Never wait on ==humans or networks== inside a txn",
+            "Push invariants into `UNIQUE` / `CHECK` constraints"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The whole book in one rule",
+          "text": "Correctness first at ==READ COMMITTED + explicit locks==; raise to SERIALIZABLE only with a **retry loop** behind it."
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "One-page revision"
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of SQL TRANSACTIONS & ISOLATION LEVELS. Your app looked fine in testing, then two users hit checkout at the same time and the balance went wrong. That gap is isolation levels — READ COMMITTED, snapshots, locks, and the anomalies each one still lets through. 12 pages of handwritten notes on ACID, MVCC, deadlocks, and what Postgres, MySQL, and SQL Server actually do differently.",
+    "hashtags": [
+      "#sql",
+      "#database",
+      "#postgresql",
+      "#mysql",
+      "#backend",
+      "#backenddeveloper",
+      "#softwareengineering",
+      "#codenewbie",
+      "#datastructures",
+      "#systemdesign",
+      "#programming",
+      "#techstudy"
+    ]
+  },
+  "spilledFrom": 1
+}

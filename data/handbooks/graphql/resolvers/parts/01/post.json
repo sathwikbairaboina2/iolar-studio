@@ -1,0 +1,898 @@
+{
+  "brand": "iolar",
+  "template": "terminal-dark",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "GRAPHQL INTERNALS",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "What A Resolver Actually Is",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What It Is",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Function attached to one field of one type",
+            "Returns the value for that field, nothing else",
+            "It resolves a FIELD — 'User resolver' is loose talk",
+            "One field, one job: not middleware, not a controller",
+            "Called once per parent object per request"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Signature"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// graphql-js, always positional",
+            "resolve(parent, args, context, info)",
+            "// four slots, never keyword args"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Resolver Map"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const resolvers = {",
+            "  Query: { hello: () => 'world' },",
+            "  User: { posts: fetchPosts },",
+            "}  // keyed: type name, then field"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "paragraph",
+          "text": "The SDL declares shape and types; the map supplies behaviour. Two layers, glued at `makeExecutableSchema`/`buildSchema` time."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Query`, `Mutation`, `Subscription` are plain object types",
+            "Their fields are entry points — nothing more special",
+            "SDL args (`user(id: ID!)`) arrive coerced and validated",
+            "A field with no resolver is legal, not an error"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What May Come Back"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Return",
+            "Executor does"
+          ],
+          "rows": [
+            [
+              "scalar or enum",
+              "serialize, chain ends"
+            ],
+            [
+              "object",
+              "becomes the child parent"
+            ],
+            [
+              "array",
+              "complete each item"
+            ],
+            [
+              "null or throw",
+              "branch stops"
+            ],
+            [
+              "Promise",
+              "awaited, then descend"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "A Depth-First Walk"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "Query.user",
+              "User.posts",
+              "Post.title",
+              "serialize"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Execution walks the query AST, one call per node",
+            "Leaf fields end the chain — no children visited",
+            "Returning a Promise is normal and idiomatic"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "No Resolver? Still Fine",
+          "text": "A field missing from the map falls through to `defaultFieldResolver`, which reads `parent[fieldName]`. Silence, not an error."
+        },
+        {
+          "type": "heading",
+          "text": "The parent Slot",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The value returned by the PARENT field's resolver",
+            "Also called `root`, `source`, `obj` — same thing",
+            "The whole chain, handed to you in one argument",
+            "For top-level `Query` fields it is `rootValue`, usually `undefined`"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "The Four Arguments",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The args Slot"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Coerced to schema types before your code runs",
+            "Defaults already applied by the executor",
+            "`null` is distinguishable from an absent key",
+            "Only args declared on THAT field appear",
+            "Undeclared args fail validation before execution"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "context, One Per Request"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One object, shared by every resolver in that request",
+            "Holds db client, authed user, dataloaders, headers",
+            "Built by the integration (Apollo/Yoga `context` function)",
+            "Never a module-level global — that leaks across users"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "info, Your Position"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "info field",
+            "Use"
+          ],
+          "rows": [
+            [
+              "`fieldName`",
+              "which field ran"
+            ],
+            [
+              "`path`",
+              "exact position, log it"
+            ],
+            [
+              "`fieldNodes`",
+              "sub-selection, for projection"
+            ],
+            [
+              "`returnType`/`parentType`",
+              "local type info"
+            ],
+            [
+              "`schema`/`fragments`/`operation`",
+              "whole-document access"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`info.path` is a linked list: `user > posts > 2 > title`",
+            "`info.fieldNodes` lets you SELECT only requested columns",
+            "`rootValue` and `variableValues` ride along too"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where To Read From"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "posts: (user, { first = 10 }, { db }) =>",
+            "  db.posts.byAuthor(user.id, first)",
+            "// data, filter, resource — in order"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Read data from `parent`, filter with `args`",
+            "Get resources from `context`",
+            "Touch `info` only for optimization or logging"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// WRONG: args lands in the parent slot",
+            "user: (args, ctx) => db.user(args.id)",
+            "// args.id is undefined, silently"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Never Do This",
+          "items": [
+            "Rely on `this` inside a resolver — it is meaningless",
+            "Stash per-field state on `context` for siblings",
+            "Mutate `parent` in a child — siblings share that ref"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Four Slots, Four Jobs",
+          "text": "`parent` is the chain, `args` is the query, `context` is the request, `info` is the position."
+        },
+        {
+          "type": "heading",
+          "text": "The Chain Rule",
+          "ink": "accent"
+        },
+        {
+          "type": "paragraph",
+          "text": "Whatever a field's resolver returns becomes the `parent` of every resolver in that field's sub-selection. That is the entire mechanism."
+        }
+      ]
+    },
+    {
+      "page_title": "The Chain: Parent Feeds Child",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "Query.user  => { id: 7, name: 'Ada' }",
+            "User.posts  => parent is that object",
+            "Post.author => parent is one post row"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Fan-Out Math"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Calls"
+          ],
+          "rows": [
+            [
+              "`Query.users`",
+              "1"
+            ],
+            [
+              "`User.name`",
+              "20"
+            ],
+            [
+              "`User.posts`",
+              "20"
+            ],
+            [
+              "`Post.title`",
+              "200"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Chain depth equals query depth, one layer per level",
+            "Each layer fans out over the previous layer's results",
+            "200 `Post.title` calls is N+1 in its native habitat"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Shape Is Yours"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The returned object need not match the GraphQL type",
+            "It needs only enough data for the child resolvers",
+            "Common: return a thin row, hydrate lazily below",
+            "Hand data down on purpose: `return { ...row, _tenantId }`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "How Branches End"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`null` short-circuits: that branch's children never run",
+            "A Promise of a list is fine; a list of Promises too",
+            "The chain crosses types: `Post.author` feeds `User.name`",
+            "Circular walks (`user > posts > author`) are legal"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Fat parent",
+                "lines": [
+                  "One big fetch up front",
+                  "Few resolvers below",
+                  "Over-fetches unused columns"
+                ]
+              },
+              {
+                "title": "Thin parent",
+                "lines": [
+                  "Row now, fields later",
+                  "No over-fetching",
+                  "More round trips"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Depth Costs",
+          "items": [
+            "A 4-level query runs 4 resolver layers",
+            "Each layer multiplies by list length",
+            "Depth-limit circular paths in production"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "What is `parent` under `Post.author`?",
+          "a_bullets": [
+            "Whatever `Post.author` returned, not the original user",
+            "Return a bare id and `User.name` gets a string",
+            "Return the key fields the children actually need"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Breaks Later, Not Now",
+          "text": "A child that assumes a hydrated `parent` dies the day another query path reaches that type with a thin row."
+        },
+        {
+          "type": "heading",
+          "text": "The Invisible Majority",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Most fields in a real schema have no resolver",
+            "`graphql-js` calls `defaultFieldResolver` for them",
+            "An explicit resolver always wins for that field"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Default Resolvers",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// defaultFieldResolver, in essence",
+            "const v = source[info.fieldName]",
+            "typeof v === 'function'",
+            "  ? v(args, ctx, info)  // args comes 1st",
+            "  : v"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A plain `{ name: 'Ada' }` resolves `User.name` for free",
+            "A class getter or method named `name` is invoked too",
+            "That call branch is why ORM model methods 'just work'",
+            "And why they receive `args` as their first parameter"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Why Is It null"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Parent has",
+            "Field resolves to"
+          ],
+          "rows": [
+            [
+              "`name: 'Ada'`",
+              "`'Ada'`"
+            ],
+            [
+              "`user_name` only",
+              "`null`"
+            ],
+            [
+              "missing key",
+              "`null`"
+            ],
+            [
+              "missing, typed `String!`",
+              "error, propagates up"
+            ],
+            [
+              "a `Date`",
+              "ISO string coercion"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Property name must match the field name exactly",
+            "snake_case columns vs camelCase fields = silent nulls",
+            "Fixes: alias in SQL, or map in the model layer",
+            "Or one explicit resolver, or a name-mapping directive"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Overriding The Default"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pass `fieldResolver` to `execute()` for a global swap",
+            "Or replace `defaultFieldResolver` via a schema transform",
+            "Plugins and directives hook the same seam"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Abstract Types Differ"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Interfaces and unions need `__resolveType`",
+            "Or `isTypeOf` on each member type",
+            "Fallback is `source.__typename` if present",
+            "Otherwise: 'Abstract type must resolve to an Object type'"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Should I write a resolver for every field?",
+          "a_bullets": [
+            "No — the default is a bare property read",
+            "A user-written resolver that hits a service costs far more",
+            "Add one only when the value is not already on the parent"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "After The Return",
+          "items": [
+            "Leaf values still run the scalar's `serialize()`",
+            "A `Date` in a `String` field silently becomes ISO text",
+            "Declare a custom scalar instead of leaning on coercion"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Cheapest Path Wins",
+          "text": "Property reads beat function calls. Do not add resolvers you do not need."
+        }
+      ]
+    },
+    {
+      "page_title": "Execution Order And Concurrency",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Before Any Resolver Runs",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Field collection flattens fragments first",
+            "Identical fields with identical args merge into one call",
+            "Different args plus different aliases run twice",
+            "`@skip`/`@include` resolve here — excluded fields never call anything"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Parallel Or Serial"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Fields",
+            "Order"
+          ],
+          "rows": [
+            [
+              "`Query` root",
+              "parallel, any order"
+            ],
+            [
+              "`Mutation` root",
+              "serial, document order"
+            ],
+            [
+              "anything nested",
+              "parallel again"
+            ],
+            [
+              "sibling leaves",
+              "order-independent"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Serial root mutations are the one ordering guarantee in the spec",
+            "Two mutations in one document run one after the other",
+            "So a create then a read in that document sees the write"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "graphql",
+          "lines": [
+            "mutation {",
+            "  a: pay(id: 1) { ok }   # runs first",
+            "  b: ship(id: 1) { ok }  # then this",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Level Loop"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "collect fields",
+              "resolve value",
+              "await promises",
+              "complete value",
+              "next level"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Breadth-per-level, depth overall: start a level, then descend",
+            "`completeValue` unwraps non-null, iterates lists, recurses, serializes leaves",
+            "Every Promise at a level is awaited before the next level"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Order You Get"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Response key order follows the query, not resolution order",
+            "The serialized JSON stays deterministic either way",
+            "Never let one sibling depend on another's side effect"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Breaking One Response"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`@defer`/`@stream` deliver parts after the initial payload",
+            "Subscriptions run once per published event",
+            "The source stream yields, then normal parallel execution runs"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Only Under Load",
+          "text": "Relying on 'resolvers run top to bottom' passes locally and corrupts data in production. Sequence writes inside one resolver."
+        }
+      ]
+    },
+    {
+      "page_title": "Context, Auth, Per-Request State",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "One Object Per Request",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Created before execution, passed unchanged to every resolver",
+            "Authed user or claims, db/ORM handle, dataloaders",
+            "Request-scoped logger, trace id, feature flags",
+            "A transaction handle so one mutation writes atomically"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Parallel execution makes any ordering assumption false. Treat `context` as read-only once built."
+        },
+        {
+          "type": "heading",
+          "text": "Per-Request Or Bust"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Dataloaders MUST be built inside the context factory",
+            "A module-level loader serves one user's cache to another",
+            "Caching a fetch on `context` for the request: fine",
+            "Caching it in module scope: cross-tenant data leak"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const context = async ({ req }) => ({",
+            "  user: await auth(req),",
+            "  loaders: makeLoaders(db),  // per request",
+            "})"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Auth At The Field"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Check `context.user` where the data is exposed",
+            "Entry-point checks miss nested paths to the same type",
+            "Throw, do not return `null` — clients need an `errors` entry",
+            "Attach a code: `extensions.code = 'FORBIDDEN'`"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const requireRole = role => fn =>",
+            "  (p, a, ctx, i) => {",
+            "    if (ctx.user?.role !== role) deny()",
+            "    return fn(p, a, ctx, i)",
+            "  }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Directives And Types"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`@auth(requires: ADMIN)` wraps `defaultFieldResolver` via `mapSchema`",
+            "So fields with no explicit resolver are covered too",
+            "One `Context` interface parameterizes generated resolver types",
+            "Depth and cost limits read `info` + `context` in a plugin, not a resolver"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Put on context",
+            "Never on context"
+          ],
+          "rows": [
+            [
+              "db handle",
+              "per-field scratch state"
+            ],
+            [
+              "dataloaders",
+              "sibling-to-sibling messages"
+            ],
+            [
+              "authed user",
+              "module-level singletons"
+            ],
+            [
+              "trace id",
+              "anything mutated mid-tree"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Context, Auth, Per-Request State (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Subscription Context",
+          "items": [
+            "Built per connection, often refreshed per event",
+            "Connection auth is not HTTP request auth",
+            "Re-check permissions on each published payload"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Testable By Design",
+          "text": "Build a fake context object and call the resolver function directly — no HTTP server, no schema, no network."
+        },
+        {
+          "type": "heading",
+          "text": "The N+1 Shape",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One query for the list, one per item for the child",
+            "50 posts calling `Post.author` = 1 + 50 round trips",
+            "The honest cost is 2 queries: posts, then authors by id"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// N+1: one DB hit per post",
+            "Post: { author: (p, a, { db }) =>",
+            "  db.user.byId(p.author_id) }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Batched In One Tick"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Collect every `.load(key)` in the tick, call `batchFn(keys)` once",
+            "The batching window is the microtask tick",
+            "Resolvers at the same execution level batch naturally",
+            "Memoized per instance: one key, ten fields, one fetch"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "new DataLoader(async ids => {",
+            "  const rows = await db.users.byIds(ids)",
+            "  return ids.map(id => rows[id] ?? null)",
+            "})  // same order, same length"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "batchFn Contract",
+          "items": [
+            "Values in the SAME order as `keys`",
+            "The SAME length as `keys`",
+            "`null` or an `Error` for misses",
+            "Instantiate per request, or you serve foreign data"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Three Ways To Fetch"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Strategy",
+            "Queries",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "DataLoader",
+              "1 per level",
+              "adds indirection"
+            ],
+            [
+              "Eager JOIN",
+              "1 total",
+              "over-fetches"
+            ],
+            [
+              "Per-field fetch",
+              "1 per item",
+              "simplest, slowest"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Join up front, let default resolvers read the joined fields",
+            "Look-ahead: read `info.fieldNodes` and project only what was asked",
+            "Depth limits and cost directives run before execution starts"
+          ]
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Your resolver returned an object and the next resolver got it — that one sentence is the entire GraphQL execution model, and almost every bug you will ship is a corollary of it. Ten pages on the four arguments, the default resolver that quietly runs most of your schema, why root mutations are the spec's only ordering guarantee, and how one non-null field can null your whole response. Save it for the next time a field comes back null and nobody knows why.",
+    "hashtags": [
+      "#graphql",
+      "#apollo",
+      "#nodejs",
+      "#backend",
+      "#api",
+      "#webdev",
+      "#javascript",
+      "#typescript",
+      "#dataloader",
+      "#softwareengineering",
+      "#codingnotes",
+      "#devtips"
+    ]
+  }
+}

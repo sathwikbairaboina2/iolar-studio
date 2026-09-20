@@ -1,0 +1,261 @@
+{
+  "title": "Node.js Async: The Handwritten Handbook",
+  "summary": "A dense, example-driven tour of asynchrony in Node.js — from the event loop and error-first callbacks through promises, async/await, concurrency limiting, cancellation, and unhandled rejection semantics. Every page pairs mechanics with the mistakes that bite in production.",
+  "chapters": [
+    {
+      "title": "Why Async At All: The Single Thread",
+      "points": [
+        "Node runs your JavaScript on ONE thread; every synchronous line blocks every other request.",
+        "Definition: blocking = the call returns only after the work finishes (`fs.readFileSync`); non-blocking = the call returns immediately, result delivered later.",
+        "I/O-bound vs CPU-bound: async fixes I/O waiting, it does NOT fix CPU work — a 2s `for` loop stalls the whole server either way.",
+        "Concurrency ≠ parallelism: Node interleaves thousands of in-flight I/O ops on one thread (concurrency); true parallelism needs `worker_threads` / `child_process` / cluster.",
+        "The runtime is not single-threaded: libuv keeps a threadpool (default 4, `UV_THREADPOOL_SIZE`) for fs, dns.lookup, crypto (pbkdf2/scrypt), zlib.",
+        "Kernel-level async (epoll/kqueue/IOCP) handles sockets — network I/O does NOT consume threadpool slots.",
+        "Demo of the cost: `app.get('/hash', () => bcrypt.hashSync(...))` drops throughput to serial; `hash()` (async, threadpool) keeps it concurrent.",
+        "The three eras of Node async style: error-first callbacks (2009) → promises (ES2015, Node 4) → async/await (Node 7.6, unflagged 8).",
+        "Rule of thumb: never do more than ~10ms of synchronous work in a request path.",
+        "`node --cpu-prof` / `--prof` and event-loop-lag probes are how you find the blocker."
+      ]
+    },
+    {
+      "title": "The Event Loop: Phases and Ordering",
+      "points": [
+        "libuv's loop runs six phases per tick, in fixed order: timers → pending callbacks → idle/prepare → poll → check → close callbacks.",
+        "timers phase: `setTimeout` / `setInterval` callbacks whose threshold elapsed. Timers are a floor, not a guarantee.",
+        "poll phase: waits for and executes I/O callbacks (socket data, fs completions); this is where the loop blocks when idle.",
+        "check phase: `setImmediate` callbacks — always runs AFTER poll, so `setImmediate` beats `setTimeout(fn,0)` from inside an I/O callback.",
+        "close phase: `'close'` events, e.g. `socket.on('close', ...)`.",
+        "Microtask queues drain BETWEEN every macrotask callback: `process.nextTick` queue first, then the promise microtask queue.",
+        "`process.nextTick` has higher priority than `Promise.resolve().then` — starving the loop with recursive nextTick is possible; recursive `setImmediate` is not.",
+        "Ordering puzzle to memorize: `setTimeout(0)` vs `setImmediate` at top level is NON-deterministic (depends on loop startup time); inside an I/O callback `setImmediate` always wins.",
+        "Code trace example printing order: sync log, nextTick, promise then, timeout, immediate → `1 2 nextTick promise timeout immediate`.",
+        "Event loop lag = time between when a timer should fire and when it did; measure with `perf_hooks.monitorEventLoopDelay()`.",
+        "Each phase drains its queue up to a system-dependent max, then moves on — one phase cannot indefinitely starve the next.",
+        "Browser vs Node difference: browsers have no `process.nextTick` and one microtask checkpoint model; ordering demos do not port 1:1."
+      ]
+    },
+    {
+      "title": "Callbacks: The Error-First Contract",
+      "points": [
+        "Convention: `(err, result) => {}` — error is always the FIRST parameter, `null` on success.",
+        "Canonical example: `fs.readFile('a.txt','utf8',(err,data)=>{ if(err) return cb(err); cb(null, data.trim()) })`.",
+        "Always `return` after handling `err`, otherwise execution falls through and the callback fires twice.",
+        "Callbacks are invoked by the runtime, not by you — `try/catch` around an async call CANNOT catch an error thrown inside its callback.",
+        "A throw inside a callback with no handler becomes an `uncaughtException` and kills the process.",
+        "Zalgo: never write an API that is sometimes sync, sometimes async. Defer with `process.nextTick(() => cb(null, cached))` to keep it consistently async.",
+        "Callbacks must be called exactly once; guard with `let called = false` or `once()` when wrapping event-based APIs.",
+        "`util.promisify(fn)` converts an error-first function to a promise-returning one; `util.callbackify` goes the other way.",
+        "`util.promisify.custom` symbol lets a library define its own promisified shape (e.g. `setTimeout` from `timers/promises`).",
+        "Multi-value callbacks (`cb(null, a, b)`) do not promisify cleanly — only the first value survives.",
+        "Node core still exposes callback APIs everywhere; `fs/promises`, `dns/promises`, `timers/promises` are the promise mirrors."
+      ]
+    },
+    {
+      "title": "Callback Hell and Why It Failed",
+      "points": [
+        "Pyramid of doom: nested callbacks growing rightward, each level repeating `if (err) return cb(err)`.",
+        "Concrete 4-level example: read config → connect db → query user → write log, all nested.",
+        "Problem 1 — error handling does not compose: every level must manually forward `err`; one missed forward silently swallows failures.",
+        "Problem 2 — no return value: a callback function has nothing to hand back, so you cannot build pipelines from expressions.",
+        "Problem 3 — control flow is manual: running 3 things in parallel needs a counter and a `done` latch you write by hand.",
+        "Hand-rolled parallel latch example: `let n=3, results=[]; each cb decrements n; when n===0 call final`.",
+        "Partial mitigations that were used: named functions instead of inline (flattens nesting), the `async` library (`async.series`, `async.parallel`, `async.waterfall`, `async.queue`).",
+        "`async.queue(worker, concurrency)` was the original concurrency limiter — the ancestor of today's `p-limit`.",
+        "Callbacks and `try/catch` do not mix; callbacks and `throw` do not mix; this is the structural reason promises were adopted.",
+        "Callbacks are still the right tool for repeated events (EventEmitter listeners) — promises settle once, listeners fire many times."
+      ]
+    },
+    {
+      "title": "Promises: States and Mechanics",
+      "points": [
+        "Three states: pending → fulfilled (with a value) or rejected (with a reason). Settled = fulfilled or rejected; transitions are one-way and permanent.",
+        "A promise is an object representing a future value — it can be returned, stored, and passed around, unlike a callback.",
+        "Constructor for wrapping legacy APIs: `new Promise((resolve, reject) => fs.readFile(p, (e,d)=> e ? reject(e) : resolve(d)))`.",
+        "`resolve` called twice is a no-op the second time — promises are idempotent, which fixes the double-callback bug class.",
+        "`.then(onFulfilled, onRejected)`, `.catch(fn)` = `.then(undefined, fn)`, `.finally(fn)` runs on both paths and passes the value through.",
+        "`.then` ALWAYS returns a new promise — this is what makes chaining work.",
+        "Callbacks scheduled with `.then` run as microtasks: always async, even on an already-resolved promise (`Promise.resolve(1).then(log)` logs after sync code).",
+        "Resolving with a thenable adopts its state — returning a promise from `.then` flattens instead of nesting.",
+        "`Promise.resolve(v)` / `Promise.reject(e)` create already-settled promises; `Promise.resolve(p)` on a promise returns it unchanged.",
+        "Promise constructor anti-pattern: `new Promise(res => doAsync().then(res))` — just return `doAsync()`.",
+        "Throwing inside a `.then` handler rejects the returned promise — `throw` and `reject` are equivalent there.",
+        "Promises are eager: the executor runs the moment you construct one. There is no built-in laziness and no built-in cancel."
+      ]
+    },
+    {
+      "title": "Chaining and Error Propagation",
+      "points": [
+        "Flat chain replaces the pyramid: `readConfig().then(connect).then(query).then(write).catch(handle)`.",
+        "Return the inner promise from a `.then` or the chain does not wait for it — the single most common chaining bug.",
+        "`.then(x => { doAsync() })` returns `undefined`; `.then(x => doAsync())` returns the promise. Arrow braces matter.",
+        "A rejection skips every downstream `.then` until the first `.catch` — errors propagate like exceptions.",
+        "A `.catch` that returns a value RESUMES the chain in the fulfilled state (recovery); to keep failing, rethrow.",
+        "Handler placement matters: `.then(a).catch(b)` catches errors from `a`; `.then(a, b)` does NOT — `b` only sees upstream errors.",
+        "Branching vs chaining: calling `.then` twice on the same promise forks two independent chains, it does not sequence them.",
+        "Passing intermediate values down a chain requires closure nesting or an accumulator object — a real ergonomic weakness that async/await removes.",
+        "`.finally` for cleanup: `.finally(() => client.release())` runs on success and failure and does not alter the settled value.",
+        "Terminate every chain with a `.catch` or return it to a caller who will — an unterminated chain becomes an unhandled rejection."
+      ]
+    },
+    {
+      "title": "Promise Combinators: all, allSettled, race, any",
+      "points": [
+        "`Promise.all(iterable)` — fulfills with an array of values in INPUT order (not completion order); rejects immediately on the first rejection.",
+        "Key gotcha: `Promise.all` fails fast but does NOT cancel the other operations — they keep running and can produce unhandled rejections.",
+        "`Promise.allSettled` — never rejects; yields `{status:'fulfilled', value}` or `{status:'rejected', reason}` per entry. Use when partial failure is acceptable.",
+        "`Promise.race` — settles with the first promise to settle, fulfilled OR rejected. Basis of the classic timeout pattern.",
+        "`Promise.any` (Node 15+) — first FULFILLMENT wins; rejects only if all reject, with an `AggregateError` whose `.errors` holds every reason.",
+        "Comparison row set: all = every-or-nothing; allSettled = report card; race = first settled; any = first success.",
+        "Parallel start is what actually creates concurrency: `const [a,b] = await Promise.all([getA(), getB()])` — the calls must be made before awaiting.",
+        "Combinators accept any iterable of values, not only promises — non-promise entries are wrapped with `Promise.resolve`.",
+        "`Promise.all` on 10,000 items opens 10,000 sockets at once — combinators have NO concurrency limit. This motivates the next chapter.",
+        "Worked example: fan out user lookups with `allSettled`, then partition into `ok` and `failed` buckets for a retry queue."
+      ]
+    },
+    {
+      "title": "async/await: Syntax Over Promises",
+      "points": [
+        "An `async` function always returns a promise; `return 1` fulfills with 1, `throw e` rejects with `e`.",
+        "`await p` suspends the function and resumes it in a microtask when `p` settles — it does NOT block the event loop or the thread.",
+        "Desugaring: `async function f(){ const a = await g(); return a+1 }` ≡ `g().then(a => a+1)`. Same machinery, different syntax.",
+        "`await` on a non-promise still defers one microtask tick — `await 1` is not free.",
+        "Real `try/catch/finally` works again: `try { await q() } catch (e) { log(e) } finally { client.release() }`.",
+        "Intermediate values become plain `const`s — no closure pyramid, this is the biggest readability win over chains.",
+        "Top-level `await` is available in ES modules (`.mjs` / `\"type\":\"module\"`), not in CommonJS.",
+        "Async functions passed to `Array.prototype.forEach` are fire-and-forget — `forEach` ignores the returned promise. Use `for...of` or `map` + `Promise.all`.",
+        "`for await (const chunk of stream)` iterates async iterables — the idiomatic way to consume streams and paginated APIs.",
+        "Async generators (`async function*`) let you `yield` from async work and back an async iterable, e.g. a paginating API cursor.",
+        "Stack traces: async/await preserves async stack frames far better than raw `.then` chains (`--async-stack-traces` is on by default).",
+        "You can `await` a promise created earlier — creation time and await time are independent, which is exactly how you get parallelism."
+      ]
+    },
+    {
+      "title": "Sequential vs Parallel: The Await Trap",
+      "points": [
+        "Serial by accident: `const a = await getA(); const b = await getB();` takes t(A)+t(B) even though they are independent.",
+        "Parallel fix: `const [a,b] = await Promise.all([getA(), getB()])` takes max(t(A), t(B)).",
+        "`await` inside a `for` loop is intentionally serial — correct for rate-limited APIs and ordered writes, disastrous for 500 independent fetches.",
+        "`array.map(async x => await f(x))` returns an array of PROMISES, not values — you must `await Promise.all(...)` it.",
+        "Deferred-await pattern: start both, await later — `const pa = getA(); const pb = getB(); use(await pa, await pb);`.",
+        "Hazard of the deferred pattern: if `pa` rejects before you await `pb`, you can get an unhandled rejection on `pb`'s branch; attach `.catch` or use `allSettled`.",
+        "`reduce` for forced sequencing: `items.reduce((p,x) => p.then(() => f(x)), Promise.resolve())`.",
+        "Latency math: 100 requests × 50ms serial = 5s; fully parallel = ~50ms; with a limit of 10 = ~500ms.",
+        "Do not parallelize writes that depend on ordering or share a transaction — parallelism is a correctness decision, not just a speed one.",
+        "Decision table: independent + bounded count → `Promise.all`; independent + large count → limited pool; dependent → sequential `for...of`."
+      ]
+    },
+    {
+      "title": "Concurrency Limits: Bounded Parallelism",
+      "points": [
+        "Why limit: unbounded fan-out exhausts sockets (`EMFILE`, `ECONNRESET`), DB connection pools, memory, and triggers 429 rate limits.",
+        "Little's Law framing: in-flight requests ≈ arrival rate × latency — the limit is the knob that caps in-flight work.",
+        "Hand-rolled worker pool: shared index cursor + N workers each looping `while (i < items.length) await task(items[i++])`.",
+        "Semaphore pattern: counter + queue of resolvers; `acquire()` returns a promise, `release()` pops and resolves the next waiter.",
+        "`p-limit` idiom: `const limit = pLimit(5); await Promise.all(items.map(i => limit(() => fetchOne(i))))` — note the limit wraps a THUNK, not a running promise.",
+        "Critical subtlety: `limit(fetchOne(i))` is wrong — the call already started. The function must be deferred.",
+        "Batch/chunk alternative: process in slices of N with `Promise.all` per slice; simpler, but stalls on the slowest item in each batch (poor tail behavior) vs a rolling pool.",
+        "Node built-ins that already gate you: `http.Agent maxSockets`, `UV_THREADPOOL_SIZE` (default 4), DB pool max — your app-level limit should sit under the tightest of these.",
+        "Streams give backpressure for free: `pipeline(src, transform, dst)` and `stream.Readable.from(items).map(fn, {concurrency: 5})` (Node 18+).",
+        "Combine limiting with retry + jitter and a circuit breaker; a limiter alone still hammers a failing dependency.",
+        "Choosing N: start at the downstream's documented limit, then tune by watching p99 latency and error rate — throughput plateaus and latency climbs past the knee.",
+        "Memory trap: `items.map(...)` over a million rows materializes a million closures before any limiting happens — stream or paginate instead."
+      ]
+    },
+    {
+      "title": "Unhandled Rejections and Crash Semantics",
+      "points": [
+        "An unhandled rejection = a promise rejected with no `.catch` / no `try` attached by the end of the microtask checkpoint.",
+        "Node 15+ default is `--unhandled-rejections=throw`: an unhandled rejection raises an `uncaughtException` and, if unhandled, exits with code 1. Older Node only printed a warning.",
+        "Modes: `throw` (default), `strict`, `warn`, `warn-with-error-code`, `none`. Do not set `none` to silence a symptom.",
+        "`process.on('unhandledRejection', (reason, promise) => …)` — for LOGGING and graceful shutdown, not for business recovery.",
+        "`process.on('rejectionHandled', …)` fires when a `.catch` is attached late — proof that late attachment is legal but dangerous.",
+        "`process.on('uncaughtException', …)` is a last resort: the process is in an unknown state, so log, flush, and exit — never resume serving.",
+        "Top source #1: fire-and-forget calls — `doWork()` without `await` or `.catch`.",
+        "Top source #2: `async` callbacks handed to APIs that ignore return values — `emitter.on('data', async …)`, `forEach`, Express handlers pre-v5.",
+        "Top source #3: losers of `Promise.all` / `Promise.race` that reject after the combinator already settled.",
+        "Express 4 needs `router.get('/x', asyncHandler(fn))` or a wrapper; Express 5 forwards rejected promises to `next()` automatically.",
+        "Safe fire-and-forget: `void doWork().catch(err => log.error(err))` — explicit and lint-friendly (`no-floating-promises`).",
+        "Under a supervisor (PM2, systemd, Kubernetes) crash-and-restart is the correct response — flush logs first, then `process.exit(1)`."
+      ]
+    },
+    {
+      "title": "Cancellation, Timeouts, and Cleanup",
+      "points": [
+        "Promises cannot be cancelled — settling is permanent. Cancellation means telling the underlying operation to stop, then rejecting.",
+        "`AbortController` / `signal` is the standard mechanism: `controller.abort()` fires `signal`'s `'abort'` event and sets `signal.aborted`.",
+        "Consumers that accept `{ signal }`: `fetch`, `fs/promises` reads, `events.once`, `setTimeout` from `timers/promises`, most modern libs.",
+        "Aborting rejects with an `AbortError` (`err.name === 'AbortError'`) — treat it as a control-flow signal, not an application error.",
+        "`AbortSignal.timeout(ms)` gives a self-firing signal; `AbortSignal.any([a, b])` combines a request-cancel signal with a deadline.",
+        "Timeout via race: `Promise.race([work(), setTimeout(5000).then(() => { throw new TimeoutError() })])` — works, but the loser keeps running and the timer keeps the loop alive.",
+        "Always clear timers you race against (`clearTimeout` in a `finally`), or the process will not exit and you leak handles.",
+        "`timers/promises`'s `setTimeout(ms, value, { signal })` is the cancellable, promise-native replacement for hand-rolled sleep.",
+        "Cleanup belongs in `finally`: release connections, close file handles, remove listeners — it runs on success, error, and abort.",
+        "Graceful shutdown: on SIGTERM, stop accepting, abort in-flight work with a shared controller, await drain with a hard deadline, then exit."
+      ]
+    },
+    {
+      "title": "Context, Errors, and Debugging Async Code",
+      "points": [
+        "Async loses `try/catch` locality but keeps stack context — always wrap or rethrow with `new Error('failed to load user', { cause: err })` (ES2022 `cause`).",
+        "`Error.captureStackTrace` and `--async-stack-traces` recover frames across `await` boundaries; raw `.then` chains lose them more easily.",
+        "`AsyncLocalStorage` from `node:async_hooks` carries request IDs / trace context across `await` without threading a parameter everywhere.",
+        "`als.run(store, fn)` establishes context; `als.getStore()` reads it anywhere downstream in the async chain.",
+        "`async_hooks` init/before/after/destroy hooks explain HOW context propagates — heavy, mostly for APM vendors, not app code.",
+        "Detect a stuck loop: `perf_hooks.monitorEventLoopDelay({resolution:20})` and report p99 lag as a health metric.",
+        "Find leaked handles keeping the process alive with `process.getActiveResourcesInfo()` (Node 17+) or `why-is-node-running`.",
+        "Common silent bug: forgetting `await` — the function returns a pending promise, callers see `undefined`, errors vanish. `@typescript-eslint/no-floating-promises` + `require-await` catch most.",
+        "`node --inspect` + Chrome DevTools shows async call stacks and pending microtasks at a breakpoint.",
+        "Testing async: `await expect(fn()).rejects.toThrow()` instead of `try/catch` with a manual `fail()`; fake timers must advance for timer-based promises to settle."
+      ]
+    },
+    {
+      "title": "Trade-offs: Choosing the Right Tool",
+      "points": [
+        "Comparison row — Callbacks: no allocation overhead, works for repeated events, but no composition, no `try/catch`, manual error forwarding.",
+        "Comparison row — Promises: composable, single-settle guarantee, combinators; costs a microtask tick and an object per step, eager and uncancellable.",
+        "Comparison row — async/await: best readability and stack traces; hides parallelism opportunities and invites the accidental-serial loop.",
+        "Comparison row — EventEmitter: many values over time, no backpressure, errors need an explicit `'error'` listener or the process crashes.",
+        "Comparison row — Streams / async iterators: many values WITH backpressure; the right choice for large or unbounded data.",
+        "Rule: one future value → promise; many values over time → stream or async iterator; recurring notifications → EventEmitter.",
+        "Cost model: a `.then` step ≈ one microtask; millions of tiny promises show up as GC pressure, so batch hot loops.",
+        "Async does not help CPU work — offload to `worker_threads` (shared memory, cheap) or `child_process` (isolated, expensive).",
+        "Time complexity of N tasks: serial = O(N × latency); unbounded = O(latency) but O(N) resources; limited to K = O(N/K × latency) with O(K) resources.",
+        "Interop rules: `util.promisify` to move callback → promise, `util.callbackify` for the reverse, `events.once(emitter, 'name')` to await a single event.",
+        "Migration path for legacy code: promisify at the boundary, keep the core promise-native, never mix a callback and a promise in the same function signature."
+      ]
+    },
+    {
+      "title": "Top Mistakes and Fixes",
+      "points": [
+        "Missing `await` → function returns a pending promise and errors disappear. Fix: enable `no-floating-promises`, `void x.catch()` when intentional.",
+        "`await` in a loop over independent items → N× latency. Fix: `Promise.all` or a bounded pool.",
+        "`forEach(async …)` → all work is fire-and-forget and the caller resumes early. Fix: `for...of` (serial) or `map` + `Promise.all` (parallel).",
+        "Not returning the inner promise from `.then` → chain proceeds before the work finishes. Fix: `return` it.",
+        "Promise constructor anti-pattern → wrapping something that is already a promise. Fix: return it directly.",
+        "Swallowing errors with `.catch(() => {})` → failures become silent corruption. Fix: log with context and rethrow or convert to a typed result.",
+        "Mixing callback and promise in one API → double invocation and Zalgo. Fix: pick one shape per function.",
+        "`Promise.all` over an unbounded list → `EMFILE`, 429s, OOM. Fix: `p-limit` or chunking.",
+        "Blocking the loop with `JSON.parse` on a 50MB payload or a sync crypto call. Fix: stream it, or move to the threadpool / a worker.",
+        "Racing a timeout without clearing the timer → the process hangs on exit. Fix: `clearTimeout` in `finally` or use `AbortSignal.timeout`.",
+        "Attaching `.catch` late (after an await elsewhere) → an unhandled rejection is reported before your handler lands. Fix: attach at creation.",
+        "Assuming `Promise.all` preserves completion order or cancels losers — it preserves INPUT order and cancels nothing."
+      ]
+    },
+    {
+      "title": "Cheat Sheet and Closing Summary",
+      "points": [
+        "Mental model in one line: one JS thread, a loop of six phases, microtasks drained between every callback, and libuv doing the waiting.",
+        "Ordering priority to memorize: sync code > `process.nextTick` > promise microtasks > timers/poll/check macrotasks.",
+        "Style ladder: error-first callbacks → promises → async/await; each layer is built on the one below, none replaces the others entirely.",
+        "Combinator picker: `all` (all must succeed) · `allSettled` (report every outcome) · `race` (first settled, incl. rejection) · `any` (first success).",
+        "Parallelism recipe: create promises first, `await Promise.all` second; add `p-limit` the moment the list length is not fixed and small.",
+        "Error-handling checklist: every chain terminates in a `.catch`, every `async` entry point has `try/catch`, every fire-and-forget has `.catch`.",
+        "Process-level safety net: `unhandledRejection` and `uncaughtException` handlers that log, flush, and exit — plus a supervisor to restart.",
+        "Cancellation kit: `AbortController`, `AbortSignal.timeout`, `AbortSignal.any`, cleanup in `finally`, graceful SIGTERM drain.",
+        "Observability kit: `monitorEventLoopDelay`, `AsyncLocalStorage` for request context, `getActiveResourcesInfo` for leaked handles.",
+        "Lint rules worth turning on today: `no-floating-promises`, `no-misused-promises`, `require-await`, `await-thenable`, `no-await-in-loop` (as a warning).",
+        "Final rule of thumb: async solves waiting, limits solve overload, and cancellation solves waiting forever — you need all three in production."
+      ]
+    }
+  ]
+}

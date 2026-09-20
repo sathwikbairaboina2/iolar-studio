@@ -1,0 +1,594 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "GO GOROUTINES — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "How Goroutines Leak",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "4: context and its timer live until the parent cancels — for `Background`, never.",
+            "6: a missing `Done()`, or one skipped by an early `return` before the `defer`.",
+            "7: connection never returns to the pool; `defer resp.Body.Close()` even if you ignore the body.",
+            "9: two goroutines wait on each other, rest of the program is fine."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Why the detector stays silent",
+          "text": "`all goroutines are asleep - deadlock!` needs EVERY goroutine asleep. Partial deadlock in a live server never trips it."
+        },
+        {
+          "type": "heading",
+          "text": "The Fixes"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "ch := make(chan T, 1)   // sender never blocks",
+            "go func(){ ch <- work() }()",
+            "select {",
+            "case v := <-ch: use(v)",
+            "case <-ctx.Done(): return ctx.Err() }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Capacity 1 lets the sender complete and exit even if nobody reads.",
+            "General rule: every blocking op gets an escape hatch.",
+            "That means a `select` on `ctx.Done()`, a timeout, or enough buffer.",
+            "Size the buffer for the worst case, not the happy path."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Symptom Profile"
+        },
+        {
+          "type": "sidebox",
+          "title": "The three signs together",
+          "items": [
+            "`runtime.NumGoroutine()` rising monotonically.",
+            "RSS climbing while the heap live-set stays flat.",
+            "Latency degrading as scheduler work grows.",
+            "Heap flat + RSS up = stacks, not objects."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Leaks scale with traffic",
+          "text": "One leaked goroutine per request at 1000 rps is a million goroutines and several GB inside twenty minutes."
+        },
+        {
+          "type": "heading",
+          "text": "Why The GC Cannot Help"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A leak is a goroutine permanently `_Gwaiting`, unreachable by anything that could finish it.",
+            "The GC collects unreachable memory — never a goroutine.",
+            "Each leaked one holds its stack and every captured variable.",
+            "So a goroutine leak is always a memory leak too."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "How Goroutines Leak (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Nine Causes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Cause",
+            "Blocks on"
+          ],
+          "rows": [
+            [
+              "1 send, no receiver",
+              "`ch <- v`"
+            ],
+            [
+              "2 nobody closes",
+              "`range ch`"
+            ],
+            [
+              "3 no `ctx.Done()`",
+              "`select`"
+            ],
+            [
+              "4 no `defer cancel()`",
+              "timer lives"
+            ],
+            [
+              "5 `Ticker` no `Stop`",
+              "fires forever"
+            ],
+            [
+              "8 jobs never closed",
+              "worker `range`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "1: reader returned early on an error path — classic HTTP handler with timeout.",
+            "2: producer died from a panic or an early return.",
+            "3: only sender disappears, goroutine blocks forever.",
+            "5: timer keeps firing into a channel nobody drains.",
+            "8: `range` over the jobs channel blocks after the last job."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "First Signal",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Export `runtime.NumGoroutine()` as a metric.",
+            "Alert on a rising trend, not an absolute number.",
+            "One cheap call; catches most leaks before an outage."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Goroutine pprof"
+        },
+        {
+          "type": "code",
+          "lang": "sh",
+          "lines": [
+            "# import _ \"net/http/pprof\" first",
+            "curl localhost:6060/debug/pprof/goroutine?debug=2",
+            "curl localhost:6060/debug/pprof/goroutine?debug=1"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Gives you"
+          ],
+          "rows": [
+            [
+              "`debug=2`",
+              "full stack per goroutine"
+            ],
+            [
+              "`debug=1`",
+              "count per unique stack"
+            ],
+            [
+              "`-http=:8080`",
+              "visual call tree"
+            ],
+            [
+              "`-base old`",
+              "diff, what is growing"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`debug=1` is fastest: 50,000 goroutines parked on one line, aggregated.",
+            "`debug=2` gives the exact stack, one entry each.",
+            "`go tool pprof -http=:8080 http://host/debug/pprof/goroutine`.",
+            "`go tool pprof -base old.pprof new.pprof` isolates real growth."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Finding and Debugging Leaks",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Read the state annotation",
+          "text": "`[chan receive, 42 minutes]` or `[select, 10 minutes]`. The duration is the smoking gun — nothing legitimate waits 42 minutes."
+        },
+        {
+          "type": "heading",
+          "text": "Catch It In Tests",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "func TestX(t *testing.T) {",
+            "    defer goleak.VerifyNone(t)",
+            "    …",
+            "}  // or goleak.VerifyTestMain(m)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`uber-go/goleak` fails the test if goroutines outlive it.",
+            "Per test with `VerifyNone`, or once via `TestMain`.",
+            "Cheap guard: spawn component, cancel ctx, wait, assert baseline `NumGoroutine()`.",
+            "`go test -race` catches races that ride along with leaky lifecycles."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Race detector cost",
+          "items": [
+            "5–10x CPU.",
+            "5–10x memory.",
+            "Run it in CI.",
+            "Never in production."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Deeper Tools"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Shows"
+          ],
+          "rows": [
+            [
+              "`schedtrace=1000`",
+              "live queue pileups"
+            ],
+            [
+              "`go tool trace`",
+              "per-G timelines"
+            ],
+            [
+              "`SetBlockProfileRate`",
+              "waits on sync"
+            ],
+            [
+              "`SetMutexProfileFraction`",
+              "contention"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`runtime/trace` + `go tool trace`: which syscall or channel stalled a G.",
+            "Block profile answers \"where do goroutines wait?\"",
+            "Mutex profile answers \"who is fighting over the lock?\"",
+            "`schedtrace`: watch `runqueue` and per-P lengths."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "When pprof Was Never Wired"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`SIGQUIT` (Ctrl-\\) dumps all goroutine stacks, then exits.",
+            "`GOTRACEBACK=all` widens panic output to every goroutine.",
+            "`GOTRACEBACK=crash` also produces a core dump.",
+            "In Kubernetes: correlate goroutine count with container RSS."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Debug ladder, in order",
+          "text": "`NumGoroutine()` metric → `goroutine?debug=2` → `go tool trace` → `goleak` in tests → `-race` in CI. Stop as soon as one answers."
+        },
+        {
+          "type": "heading",
+          "text": "Against An OS Thread",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Goroutine",
+            "Thread"
+          ],
+          "rows": [
+            [
+              "Init stack",
+              "2 KB",
+              "1–8 MB"
+            ],
+            [
+              "Scheduled by",
+              "userspace",
+              "kernel"
+            ],
+            [
+              "Create",
+              "~1 µs",
+              "~50 µs"
+            ],
+            [
+              "Ceiling",
+              "millions",
+              "thousands"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Finding and Debugging Leaks (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Against Other Runtimes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Model",
+            "Difference"
+          ],
+          "rows": [
+            [
+              "async/await",
+              "no function coloring"
+            ],
+            [
+              "Java vthreads",
+              "pins on `synchronized`"
+            ],
+            [
+              "Erlang process",
+              "per-process heap"
+            ],
+            [
+              "Thread pool",
+              "no queue-head block"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "async/await: Go's blocking call is not contagious across the API surface.",
+            "Java virtual threads: same M:N idea, but pins to its carrier in native calls; Go hands off the P.",
+            "Erlang: true isolation and supervision trees; Go shares memory — fast, but you need `-race`.",
+            "Thread pool: no size tuning, but no built-in backpressure either — bound spawning yourself."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cost Table To Memorise"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Operation",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "goroutine create",
+              "~1–2 µs"
+            ],
+            [
+              "goroutine switch",
+              "~tens of ns"
+            ],
+            [
+              "channel op",
+              "~100 ns"
+            ],
+            [
+              "mutex uncontended",
+              "~20 ns"
+            ],
+            [
+              "syscall",
+              "~1 µs"
+            ],
+            [
+              "kernel ctx switch",
+              "~1–2 µs"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Knobs and Their Bite",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Raising `GOMAXPROCS` past the real CPU quota adds ctx switching and cache thrash.",
+            "In containers before Go 1.25, `uber-go/automaxprocs` was the standard fix.",
+            "CPU-bound: more goroutines than cores is pure overhead.",
+            "I/O-bound: oversubscription is the entire point."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Not a real-time scheduler",
+          "text": "10 ms slices and a 61-tick global check mean no latency guarantee. Hard-latency work needs `LockOSThread` plus OS-level priority."
+        },
+        {
+          "type": "sidebox",
+          "title": "Top production failure",
+          "items": [
+            "Unbounded spawning.",
+            "One goroutine per incoming item, no limit.",
+            "A traffic spike becomes an OOM.",
+            "Bound it with a pool, semaphore, or `SetLimit`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Bounding The Spawn"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "sem := make(chan struct{}, 8)",
+            "sem <- struct{}{}          // acquire",
+            "defer func(){ <-sem }()    // release",
+            "// or: g.SetLimit(8)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Buffered channel of size N = semaphore: unbounded goroutines, bounded parallelism.",
+            "`errgroup.SetLimit(n)` does the same inside a group — no hand-rolled version.",
+            "Worker pool: N goroutines ranging one jobs channel, results on a second.",
+            "`errgroup` propagates the first error and cancels the shared context."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Trade-offs, Comparisons, and Summary",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Ownership Rules"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Rule",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Sender closes",
+              "receiver close races"
+            ],
+            [
+              "`ctx` first param",
+              "cancel reaches loops"
+            ],
+            [
+              "`defer cancel()`",
+              "frees timer"
+            ],
+            [
+              "No `go` in library API",
+              "caller can't stop it"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Closing from the receive side races with in-flight sends and panics.",
+            "Return a stop function or take a `context.Context` instead of hiding a `go`.",
+            "Select on `ctx.Done()` in every loop that can block.",
+            "Graceful shutdown: close input, `Wait` for workers, then close outputs."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "`os.Exit` skips everything",
+          "text": "A hard exit runs no deferred cleanup in any goroutine. Same for `main` returning — every other goroutine dies mid-flight."
+        },
+        {
+          "type": "heading",
+          "text": "Anti-Pattern Checklist"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A `go` statement with no way to stop it.",
+            "An unbuffered result channel on a timeout path.",
+            "`time.After` inside a loop.",
+            "A missing `defer cancel()`; a channel closed by its receiver."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`time.After` allocates a timer not collected until it fires — real leak in a hot `select`.",
+            "Use `time.NewTimer` + `Stop`, or `context.WithTimeout`.",
+            "`runtime.Gosched()` in your code usually marks a hidden bug.",
+            "`defer ticker.Stop()` on every `time.Ticker`."
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "One design rule to carry out of this?",
+          "a_bullets": [
+            "Make goroutine lifetime explicit and bounded.",
+            "Every goroutine gets an obvious owner.",
+            "Every goroutine gets a stop signal.",
+            "Every goroutine has a place where its exit is observed."
+          ],
+          "example_code": [
+            "g.Go(func() error {",
+            "    defer close(out)",
+            "    return stage(ctx, in, out) })"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Shutdown toolkit",
+          "items": [
+            "`sync.Once`: lazy singleton.",
+            "`WaitGroup`: join workers.",
+            "`close(done)`: broadcast to all.",
+            "`errgroup`: join plus error."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The whole handbook in one line",
+          "text": "Goroutines are cheap because the runtime schedules them M:N over threads with 2 KB copying stacks — and they stop being cheap the moment one blocks with no way out."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of GO GOROUTINES. A goroutine costs 2 KB and about a microsecond — until one blocks forever, and then it costs you a stack, its captured variables, and eventually the pod. This handbook walks the whole runtime: G/M/P, what `schedule()` does 61 ticks at a time, how stacks grow by copying, the nine ways goroutines leak, and the pprof ladder for finding them. Save it for the next time RSS climbs while your heap stays flat.",
+    "hashtags": [
+      "#golang",
+      "#goroutines",
+      "#concurrency",
+      "#gointerview",
+      "#backenddev",
+      "#systemsprogramming",
+      "#softwareengineering",
+      "#devnotes",
+      "#programmingtips",
+      "#codenewbie",
+      "#techstudy",
+      "#learntocode"
+    ]
+  }
+}

@@ -1,0 +1,261 @@
+{
+  "title": "TypeScript Generics: A Field Handbook",
+  "summary": "A dense, example-driven tour of TypeScript's generic type system — from type parameters and constraints through inference, conditional types with `infer`, mapped types, and variance. Covers the mechanics the compiler actually runs, the trade-offs of type-level programming, and the mistakes that bite in real codebases.",
+  "chapters": [
+    {
+      "title": "Why Generics Exist",
+      "points": [
+        "Definition: a generic is a type parameterized by another type — a function from types to types, evaluated at compile time only.",
+        "Motivating failure: `function identity(x: any): any` type-checks but erases the link between input and output; `identity(5).toUpperCase()` compiles and crashes at runtime.",
+        "Motivating failure #2: overloads (`identity(x: string): string; identity(x: number): number`) don't scale — one signature per type, and no coverage for user types.",
+        "The fix: `function identity<T>(x: T): T` — one signature, relation preserved, infinite type coverage.",
+        "Generics buy relational typing: they express that two positions in a signature must be *the same* type, which `any`/`unknown` cannot.",
+        "Erasure: generics are entirely compile-time; the emitted JS for `identity<T>` has no `T`, no runtime type argument, no reflection. `typeof T` is not a thing.",
+        "Consequence of erasure: you cannot do `new T()`, `x instanceof T`, or branch on a type parameter at runtime — you must pass a value (a constructor, a tag, a schema) instead.",
+        "Rule of thumb: reach for a generic when a type appears in two or more positions of the same signature; if a parameter type appears exactly once, the generic is probably useless."
+      ]
+    },
+    {
+      "title": "Type Parameters: Declaring and Reading Them",
+      "points": [
+        "Syntax and placement: `function f<T>(...)`, `class Box<T>`, `interface Pair<A, B>`, `type Result<T, E> = ...`, `const f = <T,>(x: T) => x` (trailing comma needed in `.tsx` to disambiguate from JSX).",
+        "Scope: a type parameter is in scope only inside its declaration — the signature, the body's annotations, and nested types. Class type parameters are visible in all instance members but NOT in `static` members.",
+        "Naming convention: `T` for a lone parameter; `K` key, `V` value, `E` element/error, `R` return, `P` props, `TItem`/`TKey` for descriptive multi-parameter APIs.",
+        "Multiple parameters are ordered and positional: `Map<K, V>` — swapping them is a different type, and type argument lists must be supplied left-to-right.",
+        "Arity is fixed: `Pair<string>` errors with 'Generic type Pair<A, B> requires 2 type argument(s)' unless later parameters have defaults.",
+        "A bare `<T>` is implicitly constrained by `unknown` — you may not call, index, or spread a `T` value without narrowing or constraining first.",
+        "Generic type aliases must be applied: `type Box<T> = { v: T }` used as bare `Box` is an error — the alias is a type *constructor*, not a type.",
+        "Example — reading a signature aloud: `declare function pluck<T, K extends keyof T>(items: T[], key: K): T[K][]` reads as 'for any object type T and any key K of T, map an array of T to an array of the values at K'."
+      ]
+    },
+    {
+      "title": "Generic Functions and How Inference Works",
+      "points": [
+        "Call-site inference: `identity('hi')` infers `T = string` with no explicit type argument; explicit arguments (`identity<string>('hi')`) are an override, not a requirement.",
+        "Mechanic: the compiler collects *inference candidates* by structurally matching each argument type against each parameter type, then picks the best common supertype of the candidates.",
+        "Multiple candidates from multiple positions: `function pair<T>(a: T, b: T): T[]` called as `pair(1, 'x')` infers `T = string | number` (union) rather than erroring — inference widens to accommodate.",
+        "Priority: return-type positions and contextual types have lower inference priority than direct argument positions; a parameter inferred from a callback return can be overridden by an earlier concrete argument.",
+        "Literal widening: `identity('hi')` infers `T = string`, but `identity<'hi'>('hi')` or `T extends string` constrained parameters preserve the literal `'hi'`. Constraints change widening behavior.",
+        "`const` type parameters (TS 5.0): `function f<const T>(x: T)` — `f(['a','b'])` infers the readonly tuple `readonly ['a','b']` instead of `string[]`, removing the need for a caller-side `as const`.",
+        "Contextual typing flows inward: in `arr.map(x => x.length)`, `x` is typed from `Array<T>.map`'s signature — the generic supplies the parameter type instead of requiring an annotation.",
+        "Inference failure defaults to the constraint, or to `unknown` if unconstrained: an unused type parameter silently becomes `unknown` and hides bugs.",
+        "Gotcha: you cannot partially apply type arguments — supplying one of two forces you to supply both (workaround: a curried function returning a generic function).",
+        "Example: `function first<T>(arr: readonly T[]): T | undefined { return arr[0] }` — `readonly T[]` accepts both mutable and readonly arrays; `T[]` would reject readonly ones."
+      ]
+    },
+    {
+      "title": "Constraints: `extends` as a Bound",
+      "points": [
+        "Syntax and meaning: `<T extends { length: number }>` restricts the *caller's* choice of T to types assignable to the bound, and grants the *body* access to the bound's members.",
+        "The two-sided bargain: constraints simultaneously narrow what callers may pass and widen what the implementation may do — that's the whole trade.",
+        "`extends` here means 'assignable to', not class inheritance — `<T extends string>` is legal even though nothing 'extends' `string` in the OO sense.",
+        "Common bounds: `T extends object`, `T extends keyof U`, `T extends unknown[]`, `T extends (...args: any[]) => any`, `T extends abstract new (...args: any[]) => any` for constructors.",
+        "Self-referential / F-bounded constraints: `<T extends Comparable<T>>` — the bound mentions the parameter it constrains, expressing 'comparable to itself'.",
+        "Constraints may reference earlier parameters, left-to-right only: `<T, K extends keyof T>` is legal; `<K extends keyof T, T>` is not.",
+        "A constrained `T` is still NOT its constraint: `function f<T extends {a: number}>(x: T) { x = {a: 1} }` errors — an arbitrary `T` may have more members than the bound.",
+        "Corollary gotcha: you can read constrained properties off a `T` value but you cannot construct a `T`, only receive one.",
+        "Gotcha: over-constraining loses information. `<T extends string>(x: T): string` throws away T on the way out; return `T` to keep the literal type.",
+        "Example — the classic safe getter: `function get<T, K extends keyof T>(o: T, k: K): T[K]` rejects `get({a:1}, 'b')` at compile time with 'Argument of type \"b\" is not assignable to parameter of type \"a\"'."
+      ]
+    },
+    {
+      "title": "`keyof`, Indexed Access, and Key-Driven Generics",
+      "points": [
+        "`keyof T` yields the union of T's public property keys: `keyof {a: 1, b: 2}` is `'a' | 'b'`; `keyof any` is `string | number | symbol`.",
+        "`keyof` on an array/tuple includes numeric-ish string keys plus every `Array.prototype` member — usually you want `T[number]` instead.",
+        "Indexed access `T[K]`: `Person['name']` is the property's type; `T[keyof T]` is the union of all value types.",
+        "`T[number]` on an array/tuple extracts the element type — the idiomatic way to derive a union from an `as const` array: `type Color = typeof COLORS[number]`.",
+        "`keyof` distributes over unions as an intersection of keys: `keyof (A | B)` = `keyof A & keyof B` — only the keys present in every member are safe to read.",
+        "Index signatures widen `keyof`: `keyof Record<string, number>` is `string | number` (numeric keys coerce), which is why `Record<string, T>` lookups silently return `T` for missing keys unless `noUncheckedIndexedAccess` is on.",
+        "`noUncheckedIndexedAccess` adds `| undefined` to every index-signature and array read — essential correctness flag for generic container code.",
+        "Practical pattern — key-safe setter: `function set<T, K extends keyof T>(o: T, k: K, v: T[K]): void` ties value type to key type so `set(p, 'age', 'old')` fails.",
+        "Practical pattern — filtering keys by value type: `type KeysOfType<T, V> = { [K in keyof T]-?: T[K] extends V ? K : never }[keyof T]`.",
+        "Example: `type FnKeys = KeysOfType<Window, Function>` — extracts every method name from a large interface without listing one."
+      ]
+    },
+    {
+      "title": "Generic Interfaces, Classes, and Aliases",
+      "points": [
+        "Generic interface: `interface Repo<T> { find(id: string): Promise<T | null>; save(x: T): Promise<void> }` — the parameter is bound at *declaration use site* (`Repo<User>`).",
+        "Generic class: `class Stack<T> { #items: T[] = []; push(x: T) {...}; pop(): T | undefined {...} }` — `new Stack<number>()` or inferred from a constructor argument.",
+        "Static members cannot use class type parameters: `static empty: T` errors with 'Static members cannot reference class type parameters' — statics exist once, T does not.",
+        "Generic type alias vs interface: aliases can be unions, conditionals, mapped types, and template literals; interfaces cannot, but interfaces support declaration merging and produce nicer error messages.",
+        "Generic methods vs generic classes: a method may declare its own parameter (`map<U>(f: (x: T) => U): Box<U>`), independent of the class's T — this is how functor-style APIs chain.",
+        "Structural typing means two generic instantiations are compatible when their members are: `Box<string>` and `{ value: string }` interchange freely.",
+        "Unused type parameters are dangerous in classes: `class Tagged<T> { id: string }` makes `Tagged<Dog>` and `Tagged<Cat>` mutually assignable because T never appears structurally.",
+        "Phantom-type workaround for the above: add `private readonly __brand?: T` (or an unused `_t!: T`) to force nominal-ish separation.",
+        "Constructor signature typing: `type Ctor<T> = new (...args: any[]) => T`; `function create<T>(C: Ctor<T>): T { return new C() }` — the runtime constructor value substitutes for erased type info.",
+        "Example — generic mixin: `function Serializable<TBase extends Ctor<object>>(Base: TBase) { return class extends Base { toJSON() {...} } }`, preserving the base's shape in the return type."
+      ]
+    },
+    {
+      "title": "Default Type Parameters and Explicit Type Arguments",
+      "points": [
+        "Syntax: `interface Options<T = string> { value: T }` — `Options` and `Options<string>` are then the same type.",
+        "Defaults make trailing parameters optional and fix the arity error: `Pair<A, B = A>` allows `Pair<number>`.",
+        "Defaults may reference earlier parameters (`<T, U = T[]>`) but not later ones — same left-to-right rule as constraints.",
+        "A default must satisfy its own constraint: `<T extends string = number>` errors.",
+        "Default ≠ inferred: defaults apply only when no type argument is supplied AND nothing can be inferred; an inference candidate always wins.",
+        "Design use: `Promise<T = void>`-style defaults let 90% of callers omit the argument while the API stays fully typed for the rest.",
+        "Explicit arguments override inference entirely and skip widening — useful to pin a literal union: `parse<Config>(json)`.",
+        "Danger of explicit arguments: they silence the check that inference would have performed; `useState<any>(x)` is a common way people accidentally opt out of typing.",
+        "Real-world pattern: React's `useState<T>`, `createContext<T>`, and `Array.prototype.reduce<U>` all rely on defaults plus explicit escape hatches.",
+        "Partial-application workaround: since you can't supply some type arguments, split into two calls — `const make = builder<Schema>(); make(value)` — so the first fixes T and the second infers the rest."
+      ]
+    },
+    {
+      "title": "Conditional Types: Types That Branch",
+      "points": [
+        "Syntax: `T extends U ? X : Y` — a compile-time ternary evaluated by assignability, not by runtime value.",
+        "Simplest example: `type IsString<T> = T extends string ? true : false`; `IsString<'a'>` is `true`, `IsString<1>` is `false`.",
+        "Deferred evaluation: when T is still an unresolved type parameter, the conditional stays unevaluated and is treated as its own opaque type until instantiated.",
+        "Consequence: inside a generic body, a value of a conditional type can't be assigned to either branch — you usually need an internal overload or a cast at the implementation boundary.",
+        "Nested conditionals implement type-level `switch`: `T extends string ? 'str' : T extends number ? 'num' : 'other'`.",
+        "`never` as the 'no case' branch is what makes filtering work — `never` disappears from unions.",
+        "Built-ins that are just conditionals: `Exclude<T, U> = T extends U ? never : T`, `Extract<T, U> = T extends U ? T : never`, `NonNullable<T> = T & {}`.",
+        "Assignability quirks to know: `any` in the checked position produces the *union of both branches*; `never` in a distributive position produces `never`.",
+        "Recursion is allowed and is how deep utilities work: `type DeepReadonly<T> = { readonly [K in keyof T]: DeepReadonly<T[K]> }`.",
+        "Example — a type-safe route parser sketch: `type Params<S> = S extends `${string}:${infer P}/${infer R}` ? P | Params<R> : S extends `${string}:${infer P}` ? P : never`."
+      ]
+    },
+    {
+      "title": "`infer`: Pattern Matching in the Type System",
+      "points": [
+        "`infer X` declares a fresh type variable inside the `extends` clause of a conditional, capturing whatever matched at that position.",
+        "Canonical use: `type ReturnType<T> = T extends (...a: any[]) => infer R ? R : never`.",
+        "More: `Parameters<T> = T extends (...a: infer P) => any ? P : never`, `InstanceType`, `Awaited`, and `ElementOf<T> = T extends (infer E)[] ? E : never`.",
+        "`infer` is only legal in the `extends` position of a conditional type — nowhere else.",
+        "Multiple `infer` sites with the same name in a *covariant* position produce a union; in a *contravariant* position (function parameters) they produce an intersection. This asymmetry is variance leaking into inference.",
+        "Constrained infer (TS 4.7): `T extends `${infer N extends number}` ? N : never` — filters and converts during the match instead of after.",
+        "Tuple destructuring with infer: `T extends [infer Head, ...infer Tail] ? ... : ...` is the standard recursion pattern for type-level list processing.",
+        "Variadic tuple types complement infer: `type Push<T extends unknown[], V> = [...T, V]`, `type Concat<A extends unknown[], B extends unknown[]> = [...A, ...B]`.",
+        "Gotcha: overloaded function types only infer from the *last* overload signature — `ReturnType` on an overloaded function silently picks one.",
+        "Example — recursive `Awaited`: unwraps `Promise<Promise<string>>` to `string`, handling thenables via `T extends { then(cb: (v: infer V) => any): any } ? Awaited<V> : T`."
+      ]
+    },
+    {
+      "title": "Distributive Conditional Types",
+      "points": [
+        "Rule: when the checked type is a *naked* type parameter and the argument is a union, the conditional distributes over each member and re-unions the results.",
+        "`type ToArray<T> = T extends any ? T[] : never`; `ToArray<string | number>` = `string[] | number[]`, NOT `(string | number)[]`.",
+        "Disable distribution by wrapping both sides in tuples: `type ToArrayNonDist<T> = [T] extends [any] ? T[] : never` gives `(string | number)[]`.",
+        "Non-naked positions never distribute: `T[] extends ... ?`, `Foo<T> extends ... ?`, and `keyof T extends ... ?` all check the whole type at once.",
+        "Distribution is why `Exclude<'a'|'b'|'c', 'a'>` returns `'b'|'c'` — the check runs three times.",
+        "`never` is the empty union: distributing over `never` runs zero branches, so `ToArray<never>` is `never`, not `never[]`. Classic surprise.",
+        "The bracket trick is also how you write strict equality checks: `type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false`.",
+        "Practical use — union filtering by discriminant: `type EventOf<T, K> = T extends { type: K } ? T : never` extracts one variant from a discriminated union.",
+        "Practical use — mapping a union to a lookup object: `type Handlers<E extends {type: string}> = { [K in E['type']]: (e: EventOf<E, K>) => void }`.",
+        "Gotcha checklist: unexpected union result → check for distribution; unexpected `never` → check for a `never` input; unexpected non-distribution → check whether T is truly naked."
+      ]
+    },
+    {
+      "title": "Mapped Types: Transforming Shapes Generically",
+      "points": [
+        "Syntax: `{ [K in keyof T]: F<T[K]> }` — iterate a key union and produce a new object type.",
+        "Modifiers: `?`/`-?` add or strip optionality, `readonly`/`-readonly` add or strip immutability. `Required<T> = { [K in keyof T]-?: T[K] }`.",
+        "Key remapping with `as` (TS 4.1): `{ [K in keyof T as `get${Capitalize<K & string>}`]: () => T[K] }` builds a getter interface from a data shape.",
+        "Remapping to `never` deletes keys — the standard way to write `Omit`-like filters: `[K in keyof T as T[K] extends Function ? never : K]`.",
+        "Homomorphic mapped types (`[K in keyof T]` over a bare T) preserve array-ness, tuple-ness, optionality, and readonly-ness; non-homomorphic ones (`[K in SomeUnion]`) flatten everything to an object.",
+        "That distinction is why `Partial<string[]>` is still an array, but `{[K in keyof string[]]: ...}` written over a union of keys is not.",
+        "Standard library mapped types to know: `Partial`, `Required`, `Readonly`, `Record<K, V>`, `Pick<T, K extends keyof T>`, `Omit<T, K>`.",
+        "`Omit` is not key-checked by default — `Omit<User, 'nmae'>` compiles silently; a stricter `StrictOmit<T, K extends keyof T>` catches the typo.",
+        "Combining with conditionals and recursion yields `DeepPartial`, `DeepReadonly`, `Mutable`, and JSON-serializability transforms.",
+        "Example — form state generator: `type FormState<T> = { [K in keyof T]: { value: T[K]; error?: string; touched: boolean } }` derives an entire state shape from a model interface."
+      ]
+    },
+    {
+      "title": "Variance: Covariance, Contravariance, Bivariance, Invariance",
+      "points": [
+        "The question variance answers: given `Dog extends Animal`, when is `F<Dog>` assignable to `F<Animal>`?",
+        "Covariant (`out` position): preserves direction. `Dog[]` is assignable to `readonly Animal[]`; a producer of Dogs is a producer of Animals.",
+        "Contravariant (`in` position): reverses direction. `(x: Animal) => void` is assignable to `(x: Dog) => void` — a handler that accepts any Animal can stand in wherever a Dog handler is needed.",
+        "Invariant: both positions. `Array<Dog>` should not be assignable to `Array<Animal>` — you could `push(cat)` through the alias and corrupt the original.",
+        "Bivariant: assignable in either direction — unsound, retained for ergonomics.",
+        "TypeScript's arrays are *unsoundly covariant* by design: `const animals: Animal[] = dogs; animals.push(new Cat())` compiles and corrupts `dogs`. Known, accepted hole.",
+        "`strictFunctionTypes` makes standalone function-type parameters properly contravariant; it deliberately does NOT apply to method declarations.",
+        "Method bivariance: `interface Handler { on(e: Dog): void }` stays bivariant so that `Array<T>.push`, DOM event handlers, and countless existing APIs keep working.",
+        "Derivation: variance is inferred structurally from where the parameter appears — output positions covariant, input positions contravariant, both invariant, neither bivariant/independent.",
+        "Mental model: covariance = 'I only give you T', contravariance = 'I only take T', invariance = 'I both give and take T'."
+      ]
+    },
+    {
+      "title": "Variance Annotations and Measuring Variance",
+      "points": [
+        "TS 4.7 explicit annotations: `interface Producer<out T>`, `interface Consumer<in T>`, `interface Store<in out T>`.",
+        "Annotations are checked, not asserted: marking `out T` while using T in a parameter position raises an error, so they double as documentation and a guardrail.",
+        "Primary motivation is compiler performance: structural variance measurement on large recursive generic types is expensive; an annotation lets the checker use a fast variance-based comparison instead of deep structural comparison.",
+        "`in out` (invariant) is the safe conservative annotation when unsure — it never accepts something the structural rule would reject.",
+        "Testing variance yourself: declare `let a: F<Animal>; let d: F<Dog>;` then try both assignments — which directions compile tells you the variance.",
+        "`readonly T[]` is covariant and safe; `T[]` is covariant and unsafe — prefer `readonly` in generic parameter positions to get soundness back for free.",
+        "`Promise<T>` is covariant (producer). `(x: T) => void` is contravariant. `Map<K, V>` is invariant in K and V through its mutating methods.",
+        "Callback parameter positions flip variance again — nesting matters: `(cb: (x: T) => void) => void` is covariant in T because contravariance applied twice cancels out.",
+        "Generic constraints do not fix variance; a constrained parameter still gets its variance from usage positions.",
+        "Practical guidance: design read-only generic containers covariant, sinks/handlers contravariant, and reach for invariance only when the type genuinely both reads and writes."
+      ]
+    },
+    {
+      "title": "Advanced Inference: Higher-Order, Contextual, and const",
+      "points": [
+        "Higher-order function inference (TS 3.4): composing generic functions can propagate free type parameters instead of collapsing them to `unknown` — `compose(f, g)` can stay generic.",
+        "Contextual return-type inference: `const f: <T>(x: T) => T = x => x` types the parameter from the annotation, no inline annotation needed.",
+        "Inference from generic callbacks: `function map<T, U>(a: T[], f: (x: T) => U): U[]` infers T from the array first, then supplies it contextually to `f`'s parameter — order matters.",
+        "Inference priority tiers, roughly: naked type parameter positions > return types > contextual signatures; a lower-priority site loses when candidates conflict.",
+        "`NoInfer<T>` (TS 5.4): blocks a position from producing candidates — `function pick<T>(items: T[], def: NoInfer<T>)` forces `def` to conform to the array's T rather than widening it.",
+        "`const` type parameters preserve literal and tuple-ness deeply, but only for object/array literals written at the call site — a variable passed in is already widened.",
+        "Generic type argument inference does not backtrack: once a candidate set is chosen the compiler does not retry with a different assignment, which is why some 'obvious' inferences fail.",
+        "Inference and unions: `T` inferred from `A | B` yields the union, but inference *into* a union target (`T | null`) tries each member and can pick a surprising one.",
+        "Debugging technique: hover, or force an error with `type Debug<T> = T; const _: Debug<never> = someValue` to print the resolved type in the diagnostic.",
+        "`satisfies` (TS 4.9) complements generics: `const cfg = {...} satisfies Config` validates against a type while keeping the narrow inferred literal type."
+      ]
+    },
+    {
+      "title": "Comparisons and Trade-Offs",
+      "points": [
+        "`any` vs `unknown` vs generic: `any` disables checking; `unknown` requires narrowing but loses the input/output relation; a generic preserves the relation — pick the generic whenever the type flows through.",
+        "Generic function vs overloads: overloads give per-case return types and better completion for a small fixed set; generics scale to open type sets and compose. Overloads also break `infer`-based utilities.",
+        "Generic vs union parameter: use a union when the body must branch on the case at runtime; use a generic when the body is genuinely type-agnostic.",
+        "Interface + generic vs abstract class: interfaces are erased and free; abstract classes carry runtime cost but allow shared implementation.",
+        "Conditional/mapped type vs runtime validation: types cannot check data at runtime — pair type-level work with Zod/Valibot-style parsers for external input.",
+        "Compile-time complexity: deep recursive conditional types are `O(depth)` instantiations and hit 'Type instantiation is excessively deep and possibly infinite' at roughly 50 (and a hard 100 for non-tail recursion); tail-recursion elimination raises the practical limit to ~1000.",
+        "Type-level string parsing and arithmetic are legal but expensive — a template-literal route parser can add seconds to every `tsc` run and to every keystroke in the editor.",
+        "Measure, don't guess: `tsc --diagnostics`, `--generateTrace`, and `--extendedDiagnostics` report instantiation counts and check time; variance annotations and shallower utilities are the usual fixes.",
+        "Readability trade-off: a five-level conditional type is unmaintainable by anyone but its author; a simple overload set or a plain union is often the better engineering call.",
+        "Heuristic: generic complexity should be proportional to how many callers benefit — library boundaries earn it, one-off application code rarely does."
+      ]
+    },
+    {
+      "title": "Common Mistakes and Anti-Patterns",
+      "points": [
+        "Unused type parameter: `function log<T>(msg: string)` — T is inferred as `unknown` and does nothing; the compiler won't warn without a lint rule.",
+        "'Return type only' generic: `function parse<T>(s: string): T` is a disguised cast — the caller names any T and the compiler never verifies it. Return `unknown` and let the caller narrow.",
+        "Assuming a constrained `T` equals its constraint: assigning a bound-shaped literal to a `T` variable fails, because T may be a subtype with extra required members.",
+        "Confusing `extends` in a constraint (assignability bound) with `extends` in a conditional (a test) — same keyword, different jobs.",
+        "Forgetting distribution: `NonEmpty<T> = T extends [] ? never : T` behaving strangely on unions until you wrap it as `[T] extends []`.",
+        "Forgetting `never` distributes to nothing: a utility that returns `never` for a `never` input is usually the distribution rule, not a bug in your logic.",
+        "Over-genericizing: three type parameters where one concrete interface would do — every caller now reads a signature instead of a name.",
+        "Relying on array covariance: `const animals: Animal[] = dogs` then pushing — compiles, corrupts. Use `readonly Animal[]` for parameters you only read.",
+        "`ReturnType` on an overloaded function silently resolving the last overload; likewise `Parameters` on overloads.",
+        "Using `{}` or `object` as a constraint expecting 'any object' — `{}` accepts everything except `null`/`undefined`, including `string` and `number`.",
+        "Escaping with `as any` inside a generic implementation and forgetting it: the public signature lies while the body is unchecked — isolate the cast in one line with a comment.",
+        "Ignoring `strictFunctionTypes` and `noUncheckedIndexedAccess`: generic container code is where these two flags earn their keep."
+      ]
+    },
+    {
+      "title": "Summary: The Generics Cheat Sheet",
+      "points": [
+        "Declare: `<T>` function/class/interface/alias; constrain with `T extends Bound`; default with `T = Fallback`; both together as `T extends B = D`.",
+        "Constrain when the body needs members; return `T` (not the constraint) to preserve caller information.",
+        "Inference reads arguments left-to-right, unions conflicting candidates, and falls back to the constraint or `unknown`. Override with explicit arguments, pin with `const T`, block with `NoInfer<T>`.",
+        "Key-driven safety: `<T, K extends keyof T>(o: T, k: K): T[K]` is the single most reusable generic shape in application code.",
+        "Conditional: `T extends U ? X : Y`, distributes over unions when T is naked; wrap in `[T]` to stop it; `never` in, `never` out.",
+        "`infer` captures inside the `extends` clause only — covariant sites union, contravariant sites intersect; `[infer H, ...infer R]` is the recursion workhorse.",
+        "Mapped: `{ [K in keyof T]: ... }` with `?`/`readonly` modifiers and `as` remapping; homomorphic form preserves arrays, tuples, and modifiers.",
+        "Variance: out = covariant (producers), in = contravariant (consumers), in out = invariant (both). Arrays are unsoundly covariant; methods are bivariant by design.",
+        "Annotate variance (`in`/`out`) on large recursive generic types for checker speed, not for behavior change.",
+        "Watch the budget: recursion depth ~50 practical (1000 with tail recursion), and `tsc --generateTrace` when the editor gets slow.",
+        "Decision rule: type appears twice in a signature → generic; type appears once and is opaque → `unknown`; type must branch at runtime → union with a discriminant; genuinely untypeable boundary → validate at runtime, then re-enter the type system.",
+        "Final principle: generics exist to move relationships from comments into the compiler — every type parameter should carry a relationship, and one that carries none should be deleted."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,893 @@
+{
+  "brand": "iolar",
+  "template": "studygram-pastel",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "MONGODB INDEXES: A FIELD GUIDE",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Indexes Exist",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Scan Or Seek",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No index = COLLSCAN: every document read for one query.",
+            "Index = ordered keys plus a `RecordId` pointer to the doc.",
+            "MongoDB indexes are WiredTiger row-store B-trees, O(log n).",
+            "`_id` index is automatic, unique, and cannot be dropped."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.users.createIndex({ age: 1 })   // 1 = ascending",
+            "db.users.createIndex({ age: -1 })  // -1 = descending",
+            "// auto name: age_1"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "How A Seek Works"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "root",
+              "branch",
+              "first key",
+              "walk siblings",
+              "RecordId",
+              "FETCH"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Descend the tree, land on the first matching key, walk in order.",
+            "Sorted keys serve equality, range and sort from one index.",
+            "`$gt`, `$lt`, `$gte`, `$lte` are contiguous slices of the tree.",
+            "Indexes are per-collection; one index per predicate branch."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Read The Explain"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.coll.find({email:'a@b.com'})",
+            "  .explain('executionStats')",
+            "// compare totalDocsExamined vs nReturned",
+            "// healthy index query sits near 1:1"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Stage",
+            "Means"
+          ],
+          "rows": [
+            [
+              "COLLSCAN",
+              "whole collection read"
+            ],
+            [
+              "IXSCAN",
+              "index seek"
+            ],
+            [
+              "FETCH",
+              "load full document"
+            ],
+            [
+              "PROJECTION_COVERED",
+              "doc never touched"
+            ],
+            [
+              "SORT",
+              "blocking in-memory sort"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Price Of Every Index"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Costs disk and RAM in the WiredTiger cache.",
+            "Slows every insert, update, delete touching indexed fields.",
+            "10 indexes = 11 B-tree writes for one insert.",
+            "Write amplification grows with each index you add."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Sort Memory Cap",
+          "text": "In-memory sorts are capped at 100 MB and abort with `Sort exceeded memory limit`. An index in the sort order removes the SORT stage entirely."
+        },
+        {
+          "type": "sidebox",
+          "title": "Building Live",
+          "items": [
+            "Hybrid build yields to readers and writers.",
+            "Still saturates disk I/O — schedule it.",
+            "Start with `db.coll.createIndex({field: 1})`."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Single Field Indexes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "One Doc, One Key",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.users.createIndex({ age: 1 })",
+            "// every document contributes exactly one key",
+            "db.users.createIndex({ 'address.city': 1 })"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Direction is irrelevant here: the tree walks backwards fine.",
+            "`{age:1}` serves `sort({age:1})` and `sort({age:-1})`.",
+            "Serves equality `{age:30}` and range `{age:{$gte:18,$lt:65}}`.",
+            "`$in` becomes a bounded multi-interval index scan."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Bounds Tell The Truth"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "explain bounds",
+            "Verdict"
+          ],
+          "rows": [
+            [
+              "`[\"[30, 30]\"]`",
+              "equality seek"
+            ],
+            [
+              "`[\"[18, 65)\"]`",
+              "tight range, good"
+            ],
+            [
+              "`[MinKey, MaxKey]`",
+              "no selectivity at all"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Null And Missing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A document missing the field still gets a `null` key.",
+            "`{age: null}` matches missing and explicitly-null docs alike.",
+            "`createIndex({address:1})` indexes the whole subdocument.",
+            "Whole-object equality only, and inner field order matters."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Selectivity Wins",
+          "text": "An index on a boolean `isActive` split 50/50 rarely beats a collection scan. Index the fields that cut the candidate set hard."
+        },
+        {
+          "type": "heading",
+          "text": "Unique And Its Trap"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.users.createIndex({email:1},{unique:true})",
+            "// duplicate: E11000 duplicate key error (11000)",
+            "// two docs missing email -> both null -> 2nd fails"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Sparse vs Partial"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "sparse",
+                "lines": [
+                  "Skips docs lacking the field",
+                  "Smaller index",
+                  "Cannot answer `{f: null}`",
+                  "Cannot serve a full sort"
+                ]
+              },
+              {
+                "title": "partial",
+                "lines": [
+                  "Arbitrary predicate filter",
+                  "Query must be a provable subset",
+                  "Modern replacement",
+                  "Pairs with `unique`"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.users.createIndex({email:1},{",
+            "  unique:true,",
+            "  partialFilterExpression:{email:{$exists:true}}})"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Single Field Indexes (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Housekeeping",
+          "items": [
+            "`{hidden:true}`: maintained but invisible to the planner.",
+            "Test a drop safely, unhide instantly if latency regresses.",
+            "Auto name `age_1`; pass `{name:'idx_age'}` under 127 bytes."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "One Ordered Tuple",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.orders.createIndex({",
+            "  status: 1, createdAt: -1, userId: 1 })",
+            "// hard ceiling: 32 fields per compound index"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "status",
+              "createdAt",
+              "userId",
+              "RecordId"
+            ],
+            "caption": "one index key"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keys sort lexicographically by the tuple, left to right.",
+            "All `status` values group; inside each, `createdAt` descending."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Prefix Rule"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Query",
+            "On `{a,b,c}`"
+          ],
+          "rows": [
+            [
+              "`{a}`",
+              "seek"
+            ],
+            [
+              "`{a,b}`",
+              "seek"
+            ],
+            [
+              "`{a,b,c}`",
+              "seek"
+            ],
+            [
+              "`{b}`",
+              "no seek"
+            ],
+            [
+              "`{b,c}`",
+              "no seek"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Only the leading contiguous subset can be seeked.",
+            "No leading `a` means no start point in the tree.",
+            "`{a,b,c}` makes `{a}` and `{a,b}` redundant — drop them."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "ESR Field Order"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Equality first, then Sort fields, then Range fields.",
+            "Equality pins one contiguous slice of the tree.",
+            "A range opens the slice; fields after it lose sorted order."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "find({status:'active', age:{$gt:21}})",
+            "  .sort({createdAt:1})",
+            "// want {status:1, createdAt:1, age:1}",
+            "// not  {status:1, age:1, createdAt:1}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Wrong Order Still Runs",
+          "text": "The index keeps filtering, but explain grows a `stage: 'SORT'` — a blocking sort bolted onto the scan. Check for it before shipping."
+        },
+        {
+          "type": "heading",
+          "text": "Covered Queries"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every field read and returned lives inside the index.",
+            "Needs `_id: 0` in the projection unless `_id` is indexed.",
+            "explain shows `totalDocsExamined: 0` — the strongest win."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Compound Indexes and the Prefix Rule",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Two More Truths",
+          "items": [
+            "Non-prefix fields filter after the seek: IXSCAN, loose bounds.",
+            "Index intersection exists but rarely beats one compound index.",
+            "Design for query shapes: list your top queries first."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "When Direction Matters",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Direction matters only in compound indexes, relative to siblings.",
+            "`{a:1,b:-1}` serves `sort({a:1,b:-1})` — forward walk.",
+            "The same index serves `sort({a:-1,b:1})` — backward walk.",
+            "It does NOT serve `sort({a:1,b:1})`: one walk cannot flip one field."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Inverse Test",
+          "text": "A sort is index-supported when the requested pattern equals the index pattern or its exact inverse — every field flipped, none left alone."
+        },
+        {
+          "type": "heading",
+          "text": "Prefix And Absorption"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sort keys must form an index prefix, or follow equality fields.",
+            "`{status:1,createdAt:1}` plus `find({status:'A'})` sorts free.",
+            "Equality pins `status` constant, so `createdAt` acts as prefix.",
+            "`find({status:{$gt:'A'}})` absorbs nothing — blocking sort returns."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "index sort",
+                "lines": [
+                  "Streams the first doc instantly",
+                  "`limit(10)` stops at 10 keys",
+                  "No memory ceiling"
+                ]
+              },
+              {
+                "title": "blocking SORT",
+                "lines": [
+                  "Buffers every result first",
+                  "`limit(10)` gains nothing",
+                  "100 MB cap, then error"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Pagination Payoff"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "find({status:'A'}).sort({createdAt:1}).limit(10)",
+            "// stops after 10 index entries",
+            "// skip(10000) still walks 10000 entries first"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Prefer range pagination on the sort key over `skip`.",
+            "`{createdAt: {$lt: lastSeen}}` reseeks instead of re-walking.",
+            "`allowDiskUse: true` spills a big sort — a bandage, not a fix."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Edge Cases"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Case",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "multikey sort asc",
+              "ordered by array min"
+            ],
+            [
+              "multikey sort desc",
+              "ordered by array max"
+            ],
+            [
+              "`$natural`",
+              "storage order, no index"
+            ],
+            [
+              "collation mismatch",
+              "index unusable"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Collation Note",
+          "items": [
+            "An index built with one collation cannot serve another.",
+            "Mismatch kills both the sort and the equality match."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Never Trust `$natural`",
+          "text": "`$natural` ignores indexes and returns storage order. It is not an ordering guarantee — never build semantics on top of it."
+        }
+      ]
+    },
+    {
+      "page_title": "Multikey Indexes (Arrays)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Arrays Index Themselves",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Index an array field and MongoDB makes it multikey automatically.",
+            "No option, no flag, no separate command to run.",
+            "One document produces N keys, one per array element.",
+            "All N keys point back to the same `RecordId`."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.posts.createIndex({ tags: 1 })",
+            "// {tags:['db','mongo','index']} -> 3 keys",
+            "db.orders.createIndex({ 'items.sku': 1 })"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "db | r7",
+              "index | r7",
+              "mongo | r7",
+              "(sorted)"
+            ],
+            "caption": "keys for doc r7"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`find({tags:'mongo'})` seeks one key — membership is equality.",
+            "Index size tracks total array cardinality, not document count.",
+            "1M docs with 50-element arrays hold 50M index keys."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The One-Array Limit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A compound index may hold at most ONE array-valued field.",
+            "Two arrays would demand a cartesian product of keys.",
+            "An insert making both arrays fails: `cannot index parallel arrays`.",
+            "The multikey flag is per-index and sticky — it survives the delete."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "No Covered Queries",
+          "text": "The multikey flag disables index-only plans. Expect a FETCH on every multikey hit, however tight the bounds look in explain."
+        },
+        {
+          "type": "heading",
+          "text": "`$elemMatch` Or Silent Bug"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "find({items:{$elemMatch:{sku:'A',qty:{$gt:5}}}})",
+            "// SAME element must satisfy both",
+            "find({'items.sku':'A','items.qty':{$gt:5}})",
+            "// DIFFERENT elements may satisfy each"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The index narrows one condition; the other rechecks in FETCH.",
+            "So multikey bounds are looser than explain makes them look."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sharp Edges"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Feature",
+            "On multikey"
+          ],
+          "rows": [
+            [
+              "covered query",
+              "impossible"
+            ],
+            [
+              "sort + range on the array",
+              "not index-served"
+            ],
+            [
+              "`unique`",
+              "no 2 docs share an element"
+            ],
+            [
+              "TTL, hashed, text",
+              "own array rules"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Subdocument Arrays",
+          "items": [
+            "`createIndex({'items.sku':1})` indexes each element's `sku`.",
+            "One key per element, same RecordId, same limits apply."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Text Indexes and Search",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Tokenize And Stem",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "raw text",
+              "tokenize",
+              "drop stop words",
+              "stem",
+              "term keys"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.docs.createIndex({ description: 'text' })",
+            "db.docs.createIndex({ title:'text', body:'text' })",
+            "// only ONE text index per collection"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An inverted-style index over tokenized, stemmed, filtered terms.",
+            "One text index per collection, but it may cover many fields.",
+            "`createIndex({'$**':'text'})` indexes every string field.",
+            "Wildcard text is cheap to type, expensive to run in production."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Writing A `$text` Query"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "find({$text:{$search:'mongodb index'}})   // OR-ed",
+            "find({$text:{$search:'\\\"compound index\\\"'}}) // phrase",
+            "find({$text:{$search:'mongodb -atlas'}})  // negated"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Terms are OR-ed by default; escaped quotes make a phrase.",
+            "A leading minus negates a term inside the same search string.",
+            "Score only via `{score:{$meta:'textScore'}}` in the projection.",
+            "Sort it with `sort({score:{$meta:'textScore'}})`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Language And Weights"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`default_language`",
+              "stemming + stop words"
+            ],
+            [
+              "`language` field",
+              "per-document override"
+            ],
+            [
+              "`language:'none'`",
+              "raw tokens, no stemming"
+            ],
+            [
+              "`weights:{title:10}`",
+              "title hit worth 10x"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Use `'none'` for codes, identifiers, non-linguistic tokens.",
+            "A text index is implicitly multikey — many term keys per doc.",
+            "It is often larger on disk than the data it indexes."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Text Indexes and Search (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What `$text` Refuses"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cannot sit inside `$or` beside non-text clauses.",
+            "Cannot be negated with `$not`; one `$text` per query.",
+            "No prefix or substring match: `mongo` misses `mongodb`.",
+            "Compound text puts equality fields first, and the query must supply them."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.docs.createIndex({ tenantId: 1, body: 'text' })",
+            "// query MUST pass tenantId as equality"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Reach For Atlas Search",
+          "text": "Substring, fuzzy matching and real relevance tuning need Lucene-backed Atlas Search. `$text` is the blunt self-hosted tool."
+        },
+        {
+          "type": "sidebox",
+          "title": "Defaults",
+          "items": [
+            "Case and diacritic insensitive by default (version 3 indexes).",
+            "Toggle per query with `caseSensitive` / `diacriticSensitive`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Expiry As An Index",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.sessions.createIndex({ createdAt: 1 },",
+            "  { expireAfterSeconds: 3600 })",
+            "// deleted 3600s after the createdAt value"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The field must be a BSON Date, or an array of Dates.",
+            "Any other type and the document simply never expires.",
+            "With an array of Dates the EARLIEST date decides expiry.",
+            "Still a normal single-field index: serves queries and sorts."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Monitor Loop"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "TTLMonitor",
+              "60s wake",
+              "scan index",
+              "real deletes",
+              "oplog",
+              "secondaries"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Deletion latency is up to ~60s plus the delete itself.",
+            "TTL deletes are real deletes: change streams fire, oplog grows.",
+            "A mass expiry is a write storm — spread your timestamps.",
+            "Runs on the primary only; secondaries apply replicated deletes."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Absolute Expiry",
+          "text": "Set `expireAfterSeconds: 0` and store the exact desired deletion timestamp in the field. The monitor then honours your date verbatim."
+        },
+        {
+          "type": "heading",
+          "text": "Changing The Window"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.runCommand({collMod:'sessions',",
+            "  index:{keyPattern:{createdAt:1},",
+            "         expireAfterSeconds: 7200}})"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Your query is either seeking or scanning, and `explain` is the only thing that will tell you which. This field guide walks the whole index zoo — B-tree mechanics, the prefix rule, ESR field order, multikey array traps, TTL, text, and the planner mistakes that quietly turn a seek back into a COLLSCAN. Ten pages of dense notes: save it before your next slow-query hunt.",
+    "hashtags": [
+      "#mongodb",
+      "#databases",
+      "#indexing",
+      "#backenddev",
+      "#systemdesign",
+      "#nosql",
+      "#performance",
+      "#devnotes",
+      "#softwareengineering",
+      "#codingtips",
+      "#databasedesign",
+      "#iolar"
+    ]
+  }
+}

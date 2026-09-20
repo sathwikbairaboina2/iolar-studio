@@ -1,0 +1,1554 @@
+{
+  "brand": "iolar",
+  "template": "studygram-pastel",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "REDIS PERSISTENCE",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Persistence At All",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "RAM Is The Only Copy",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Authoritative dataset lives in RAM, not on disk",
+            "Process exit loses everything not yet written out",
+            "Persistence = write state so a restart can rebuild it",
+            "Redis ACKs the write before it hits the platter"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Three Failure Classes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Failure",
+            "What dies",
+            "Survives"
+          ],
+          "rows": [
+            [
+              "Process crash",
+              "`redis-server`",
+              "page cache"
+            ],
+            [
+              "OS / host crash",
+              "page cache",
+              "fsynced bytes"
+            ],
+            [
+              "Disk failure",
+              "the files",
+              "offsite copy"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Durability, RPO, RTO"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Durability: an ACKed write survives a named failure class",
+            "RPO: data you accept losing, in time (e.g. 1s)",
+            "RTO: how long a restart takes to become serving-ready",
+            "Each policy guards a different class — say which"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Mechanisms"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Redis persistence",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0",
+                "c0_1"
+              ],
+              [
+                "c1_0",
+                "c1_1"
+              ],
+              [
+                "c2_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "Redis persistence",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "RDB"
+              },
+              "b1": {
+                "text": "AOF"
+              },
+              "b2": {
+                "text": "Both"
+              },
+              "c0_0": {
+                "text": "periodic snapshot"
+              },
+              "c0_1": {
+                "text": "binary dump"
+              },
+              "c1_0": {
+                "text": "command log"
+              },
+              "c1_1": {
+                "text": "fsync dial"
+              },
+              "c2_0": {
+                "text": "they run together"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Not The Same As Replication",
+          "text": "A replica protects against host loss; persistence protects against restart amnesia. Production wants both."
+        },
+        {
+          "type": "sidebox",
+          "title": "Replicas Copy Bugs Too",
+          "items": [
+            "A stray `FLUSHALL` replicates instantly",
+            "An hour-old `dump.rdb` still holds the data",
+            "Backups beat replicas for human error"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reading The State"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "redis-cli INFO persistence",
+            "# rdb_*  aof_*  loading",
+            "# rdb_last_bgsave_status, aof_last_write_status",
+            "# one command, every state in this handbook"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Zero Persistence Is Legit",
+          "items": [
+            "`save \"\"` plus `appendonly no`",
+            "Cache-only nodes are rebuildable by design",
+            "Only when a real system of record sits behind"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Pick By Need",
+          "text": "RDB for backups and fast restarts, AOF for a low RPO, both for production."
+        },
+        {
+          "type": "qa",
+          "q": "\"We run an AOF, so we're durable\" — true?",
+          "a_bullets": [
+            "False until you also state `appendfsync`",
+            "`appendfsync no` can lose ~30s on a host crash",
+            "A durability claim needs a policy plus a failure class"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "RDB Snapshots: What & How",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What An RDB Is",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compact binary dump of the whole keyspace",
+            "Point-in-time: one instant, one file",
+            "Default `dump.rdb`, written inside `dir`",
+            "Versioned, self-describing, CRC64 trailer"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "dbfilename dump.rdb   # names the file",
+            "dir /var/lib/redis    # Redis chdir()s here",
+            "rdbcompression yes    # LZF strings, cheap CPU",
+            "rdbchecksum yes       # CRC64, independent knob"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "SAVE vs BGSAVE"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "`SAVE`",
+                "lines": [
+                  "Main thread",
+                  "Blocks every client",
+                  "Scripts, shutdown only"
+                ]
+              },
+              {
+                "title": "`BGSAVE`",
+                "lines": [
+                  "Forks a child",
+                  "Parent keeps serving",
+                  "The normal path"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Automatic Triggers"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "save 900 1       # 1 change in 15 min",
+            "save 300 10      # 10 changes in 5 min",
+            "save 60 10000    # 10k changes in 1 min",
+            "save \"\"          # disables all of them"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`CONFIG SET save \"\"` does it at runtime",
+            "Implicit BGSAVE on `SHUTDOWN` if saves configured",
+            "Also on `DEBUG RELOAD` and full replica sync"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Atomic On Disk"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "fork child",
+              "write temp file",
+              "checksum",
+              "rename() over dump.rdb"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Never A Half File",
+          "text": "Readers see the old snapshot or the new one. `rename()` is atomic, so a backup copy needs no locking."
+        },
+        {
+          "type": "heading",
+          "text": "Watching A Save Land"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "redis-cli LASTSAVE     # unix ts of last success",
+            "redis-cli INFO persistence",
+            "# rdb_bgsave_in_progress, rdb_last_save_time",
+            "# rdb_last_bgsave_status, rdb_changes_since_last_save"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Backup Recipe",
+          "items": [
+            "Poll `LASTSAVE` until it advances",
+            "`redis-check-rdb dump.rdb` before trusting it",
+            "`cp dump.rdb snap-2026-09-07.rdb`",
+            "One immutable file — ship it anywhere"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Fork, Copy-on-Write & Snapshot Cost",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What fork() Actually Does",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Child gets a logical copy of parent memory",
+            "Pages are shared and marked read-only",
+            "No data bytes copied — only page tables"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Copy-On-Write Tax"
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "r/o",
+              "r/o",
+              "WRITE",
+              "copied 4KB",
+              "r/o",
+              "r/o"
+            ],
+            "caption": "shared pages after fork"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Parent mutates a shared page: kernel copies 4KB",
+            "Memory grows with write rate, not dataset size",
+            "Worst case a BGSAVE doubles RSS — keep headroom",
+            "`rdb_last_cow_size` = bytes copied last BGSAVE"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Fork Stall"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Dataset",
+            "Page table copy",
+            "Felt as"
+          ],
+          "rows": [
+            [
+              "1 GB",
+              "~10-20 ms",
+              "latency spike"
+            ],
+            [
+              "8 GB",
+              "~80-160 ms",
+              "p99 blowup"
+            ],
+            [
+              "THP on",
+              "2 MB per copy",
+              "hundreds of ms"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stall scales with dataset size, not write rate",
+            "`INFO stats` `latest_fork_usec` = exact last stall",
+            "Alert on it — that number is your fork budget"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Host Prep, Two Lines"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "echo never > /sys/kernel/mm/transparent_hugepage/enabled",
+            "sysctl -w vm.overcommit_memory=1",
+            "# THP off: COW copies 4KB pages, not 2MB",
+            "# overcommit 1: fork() survives RSS+COW > RAM"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Redis Warns You At Boot",
+          "text": "The THP warning in the log is not cosmetic. Leaving it on is the classic source of mystery spikes during saves."
+        },
+        {
+          "type": "sidebox",
+          "title": "When Fork Fails",
+          "items": [
+            "`rdb_last_bgsave_status:err` appears",
+            "`stop-writes-on-bgsave-error yes` then rejects writes",
+            "Client sees `MISCONF`, not silent loss"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "One Child At A Time"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "BGSAVE, AOF rewrite and disk replica sync all fork",
+            "Same COW tax applies to all three",
+            "A BGSAVE asked for during a rewrite is deferred",
+            "Watch `rdb_bgsave_scheduled:1`"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Lowering The Bill",
+          "items": [
+            "Shard into smaller instances",
+            "Fewer `save` points",
+            "Run snapshots on a replica, not the primary",
+            "Keep `maxmemory` well under RAM"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "AOF: The Append-Only Log",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "A Log Of Mutations",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every write command appended in RESP wire format",
+            "Logged after execution — only successful mutations",
+            "Append-only: no seeks, no in-place edits",
+            "So a truncated tail is the only realistic corruption"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "appendonly yes",
+            "appendfilename \"appendonly.aof\"",
+            "appenddirname \"appendonlydir\"   # Redis 7+"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Commands Get Normalised"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "You ran",
+            "AOF stores",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`SPOP s`",
+              "`SREM s m`",
+              "random pick"
+            ],
+            [
+              "`EXPIRE k 60`",
+              "`PEXPIREAT k <ms>`",
+              "absolute time"
+            ],
+            [
+              "`INCRBYFLOAT k .1`",
+              "`SET k <result>`",
+              "float drift"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Replay Must Be Deterministic",
+          "text": "Rewriting non-deterministic commands before logging is what makes a replay land on the exact same dataset."
+        },
+        {
+          "type": "heading",
+          "text": "Two Writes Per Command"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "command",
+              "AOF buffer",
+              "write() page cache",
+              "fsync() platter"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Buffer flushes once per event-loop pass (`beforeSleep`)",
+            "Not once per command — the batching is deliberate",
+            "`write()` and `fsync()` are separate steps",
+            "That split is the whole durability story"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Recovery Is A Replay"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Redis starts a fake client on boot",
+            "Feeds the log back command by command",
+            "`aof-load-truncated yes` (default) tolerates a cut tail",
+            "It warns and keeps appending instead of refusing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keeping It From Growing"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "auto-aof-rewrite-percentage 100  # doubled since base",
+            "auto-aof-rewrite-min-size 64mb   # and past this floor",
+            "# manual kick: redis-cli BGREWRITEAOF"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "INFO Keys To Know",
+          "items": [
+            "`aof_enabled`, `aof_rewrite_in_progress`",
+            "`aof_last_bgrewrite_status`, `aof_last_write_status`",
+            "`aof_current_size` vs `aof_base_size`"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Safe to switch AOF on in a live server?",
+          "a_bullets": [
+            "`CONFIG SET appendonly yes` — it does not block",
+            "It kicks off a background rewrite to build the base",
+            "`redis-check-aof --fix` truncates a bad trailing command"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "fsync Policies: The Durability Dial",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Exactly Three Settings",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`appendfsync`",
+            "Loss window",
+            "Throughput"
+          ],
+          "rows": [
+            [
+              "`always`",
+              "~1 command",
+              "<10k ops/s"
+            ],
+            [
+              "`everysec`",
+              "~1-2 s",
+              "near full"
+            ],
+            [
+              "`no`",
+              "~30 s",
+              "fastest"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`everysec` is the default and the sane one",
+            "`always` fsyncs before replying to the client",
+            "`no` leaves it to kernel dirty-page writeback"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Distinction That Matters"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "`write()` saves you from",
+                "lines": [
+                  "redis-server crash",
+                  "`kill -9`",
+                  "OOM killer"
+                ]
+              },
+              {
+                "title": "`fsync()` saves you from",
+                "lines": [
+                  "kernel panic",
+                  "power cut",
+                  "host loss"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Process Kill Is Cheap",
+          "text": "Even `appendfsync no` loses nothing when only redis-server dies — the kernel still owns the buffer."
+        },
+        {
+          "type": "heading",
+          "text": "everysec Is Really 2s"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A background thread fsyncs once a second",
+            "If that thread is still busy, the main thread waits",
+            "Documented delay of up to another second",
+            "Budget 2s of loss, not 1s"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rewrites Fight The Disk"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "no-appendfsync-on-rewrite yes",
+            "# main AOF fsync paused while a child writes",
+            "# = appendfsync no for the whole rewrite window",
+            "# buys latency, sells durability. Know it first."
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Hardware Tells Lies",
+          "items": [
+            "fsync hits the platter only if write cache is off",
+            "...or battery / capacitor backed",
+            "Consumer SSDs report success early",
+            "EBS and PD fsync sits in the low milliseconds"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Per-Write Durability"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SET order:9 paid",
+            "WAITAOF 1 1 100   # 1 local fsync, 1 replica, 100ms",
+            "WAIT 1 100        # replication only, NOT fsync",
+            "# 7.2+; confusing the two is a real outage"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "One Node Is Never Enough",
+          "text": "`always` on a single box still dies with the box. Cross-machine durability needs a replica plus `WAITAOF`."
+        }
+      ]
+    },
+    {
+      "page_title": "AOF Rewrite & Multi-Part AOF",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Log Grows Forever",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`INCR counter` a million times = a million entries",
+            "...describing one integer of actual state",
+            "Rewrite emits the shortest sequence that rebuilds it",
+            "History discarded, current dataset kept"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "before:  INCR c   x 1,000,000",
+            "after:   SET c 1000000",
+            "# same dataset, one line instead of a million"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "When It Fires"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "auto-aof-rewrite-percentage 100  # grown 2x aof_base_size",
+            "auto-aof-rewrite-min-size 64mb   # and past the floor",
+            "# 0 disables auto rewrite entirely",
+            "# then the log grows until the disk fills"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`BGREWRITEAOF` forks a child that walks memory",
+            "The child writes a fresh, minimal base",
+            "`aof_rewrite_scheduled:1` = waiting on a running child"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Old Design vs Redis 7"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Pre-7",
+                "lines": [
+                  "Child writes one file",
+                  "Parent buffers new writes",
+                  "Buffer appended, then rename",
+                  "Memory-hungry and fiddly"
+                ]
+              },
+              {
+                "title": "Multi-part AOF",
+                "lines": [
+                  "Child writes base only",
+                  "Parent appends to a new incr",
+                  "Manifest lists the parts",
+                  "No rewrite buffer at all"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Inside appendonlydir/"
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "*.manifest",
+                "*.base.rdb"
+              ],
+              [
+                "*.1.incr.aof",
+                "*.2.incr.aof"
+              ]
+            ],
+            "caption": "appendonlydir/"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Manifest is updated atomically at the very end",
+            "Old base and incr files deleted only after that",
+            "A crash mid-rewrite leaves the old manifest valid"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Hybrid Format"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`aof-use-rdb-preamble yes`, default since 4.0",
+            "Base is an RDB dump, not RESP commands",
+            "Tail stays per-command, so durability is unchanged",
+            "Loads dramatically faster than a plain AOF"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Still A Fork",
+          "text": "A rewrite pays the same COW memory and `latest_fork_usec` stall as a BGSAVE — and the two never run at once."
+        }
+      ]
+    },
+    {
+      "page_title": "Restart & Recovery Behaviour",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Load Precedence",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Redis boots",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1"
+              ],
+              [
+                "c0_0",
+                "c0_1"
+              ],
+              [
+                "c1_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "Redis boots",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "`appendonly yes`"
+              },
+              "b1": {
+                "text": "`appendonly no`"
+              },
+              "c0_0": {
+                "text": "loads AOF"
+              },
+              "c0_1": {
+                "text": "ignores dump.rdb"
+              },
+              "c1_0": {
+                "text": "loads dump.rdb"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "AOF wins because it is the more complete record",
+            "There is no merge — the RDB is simply not read"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The #1 Loss Trap",
+          "text": "Good RDB on disk, you add `appendonly yes` to the config and restart: Redis reads an empty AOF and boots an empty dataset."
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# safe enablement, at runtime, RDB already loaded",
+            "redis-cli CONFIG SET appendonly yes",
+            "redis-cli INFO persistence | grep rewrite",
+            "redis-cli CONFIG REWRITE   # persist to the file"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "While It Loads"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`INFO persistence` reports `loading:1`",
+            "Clients get `-LOADING Redis is loading the dataset in memory`",
+            "Progress: `loading_total_bytes`, `loading_loaded_perc`",
+            "Plus `loading_eta_seconds`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "RTO By Format"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Format",
+            "Load path",
+            "Speed"
+          ],
+          "rows": [
+            [
+              "RDB",
+              "binary parse",
+              "seconds per GB"
+            ],
+            [
+              "Hybrid AOF",
+              "RDB base + tail",
+              "close behind"
+            ],
+            [
+              "Plain AOF",
+              "re-dispatch every command",
+              "slowest by far"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Damaged Files"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Damage",
+            "Redis does",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "Bad RDB checksum",
+              "refuses to start",
+              "older backup"
+            ],
+            [
+              "Truncated AOF tail",
+              "loads, warns",
+              "nothing"
+            ],
+            [
+              "Corrupt AOF middle",
+              "exits",
+              "`redis-check-aof --fix`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`--fix` cuts at the bad point — everything after is gone",
+            "There is no partial RDB load, ever"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Stopping Cleanly"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`SHUTDOWN` does a final blocking save if saves exist",
+            "`SHUTDOWN NOSAVE` skips it; `kill -9` always skips",
+            "Redis 7 waits for lagging replicas, `shutdown-timeout 10`",
+            "`DEBUG RELOAD` saves and reloads in place — a round-trip test"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Restore Drill",
+          "items": [
+            "Stop Redis first",
+            "Drop the file into `dir`, right name and owner",
+            "Start Redis — it loads on boot",
+            "Never copy into a running instance's `dir`"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "RDB vs AOF: Side by Side",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Loss, Size, Speed",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "RDB",
+            "AOF"
+          ],
+          "rows": [
+            [
+              "Loss window",
+              "minutes",
+              "~1s / ~1 cmd"
+            ],
+            [
+              "File size",
+              "compact binary",
+              "much larger"
+            ],
+            [
+              "Restart",
+              "fastest",
+              "slowest (plain)"
+            ],
+            [
+              "Overhead",
+              "fork spike only",
+              "per-write + fsync"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Hybrid AOF sits between on both size and load speed",
+            "RDB costs nothing at all between snapshots",
+            "AOF pays a small constant cost on every write"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Operating Them"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "RDB",
+            "AOF"
+          ],
+          "rows": [
+            [
+              "Backup",
+              "one `cp`-able file",
+              "dir + manifest"
+            ],
+            [
+              "Point-in-time",
+              "hourly restore points",
+              "as of the crash"
+            ],
+            [
+              "Disk I/O",
+              "periodic burst",
+              "steady append"
+            ],
+            [
+              "Blast radius",
+              "unusable wholesale",
+              "truncate, salvage"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Backups Still Need RDB",
+          "text": "AOF gives you \"now\". Only archived snapshots give you \"yesterday at 3pm\" — which is what a bad `FLUSHALL` needs."
+        },
+        {
+          "type": "heading",
+          "text": "Host Crash Ranking"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "nothing",
+              "RDB",
+              "AOF everysec",
+              "AOF always"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Left to right: weakest to strongest on one box",
+            "AOF `always` is the ceiling for a single node",
+            "Both mechanisms fork, so neither escapes COW",
+            "Both show up in `latest_fork_usec`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Choosing"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Pick",
+            "When"
+          ],
+          "rows": [
+            [
+              "Both",
+              "production; Redis's own advice"
+            ],
+            [
+              "RDB only",
+              "cache-like data, huge set, fast restart"
+            ],
+            [
+              "AOF only",
+              "disk cheap, low loss, no file backups"
+            ],
+            [
+              "Neither",
+              "pure cache, warmup is cheap"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "AOF-only is rare — you still want RDB backups",
+            "RDB is the DR artifact, AOF is the low-RPO log",
+            "\"Neither\" assumes a real system of record behind it"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "One sentence: which do I run?",
+          "a_bullets": [
+            "Both — `appendonly yes` plus `save` lines",
+            "AOF covers the last second, RDB the last week",
+            "You pay the fork tax either way"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Gotchas & Common Mistakes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "MISCONF Locks Writes",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "MISCONF Redis is configured to save RDB snapshots,",
+            "but is currently not able to persist on disk.",
+            "# usually a full disk or bad `dir` permissions"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Writes are rejected because a BGSAVE failed",
+            "Fix the disk, not `stop-writes-on-bgsave-error no`",
+            "That flag turns loud failure into silent data loss"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Disk Space Arithmetic"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A BGSAVE writes a full temp copy before renaming",
+            "An AOF rewrite writes a full new base too",
+            "Each needs room for a second whole dataset",
+            "Sizing `dir` at 1x is how you meet MISCONF"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Config Traps"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Result"
+          ],
+          "rows": [
+            [
+              "`appendonly yes` in file, no AOF",
+              "boots empty"
+            ],
+            [
+              "`CONFIG SET`, no `CONFIG REWRITE`",
+              "reverts on restart"
+            ],
+            [
+              "`SAVE` on a big instance",
+              "blocks for minutes"
+            ],
+            [
+              "`no-appendfsync-on-rewrite yes`",
+              "unmonitored footgun"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`SAVE` exists for scripts and shutdown paths, not you",
+            "The rewrite window is exactly when durability quietly drops"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Kernel Bites"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "Can't save in background: fork: Cannot allocate memory",
+            "# missing vm.overcommit_memory=1, intermittent under load",
+            "# THP left on: mystery multi-hundred-ms spikes at save time"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Copying Files Safely",
+          "items": [
+            "Copying `dump.rdb` mid-BGSAVE is safe — rename saves you",
+            "Copying the temp file is not — it is half written",
+            "ext4 `data=writeback` is weaker than `data=ordered`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Replica Assumptions"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Snapshots on a primary hurt latency — move them to a replica",
+            "But that replica's dataset can lag the primary",
+            "A replica does not persist its own view unless configured",
+            "Never assume the replica has a usable RDB"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "FLUSHALL Is A Race",
+          "text": "It replicates and it lands in the AOF. Recovery means grabbing a pre-incident RDB fast, before a rewrite overwrites the history."
+        },
+        {
+          "type": "sidebox",
+          "title": "Untested Backups Aren't Backups",
+          "items": [
+            "Restore into a scratch instance on a schedule",
+            "Diff `DBSIZE` against the source",
+            "Spot-check a handful of known keys"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Production Playbook & Recap",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Baseline Config",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "appendonly yes",
+            "appendfsync everysec",
+            "aof-use-rdb-preamble yes",
+            "save 900 1",
+            "save 300 100"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep `stop-writes-on-bgsave-error yes` — fail loudly",
+            "`dir` on a dedicated volume, 2-3x dataset headroom",
+            "Owned by the `redis` user, not root"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Host Prep",
+          "items": [
+            "THP set to `never`",
+            "`vm.overcommit_memory=1`",
+            "`maxmemory` well below RAM for COW headroom"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Monitor These Five"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "Alert when"
+          ],
+          "rows": [
+            [
+              "`rdb_last_bgsave_status`",
+              "not `ok`"
+            ],
+            [
+              "`aof_last_bgrewrite_status`",
+              "not `ok`"
+            ],
+            [
+              "`aof_last_write_status`",
+              "not `ok`"
+            ],
+            [
+              "`latest_fork_usec`",
+              "over latency budget"
+            ],
+            [
+              "`rdb_last_save_time`",
+              "older than your RPO"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`rdb_changes_since_last_save` is the sixth to watch",
+            "It tells you what a crash would cost right now"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Backup Pipeline"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "BGSAVE on replica",
+              "LASTSAVE advances",
+              "redis-check-rdb",
+              "ship offsite, timestamped"
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Retention",
+          "items": [
+            "Hourly for a day",
+            "Daily for a month",
+            "Enough to undo a logical mistake found late"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Durability Ladder"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "none",
+              "RDB",
+              "AOF everysec",
+              "AOF always",
+              "+ WAITAOF"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pay `always` where you must, not globally",
+            "`WAITAOF 1 1 <timeout>` on critical writes instead",
+            "Redis is a fast tier, never the last copy"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Three Lines To Keep"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mechanism",
+            "Shape",
+            "Loss"
+          ],
+          "rows": [
+            [
+              "RDB",
+              "forked binary snapshot",
+              "minutes"
+            ],
+            [
+              "AOF",
+              "command log + fsync dial",
+              "~1s everysec"
+            ],
+            [
+              "Hybrid",
+              "RDB base + AOF tail",
+              "~1s, fast load"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Whole Handbook",
+          "text": "Fork and COW are the shared tax; `write()` vs `fsync()` is the shared distinction. Test your restore before you need it."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your Redis just restarted — how much did you lose? The honest answer is a config line, not a feeling: RDB gives you a forked point-in-time snapshot and minutes of loss, AOF gives you a command log with an fsync dial, and hybrid gives you most of both. 10 pages on snapshots, copy-on-write cost, the everysec-is-really-2s footnote, the AOF-beats-RDB load trap that boots an empty dataset, and the production config to just copy.",
+    "hashtags": [
+      "#redis",
+      "#databases",
+      "#backend",
+      "#systemdesign",
+      "#devops",
+      "#sre",
+      "#persistence",
+      "#datastructures",
+      "#programming",
+      "#techstudy",
+      "#codenotes",
+      "#learntocode"
+    ]
+  }
+}

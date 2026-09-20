@@ -1,0 +1,205 @@
+{
+  "title": "Postgres EXPLAIN ANALYZE: Reading the Planner's Mind",
+  "summary": "A dense field guide to Postgres query plans — how to read EXPLAIN ANALYZE output, every scan and join strategy, where costs and row estimates come from, and how to diagnose the moments the planner guesses wrong.",
+  "chapters": [
+    {
+      "title": "EXPLAIN Fundamentals: Reading the Output",
+      "points": [
+        "EXPLAIN shows the planner's chosen plan without running it; EXPLAIN ANALYZE actually executes the query and reports real timings",
+        "Plans are trees of nodes; output is indented, children below parents, and execution flows bottom-up (leaves feed parents)",
+        "Read a plan inside-out: the most indented node runs first, the top node returns the final rows",
+        "Node line anatomy: `Seq Scan on orders (cost=0.00..18334.00 rows=1000000 width=33)`",
+        "cost=startup..total — startup is cost before first row emitted, total is cost to return all rows",
+        "rows = estimated row count for THAT node, width = estimated average bytes per row",
+        "With ANALYZE you also get `(actual time=0.015..85.2 rows=1000000 loops=3)` — real startup ms, total ms, real rows, and loop count",
+        "CRITICAL: actual rows and actual time are PER LOOP averages — multiply by loops for the true total",
+        "`EXPLAIN (ANALYZE, BUFFERS)` adds shared hit/read/dirtied/written — the single most useful extra flag",
+        "Other options: VERBOSE (output columns, schema-qualified names), SETTINGS (non-default GUCs), WAL, TIMING OFF, FORMAT JSON|YAML|TEXT",
+        "`Planning Time` vs `Execution Time` — a 3ms plan for a 2ms query means the planning itself is the bottleneck",
+        "ANALYZE runs the query for real: wrap writes in `BEGIN; EXPLAIN ANALYZE UPDATE ...; ROLLBACK;`",
+        "`EXPLAIN (ANALYZE, TIMING OFF)` when per-node timing overhead (gettimeofday) distorts a fast query",
+        "Filter vs Index Cond vs Recheck Cond: Filter runs after rows are fetched, Index Cond narrows inside the index",
+        "`Rows Removed by Filter: 998000` is a red flag — you read a million rows to keep two thousand"
+      ]
+    },
+    {
+      "title": "Scan Types: Getting Rows Off Disk",
+      "points": [
+        "Seq Scan — reads every page of the table in physical order; cheapest per page, fine when selectivity is low (>5-10% of table)",
+        "Index Scan — walks the index, then does a random heap fetch per match; good for high selectivity and when you need ordered output",
+        "Index Only Scan — answers entirely from the index; requires all referenced columns in the index AND a visible-enough visibility map",
+        "`Heap Fetches: N` on an Index Only Scan — nonzero means the visibility map is stale; VACUUM to drop it toward zero",
+        "Bitmap Heap Scan + Bitmap Index Scan — builds a bitmap of matching TIDs, sorts it, then reads the heap in physical order",
+        "Bitmap scan wins in the middle ground: too many rows for random index fetches, too few to justify reading the whole table",
+        "`Recheck Cond` appears because the bitmap may go lossy (page-level, not tuple-level) once work_mem fills",
+        "`Heap Blocks: exact=1204 lossy=8891` — lossy blocks mean work_mem was too small and every tuple on those pages is rechecked",
+        "BitmapAnd / BitmapOr — combine several indexes for one query; why multiple single-column indexes can beat one composite",
+        "TID Scan — direct fetch by ctid, e.g. `WHERE ctid = '(0,1)'`",
+        "Function Scan, Values Scan, Result — set-returning functions, VALUES lists, and constant-only nodes",
+        "CTE Scan and Subquery Scan — materialized intermediate result sets",
+        "Covering index syntax: `CREATE INDEX ... ON t (a, b) INCLUDE (c)` to enable Index Only Scan without widening the key",
+        "Index type matters: B-tree for =/</>/BETWEEN/prefix LIKE, GIN for arrays and full text, GiST for ranges and geometry, BRIN for huge naturally-ordered tables",
+        "A Seq Scan is not automatically a bug — on a 200-row table it beats every index"
+      ]
+    },
+    {
+      "title": "Join Strategies: Nested Loop, Hash, Merge",
+      "points": [
+        "Nested Loop — for each outer row, probe the inner side; cost roughly outer_rows × inner_cost",
+        "Nested Loop is optimal when the outer side is tiny and the inner side has an index on the join key",
+        "A Nested Loop with a Seq Scan on the inner side and a large outer side is a classic disaster: O(N×M)",
+        "Hash Join — builds a hash table from the smaller side (`Hash` node), then probes it while streaming the other side",
+        "`Buckets: 8192 Batches: 1 Memory Usage: 4096kB` — Batches > 1 means the hash spilled to disk; raise work_mem",
+        "Hash Join only supports equality conditions (=), never < or >, never non-equijoins",
+        "Merge Join — sorts both inputs on the join key, then walks them in lockstep like a zipper",
+        "Merge Join is nearly free when both sides already arrive sorted (index order); brutal when it must Sort a huge input",
+        "Join order matters as much as join method — the planner reorders joins, but only within its search limits",
+        "Inner side of a Nested Loop shows `loops=N` — that is where the real cost hides",
+        "Parameterized (dependent) inner scans: `Index Cond: (o.customer_id = c.id)` means the inner index scan uses the outer row's value",
+        "Semi Join (EXISTS / IN) stops at the first inner match; Anti Join (NOT EXISTS) emits outer rows with no match",
+        "LEFT JOIN forces a join direction — the nullable side must be the inner side, restricting the planner's options",
+        "Memoize node caches inner-side results across loops when join keys repeat — turns a repeated Nested Loop probe into a lookup",
+        "Rule of thumb: small×indexed = Nested Loop, big×big equality = Hash, both pre-sorted = Merge"
+      ]
+    },
+    {
+      "title": "Cost Estimates: Where the Numbers Come From",
+      "points": [
+        "Cost is a unitless abstract number, not milliseconds — comparable only between plans for the same query",
+        "seq_page_cost = 1.0 is the unit everything else is measured against",
+        "random_page_cost = 4.0 by default — models a spinning disk; set to 1.1 for SSD/NVMe so index scans stop looking overpriced",
+        "cpu_tuple_cost = 0.01, cpu_index_tuple_cost = 0.005, cpu_operator_cost = 0.0025",
+        "Seq Scan cost = (pages × seq_page_cost) + (rows × cpu_tuple_cost) — worked example on a 10k-page, 1M-row table",
+        "effective_cache_size (default 4GB) does NOT allocate memory; it tells the planner how much of the table is likely already cached",
+        "Startup cost is nonzero for blocking nodes (Sort, Hash, aggregation) — they must consume all input before emitting a row",
+        "LIMIT interacts with startup cost: a plan with a high total cost but zero startup can win under LIMIT 10",
+        "parallel_setup_cost (1000) and parallel_tuple_cost (0.1) explain why small queries never go parallel",
+        "The planner picks the lowest total cost path — or lowest startup path when a cursor or LIMIT is in play",
+        "Costs are additive up the tree: a parent's total includes all its children",
+        "JIT kicks in above jit_above_cost (100000) — can add 20ms of compile time to a query that runs in 5ms",
+        "Tune costs as a set, not one at a time; random_page_cost and effective_cache_size are the two that move real workloads",
+        "Never compare costs across different queries or different tables — they are only ordinally meaningful within one search"
+      ]
+    },
+    {
+      "title": "Statistics: How the Planner Guesses Row Counts",
+      "points": [
+        "ANALYZE (the command, not the EXPLAIN option) samples the table and stores stats in pg_statistic, readable via pg_stats",
+        "default_statistics_target = 100 — the planner samples about 300 × target = 30,000 rows per table",
+        "pg_stats columns: null_frac, avg_width, n_distinct, most_common_vals, most_common_freqs, histogram_bounds, correlation",
+        "MCV list holds the most common values and their frequencies — exact selectivity for skewed values",
+        "Histogram buckets cover everything outside the MCV list, each holding roughly equal row counts",
+        "n_distinct negative means a ratio: -1 = every value unique, -0.5 = each value appears twice",
+        "correlation near 1.0 or -1.0 means physical order tracks logical order — makes index scans much cheaper",
+        "Selectivity for `col = 'x'`: MCV frequency if listed, else (1 - sum(mcv_freqs) - null_frac) / (n_distinct - mcv_count)",
+        "Autovacuum triggers ANALYZE at autovacuum_analyze_threshold (50) + 0.1 × reltuples changed rows",
+        "Raise per-column detail: `ALTER TABLE t ALTER COLUMN c SET STATISTICS 1000;` then re-ANALYZE",
+        "Extended statistics fix correlated columns: `CREATE STATISTICS s (dependencies, ndistinct, mcv) ON city, state FROM addr;`",
+        "Without extended stats the planner multiplies selectivities as if columns are independent — city='Paris' AND country='France' underestimates badly",
+        "Expression indexes get their own stats; a bare `WHERE lower(email) = ...` without one falls back to a 0.5% default guess",
+        "Fixed fallback constants when stats are missing: 0.5% for equality, 33% for inequality range",
+        "A freshly restored dump or a just-bulk-loaded table has no stats at all — ANALYZE before benchmarking"
+      ]
+    },
+    {
+      "title": "Parallelism, Sorts, and Aggregates",
+      "points": [
+        "Gather node collects rows from parallel workers; `Workers Planned: 4 Workers Launched: 2` means the pool ran out",
+        "Gather Merge preserves sort order from workers; Gather does not",
+        "Parallel Seq Scan divides pages among workers — actual rows shown are per-worker, so leader + workers sum to the total",
+        "max_parallel_workers_per_gather (default 2) caps workers per Gather; max_worker_processes caps the whole cluster",
+        "Table must exceed min_parallel_table_scan_size (8MB) before parallelism is even considered",
+        "Sort node reports `Sort Method: quicksort Memory: 25kB` or `external merge Disk: 24000kB` — Disk means work_mem was exceeded",
+        "Sort keys, top-N heapsort for `ORDER BY ... LIMIT n`, and why that avoids sorting the full set",
+        "HashAggregate — builds a hash table of groups; unordered output, fast, but memory-hungry",
+        "GroupAggregate — requires sorted input, streams groups, constant memory",
+        "Postgres 13+ HashAggregate can spill to disk instead of blowing up: `Disk Usage: 12000kB`",
+        "Incremental Sort — reuses a partial index ordering, sorting only within groups of already-ordered prefix columns",
+        "Materialize node caches a subplan's rows so an inner side can be rescanned without re-running",
+        "WindowAgg for window functions; Unique for DISTINCT on sorted input",
+        "work_mem is per sort/hash node per worker — a 10-node parallel plan can multiply it far past what you budgeted",
+        "Append vs Merge Append for partitions and UNION ALL; `Subplans Removed: 7` proves partition pruning worked"
+      ]
+    },
+    {
+      "title": "When the Planner Goes Wrong",
+      "points": [
+        "The core diagnostic: compare estimated `rows=` against `actual rows=` at every node, starting from the leaves",
+        "Estimation error compounds upward — a 10× error at a leaf becomes a 1000× error three joins up",
+        "Underestimate signature: planner picks Nested Loop expecting 5 rows, gets 500,000, and the query hangs",
+        "Overestimate signature: planner picks Hash Join and a full Seq Scan when a cheap Index Scan would have done",
+        "Stale statistics — the most common root cause; check `last_analyze` and `last_autoanalyze` in pg_stat_user_tables",
+        "Correlated columns without extended statistics — the independence assumption multiplies selectivities into absurdity",
+        "Joining on an expression or a function the planner has no stats for",
+        "Parameter sniffing in PL/pgSQL: a generic plan built for an unknown parameter; `SET plan_cache_mode = force_custom_plan`",
+        "Data skew — one customer_id owns 90% of rows, but the plan was costed for the average",
+        "Ballooning table bloat makes reltuples and relpages lie about real size; VACUUM FULL or pg_repack to reset",
+        "Fix order: ANALYZE first, then extended stats, then indexes, then rewrite the query, and only then reach for hints",
+        "`enable_nestloop = off` etc. are diagnostic tools, not fixes — they prove which plan you wanted, then you go make the planner want it",
+        "pg_hint_plan extension for real hints when you genuinely cannot make the planner see it",
+        "`join_collapse_limit` / `from_collapse_limit` (both 8) — above that many tables, the planner stops exhaustively searching join orders",
+        "auto_explain module logs plans for slow queries in production, where you cannot re-run them by hand"
+      ]
+    },
+    {
+      "title": "Reading Real Plans: Worked Diagnoses",
+      "points": [
+        "Step 1: find the node with the largest actual time × loops, not the largest cost",
+        "Step 2: check that node's rows estimate against its actual — that is where the plan broke",
+        "Step 3: look at BUFFERS — shared read means it went to disk, shared hit means it came from cache",
+        "Exclusive vs inclusive time: a node's `actual time` INCLUDES all its children; subtract to get self-time",
+        "Example — Nested Loop with `loops=48000`: real cost is 48000 × 0.03ms = 1.4s hidden in a node whose per-loop time looks trivial",
+        "Example — `Rows Removed by Filter: 4900000` on a Seq Scan: needs an index on the filtered column",
+        "Example — `Sort Method: external merge Disk: 180MB`: raise work_mem or add an index that supplies the order",
+        "Example — `Batches: 16` on a Hash node: the hash table spilled; the build side was underestimated",
+        "Example — Index Only Scan with `Heap Fetches: 890000`: VACUUM the table to refresh the visibility map",
+        "Example — `Workers Planned: 4 Workers Launched: 0`: worker pool exhausted by other queries",
+        "`Rows Removed by Join Filter` — a non-equi join condition being evaluated as a filter after the join",
+        "`Rows Removed by Index Recheck` — lossy bitmap pages costing real CPU",
+        "Trigger time is reported separately after the plan and is not included in node times",
+        "Use explain.depesz.com or explain.dalibo.com to visualize; they highlight estimate/actual mismatches automatically",
+        "Always run the query twice — the first run measures cold cache, the second measures the plan"
+      ]
+    },
+    {
+      "title": "Trade-offs, Comparisons, and Tuning Levers",
+      "points": [
+        "Scan comparison — Seq: O(pages), sequential IO, no index maintenance; Index: O(log n + k) with random IO; Bitmap: index cost plus sequential-order heap reads",
+        "Join comparison — Nested Loop: O(N×M) or O(N log M) indexed, no memory; Hash: O(N+M), needs work_mem; Merge: O(N log N + M log M) unless pre-sorted, low memory",
+        "Index Only Scan is the only scan that avoids touching the heap — worth designing schemas around",
+        "Every index you add speeds reads and taxes every INSERT, UPDATE, and DELETE plus VACUUM time",
+        "Composite index column order: equality columns first, then range, then ORDER BY columns",
+        "Partial index (`WHERE status = 'active'`) can be a fraction of the size and stays hot in cache",
+        "work_mem: too low means disk sorts and hash batches; too high means an OOM when connections × nodes multiply",
+        "random_page_cost 4.0 → 1.1 on SSD is usually the single highest-leverage planner setting change",
+        "effective_cache_size should be roughly 50-75% of system RAM — it is a hint, it allocates nothing",
+        "default_statistics_target 100 → 500 on skewed columns costs ANALYZE time, buys accurate selectivity",
+        "Query rewrites that unlock better plans: EXISTS instead of IN on large subqueries, LATERAL instead of a correlated scalar subquery, avoiding functions on the indexed column",
+        "OFFSET N pagination scans and discards N rows — keyset pagination (`WHERE id > last_id`) stays constant time",
+        "Denormalize or add a materialized view when no plan can be fast enough; refresh cost is the trade",
+        "Partitioning helps only if the partition key is in the WHERE clause — otherwise you scan every partition",
+        "Measure with pg_stat_statements to find WHICH query to EXPLAIN; EXPLAIN answers why, pg_stat_statements answers where"
+      ]
+    },
+    {
+      "title": "Field Checklist and Summary",
+      "points": [
+        "Standard invocation: `EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS, FORMAT TEXT) <query>;`",
+        "The one-line summary of the whole discipline: find the node where estimated rows and actual rows diverge most",
+        "Cost is the planner's opinion; actual time is the truth — EXPLAIN alone shows only the opinion",
+        "Remember loops: actual time and actual rows are per-loop averages, always multiply",
+        "Triage order: pg_stat_statements to find the query, EXPLAIN ANALYZE BUFFERS to find the node, pg_stats to find the bad estimate",
+        "Fix ladder, cheapest first: ANALYZE → extended statistics → raise per-column statistics target → index → query rewrite → config change → hint",
+        "Never leave `enable_*` settings off in production — they are a debugging flashlight, not a repair",
+        "Scan cheat sheet: <1% of rows use Index, 1-10% use Bitmap, >10% use Seq",
+        "Join cheat sheet: tiny outer + indexed inner use Nested Loop, big equality use Hash, both sorted use Merge",
+        "Red flag list: Batches > 1, Sort Method external, lossy Heap Blocks, high Heap Fetches, Rows Removed by Filter in the millions, loops in the thousands",
+        "Always ANALYZE after a bulk load, restore, or major data shift — before you benchmark anything",
+        "Test on production-sized data; a plan that is right for 1,000 rows is often wrong for 10,000,000",
+        "auto_explain with log_min_duration captures the slow plans you cannot reproduce interactively",
+        "EXPLAIN in a transaction with ROLLBACK to safely analyze INSERT, UPDATE, and DELETE",
+        "The planner is not your adversary — it is a cost model running on statistics; give it better statistics and it makes better choices"
+      ]
+    }
+  ]
+}

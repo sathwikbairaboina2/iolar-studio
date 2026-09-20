@@ -1,0 +1,198 @@
+{
+  "title": "Bash Functions: Args, Exit Codes & Scope",
+  "summary": "A dense field guide to Bash functions — how arguments arrive, why return codes and stdout are two separate channels, what `local` really scopes, and everything a subshell silently throws away.",
+  "chapters": [
+    {
+      "title": "What a Bash Function Really Is",
+      "points": [
+        "Definition: a named block of commands stored in shell memory, run in the *current* shell process — not a new process",
+        "Two syntaxes: POSIX `name() { ...; }` and Bash keyword `function name { ...; }`; prefer POSIX form for portability",
+        "`function name() {...}` is Bash-only mixed form — legal in Bash, breaks in dash/sh",
+        "Body must be a compound command; `{ }` needs a space after `{` and a `;` or newline before `}`",
+        "`name() ( ... )` with parens makes the body a subshell by definition — every call runs isolated",
+        "Functions are looked up BEFORE builtins? No — order is: function, then builtin, then PATH executable. Aliases resolve even earlier, at parse time",
+        "Shadowing example: `ls() { command ls --color \"$@\"; }` — `command` bypasses the function to avoid infinite recursion",
+        "`declare -f name` prints the function body; `declare -F` lists names only",
+        "`unset -f name` removes a function; plain `unset name` targets the variable namespace first",
+        "Functions are NOT exported to child processes by default; `export -f name` puts them in the environment as `BASH_FUNC_name%%`",
+        "Definition is a runtime action: a function inside an `if` branch only exists after that branch executes",
+        "Functions may be redefined freely — last definition wins, no error, no warning",
+        "`type -t name` returns `function`, `builtin`, `alias`, `file`, or `keyword` — the fastest way to see what a word actually is",
+        "Comparison row: function = zero fork, same shell state | script = fork + exec, own process, own everything"
+      ]
+    },
+    {
+      "title": "Arguments: How They Arrive",
+      "points": [
+        "Function args are positional parameters `$1 $2 ...` — they SHADOW the script's own `$1 $2` for the duration of the call",
+        "`$0` is the exception: it stays the script/shell name, it is NOT the function name",
+        "`FUNCNAME[0]` gives the current function's name; `FUNCNAME` is a whole call-stack array",
+        "`$#` = argument count; `$@` and `$*` = all args",
+        "`\"$@\"` expands to separate quoted words; `\"$*\"` joins into ONE word using first char of `IFS`",
+        "Golden rule: always write `\"$@\"` with quotes — bare `$@` word-splits and glob-expands every arg",
+        "`shift` drops `$1` and renumbers; `shift 2` drops two; `shift` past `$#` returns non-zero",
+        "Defaults: `local name=\"${1:-anon}\"` uses `anon` when `$1` unset OR empty; `${1-anon}` only when unset",
+        "Required-arg guard: `local f=\"${1:?path required}\"` aborts with a message if missing",
+        "`${10}` needs braces — `$10` parses as `$1` followed by literal `0`",
+        "Passing an array: `f \"${arr[@]}\"` flattens to N args; there is no true array parameter",
+        "Bash 4.3+ nameref: `local -n out=$1` lets the caller pass a variable *name* to be written into",
+        "Call syntax has no parentheses and no commas: `greet Bob 42`, never `greet(Bob, 42)`",
+        "Args with spaces need quoting at the CALL site too: `f \"$file name\"` — quoting inside the function cannot recover words already split",
+        "`set -- a b c` inside a function rewrites its positional params without touching the caller's"
+      ]
+    },
+    {
+      "title": "Return Codes: The Status Channel",
+      "points": [
+        "`return N` sets the function's exit status; N is 0–255, truncated modulo 256 (`return 300` yields 44)",
+        "Convention: 0 = success, non-zero = failure. Inverted vs. C/Python truthiness — 0 is 'true' in shell",
+        "Bare `return` (no argument) returns the status of the LAST command executed in the function",
+        "Falling off the end of a function does the same as bare `return` — implicit last-command status",
+        "`$?` holds the status of the most recent foreground command; read it IMMEDIATELY, any command overwrites it",
+        "`return` vs `exit`: `return` leaves the function; `exit` kills the whole shell/script — a common accidental script-killer",
+        "`return` outside a function or sourced file is an error: 'return: can only `return' from a function or sourced script'",
+        "Predicate pattern: `is_root() { [[ $EUID -eq 0 ]]; }` — no explicit return needed, the test's status becomes the function's",
+        "Direct use in control flow: `if is_root; then ...`, `is_root && setup`, `while has_more; do ...`",
+        "Negation: `if ! validate \"$f\"; then` — `!` inverts the status",
+        "`local x=$(cmd)` DESTROYS the exit status — `local` is itself a command and always returns 0. Split it: `local x; x=$(cmd) || return 1`",
+        "Standard code meanings: 1 generic error, 2 misuse of builtin, 126 not executable, 127 command not found, 128+N killed by signal N",
+        "`return -1` becomes 255 — usable but non-obvious; prefer explicit small codes",
+        "Multiple exit codes for meaning: 0 found, 1 not found, 2 bad input — document them in a comment above the function"
+      ]
+    },
+    {
+      "title": "Output: The Data Channel",
+      "points": [
+        "Functions 'return' data by WRITING to stdout; the caller captures with `result=$(f)` command substitution",
+        "Command substitution runs the function in a SUBSHELL — variable changes inside are lost, but stdout comes back",
+        "`$(...)` strips ALL trailing newlines from the captured output",
+        "Two channels, one call: `out=$(f) ; status=$?` — data on stdout, success on the status code",
+        "Send diagnostics to stderr so they don't pollute the captured value: `printf 'warn: %s\\n' \"$msg\" >&2`",
+        "`echo` is unreliable for data — mangles leading `-` and interprets backslashes in some shells; use `printf '%s\\n' \"$x\"`",
+        "Never mix logging and results on stdout — the classic 'my variable has the log line in it' bug",
+        "Multi-value output: print one item per line, caller uses `mapfile -t arr < <(f)` to read into an array",
+        "`mapfile < <(f)` (process substitution) keeps the caller's shell as the reader; `f | mapfile` puts mapfile in a subshell and loses the array",
+        "Nameref alternative avoids the fork entirely: `f() { local -n r=$1; r=value; }` then `f out; echo \"$out\"`",
+        "Global-variable convention: set `REPLY` (what `read` and `select` use) — no subshell, no fork, but not reentrant",
+        "Comparison row: `$(f)` = clean, composable, costs a fork and loses state | nameref/global = fast, stateful, harder to nest",
+        "Suppressing output: `f >/dev/null` keeps the return code while discarding data",
+        "`f | while read ...` puts the *while* in a subshell in Bash's default config — a top cause of 'my counter is always 0'"
+      ]
+    },
+    {
+      "title": "Local Variables and Scope",
+      "points": [
+        "Bash has DYNAMIC scope, not lexical: a callee sees the caller's locals, and can modify them",
+        "`local x` restricts x to the function and everything it calls, then restores the previous value on return",
+        "Without `local`, every assignment is global — silently overwriting a caller's variable of the same name",
+        "`local` is only valid inside a function; at top level it errors 'local: can only be used in a function'",
+        "Multiple declarations: `local a b c` or `local a=1 b=2` — but each `=` value is a separate word, quote them",
+        "`local -r x=5` makes it read-only for the function's lifetime; `local -i n` makes it integer",
+        "`local -a arr` / `local -A map` declare local indexed and associative arrays",
+        "`declare` inside a function behaves like `local`; at top level it is global — a subtle source of surprise",
+        "Loop counters and `i` must be `local` — nested loops in caller and callee otherwise clobber each other",
+        "`local` masks exit status (see previous chapter) — the single most reported `local` gotcha",
+        "Unset semantics: `unset x` inside a function can unset the caller's variable, exposing the enclosing scope's value",
+        "Nameref caveat: `local -n ref=$1` fails if the caller's variable has the same name as `ref` — 'circular name reference'; convention is a `_`-prefixed unlikely name",
+        "Discipline rule: declare every variable at the top of the function with `local`, treat globals as read-only unless documented",
+        "`set -u` (nounset) turns unset variable reads into hard errors — pairs well with strict `local` use"
+      ]
+    },
+    {
+      "title": "Subshells: What They Are, What They Lose",
+      "points": [
+        "A subshell is a FORKED copy of the shell process; it inherits state, but nothing it changes flows back",
+        "Created by: `( ... )`, `$( ... )` and backticks, every stage of a `|` pipeline, `&` background, process substitution `<( )` / `>( )`",
+        "NOT a subshell: `{ ...; }` braces, sourcing with `.`/`source`, plain function calls — these all run in the current shell",
+        "Lost on exit: variable assignments, array changes, `cd`, `umask`, `set` options, function definitions, exports",
+        "Survives: stdout/stderr (if captured or redirected), the exit status, and side effects outside the process (files, network)",
+        "`BASH_SUBSHELL` counts nesting depth — 0 in the parent, 1 inside `( )`. Prints your current depth",
+        "`$$` is the PARENT shell's PID even inside a subshell; use `$BASHPID` for the real current PID",
+        "Classic loss: `cat f | while read l; do n=$((n+1)); done; echo $n` prints 0 — the while ran in a subshell",
+        "Fixes: `while read l; do ...; done < f` (redirect) or `done < <(cmd)` (process substitution) keep the loop in the parent",
+        "Bash-only alternative: `shopt -s lastpipe` (needs job control off) runs the LAST pipeline stage in the current shell",
+        "Deliberate use: `( cd /tmp && do_work )` — the `cd` cannot escape, no need to `cd -` back",
+        "`exit` inside a subshell exits only the subshell, not your script — a silent no-op where you meant to abort",
+        "Cost: each subshell is a `fork()`. In a hot loop, thousands of forks dominate runtime — hoist substitutions out of loops",
+        "`trap` handlers are reset in a subshell (except ignored signals), so parent EXIT traps do not fire there"
+      ]
+    },
+    {
+      "title": "Errors, Traps and Strict Mode",
+      "points": [
+        "`set -e` (errexit) is NOT inherited into function bodies in every context — it is suppressed for any command in a condition (`if f`, `f &&`, `! f`)",
+        "Consequence: a function called in an `if` runs with errexit effectively off for its whole body, including nested calls",
+        "`set -o pipefail` makes a pipeline return the first non-zero status instead of only the last command's",
+        "`PIPESTATUS` array holds every stage's status: `${PIPESTATUS[0]}` is the first command's",
+        "Common strict header: `set -euo pipefail` plus `IFS=$'\\n\\t'` — understand each flag before adopting it",
+        "`set -E` (errtrace) makes `ERR` traps inherit into functions, subshells and command substitutions; without it they do not",
+        "`trap 'cleanup' EXIT` fires when the shell exits; `RETURN` trap fires when a function returns (needs `set -T`/functrace)",
+        "Cleanup pattern: create a temp dir, `trap 'rm -rf \"$tmp\"' EXIT` immediately after, so no path leaks",
+        "`die() { printf '%s\\n' \"$*\" >&2; exit 1; }` — the standard fatal-error helper",
+        "Error propagation: prefer explicit `cmd || return 1` inside functions over trusting `set -e`",
+        "`LINENO` and `${BASH_SOURCE[0]}` build useful error messages: `printf 'err %s:%s\\n' \"${BASH_SOURCE[0]}\" \"$LINENO\"`",
+        "`caller` builtin prints the call stack frame — `caller 0`, `caller 1` for tracebacks",
+        "Subshell interaction: `set -e` inside `$( )` applies to the subshell, and its failure only matters if you check the status",
+        "Gotcha: `set -e` does not trigger on a failing command inside `local x=$(fail)` — the `local` swallows it"
+      ]
+    },
+    {
+      "title": "Recursion, Composition and Call Mechanics",
+      "points": [
+        "Functions may recurse; `FUNCNEST` (default unlimited) caps depth — set `FUNCNEST=100` to catch runaway recursion",
+        "Recursion needs `local` on every working variable or each frame corrupts the last (dynamic scope has no per-frame isolation otherwise)",
+        "Example: `fact() { local n=$1; ((n<=1)) && { echo 1; return; }; echo $(( n * $(fact $((n-1))) )); }` — note each level forks a subshell",
+        "Cost warning: recursion via `$( )` forks once per level; depth 20 = 20 forks. Accumulate into a global/nameref to stay fork-free",
+        "`FUNCNAME` array is the live call stack: `FUNCNAME[1]` is the caller's name",
+        "`BASH_LINENO` and `BASH_SOURCE` are parallel arrays to `FUNCNAME` — index them together for a traceback",
+        "Higher-order dispatch: pass a function name as a string and call it with `\"$1\" \"${@:2}\"`",
+        "Command-table pattern: `case $cmd in start|stop|status) \"cmd_$cmd\" \"$@\" ;; *) usage ;; esac` — validate before calling to avoid arbitrary execution",
+        "Never `eval \"$user_input\"` to dispatch — use a whitelist `case` or an associative array of allowed names",
+        "Functions can be defined inside functions; the inner definition becomes GLOBAL once the outer runs, not scoped",
+        "Sourcing (`source lib.sh`) loads functions into the current shell — this is how Bash libraries work, no import system",
+        "Guard sourced libraries against being executed: `[[ ${BASH_SOURCE[0]} != \"$0\" ]] || { echo 'source me'; exit 1; }`",
+        "`export -f f` plus `bash -c 'f'` works; `find -exec` needs `bash -c` too since exec'd binaries cannot see functions",
+        "Pipelines of functions compose fine: `list_files | filter_big | count` — each stage is a subshell, so none can set a caller variable"
+      ]
+    },
+    {
+      "title": "Common Mistakes and Their Fixes",
+      "points": [
+        "Unquoted `$@`: splits args on whitespace and globs them. Fix: always `\"$@\"`",
+        "`local x=$(cmd)` hiding failure. Fix: `local x; x=$(cmd) || return 1`",
+        "Using `exit` where `return` was meant — kills the caller's script. Fix: `return` in library functions, `exit` only in `main`",
+        "Missing `local` clobbering a caller's `i`, `f`, `n`, `tmp`. Fix: declare every variable local",
+        "Counting inside `cmd | while read`: counter lost to the pipeline subshell. Fix: `while read < <(cmd)`",
+        "Reading `$?` too late — an intervening `echo` or `[[ ]]` overwrote it. Fix: capture `local rc=$?` on the very next line",
+        "`echo` for data output mangling `-n` and backslashes. Fix: `printf '%s\\n'`",
+        "Returning a string with `return \"$str\"` — `return` takes a number only, gives 'numeric argument required'. Fix: print to stdout",
+        "Forgetting the space in `{ cmd; }` giving 'syntax error near unexpected token'",
+        "Defining a function after its first call site in a straight-line script — 'command not found'. Fix: define at the top, or wrap in `main` called last",
+        "Trailing-newline surprise: `$(printf 'a\\n\\n')` yields just `a`. Fix: append a sentinel char and strip it if newlines matter",
+        "Name collision with a builtin or PATH command, causing infinite recursion. Fix: call the real one via `command`/`builtin`",
+        "Assuming `set -e` aborts inside a function called under `if` — it does not. Fix: explicit `|| return`",
+        "Exporting a function then wondering why a *non-Bash* child cannot see it — `export -f` is Bash-to-Bash only"
+      ]
+    },
+    {
+      "title": "Design Rules and Cheat Sheet",
+      "points": [
+        "One function, one job; name it `verb_noun` (`fetch_config`, `validate_input`) in lowercase with underscores",
+        "Prefix library functions to avoid collisions: `mylib::parse` or `mylib_parse`",
+        "Contract per function: document args, stdout meaning, and every exit code in a comment header",
+        "Status for success/failure, stdout for data, stderr for humans — never overload one channel",
+        "Keep functions under ~50 lines; if it needs a comment to explain a section, that section is another function",
+        "Skeleton to memorize: `f() { local a=\"${1:?}\" b=\"${2:-default}\"; ... ; printf '%s\\n' \"$out\"; return 0; }`",
+        "Prefer `\"$@\"` pass-through over rebuilding argument lists by hand",
+        "Wrap the script body in `main() { ...; }` and end with `main \"$@\"` — gives predictable definition order and a clean entry point",
+        "Avoid subshells in hot loops; hoist `$( )` out and use namerefs or globals when performance matters",
+        "Use `( subshell )` deliberately when you WANT isolation — `cd`, `set` changes, `trap` overrides",
+        "Test functions by sourcing the library and calling them directly; keep side effects out of the definition-time path",
+        "Run `shellcheck` — it catches unquoted `$@`, `local x=$(...)` status loss, and `while read` subshell bugs mechanically",
+        "Portability: `local` is not POSIX (though every real shell has it); `function` keyword, arrays, and `[[ ]]` are Bash-only",
+        "Final recap table: function = same shell | `( )`/`$( )`/pipe stage = subshell, state lost | `source` = same shell | script = new process",
+        "Reach for a real language when a Bash function needs data structures, floats, or error objects — Bash returns bytes and one small integer, nothing more"
+      ]
+    }
+  ]
+}

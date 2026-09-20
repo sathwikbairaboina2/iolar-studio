@@ -1,0 +1,546 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "CACHING IN SYSTEM DESIGN — PART 2",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "Distributed Caching: Placement, Sharding, Hot Keys",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Virtual Nodes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Place many ring points per physical node.",
+            "Smooths load imbalance from unlucky hash placement.",
+            "Removing a node spreads its keys across all survivors."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Rendezvous (HRW)"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "node = argmax_n hash(key, n)",
+            "# no ring, no vnode table",
+            "# same minimal-disruption property"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Hot Key vs Hot Shard"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Cause"
+          ],
+          "rows": [
+            [
+              "One key dominates",
+              "hot key"
+            ],
+            [
+              "One shard hot, keys spread",
+              "hot shard"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Diagnose first — the remedies are different.",
+            "Hot shard: rehash, add vnodes, split the key space."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "7. Fixing a Hot Key"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Replicate across shards: key:hot:{0..9}, read a random one.",
+            "Promote it into every app node's L1 cache.",
+            "Front it with request coalescing so N requests = 1 load."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "8. Memcached vs Redis"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "Memcached",
+            "Redis"
+          ],
+          "rows": [
+            [
+              "Threading",
+              "multithreaded",
+              "single-thread/shard"
+            ],
+            [
+              "Types",
+              "strings only",
+              "rich structures"
+            ],
+            [
+              "Extras",
+              "none",
+              "persist, repl, Lua"
+            ],
+            [
+              "Pick when",
+              "big object cache",
+              "structures/durability"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "9. Serialization Cost"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "JSON: debuggable, but slow and fat on the wire.",
+            "protobuf/msgpack cut CPU and memory on hot paths.",
+            "For small values, serializing can cost more than the DB call."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "10. Connections and Batching"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "for k in keys: cache.get(k)  # 50 RTTs",
+            "cache.mget(keys)             # 1 RTT",
+            "# pool connections; pipeline writes"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Client vs Proxy Routing",
+          "items": [
+            "Client-side hashing: fastest, no extra hop.",
+            "Proxy (Envoy, twemproxy, mcrouter): central routing + failover.",
+            "Proxy costs a hop, buys one place to fix things."
+          ],
+          "ink": "green"
+        }
+      ]
+    },
+    {
+      "page_title": "Failure Modes: Stampede, Penetration, Avalanche",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Cache Stampede",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One hot key expires; N concurrent requests all miss.",
+            "All N hit the DB for the same value at the same instant.",
+            "Spike scales with concurrency, not with traffic growth.",
+            "Also called thundering herd or dogpile."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Fix: Single-Flight Lock"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "if cache.set(lk, 1, nx=True, ex=5):",
+            "    v = db.query(k); cache.set(k, v, ttl)",
+            "else:",
+            "    wait_briefly() or serve_stale()"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Go's singleflight and Caffeine's LoadingCache do this per key.",
+            "Lock TTL must exceed the load, or the herd returns."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Fix: Probabilistic Early Expiry"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "XFetch: refresh early with probability rising near the TTL.",
+            "One request refreshes before the cliff, not all of them.",
+            "No locks, no coordination, no wait."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Fix: Never Expire Hot Keys"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep logical expiry inside the value; the key has no TTL.",
+            "Always serve the value, even when logically stale.",
+            "Trigger an async refresh when it goes logically stale."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Cache Penetration"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Requests for IDs that do not exist in the DB either.",
+            "Scrapers and enumeration attacks always miss, always reach DB.",
+            "Fix 1: negative cache the not-found with a short TTL.",
+            "Fix 2: Bloom filter of existing IDs rejects unknowns in O(1)."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Bloom Errs the Right Way",
+          "text": "No false negatives, tunable false positives. A false positive costs one wasted DB lookup — the acceptable direction to be wrong."
+        }
+      ]
+    },
+    {
+      "page_title": "Failure Modes: Stampede, Penetration, Avalanche (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Cache Avalanche"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A large key set expires at once (same TTL from a bulk load).",
+            "Or the cache cluster restarts cold. Origin takes 100%.",
+            "Fixes: TTL jitter, staged warmup, rate limit at the origin.",
+            "Circuit breakers so the DB sheds load instead of dying."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Plan for h = 0",
+          "text": "Cold start after failover is avalanche with a different trigger. A cache the system cannot survive without is not a cache — it is an undeclared dependency."
+        },
+        {
+          "type": "heading",
+          "text": "7. Stale Reads from Replica Lag"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "write primary",
+              "delete cache",
+              "read hits replica",
+              "replica still old",
+              "cache repopulates old"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Read from primary during the invalidation window, or",
+            "Delay the second delete past measured replica lag."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "8. Metrics That Reveal It"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Hit rate, miss rate, evictions/sec, expired keys/sec.",
+            "p99 GET latency and lock-wait counts.",
+            "Origin QPS — alert on this, not just cache metrics."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Two More Landmines",
+          "items": [
+            "Multi-MB blobs block the Redis event loop on write.",
+            "Split, compress, or offload to object storage + CDN.",
+            "Key omitting tenant/user leaks data across users.",
+            "Put the full authorization context in the key. Always."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "1. Screening Questions",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "What is the read/write ratio?",
+            "What is the staleness budget?",
+            "How big is the working set?",
+            "What breaks if the cache is empty? If it serves stale?"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Sizing the Memory"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "mem = keys * (key + value + overhead)",
+            "# Redis overhead ~50-100 B per key",
+            "# millions of tiny keys = metadata-dominated",
+            "# -> batch related fields into hashes"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Design Checklist and Cheatsheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. Target Hit Rate by Goal"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Goal",
+            "What to check"
+          ],
+          "rows": [
+            [
+              "Cut latency",
+              "p99 on hits"
+            ],
+            [
+              "Protect origin",
+              "qps * (1-h)"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compute surviving origin QPS, then confirm the DB can serve it.",
+            "If it cannot, the cache is load-bearing, not an optimization."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Key Naming"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "entity:id:field:version",
+            "tenant:9:user:123:profile:v7",
+            "# scoped data always carries its dimension",
+            "# consistent prefixes enable gen-flushes later"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Default Recipe"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cache-aside reads + write-then-delete invalidation.",
+            "TTL with jitter, plus negative caching on not-found.",
+            "Single-flight on miss; allkeys-lru eviction.",
+            "Covers ~90% of read-heavy web services."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Pattern Decision"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Use"
+          ],
+          "rows": [
+            [
+              "Lowest write latency",
+              "write-back"
+            ],
+            [
+              "Always correct on write",
+              "write-through"
+            ],
+            [
+              "Writes rarely re-read",
+              "write-around"
+            ],
+            [
+              "Anything else",
+              "cache-aside"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "7. Eviction Decision"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Traffic",
+            "Use"
+          ],
+          "rows": [
+            [
+              "Recency-driven",
+              "LRU"
+            ],
+            [
+              "Stable popularity skew",
+              "LFU / TinyLFU"
+            ],
+            [
+              "Expire only, never evict",
+              "noeviction + TTL"
+            ],
+            [
+              "Mixed real traffic",
+              "W-TinyLFU"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "8. Invalidation Decision"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Constraint",
+            "Use"
+          ],
+          "rows": [
+            [
+              "Minutes of staleness OK",
+              "TTL only"
+            ],
+            [
+              "Prompt, simple keys",
+              "write-then-delete"
+            ],
+            [
+              "Derived / fan-out keys",
+              "generations or tags"
+            ],
+            [
+              "Correct across regions",
+              "CDC / event-driven"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "9. The Recurring Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No TTL anywhere; or identical TTLs everywhere (avalanche).",
+            "Invalidating before the DB commit lands.",
+            "Per-user data cached under a shared key.",
+            "Caching a downstream failure forever.",
+            "Treating the cache as durable; watching hit rate, not origin QPS."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "10. How to Test It"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Run with the cache disabled: does the system still work?",
+            "Run cold from empty: does it survive the fill?",
+            "Force a flush under load: does it stampede?",
+            "Assert staleness bounds in integration tests."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Design Checklist and Cheatsheet (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Minimum Observability",
+          "items": [
+            "Hit/miss counters per key prefix.",
+            "Eviction and expiry rates.",
+            "Memory used vs maxmemory.",
+            "Origin QPS overlaid with hit rate on one panel."
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Whole Handbook, One Line",
+          "text": "A cache is a bounded, expiring, evictable copy. TTL bounds how wrong it can be, eviction bounds how big it can get, invalidation bounds how long it stays wrong — and every pattern choice is just where you put the write."
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of CACHING IN SYSTEM DESIGN. Most \"add a cache\" answers stop at Redis — but the interview (and the incident) is decided by what happens when the key expires. 10 pages of handwritten notes: the read/write patterns, TTL mechanics and jitter, how LRU/LFU/W-TinyLFU actually evict, invalidation that survives races, and the failure modes — stampede, penetration, avalanche — with the fix for each. Save it before your next system design round.",
+    "hashtags": [
+      "#systemdesign",
+      "#caching",
+      "#redis",
+      "#backendengineering",
+      "#softwareengineering",
+      "#distributedsystems",
+      "#techinterview",
+      "#codingnotes",
+      "#studygram",
+      "#lowleveldesign",
+      "#devnotes",
+      "#computerscience"
+    ]
+  }
+}

@@ -1,0 +1,195 @@
+{
+  "title": "CORS Field Notes: Simple, Preflighted & Broken",
+  "summary": "A complete study series on browser CORS — why the same-origin policy exists, what makes a request simple vs preflighted, how the response headers negotiate access, how credentials and caching change the rules, and the misconfigurations that turn CORS into a vulnerability.",
+  "chapters": [
+    {
+      "title": "Same-Origin Policy: The Wall CORS Opens",
+      "points": [
+        "Origin = scheme + host + port triple; `https://a.com` ≠ `http://a.com` (scheme), ≠ `https://api.a.com` (host), ≠ `https://a.com:8443` (port)",
+        "Same-Origin Policy (SOP) is a browser-enforced rule, not a server or network rule — curl, Postman, and server-to-server calls ignore it entirely",
+        "SOP blocks *reading* cross-origin responses; it does not block *sending* the request in many cases — this asymmetry is the root of CSRF",
+        "Path is NOT part of an origin: `https://a.com/x` and `https://a.com/y` are same-origin",
+        "`document.domain` legacy relaxation is deprecated/removed in modern browsers; do not design around it",
+        "Site ≠ Origin: 'site' is registrable domain + scheme (eTLD+1), so `a.example.com` and `b.example.com` are same-site but cross-origin",
+        "Historically-free cross-origin embedding: `<img>`, `<script>`, `<link rel=stylesheet>`, `<iframe>`, `<form>` submissions — CORS had to stay backward-compatible with all of them",
+        "CORS = Cross-Origin Resource Sharing: a server opt-in protocol that tells the browser 'this other origin may read my response'",
+        "CORS relaxes SOP for `fetch`/XHR; it is not an authentication or authorization mechanism",
+        "The browser is the enforcer: a CORS failure means JS cannot read the response, but the server may have already executed the request",
+        "`null` origin appears from sandboxed iframes, `file://` pages, and some redirects — never treat it as trusted",
+        "Non-browser clients and browser extensions bypass CORS, so CORS never substitutes for server-side authorization checks",
+        "Mental model: CORS is a read-permission handshake between browser and server, negotiated with HTTP headers"
+      ]
+    },
+    {
+      "title": "Anatomy of a CORS Exchange",
+      "points": [
+        "`Origin: https://app.com` is added by the browser automatically on cross-origin fetch/XHR; JS cannot set or forge it",
+        "`Origin` is sent even on simple requests — the server always knows who is asking",
+        "Server answers with `Access-Control-Allow-Origin` (ACAO): either an exact origin echo or `*`",
+        "ACAO does not support lists or wildcards inside a value: `https://a.com, https://b.com` and `https://*.a.com` are both invalid",
+        "Multi-origin support = server reads `Origin`, checks it against an allowlist, echoes it back, and adds `Vary: Origin`",
+        "Two request flavors: simple requests (fire immediately, check response) and preflighted requests (OPTIONS probe first)",
+        "Failure mode: request executes, response arrives at the browser, browser discards it and throws a `TypeError: Failed to fetch` in JS",
+        "The network tab shows the response body even when JS is blocked — a common source of 'but I can see it!' confusion",
+        "CORS errors are deliberately opaque to JS (no status, no headers) to prevent using error detail as a side channel",
+        "`Access-Control-Expose-Headers` controls which *response* headers JS may read; without it only the CORS-safelisted response headers are visible",
+        "CORS-safelisted response headers: `Cache-Control`, `Content-Language`, `Content-Length`, `Content-Type`, `Expires`, `Last-Modified`, `Pragma`",
+        "Common bite: `Authorization` echoed back or a custom `X-Request-Id` is invisible to JS until listed in Expose-Headers",
+        "CORS headers must be present on *error* responses too (4xx/5xx) or the client sees a CORS error instead of the real status"
+      ]
+    },
+    {
+      "title": "Simple Requests: The No-Preflight Path",
+      "points": [
+        "A request is 'simple' (no preflight) only if ALL conditions hold — method, headers, and content-type together",
+        "Allowed methods: `GET`, `HEAD`, `POST` only — `PUT`, `PATCH`, `DELETE` always preflight",
+        "Allowed `Content-Type` values: `application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain` — nothing else",
+        "`Content-Type: application/json` is the single most common reason an innocent-looking POST preflights",
+        "CORS-safelisted request headers: `Accept`, `Accept-Language`, `Content-Language`, `Content-Type` (safelisted values), plus `Range` (simple range values)",
+        "Any custom header (`X-API-Key`, `Authorization`, `X-Requested-With`) forces a preflight",
+        "No event listener registered on `XMLHttpRequest.upload` (an upload progress listener triggers preflight)",
+        "No `ReadableStream` used as the request body",
+        "Example simple request: `fetch(url, {method:'POST', body: new URLSearchParams({a:1})})` — no preflight",
+        "Example preflighted: `fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})`",
+        "Simple requests are exactly the shapes an HTML `<form>` could already produce — that is why they need no permission probe",
+        "Consequence: a simple cross-origin POST reaches your handler and runs before any CORS check — CSRF protection is still your job",
+        "Trick to avoid preflight on JSON APIs: send `Content-Type: text/plain` and parse manually — works, but silently disables the browser's CSRF-ish speed bump",
+        "Safelisted header values still have length/character limits (e.g. header value byte limits) that can force a preflight unexpectedly"
+      ]
+    },
+    {
+      "title": "Preflight: The OPTIONS Handshake",
+      "points": [
+        "Preflight = an automatic `OPTIONS` request the browser sends *before* the real request, asking permission",
+        "Preflight request headers: `Origin`, `Access-Control-Request-Method`, `Access-Control-Request-Headers` (comma-separated, lowercased)",
+        "Preflight carries NO body, NO credentials cookies by default in the sense that it must be answerable without auth",
+        "Server must answer with `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers`",
+        "`Access-Control-Allow-Methods` is a list: `GET, POST, PUT, DELETE, OPTIONS` — it applies to the preflight, not per-endpoint enforcement",
+        "`Access-Control-Allow-Headers` must name every non-safelisted header the real request will send; wildcard `*` works only for non-credentialed requests",
+        "Preflight response must return a 2xx status (200 or 204) with no body; 3xx or 401 on OPTIONS breaks it",
+        "Classic bug: auth middleware runs before CORS middleware and returns `401` to the `OPTIONS` probe — browser reports a CORS error, not an auth error",
+        "Classic bug: framework routing has no `OPTIONS` handler for the path and returns `404` or `405`",
+        "Redirects are not followed on preflight — a `301` from `http` to `https` on OPTIONS fails the whole exchange",
+        "Preflight failure means the real request is never sent — server logs show only an OPTIONS line",
+        "Reading a preflight in DevTools: filter by method OPTIONS, compare `Access-Control-Request-Headers` against the returned `Allow-Headers` line by line",
+        "The real request is still subject to a second CORS check: the actual response must also carry a valid `Access-Control-Allow-Origin`",
+        "Preflight costs a full round trip — on a high-latency link it can double perceived API latency"
+      ]
+    },
+    {
+      "title": "Credentials: Cookies, Auth, and the Wildcard Ban",
+      "points": [
+        "By default `fetch` sends no cookies cross-origin; `credentials: 'same-origin'` is the default mode",
+        "`credentials: 'include'` sends cookies, TLS client certs, and lets `Set-Cookie` in the response stick",
+        "XHR equivalent: `xhr.withCredentials = true`",
+        "Credentialed request requires `Access-Control-Allow-Credentials: true` on the response — absence blocks the read",
+        "Hard rule: with credentials, `Access-Control-Allow-Origin: *` is REJECTED — the server must echo the exact origin",
+        "Same rule extends to `Access-Control-Allow-Headers: *`, `Allow-Methods: *`, and `Expose-Headers: *` — the wildcard is literal, not a wildcard, in credentialed mode",
+        "Exact error text to recognize: 'The value of the Access-Control-Allow-Origin header must not be the wildcard * when the request's credentials mode is include'",
+        "Echoing the origin for credentialed responses REQUIRES `Vary: Origin` or a shared cache will serve one origin's ACAO to another",
+        "`SameSite=Lax` (the modern browser default) blocks the cookie on cross-site XHR/fetch even when CORS is fully configured — CORS and SameSite are two independent gates",
+        "Cross-site cookies now need `SameSite=None; Secure`, and third-party cookie deprecation is eroding even that",
+        "`Authorization: Bearer <token>` is NOT a credential in CORS terms — it is a custom header, so it forces preflight but does not need Allow-Credentials",
+        "Token-in-header auth avoids the credentials-mode wildcard trap entirely; this is why bearer tokens are simpler than cookies for cross-origin APIs",
+        "Both gates must open: server sends `Allow-Credentials: true` AND client sets `credentials: 'include'` — one side alone silently drops cookies",
+        "Preflight must ALSO return `Access-Control-Allow-Credentials: true` if the real request is credentialed"
+      ]
+    },
+    {
+      "title": "Caching Preflights and Vary",
+      "points": [
+        "`Access-Control-Max-Age: 600` tells the browser to cache the preflight result for 600 seconds and skip the OPTIONS round trip",
+        "Cache key is (origin, URL, method, header set) — a different method or header set re-preflights",
+        "Browser caps override your value: Chromium caps at 7200s (2h), Firefox at 86400s (24h), Safari historically much lower (~600s)",
+        "`Access-Control-Max-Age: 0` disables the cache — useful while debugging so config changes take effect immediately",
+        "Debugging tip: preflights only appear once per cache window, so a 'missing OPTIONS' in the log may just mean it was cached",
+        "`Vary: Origin` is mandatory whenever ACAO depends on the request's `Origin` — CDNs and reverse proxies key on it",
+        "Cache poisoning failure: without `Vary: Origin`, a CDN caches `ACAO: https://evil.com` and serves it to `https://app.com` (or vice versa, breaking the app)",
+        "Also `Vary: Access-Control-Request-Headers, Access-Control-Request-Method` on preflight responses when the answer varies by them",
+        "A static `Access-Control-Allow-Origin: *` needs no `Vary` — it is origin-independent, which is part of why `*` is cache-friendly",
+        "Reducing preflights: keep the endpoint simple-request-shaped, or raise Max-Age, or consolidate custom headers",
+        "Preflight cache is per-browser-profile and cleared on hard reload with DevTools 'Disable cache' checked",
+        "Interaction gotcha: cached preflight can mask a server-side CORS regression for hours after deploy",
+        "Measure it: a preflighted request on a 100ms RTT link costs ~200ms before the first byte of real work"
+      ]
+    },
+    {
+      "title": "Beyond Basic CORS: Redirects, Modes, and Neighbors",
+      "points": [
+        "`fetch` modes: `cors` (default, readable if allowed), `no-cors` (opaque response, status 0, body unreadable), `same-origin` (cross-origin rejected outright)",
+        "`no-cors` is not a bypass — you get an opaque response you cannot read; useful only for fire-and-forget or cache warming",
+        "Opaque responses still count toward cache storage quota at an inflated padded size",
+        "Cross-origin redirect resets the origin to `null` for the follow-up request in some flows — every hop in a redirect chain must pass CORS",
+        "`redirect: 'manual'` in fetch yields an opaque-redirect response; `redirect: 'error'` fails fast — helpful for diagnosing hidden hops",
+        "CORS vs CSP: CORS decides who can *read* your response; `Content-Security-Policy` decides what your page may *load*. Independent controls",
+        "CORS vs CSRF: CORS does not stop the request from executing; use SameSite cookies plus anti-CSRF tokens for state-changing endpoints",
+        "CORS vs JSONP: JSONP was the pre-CORS hack using `<script>` callbacks — no method control, no header control, and it executes attacker JS. Dead; never revive it",
+        "`Cross-Origin-Resource-Policy` (CORP): `same-origin | same-site | cross-origin` — blocks other sites from *embedding* your resource, the mirror image of CORS",
+        "`Cross-Origin-Opener-Policy` (COOP) + `Cross-Origin-Embedder-Policy` (COEP) enable cross-origin isolation, required for `SharedArrayBuffer` and precise timers",
+        "Under COEP `require-corp`, every cross-origin subresource must send CORP or be fetched with CORS — a whole class of new load failures",
+        "`Timing-Allow-Origin` is a separate header controlling access to detailed Resource Timing data",
+        "Private Network Access (PNA) adds `Access-Control-Request-Private-Network` preflights when a public page calls a local/private IP — breaks localhost dev setups",
+        "WebSockets do not use CORS at all — the server must validate the `Origin` header itself during the handshake"
+      ]
+    },
+    {
+      "title": "Server Configuration Patterns",
+      "points": [
+        "Public read-only API: `Access-Control-Allow-Origin: *`, no credentials, no `Vary` needed — simplest and safest",
+        "Allowlist pattern: read `Origin`, exact-match against a config set, echo it back, add `Vary: Origin`, else omit ACAO entirely",
+        "Omitting ACAO is the correct rejection: do NOT return `ACAO: null` and do NOT return a 403 with CORS headers",
+        "Express: `app.use(cors({origin: ALLOWED, credentials: true}))` must be registered *before* auth middleware and before routes",
+        "Express preflight: `app.options('*', cors(...))` when the router does not auto-handle OPTIONS",
+        "Nginx: `add_header` is not inherited into a block that has its own `add_header` — repeat all CORS headers per block, and use `always` so they survive error responses",
+        "Nginx preflight short-circuit: `if ($request_method = OPTIONS) { add_header ...; return 204; }`",
+        "Spring: `@CrossOrigin(origins=\"https://app.com\", allowCredentials=\"true\")` or a global `CorsConfigurationSource`; Spring Security needs `http.cors()` enabled or the filter chain rejects OPTIONS",
+        "Django: `django-cors-headers` with `CORS_ALLOWED_ORIGINS` (never `CORS_ALLOW_ALL_ORIGINS = True` in production with credentials)",
+        "Layer duplication bug: both the app and the load balancer add ACAO, producing two headers — browsers treat multiple ACAO values as invalid and fail",
+        "API gateway note: AWS API Gateway and CloudFront need CORS configured at the gateway *and* in the integration response for errors",
+        "Ordering rule of thumb: CORS filter first, then auth, then rate limiting, then routing — so OPTIONS never hits auth",
+        "Always set CORS headers on 401/403/500 responses, otherwise clients see a CORS error masking the real failure",
+        "Testing without a browser: `curl -i -X OPTIONS https://api.com/x -H 'Origin: https://app.com' -H 'Access-Control-Request-Method: PUT' -H 'Access-Control-Request-Headers: content-type'`"
+      ]
+    },
+    {
+      "title": "Misconfigurations That Become Vulnerabilities",
+      "points": [
+        "Reflect-any-origin: server blindly echoes `Origin` back into ACAO with `Allow-Credentials: true` — any site can read authenticated responses. The classic CORS bug",
+        "`Access-Control-Allow-Origin: null` with credentials: an attacker gets `null` for free from a sandboxed iframe (`<iframe sandbox=\"allow-scripts\">`) and reads your data",
+        "Sloppy prefix match: `origin.startsWith('https://app.com')` matches `https://app.com.evil.com`",
+        "Sloppy suffix match: `origin.endsWith('app.com')` matches `https://evilapp.com`",
+        "Unescaped regex dot: `/^https:\\/\\/app.com$/` — the `.` matches any char, so `https://appXcom` passes",
+        "Subdomain wildcard risk: trusting `*.app.com` means one XSS or one dangling/takeover-able subdomain compromises the whole API",
+        "Trusting `http://` origins: a network attacker on plaintext can inject into the allowed origin and pivot to your HTTPS API",
+        "Trusting `localhost` or `127.0.0.1` in production config: a malicious local app or a user visiting a hostile page can reach the API",
+        "Wildcard with credentials is blocked by browsers, so attackers hunt for *reflection* instead — reflection is the actual exploit vector",
+        "Exploit shape: victim visits `evil.com`, JS does `fetch('https://api.bank.com/me', {credentials:'include'})`, reads the response, exfiltrates it",
+        "Impact ladder: read PII, steal API keys/CSRF tokens from responses, then chain the token into state-changing requests",
+        "Internal APIs are the worst case: a CORS-permissive internal service plus a victim on the VPN equals an SSRF-like read primitive from the browser",
+        "Defense: exact-string allowlist, no regex, no reflection of unknown origins, credentials only where genuinely required",
+        "Defense: never let the allowlist come from user-controllable data (a header, a query param, or a tenant record an attacker can register)",
+        "Audit test: send `Origin: https://evil.com` with curl and confirm the response has no ACAO"
+      ]
+    },
+    {
+      "title": "Debugging Playbook & Recap",
+      "points": [
+        "Step 1 — read the console error precisely; the browser names the exact missing header, and each message maps to one fix",
+        "'No \\'Access-Control-Allow-Origin\\' header is present' = server never emitted ACAO, or emitted it only on 200 and this was an error response",
+        "'...Allow-Origin header has a value \\'X\\' that is not equal to the supplied origin' = allowlist miss or scheme/port mismatch",
+        "'Request header field x-api-key is not allowed by Access-Control-Allow-Headers' = add it to the preflight Allow-Headers list",
+        "'Response to preflight request doesn't pass access control check' = look at the OPTIONS response status first, it is usually 401/404/405",
+        "'Redirect is not allowed for a preflight request' = fix the URL to the final scheme/host, drop the trailing-slash or http→https hop",
+        "Step 2 — reproduce with curl using explicit `Origin`; if curl shows the headers but the browser fails, suspect the preflight or a cache",
+        "Step 3 — check the response for duplicate ACAO headers added by proxy + app",
+        "Step 4 — check `Vary: Origin` and bust the CDN/preflight cache before concluding the fix failed",
+        "Comparison recap — simple: no OPTIONS, limited methods/headers/content-types; preflighted: OPTIONS first, arbitrary methods and headers, extra round trip",
+        "Comparison recap — `*`: public data, no cookies, cache-friendly; echoed origin: credentials possible, requires allowlist + `Vary`",
+        "Trade-off recap — fewer preflights means simpler content types and fewer custom headers; more Max-Age means slower propagation of CORS config changes",
+        "Security recap — CORS grants read access, never authorization; every endpoint still needs its own authz check server-side",
+        "Checklist to ship: exact-match allowlist, `Vary: Origin`, CORS headers on errors, OPTIONS before auth, credentials only when needed, no reflection, no regex",
+        "Remember the one-liner: 'CORS is the server telling the browser who may read the answer — it never decides who may ask the question'"
+      ]
+    }
+  ]
+}

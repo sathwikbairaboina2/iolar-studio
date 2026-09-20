@@ -1,0 +1,1231 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "NODE ASYNC HANDBOOK",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "One Thread, Six Phases",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. One Thread Only",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Node runs your JS on ONE thread, one call stack.",
+            "Every synchronous line blocks every other request.",
+            "A 2s `for` loop = 2s of dead server, for everyone."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Blocking vs Non-Blocking",
+          "items": [
+            "Blocking: returns only when work is done.",
+            "`fs.readFileSync(p)` — the stack waits.",
+            "Non-blocking: returns now, result delivered later.",
+            "`fs.readFile(p, cb)` — the loop keeps going."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. I/O-Bound vs CPU-Bound",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Async fixes WAITING on I/O, not CPU work.",
+            "Hashing, parsing, image resize stay blocking.",
+            "Concurrency = interleaved in-flight ops, one thread.",
+            "Parallelism needs `worker_threads` / `child_process`."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "app.get('/hash', (req, res) => {",
+            "  res.end(bcrypt.hashSync(pw, 12)); // serial!",
+            "});",
+            "// bcrypt.hash(pw, 12) -> threadpool, concurrent"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Runtime Is Not Single-Threaded",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Work",
+            "Handled by",
+            "Pool slot?"
+          ],
+          "rows": [
+            [
+              "fs, zlib",
+              "libuv pool",
+              "yes"
+            ],
+            [
+              "dns.lookup",
+              "libuv pool",
+              "yes"
+            ],
+            [
+              "pbkdf2, scrypt",
+              "libuv pool",
+              "yes"
+            ],
+            [
+              "sockets, HTTP",
+              "epoll/kqueue/IOCP",
+              "no"
+            ],
+            [
+              "pool size",
+              "UV_THREADPOOL_SIZE",
+              "4 default"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Style Timeline",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "callbacks 2009",
+              "promises ES2015 / Node 4",
+              "async-await Node 7.6",
+              "unflagged Node 8"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rule of thumb",
+          "text": "Never do more than ~10ms of synchronous work in a request path. Past that, chunk it, stream it, or move it off-thread."
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "p.then(x => { doAsync() })  // undefined, no wait",
+            "p.then(x => doAsync())      // returns promise",
+            "p.then(x => { return doAsync() })  // also fine"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "One Thread, Six Phases (cont.)",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Find the blocker: `node --cpu-prof`, `node --prof`.",
+            "Add an event-loop-lag probe as a health metric."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Loop Phases In Order",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "timers",
+              "pending cbs",
+              "idle/prepare",
+              "poll",
+              "check",
+              "close"
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Phase",
+            "Runs"
+          ],
+          "rows": [
+            [
+              "timers",
+              "setTimeout / setInterval"
+            ],
+            [
+              "poll",
+              "I/O cbs; blocks here when idle"
+            ],
+            [
+              "check",
+              "setImmediate — always after poll"
+            ],
+            [
+              "close",
+              "socket.on('close')"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Timers are a floor, never a guarantee.",
+            "Microtasks drain BETWEEN every macrotask callback.",
+            "Order: `process.nextTick` queue, then promises.",
+            "Recursive nextTick starves the loop; setImmediate can't."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Memorise this puzzle",
+          "text": "At top level, `setTimeout(fn,0)` vs `setImmediate` is NON-deterministic (depends on loop startup). Inside an I/O callback, `setImmediate` always wins."
+        },
+        {
+          "type": "heading",
+          "text": "1. Trace The Order",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "log('1'); log('2');",
+            "process.nextTick(() => log('nextTick'));",
+            "Promise.resolve().then(() => log('promise'));",
+            "setTimeout(() => log('timeout'), 0);",
+            "setImmediate(() => log('immediate'));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Prints: 1 2 nextTick promise timeout immediate.",
+            "Sync code first — it owns the stack until it returns.",
+            "Each phase drains up to a system max, then moves on.",
+            "So one phase cannot indefinitely starve the next."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Loop Lag",
+          "items": [
+            "Lag = should-have-fired minus did-fire.",
+            "`perf_hooks.monitorEventLoopDelay()`.",
+            "Browsers have no nextTick — demos don't port 1:1."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. The Error-First Contract",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "fs.readFile('a.txt','utf8', (err, data) => {",
+            "  if (err) return cb(err);   // return!",
+            "  cb(null, data.trim());     // null on success",
+            "});"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Ordering & The Error-First Contract",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Error is ALWAYS the first parameter, `null` on success.",
+            "Miss the `return` and the callback fires twice.",
+            "The runtime invokes your callback, not your code.",
+            "So `try/catch` around the call cannot catch inside it."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Throw = death",
+          "text": "A throw inside a callback with no handler becomes an `uncaughtException` and kills the process."
+        },
+        {
+          "type": "heading",
+          "text": "3. Zalgo & Once",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// never sometimes-sync, sometimes-async",
+            "if (hit) return process.nextTick(",
+            "  () => cb(null, hit));   // defer the cache path",
+            "fs.readFile(k, cb);"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Call the callback exactly once — no more, no less.",
+            "Guard with `let called = false` or `once()`.",
+            "Matters most when wrapping event-based APIs."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. The Promisify Bridge",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Direction",
+            "Note"
+          ],
+          "rows": [
+            [
+              "util.promisify",
+              "cb → promise",
+              "err-first only"
+            ],
+            [
+              "util.callbackify",
+              "promise → cb",
+              "reverse path"
+            ],
+            [
+              "promisify.custom",
+              "library-defined",
+              "custom shape"
+            ],
+            [
+              "cb(null,a,b)",
+              "lossy",
+              "only `a` survives"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Core still ships callback APIs everywhere.",
+            "Promise mirrors: `fs/promises`, `dns/promises`.",
+            "`timers/promises` gives a promise `setTimeout`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Pyramid Of Doom",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "readConfig((e, c) => {",
+            "  connectDb(c, (e, db) => {",
+            "    db.query(q, (e, u) => {",
+            "      writeLog(u, (e) => done(e));  // 4 deep",
+            "    }); }); });"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Ordering & The Error-First Contract (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Growing rightward",
+          "text": "Every level repeats `if (err) return cb(err)`, and indentation encodes control flow. Nesting is the symptom; the disease is on the next page."
+        },
+        {
+          "type": "heading",
+          "text": "1. Three Structural Failures",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Errors don't compose — every level forwards by hand.",
+            "One missed forward silently swallows the failure.",
+            "No return value — you can't build pipelines.",
+            "Control flow is manual: parallel needs your own latch."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "let n = 3, out = [];",
+            "const done = i => (e, v) => {",
+            "  out[i] = v;",
+            "  if (--n === 0) final(null, out);  // the latch",
+            "};"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "2. What People Tried",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Fix",
+            "Gives you"
+          ],
+          "rows": [
+            [
+              "named functions",
+              "flatter nesting"
+            ],
+            [
+              "async.series",
+              "ordered steps"
+            ],
+            [
+              "async.parallel",
+              "fan-out + join"
+            ],
+            [
+              "async.waterfall",
+              "value passing"
+            ],
+            [
+              "async.queue(w, n)",
+              "first concurrency limiter"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`async.queue` is the ancestor of today's `p-limit`.",
+            "Callbacks + `try/catch` don't mix; + `throw` don't mix.",
+            "That is the structural reason promises won.",
+            "Still right for repeated events: EventEmitter listeners."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Settle vs fire",
+          "text": "A promise settles ONCE. A listener fires many times. Don't promisify a stream of events."
+        },
+        {
+          "type": "heading",
+          "text": "3. Promise States",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "pending",
+              "fulfilled (value) | rejected (reason)",
+              "settled — permanent"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Transitions are one-way and irreversible.",
+            "Settled = fulfilled or rejected.",
+            "A promise is an OBJECT for a future value.",
+            "So it can be returned, stored, passed — a callback can't."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Callback Hell → Promise Mechanics",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Wrapping Legacy APIs",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const read = p => new Promise((res, rej) =>",
+            "  fs.readFile(p, (e, d) => {",
+            "    if (e) return rej(e);",
+            "    res(d);        // 2nd resolve = no-op",
+            "  }));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Idempotence kills the double-callback bug class.",
+            "`Promise.resolve(v)` / `reject(e)` = already settled.",
+            "`Promise.resolve(p)` on a promise returns it unchanged."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. then / catch / finally",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Call",
+            "Same as",
+            "Returns"
+          ],
+          "rows": [
+            [
+              ".then(f, r)",
+              "—",
+              "new promise"
+            ],
+            [
+              ".catch(f)",
+              ".then(undefined, f)",
+              "new promise"
+            ],
+            [
+              ".finally(f)",
+              "both paths",
+              "value passes through"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`.then` ALWAYS returns a new promise — that's chaining.",
+            "Handlers run as microtasks, never synchronously.",
+            "`Promise.resolve(1).then(log)` logs after all sync code.",
+            "Returning a thenable adopts its state — flattens, not nests."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Two Promise Traps",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// anti-pattern: wrapping a promise",
+            "new Promise(res => doAsync().then(res));",
+            "// just:",
+            "return doAsync();"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`throw` inside `.then` rejects the returned promise.",
+            "So `throw e` and `reject(e)` are equivalent there.",
+            "Promises are EAGER — the executor runs at construction.",
+            "No built-in laziness, no built-in cancel."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. The Flat Chain",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "readConfig()",
+            "  .then(connect)",
+            "  .then(query)",
+            "  .then(write)",
+            "  .catch(handle);   // always terminate"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Most common chaining bug",
+          "text": "Not returning the inner promise. The chain moves on before the work finishes, and errors escape the `.catch`."
+        }
+      ]
+    },
+    {
+      "page_title": "Chaining, Propagation, Combinators",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. Errors Flow Downhill",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A rejection skips every `.then` until the first `.catch`.",
+            "`.catch` returning a value RESUMES in fulfilled state.",
+            "To keep failing, rethrow inside the `.catch`.",
+            "Unterminated chain = unhandled rejection."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Placement",
+            "Catches errors from `a`?"
+          ],
+          "rows": [
+            [
+              ".then(a).catch(b)",
+              "yes"
+            ],
+            [
+              ".then(a, b)",
+              "no — upstream only"
+            ],
+            [
+              "chain returned",
+              "caller's problem"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Fork vs Sequence",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two `.then` on the SAME promise = two independent chains.",
+            "That branches; it does not sequence.",
+            "Passing values down needs closure nesting or an accumulator.",
+            "That ergonomic weakness is what async/await removes."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "c.query(sql)",
+            " .then(use)",
+            " .catch(log)",
+            " .finally(() => c.release());  // both paths"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "5. Combinators Open",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Call",
+            "Settles when",
+            "Order"
+          ],
+          "rows": [
+            [
+              "all",
+              "first rejection / all done",
+              "INPUT order"
+            ],
+            [
+              "allSettled",
+              "all settled, never rejects",
+              "INPUT order"
+            ],
+            [
+              "race",
+              "first to settle, either way",
+              "n/a"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "allSettled yields {status,value} or {status,reason}.",
+            "Use it when partial failure is acceptable.",
+            "`race` is the basis of the classic timeout pattern."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "all fails fast, cancels nothing",
+          "text": "The other operations keep running after the first rejection — and their later rejections can surface as unhandled."
+        },
+        {
+          "type": "heading",
+          "text": "1. any & AggregateError",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const first = await Promise.any([a(), b()]);",
+            "// Node 15+: first FULFILLMENT wins",
+            "// all reject -> AggregateError",
+            "// e.errors holds every reason"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Combinator Picks & async/await",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Pick",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "all",
+              "every-or-nothing"
+            ],
+            [
+              "allSettled",
+              "report card"
+            ],
+            [
+              "race",
+              "first settled"
+            ],
+            [
+              "any",
+              "first success"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Fan Out, Then Partition",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const rs = await Promise.allSettled(jobs);",
+            "const ok = rs.filter(r => r.value !== undefined);",
+            "const bad = rs.filter(r => r.reason);  // retry"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Parallel START creates concurrency, not `await`.",
+            "`await Promise.all([getA(), getB()])` — calls made first.",
+            "Any iterable works; non-promises get `Promise.resolve`d.",
+            "10,000 items = 10,000 sockets. Combinators have NO limit."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. async Returns A Promise",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`return 1` fulfills with 1; `throw e` rejects with e.",
+            "`await p` suspends the function, resumes in a microtask.",
+            "It never blocks the loop or the thread.",
+            "`await 1` still costs one microtask tick — not free."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "async function f() {",
+            "  const a = await g();",
+            "  return a + 1;",
+            "}",
+            "// desugars to: g().then(a => a + 1)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. try/catch Comes Back",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "try { await q(sql); }",
+            "catch (e) { log(e); }",
+            "finally { client.release(); }  // always"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Intermediate values become plain `const`s — no pyramid.",
+            "That readability win is the whole point of the syntax.",
+            "Top-level `await`: ESM only (.mjs / type: module).",
+            "CommonJS still needs an async IIFE."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Iteration Rules",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`forEach(async …)` is fire-and-forget — return ignored.",
+            "Use `for...of` (serial) or `map` + `Promise.all`.",
+            "`for await (const c of stream)` walks async iterables.",
+            "Idiomatic for streams and paginated APIs."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "async function* pages(url) {",
+            "  let next = url;",
+            "  while (next) { const p = await get(next);",
+            "    yield p.items; next = p.next; }",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Combinator Picks & async/await (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Stack traces",
+          "text": "async/await preserves async frames far better than raw `.then` chains — `--async-stack-traces` is on by default."
+        },
+        {
+          "type": "heading",
+          "text": "1. The Serial Trap",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const a = await getA();   // t(A)",
+            "const b = await getB();   // + t(B)  serial!",
+            "const [x, y] = await Promise.all([",
+            "  getA(), getB()          // max(t), not sum(t)",
+            "]);"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`await` in a `for` loop is intentionally serial.",
+            "Correct for rate-limited APIs and ordered writes.",
+            "Disastrous for 500 independent fetches.",
+            "`map(async x => f(x))` gives PROMISES, not values."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Start Early, Await Later",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const pa = getA(), pb = getB();  // both started",
+            "pb.catch(() => {});   // guard the loser",
+            "use(await pa, await pb);"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Creation time and await time are independent.",
+            "That independence is exactly how you get parallelism.",
+            "Hazard: `pa` rejects first, `pb` goes unhandled.",
+            "Attach `.catch` at creation, or use `allSettled`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Forcing Sequence",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "items.reduce(",
+            "  (p, x) => p.then(() => f(x)),",
+            "  Promise.resolve()   // one at a time",
+            ");"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Parallelism is correctness",
+          "text": "Never parallelize writes that depend on ordering or share a transaction. Speed is the second question."
+        },
+        {
+          "type": "heading",
+          "text": "4. Latency Math",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "100 × 50ms",
+            "Wall clock"
+          ],
+          "rows": [
+            [
+              "serial",
+              "5s"
+            ],
+            [
+              "fully parallel",
+              "~50ms"
+            ],
+            [
+              "limit 10",
+              "~500ms"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Shape",
+            "Tool"
+          ],
+          "rows": [
+            [
+              "independent, small N",
+              "Promise.all"
+            ],
+            [
+              "independent, large N",
+              "limited pool"
+            ],
+            [
+              "dependent",
+              "sequential for...of"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Serial By Accident, Bounded By Design",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Why Bound It",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Unbounded fan-out: EMFILE, ECONNRESET, 429s, OOM.",
+            "It drains DB pools and blows memory too.",
+            "Little's Law: in-flight ≈ arrival rate × latency.",
+            "The limit is the knob that caps in-flight work."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const limit = pLimit(5);",
+            "await Promise.all(items.map(",
+            "  i => limit(() => fetchOne(i))   // THUNK",
+            "));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The one-character bug",
+          "text": "`limit(fetchOne(i))` is wrong — the call already started, so the limiter gates nothing. The function must be deferred."
+        },
+        {
+          "type": "heading",
+          "text": "1. Roll Your Own Pool",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "let i = 0;",
+            "const worker = async () => {",
+            "  while (i < n) await task(list[i++]);  // cursor",
+            "};",
+            "await Promise.all([1,2,3,4,5].map(worker));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Semaphore: a counter plus a queue of resolvers.",
+            "`acquire()` returns a promise when a slot is free.",
+            "`release()` pops the queue and resolves the next waiter."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Rolling Pool vs Batch",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Shape",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "slices of N",
+              "simple to write"
+            ],
+            [
+              "",
+              "stalls on slowest item"
+            ],
+            [
+              "rolling pool",
+              "always N in flight"
+            ],
+            [
+              "",
+              "much better p99"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Limits Above You",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Gate",
+            "Default"
+          ],
+          "rows": [
+            [
+              "http.Agent maxSockets",
+              "per host"
+            ],
+            [
+              "UV_THREADPOOL_SIZE",
+              "4"
+            ],
+            [
+              "DB pool max",
+              "driver config"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "await pipeline(src, transform, dst);",
+            "Readable.from(items)",
+            "  .map(fn, { concurrency: 5 });  // Node 18+"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Two knees to watch",
+          "text": "Throughput plateaus while p99 latency and error rate climb — that's your N. And `items.map(...)` over a million rows builds a million closures before any limiting happens: stream or paginate."
+        }
+      ]
+    },
+    {
+      "page_title": "Pools, Limits, Unhandled Rejections",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Your app limit sits UNDER the tightest gate above.",
+            "Pair limiting with retry + jitter and a circuit breaker.",
+            "A limiter alone still hammers a failing dependency.",
+            "Pick N from the downstream's documented limit, then tune."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Unhandled Rejection",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "= rejected promise with no handler by the checkpoint end.",
+            "Node 15+ raises `uncaughtException`, then exits code 1.",
+            "Older Node only printed a warning — habits lag behind."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "throw (default)",
+              "crash"
+            ],
+            [
+              "strict",
+              "always uncaught"
+            ],
+            [
+              "warn",
+              "log only"
+            ],
+            [
+              "none",
+              "silence — don't"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Where They Come From",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "#1 fire-and-forget: `doWork()` with no await, no catch.",
+            "#2 async callbacks to APIs that ignore return values.",
+            "e.g. `emitter.on('data', async …)`, forEach, Express 4.",
+            "#3 losers of `all` / `race` rejecting after it settled."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "process.on('unhandledRejection', r => {",
+            "  log.fatal(r); flush(); process.exit(1);",
+            "});",
+            "process.on('rejectionHandled', late);  // late catch"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "1. Last Resort Handlers",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`unhandledRejection` is for logging and shutdown only.",
+            "Never for business recovery — you lost the context.",
+            "`uncaughtException`: log, flush, exit. Never resume serving.",
+            "`rejectionHandled` proves late attach is legal but risky."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "void doWork().catch(e => log.error(e));",
+            "// explicit, lint-friendly fire-and-forget",
+            "// rule: @typescript-eslint/no-floating-promises"
+          ],
+          "runnable": false
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your Node server has one thread — and every sync line you write is a queue everyone else stands in. This 10-page handwritten handbook walks the whole async stack: the six loop phases, error-first callbacks and Zalgo, promise mechanics, the combinator picker, the accidental-serial await trap, bounded concurrency with p-limit, unhandled-rejection crash semantics, and AbortController cleanup. Save it for the next time a fan-out takes down your connection pool.",
+    "hashtags": [
+      "#nodejs",
+      "#javascript",
+      "#asyncawait",
+      "#eventloop",
+      "#promises",
+      "#backenddev",
+      "#webdev",
+      "#codenotes",
+      "#programming",
+      "#softwareengineering",
+      "#devtips",
+      "#100daysofcode"
+    ]
+  }
+}

@@ -1,0 +1,971 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA RETENTION & COMPACTION",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Kafka Needs Retention",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Log, Not Queue",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Topic = append-only distributed commit log",
+            "Consuming never deletes — unlike a queue",
+            "Offset is a read cursor, not a delete ack",
+            "100 consumers read the same bytes, stored once"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Retention is the only mechanism that reclaims disk in Kafka. Without it a broker fills its disk and goes offline."
+        },
+        {
+          "type": "heading",
+          "text": "Two Policies"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`cleanup.policy`",
+            "Keeps",
+            "Fits"
+          ],
+          "rows": [
+            [
+              "`delete`",
+              "Recent window",
+              "Events, logs"
+            ],
+            [
+              "`compact`",
+              "Latest per key",
+              "State, config"
+            ],
+            [
+              "`compact,delete`",
+              "Latest, bounded",
+              "Changelogs"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default is `delete` with `retention.ms=604800000` (7 days)",
+            "Retention is per-partition, per-broker — never per-topic",
+            "Footprint = sum over partitions × replication factor",
+            "A background thread enforces it, not the write path"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Broker vs Topic"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Config",
+            "Wins?"
+          ],
+          "rows": [
+            [
+              "Broker",
+              "`log.retention.hours`",
+              "Fallback"
+            ],
+            [
+              "Broker",
+              "`log.retention.bytes`",
+              "Fallback"
+            ],
+            [
+              "Topic",
+              "`retention.ms`",
+              "Always"
+            ],
+            [
+              "Topic",
+              "`retention.bytes`",
+              "Always"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-configs.sh --alter \\",
+            "  --entity-type topics --entity-name t \\",
+            "  --add-config retention.ms=86400000  # 1 d"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Sizing The Disk"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "peak throughput × window × RF × (1 + headroom)",
+            "Headroom of 30-40% is standard, not optional",
+            "Expect lag between 'expired' and 'actually deleted'"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "50 MB/s x 86400 s x 7 d x RF 3",
+            "= ~90 TB across the cluster",
+            "+35% headroom -> buy ~120 TB"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "append",
+              "active segment",
+              "closed segments",
+              "retention sweep",
+              "unlink"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Retention Is Not Backup",
+          "text": "A 7-day window means a bug found on day 8 is unrecoverable from Kafka. Retention defines the replay window, nothing more."
+        },
+        {
+          "type": "sidebox",
+          "title": "A Cross-Team Contract",
+          "items": [
+            "Producers, consumers and DR share one window",
+            "Shrinking it silently shortens everyone's replay",
+            "Announce changes; not a solo tuning knob"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Why Kafka Needs Retention (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Hold This Picture",
+          "text": "A log is a list of segment files. Retention is the rule set for deleting or rewriting those files."
+        },
+        {
+          "type": "heading",
+          "text": "What A Partition Is",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "orders-3/",
+            "  00000000000000368122.log   # records",
+            "  00000000000000368122.index # offset->byte",
+            "  00000000000000368122.timeindex",
+            "  00000000000000368122.snapshot"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Filename is the base offset, zero-padded to 20 digits",
+            "`.txnindex` and `.snapshot` carry transaction state",
+            "One such directory per partition per broker"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Active Segment"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Exactly one per partition; all writes append there",
+            "Never eligible for deletion or compaction",
+            "So a partition never shrinks to zero bytes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "When A Segment Rolls"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Trigger",
+            "Config",
+            "Default"
+          ],
+          "rows": [
+            [
+              "Size",
+              "`segment.bytes`",
+              "1 GB"
+            ],
+            [
+              "Age",
+              "`segment.ms`",
+              "7 days"
+            ],
+            [
+              "Index full",
+              "`segment.index.bytes`",
+              "10 MB"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "seg 0",
+              "seg 368122",
+              "seg 740k",
+              "seg 1.1M",
+              "ACTIVE"
+            ],
+            "caption": "partition = segments"
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Whole Files Only",
+          "text": "Kafka deletes segments, never individual records. That coarse granularity explains most retention surprises."
+        },
+        {
+          "type": "heading",
+          "text": "Index Files"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`.index` is sparse: one entry per `index.interval.bytes` (4096)",
+            "Lookups binary-search the index, then scan forward",
+            "`.timeindex` drives time retention and `offsetsForTimes()`",
+            "Zero-copy `sendfile` serves `.log` straight from page cache"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Deletion Is Two-Phase"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "expired",
+              "rename .deleted",
+              "wait 60 s",
+              "unlink"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`file.delete.delay.ms` (60000) lets in-flight reads finish",
+            "Sweep runs every `log.retention.check.interval.ms` (5 min)",
+            "Data lives past expiry until the next sweep"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Segment Files: The Unit of Deletion",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-dump-log.sh \\",
+            "  --files 00000000000000368122.log \\",
+            "  --print-data-log   # offsets, keys, ts"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Segment Size Trade-Off",
+          "items": [
+            "1 GB segment on a slow topic = weeks of data",
+            "Small segments reclaim precisely and fast",
+            "But more open file handles, more frequent rolls"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Window",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`retention.ms` — drop a segment once all its records age out",
+            "Broker default is `log.retention.hours=168`",
+            "`retention.ms=-1` means never expire by time"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Broker key",
+            "Unit",
+            "Precedence"
+          ],
+          "rows": [
+            [
+              "`log.retention.ms`",
+              "ms",
+              "1st"
+            ],
+            [
+              "`log.retention.minutes`",
+              "min",
+              "2nd"
+            ],
+            [
+              "`log.retention.hours`",
+              "hr",
+              "3rd, default"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Whose Clock?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`message.timestamp.type`",
+            "Clock",
+            "Risk"
+          ],
+          "rows": [
+            [
+              "`CreateTime`, default",
+              "Producer",
+              "Skew"
+            ],
+            [
+              "`LogAppendTime`",
+              "Broker",
+              "None"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A future-dated producer clock pins a segment for years",
+            "`message.timestamp.difference.max.ms` rejects wild timestamps",
+            "That guard is the cure for clock-skew retention bugs"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Max, Not Min",
+          "text": "Expiry is decided on the segment's LARGEST record timestamp — not the smallest, not the file mtime. One future record keeps every older record alive."
+        },
+        {
+          "type": "heading",
+          "text": "Why One Hour Means Eight"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "record written",
+              "segment rolls",
+              "records expire",
+              "sweep runs",
+              "delete delay"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "lifetime ~= retention.ms",
+            "  + segment.ms          # roll wait",
+            "  + check.interval.ms   # sweep",
+            "  + file.delete.delay.ms"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Actual retention is always ≥ configured retention",
+            "Cure a long tail by lowering `segment.ms`, not `retention.ms`",
+            "A 1 GB segment on a trickle topic dominates the math"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Time-Based Retention",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Changing It Live"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-configs.sh --alter \\",
+            "  --entity-type topics \\",
+            "  --entity-name events \\",
+            "  --add-config retention.ms=86400000"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Takes effect on the next check, not instantly",
+            "Shrinking a window can unlink terabytes in one sweep",
+            "Expect a disk I/O burst; do it off peak"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Compliance Caveat",
+          "items": [
+            "Time retention is best-effort deletion",
+            "Never a guarantee of erasure by a deadline",
+            "GDPR needs tombstones plus forced compaction"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Per Partition, Always",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`retention.bytes` caps ONE partition, not the topic",
+            "Broker default `log.retention.bytes` is per-partition too",
+            "`retention.bytes=-1` (default) means size never limits"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "retention.bytes = 10 GB",
+            "x 12 partitions x RF 3",
+            "= 360 GB cluster-wide, not 10 GB"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Classic Miscalculation",
+          "text": "Topic footprint ≈ `retention.bytes` × partitions × replication factor. Multiply before you buy disk."
+        },
+        {
+          "type": "heading",
+          "text": "Time And Size Together"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Set",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "Only `retention.ms`",
+              "Time decides"
+            ],
+            [
+              "Only `retention.bytes`",
+              "Size decides"
+            ],
+            [
+              "Both",
+              "OR — first to hit wins"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Size retention deletes the OLDEST segments first",
+            "It stops once the partition is back under the cap",
+            "The active segment is excluded, so caps get exceeded"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Hot Partition Skew"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Hot key partition",
+                "lines": [
+                  "Hits `retention.bytes`",
+                  "Drops data early",
+                  "Short replay window"
+                ]
+              },
+              {
+                "title": "Cold partition",
+                "lines": [
+                  "Far under the cap",
+                  "Keeps everything",
+                  "Full window"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Uneven keys make retention uneven across partitions",
+            "Same topic, two very different histories",
+            "Check real sizes before trusting the config"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-log-dirs.sh --describe \\",
+            "  --bootstrap-server localhost:9092 \\",
+            "  --topic-list events  # bytes per part"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Sizing The Cap"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`retention.bytes` ≈ (disk × 0.7) ÷ partitions per broker",
+            "A reassignment temporarily doubles a partition on the target",
+            "Budget that doubling or a rebalance fills the disk"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Size-Based Retention",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Which One Is The SLA?",
+          "items": [
+            "Size retention is the disk safety net",
+            "Time retention is the business promise",
+            "Set both; lean on time for correctness"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "No Quota Exists",
+          "text": "Kafka does not enforce a log-dir quota. Exceed the disk and the log dir is marked offline, taking its replicas down."
+        },
+        {
+          "type": "heading",
+          "text": "What Survives",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`cleanup.policy=compact` keeps at least the last value per key",
+            "Superseded values for that key are deleted",
+            "Records need a non-null key; null-keyed ones are dropped",
+            "Order is preserved — compaction removes, never reorders"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Topic As Table",
+          "text": "A compacted topic is a durable changelog. Replay from offset 0 and you rebuild current state, not a partial history."
+        },
+        {
+          "type": "heading",
+          "text": "Head And Tail"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Head, dirty",
+                "lines": [
+                  "Not yet cleaned",
+                  "Duplicate keys live",
+                  "Active segment inside"
+                ]
+              },
+              {
+                "title": "Tail, clean",
+                "lines": [
+                  "At most 1 per key",
+                  "Rewritten segments",
+                  "Offsets have gaps"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Offsets are never renumbered or reused",
+            "Consumers must tolerate non-contiguous offsets",
+            "Small segments merge into larger ones during the recopy"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "How A Pass Runs"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "scan head",
+              "build key map",
+              "recopy log",
+              "drop stale",
+              "swap segments"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Lag Knobs"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Config",
+            "Default",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`min.compaction.lag.ms`",
+              "0",
+              "Floor on record age"
+            ],
+            [
+              "`max.compaction.lag.ms`",
+              "none",
+              "Forces a dirty pass"
+            ],
+            [
+              "`delete.retention.ms`",
+              "24 h",
+              "Tombstone life"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Log Compaction: Latest Value per Key",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`max.compaction.lag.ms` is the GDPR-delete lever",
+            "`compact,delete` also drops anything past `retention.ms`",
+            "Use it for changelogs where ancient keys are dead weight"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Who Actually Uses It"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`__consumer_offsets` — Kafka's own offset store",
+            "Streams KTable changelogs, Connect config topics",
+            "Debezium schema history, cache warm-up topics"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Do I see every version of a key?",
+          "a_bullets": [
+            "Keep up with the head and you see EVERY message",
+            "Lag behind and intermediate values may be gone",
+            "Compaction is async and per-partition — 'latest' is eventual"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "cleanup.policy=compact",
+            "min.compaction.lag.ms=600000  # 10 min",
+            "delete.retention.ms=604800000 # 7 d"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Cleaner Threads",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`log.cleaner.enable=true` by default on every broker",
+            "`log.cleaner.threads` defaults to 1 — often too few",
+            "Each pass picks the partition with the highest dirty ratio"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "dirty ratio = dirty bytes / total bytes",
+            "min.cleanable.dirty.ratio = 0.5",
+            "# raise it: less CPU/IO, more disk"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Two Phases"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Phase",
+            "Reads",
+            "Result"
+          ],
+          "rows": [
+            [
+              "1 Scan",
+              "Dirty head",
+              "key -> max offset"
+            ],
+            [
+              "2 Recopy",
+              "Log from start",
+              "Writes survivors"
+            ],
+            [
+              "Survivor",
+              "Offset in map",
+              "Or key unseen"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Dedupe Buffer"
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "md5 + off",
+              "24 B",
+              "24 B",
+              "24 B",
+              "...",
+              "~5M keys"
+            ],
+            "caption": "dedupe buffer, 128 MB"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`log.cleaner.dedupe.buffer.size` (128 MB) is shared by threads",
+            "Entry = 16-byte MD5 of key + 8-byte offset = 24 B",
+            "Usable = buffer × `log.cleaner.io.buffer.load.factor` (0.9)"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "128 MB x 0.9 / 24 B",
+            "= ~5,000,000 keys per pass",
+            "# more keys = more passes, not failure"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The Silent Stall",
+          "text": "If a SINGLE segment holds more keys than the buffer, the cleaner throws and that partition stops compacting. The broker keeps serving as if nothing broke."
+        }
+      ]
+    },
+    {
+      "page_title": "The Log Cleaner: How Compaction Runs",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Unsticking A Cleaner"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Raise `log.cleaner.dedupe.buffer.size`",
+            "Add `log.cleaner.threads`",
+            "Lower `segment.bytes` on the offending topic",
+            "Restart the broker — dead cleaner threads never respawn"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What To Watch"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`LogCleanerManager` `max-dirty-ratio`",
+            "`time-since-last-run-ms` climbing forever",
+            "`uncleanable-partitions-count` above zero",
+            "`log-cleaner.log` holds the real exception"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Throttle And Safety",
+          "items": [
+            "`log.cleaner.io.max.bytes.per.second` caps cleaner I/O",
+            "Keeps compaction from starving produce and fetch",
+            "The active segment is never compacted — newest data safe"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Why This Bites Hard",
+          "text": "A stalled cleaner on `__consumer_offsets` grows it without bound until commits crawl and group rebalances turn pathological."
+        },
+        {
+          "type": "heading",
+          "text": "The Delete Marker",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A tombstone = valid key, NULL value",
+            "The only way to remove a key from a compacted topic",
+            "It is a real record: takes an offset, replicates normally"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "// key stays, value is null",
+            "producer.send(new ProducerRecord<>(",
+            "    \"users\", userId, null));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Null Is Not Empty",
+          "text": "A 0-byte payload is a real value and does NOT delete the key. Only a true null marks a delete."
+        },
+        {
+          "type": "heading",
+          "text": "Two-Stage Removal"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "write tombstone",
+              "drop old values",
+              "keep marker",
+              "wait window",
+              "drop marker"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`delete.retention.ms` defaults to 86400000 (24 h)",
+            "It runs from the compaction that cleaned that segment",
+            "Pass 1 keeps the tombstone; a later pass removes it"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your Kafka topic says 1-hour retention and the disk holds 8 hours — that is not a bug, it is `segment.ms` plus the sweep interval plus the delete delay. This field handbook walks the whole machinery: segment files as the real unit of deletion, why `retention.bytes` is per-partition (and how that turns 10 GB into 360 GB), how the log cleaner silently stalls when one segment holds more keys than its 128 MB dedupe buffer, and why a tombstone your consumer slept through leaves a phantom key forever. Ten pages of production-grade notes on the one policy that decides what data you keep.",
+    "hashtags": [
+      "#kafka",
+      "#apachekafka",
+      "#distributedsystems",
+      "#dataengineering",
+      "#backendengineering",
+      "#logcompaction",
+      "#streamprocessing",
+      "#sre",
+      "#devops",
+      "#systemdesign",
+      "#kafkastreams",
+      "#platformengineering"
+    ]
+  }
+}

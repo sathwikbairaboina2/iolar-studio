@@ -1,0 +1,503 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "REDIS STREAMS & PUB/SUB — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Trimming, Memory, and Capped Streams",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Trim By Time"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Form",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`MINID 1526919030474-0`",
+              "drop older IDs"
+            ],
+            [
+              "`XTRIM s MAXLEN ~ 1000`",
+              "out-of-band, by count"
+            ],
+            [
+              "`XTRIM s MINID ~ <id>`",
+              "out-of-band, by time"
+            ],
+            [
+              "`EXPIRE s 86400`",
+              "whole key dies"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`MINID` is the natural fit for 'keep 24 hours'",
+            "`XTRIM` keeps publishers fast by moving trim off the write path",
+            "A TTL deletes the stream, its groups, and all PELs together",
+            "Blunt, but a valid retention policy for throwaway telemetry"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Trimming Is Dumb"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "XTRIM",
+              "ignores groups",
+              "unread entries gone",
+              "work never ran"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "It deletes entries regardless of which groups have read them",
+            "Undelivered work vanishes silently, with no error",
+            "Check `XINFO GROUPS` lag before every scheduled trim",
+            "Trim only up to the minimum last-delivered-id across groups"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Memory Tuning"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Default",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`stream-node-max-entries`",
+              "100",
+              "node size"
+            ],
+            [
+              "`stream-node-max-bytes`",
+              "4096",
+              "node bytes"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bigger nodes compress better, but coarsen `XDEL` and `~` trims",
+            "Field names matching the master entry store values only",
+            "A stable schema can halve stream memory outright",
+            "`MEMORY USAGE s` counts the rax AND the group PELs"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "NOMKSTREAM",
+          "text": "`XADD ... NOMKSTREAM` returns nil instead of creating the key — the guard against a stray producer resurrecting a stream you deliberately deleted."
+        }
+      ]
+    },
+    {
+      "page_title": "Replication, Durability, and Cluster Slots",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What Replicates",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Streams replicate as ordinary key writes, nothing special",
+            "`XADD` propagates its resolved concrete ID, never `*`",
+            "Replicas therefore stay byte-identical to the primary",
+            "`XREADGROUP` propagates an `XCLAIM`-equivalent; `XACK` propagates too",
+            "A promoted replica keeps the group cursor and the PEL"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Durability Ladder"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Loss window"
+          ],
+          "rows": [
+            [
+              "async replication",
+              "un-propagated writes"
+            ],
+            [
+              "`appendfsync everysec`",
+              "up to 1 second"
+            ],
+            [
+              "`appendfsync always`",
+              "near zero, slow"
+            ],
+            [
+              "RDB only",
+              "since last snapshot"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A primary can ack an `XADD`, crash, and lose that entry",
+            "`WAIT numreplicas timeout` narrows the window, never closes it",
+            "RDB-only is never right for a stream you treat as a queue",
+            "At-least-once holds only as far as persistence settings allow"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Acks Are Not Durability",
+          "text": "The `XACK` model tracks who processed what. It creates no durability on its own — that comes from AOF, replication, and failover configuration."
+        },
+        {
+          "type": "heading",
+          "text": "One Stream, One Slot"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XADD events:{3} * k v    # hash tag pins slot",
+            "XREAD STREAMS events:{3} events:{7} 0 0",
+            "# ERR CROSSSLOT Keys in request don't hash"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A stream is one key in one hash slot — it never spans nodes",
+            "One stream's throughput is one node's throughput, full stop",
+            "Shard manually: `stream:{0}` … `stream:{15}`, hash the partition key",
+            "Multi-key `XREAD` needs every key in the same slot"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pub/Sub In Cluster"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "PUBLISH",
+                "lines": [
+                  "crosses cluster bus",
+                  "reaches all nodes",
+                  "O(nodes) cost"
+                ]
+              },
+              {
+                "title": "SPUBLISH",
+                "lines": [
+                  "one slot's shard",
+                  "slot-aware client",
+                  "scales wide"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Scripts, Blocking, and Ack-Path Pitfalls",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Scripts And Blocking"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`XADD` in MULTI/EXEC or Lua uses an explicit ID or `*`",
+            "Scripts were once barred from nondeterministic commands",
+            "Effect replication handles that now — the resolved ID ships",
+            "`BLOCK` does not block the server; it parks the client"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Blocked Clients Cost",
+          "items": [
+            "A `BLOCK 0` consumer is nearly free CPU-wise",
+            "It still counts against `maxclients`",
+            "It still holds one connection open",
+            "Hundreds is fine; hundreds of thousands is not"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Monitoring Set",
+          "text": "`XINFO STREAM key FULL` for a deep dump with PEL contents, `XINFO GROUPS` for per-group lag, and `redis-cli --stat` for live throughput."
+        },
+        {
+          "type": "heading",
+          "text": "Two Decision Rules",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Is losing it OK?",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1"
+              ],
+              [
+                "c0_0"
+              ],
+              [
+                "c1_0",
+                "c1_1"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "Is losing it OK?",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "yes"
+              },
+              "b1": {
+                "text": "no"
+              },
+              "c0_0": {
+                "text": "Pub/Sub"
+              },
+              "c1_0": {
+                "text": "Streams + group"
+              },
+              "c1_1": {
+                "text": "explicit XACK"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_1"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Must exactly one worker handle each item? Consumer group",
+            "Must everyone see it? Pub/Sub, or one group per consumer",
+            "Both models can coexist in the same app, same server"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pitfalls: The Ack Path",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Acking before processing — a crash loses the message",
+            "Never draining your own PEL: read `0` before `>` on boot",
+            "A worker that only reads `>` strands its old pending entries forever",
+            "UUID-per-boot names leak a dead consumer on every restart"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XREADGROUP GROUP g pod-7 STREAMS s 0  # backlog",
+            "XREADGROUP GROUP g pod-7 BLOCK 2000 STREAMS s >",
+            "XACK s g <id>          # process THEN ack"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Pitfalls: Volume",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Consequence"
+          ],
+          "rows": [
+            [
+              "no reclaim sweep",
+              "crashed pod drops batch"
+            ],
+            [
+              "unbounded MAXLEN",
+              "OOM weeks later"
+            ],
+            [
+              "trim past unread",
+              "work nobody ran"
+            ],
+            [
+              "huge COUNT, slow work",
+              "stolen and duplicated"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Patterns, Pitfalls, and Choosing Your Model",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "One crashed pod is silent without a periodic `XAUTOCLAIM`",
+            "The OOM lands at the worst possible traffic peak",
+            "Claiming 1000 entries you cannot finish invites the thief",
+            "Cap the batch below what min-idle-time allows"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pitfalls: Handlers",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Non-idempotent handlers plus a retry means double charges",
+            "Key every side effect by entry ID, then dedupe",
+            "Poison messages redeliver forever until you cap the count",
+            "Route past-limit entries to a DLQ stream and ack them"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Outbox Pattern"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "MULTI",
+            "HSET order:42 status paid",
+            "XADD events * type paid order 42",
+            "EXEC     # state and event commit together"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Against The Alternatives"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "LIST + BLPOP",
+                "lines": [
+                  "O(1), simplest",
+                  "pop-destructive",
+                  "no ack, no history",
+                  "no fan-out"
+                ]
+              },
+              {
+                "title": "Kafka",
+                "lines": [
+                  "multi-node partitions",
+                  "disk retention",
+                  "big ecosystem",
+                  "extra infrastructure"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Streams cost memory and complexity, buy replay and groups",
+            "Redis wins on sub-millisecond latency and one-command setup"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Closing Checklist",
+          "text": "Bound the stream, ack after work, name consumers stably, drain your own PEL on boot, sweep with `XAUTOCLAIM`, cap retries into a DLQ, alert on group lag and PEL size."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of REDIS STREAMS & PUB/SUB. `PUBLISH` returning 2 does not mean two workers did the job — it means two sockets got the bytes, and Redis stopped caring. This ten-page field handbook walks the whole Redis messaging surface: why Pub/Sub loses messages six different ways, how consumer groups split work with XREADGROUP and the Pending Entries List, and how to rescue stuck entries with XAUTOCLAIM before your trim policy deletes work nobody ran. Save it before your next queue outage, not after.",
+    "hashtags": [
+      "#redis",
+      "#redisstreams",
+      "#pubsub",
+      "#backend",
+      "#distributedsystems",
+      "#systemdesign",
+      "#messagequeue",
+      "#devnotes",
+      "#backendengineering",
+      "#databases",
+      "#softwareengineering",
+      "#iolar"
+    ]
+  }
+}

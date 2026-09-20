@@ -1,0 +1,309 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "SQL WINDOW FUNCTIONS — PART 2",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "Execution Order and Performance",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. What Costs Extra"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "RANGE offsets > ROWS: peer boundaries found by value",
+            "ROWS just counts, no comparison needed",
+            "Huge partitions and FOLLOWING frames force buffering",
+            "Watch EXPLAIN ANALYZE for external merge sort spills"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Reading the plan",
+          "items": [
+            "PostgreSQL: look for WindowAgg",
+            "SQL Server: Window Spool / Segment",
+            "Check whether a Sort sits underneath",
+            "Sort gone = index is being used"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Filtering in the Wrong Place",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT ..., ROW_NUMBER() OVER (...) rn",
+            "FROM t WHERE rn = 1;   -- fails: rn unknown",
+            "-- fix: outer query, or QUALIFY rn = 1"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "QUALIFY works in Snowflake, BigQuery, DuckDB, Teradata",
+            "Nesting windows directly is illegal — layer with CTEs",
+            "SUM(RANK() OVER ()) OVER () will not parse"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Numbers That Change Silently"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ORDER BY flips an aggregate window into a running total",
+            "No error raised — just a different answer",
+            "Ties under default RANGE collapse into one cumulative step",
+            "Duplicate timestamps therefore inflate the running total"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. LAST_VALUE Returns Yourself"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default frame stops at CURRENT ROW",
+            "So the frame's last row is the current row",
+            "Widen to UNBOUNDED FOLLOWING to get the real last value"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Wrong Function Chosen"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Wrote",
+            "Meant",
+            "Damage"
+          ],
+          "rows": [
+            [
+              "RANK",
+              "ROW_NUMBER",
+              "top-3 returns 4+"
+            ],
+            [
+              "RANGE",
+              "ROWS",
+              "ties over-counted"
+            ],
+            [
+              "DISTINCT",
+              "dedup input",
+              "dedupes annotated rows"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "DISTINCT runs after windows, never before them"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Classic Mistakes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Order Assumptions",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ORDER BY inside OVER does not sort the output",
+            "Add a query-level ORDER BY for that",
+            "No unique tiebreaker = unstable across runs",
+            "Put id last in the window ORDER BY"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Edge Values"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "LAG never crosses a partition boundary — returns NULL",
+            "Empty frame: SUM/AVG/MAX give NULL, COUNT gives 0",
+            "Guard aggregate arithmetic with COALESCE"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Portability traps",
+          "items": [
+            "MySQL 8: no GROUPS, no EXCLUDE",
+            "Older SQLite builds: no IGNORE NULLS",
+            "QUALIFY is not in the SQL standard",
+            "NULLS FIRST/LAST defaults differ by engine"
+          ],
+          "ink": "accent"
+        },
+        {
+          "type": "heading",
+          "text": "1. The Four Workhorses",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- top-N per group (filter rn <= N outside)",
+            "ROW_NUMBER() OVER (PARTITION BY g",
+            "  ORDER BY metric DESC)"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- running balance",
+            "SUM(delta) OVER (PARTITION BY account",
+            "  ORDER BY ts, id ROWS UNBOUNDED PRECEDING)"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- 7-day moving average",
+            "AVG(v) OVER (ORDER BY d",
+            "  ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- month-over-month growth",
+            "v / NULLIF(LAG(v) OVER (PARTITION BY sku",
+            "  ORDER BY month), 0) - 1"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Share of Group Total"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "v * 1.0 / SUM(v) OVER (PARTITION BY category)",
+            "-- * 1.0 forces float division"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Two-Step Idioms",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sessionization: flag gaps with LAG, then running SUM the flags",
+            "That running sum becomes the session id",
+            "Islands and gaps: ROW_NUMBER() minus a date-sequence number",
+            "Equal difference = one consecutive run",
+            "Dedup: keep ROW_NUMBER() = 1 by natural key, ordered by recency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Decision Checklist"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Reach for"
+          ],
+          "rows": [
+            [
+              "Keep all rows",
+              "a window"
+            ],
+            [
+              "Neighbour values",
+              "LAG / LEAD"
+            ],
+            [
+              "Cumulative",
+              "ORDER BY + ROWS frame"
+            ],
+            [
+              "One row per group",
+              "GROUP BY"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Recipes and Closing Summary",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Three Rules to Memorise",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "OVER is what makes it a window function",
+            "ORDER BY inside OVER creates a running frame by default",
+            "ROWS is what you almost always want, not RANGE"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Performance one-liner",
+          "items": [
+            "Index on (partition keys, order keys)",
+            "Reuse one OVER via the WINDOW clause",
+            "Check EXPLAIN for a redundant Sort"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Final framing",
+          "text": "Window functions turn multi-pass, self-join-heavy SQL into one declarative sorted pass. Learn the frame defaults and most surprises vanish."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of SQL WINDOW FUNCTIONS. Your running total is quietly wrong and SQL will never tell you — the default frame is RANGE, so two rows sharing a timestamp both show the day-end figure. This 12-page handbook works through window functions end to end: the OVER grammar, PARTITION BY, the frame defaults nobody reads, ranking, LAG/LEAD, execution order, and the twelve mistakes that produce silently wrong numbers. Save it for the next time you catch yourself joining a table to itself on an inequality.",
+    "hashtags": [
+      "#sql",
+      "#windowfunctions",
+      "#postgresql",
+      "#dataengineering",
+      "#analytics",
+      "#sqltips",
+      "#database",
+      "#datascience",
+      "#backenddev",
+      "#learnsql",
+      "#studynotes",
+      "#codingnotes"
+    ]
+  }
+}

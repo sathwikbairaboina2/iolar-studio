@@ -1,0 +1,951 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES INTERNALS",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Why MVCC Exists",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Core Idea",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "MVCC = Multi-Version Concurrency Control",
+            "Readers see a consistent snapshot, never blocking writers",
+            "Writers never block readers either — the core Postgres rule",
+            "Snapshot isolation ships by default at `READ COMMITTED`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Writes Never Overwrite"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "UPDATE writes a NEW row version, marks the old expired",
+            "DELETE erases no bytes — it stamps the version expired",
+            "Each row version is a `tuple`",
+            "A logical row = a chain of tuple versions over time"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Three Ways To Isolate"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Scheme",
+            "Engine",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Two-phase locking",
+              "classic DBs",
+              "reader lock stalls writers"
+            ],
+            [
+              "Undo log",
+              "Oracle, InnoDB",
+              "rollback segment"
+            ],
+            [
+              "In-heap versions",
+              "Postgres",
+              "old rows in same pages"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Undo log",
+                "lines": [
+                  "One current row",
+                  "Old image in undo",
+                  "Rollback replays undo",
+                  "Compact table"
+                ]
+              },
+              {
+                "title": "Postgres heap",
+                "lines": [
+                  "Versions in table pages",
+                  "Abort = flag only",
+                  "Rollback ~ free",
+                  "Needs VACUUM"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The One Trade-off"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Consequence 1: rollback is nearly free — no undo replay",
+            "Consequence 2: cleanup is not free — VACUUM reclaims later",
+            "One trade-off, three symptoms: bloat, autovacuum, wraparound"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Terms To Keep",
+          "items": [
+            "dead tuple = invisible to any running or future txn",
+            "bloat = dead tuples + unused free space in pages",
+            "Bloat lives in table AND index pages"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Locking, Skipped"
+        },
+        {
+          "type": "paragraph",
+          "text": "Under 2PL a plain reader takes a shared lock and a writer waits behind it. Postgres avoids that entirely by keeping the old version readable."
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "One Line",
+          "text": "Postgres buys non-blocking reads with garbage it must sweep up later."
+        },
+        {
+          "type": "heading",
+          "text": "HeapTupleHeader",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "23 bytes of header sit before every row's user data",
+            "Padded to 24 bytes by alignment",
+            "Per-version overhead: header + null bitmap + padding",
+            "Every version pays it again — overhead is real"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "t_xmin",
+                "t_xmax"
+              ],
+              [
+                "t_cid",
+                "t_ctid"
+              ],
+              [
+                "infomask",
+                "null bitmap"
+              ],
+              [
+                "user data"
+              ]
+            ],
+            "caption": "heap tuple"
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Tuple Headers: xmin, xmax, ctid",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Four Fields"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`t_xmin`",
+              "xid that INSERTed this version"
+            ],
+            [
+              "`t_xmax`",
+              "xid that DELETEd/UPDATEd; 0 = live"
+            ],
+            [
+              "`t_cid`",
+              "command id inside one txn"
+            ],
+            [
+              "`t_ctid`",
+              "(block, offset): self, or successor"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`t_cid` stops a statement from seeing its own output",
+            "Newest version's `t_ctid` points at itself",
+            "After UPDATE the old one points forward"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Read Them Yourself"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT xmin, xmax, ctid, * FROM t;",
+            "UPDATE t SET v = v + 1 WHERE id = 1;",
+            "SELECT ctid, xmin, xmax FROM t WHERE id = 1;",
+            "-- new ctid, new xmin: a fresh version"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Hint Bits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`t_infomask` caches commit state per tuple",
+            "`HEAP_XMIN_COMMITTED`, `HEAP_XMIN_INVALID`",
+            "`HEAP_XMAX_COMMITTED`, `HEAP_XMAX_INVALID`",
+            "Later readers skip the clog lookup entirely",
+            "`HEAP_XMIN_FROZEN` = visible to everyone, forever"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Gotcha",
+          "text": "Setting hint bits writes the page — this is why a pure SELECT can dirty pages and generate I/O."
+        },
+        {
+          "type": "heading",
+          "text": "xmax Is Overloaded"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "With `HEAP_XMAX_IS_MULTI` it holds a MultiXactId",
+            "That happens when several txns lock the same row",
+            "`SELECT ... FOR UPDATE` / `FOR SHARE` sets xmax as a lock marker",
+            "Lock marker ≠ deleted row"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE EXTENSION pageinspect;",
+            "SELECT * FROM heap_page_items(",
+            "  get_raw_page('t', 0));  -- raw internals"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The xid Counter",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A transaction id is a 32-bit unsigned counter",
+            "Assigned lazily — read-only txns get no real xid",
+            "Real xids begin at 3",
+            "Comparison is modulo-2^32, not plain integer order"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "xid",
+            "Name"
+          ],
+          "rows": [
+            [
+              "0",
+              "InvalidTransactionId"
+            ],
+            [
+              "1",
+              "BootstrapXid"
+            ],
+            [
+              "2",
+              "FrozenTransactionId"
+            ],
+            [
+              "3+",
+              "real transactions"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Virtual xids are (backendID, localXID) pairs",
+            "They let read-only work run without burning the global counter"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pg_current_xact_id();",
+            "-- old name: txid_current()",
+            "-- forces a real xid to be assigned"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Transaction IDs and the Commit Log",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "pg_xact, The Commit Log"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Formerly `pg_clog`; stores 2 bits per transaction",
+            "States: IN_PROGRESS, COMMITTED, ABORTED, SUB_COMMITTED",
+            "Visibility = read xmin/xmax, then ask `pg_xact`",
+            "Hint bits exist to avoid repeating that lookup"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "read tuple",
+              "xmin/xmax",
+              "pg_xact lookup",
+              "set hint bit",
+              "visible?"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Subtransactions"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`SAVEPOINT` and PL/pgSQL `EXCEPTION` blocks consume their own xids",
+            "A loop with an EXCEPTION block burns ids fast",
+            "`pg_subtrans` maps a subtransaction to its parent",
+            "Visibility resolves to the top-level commit state"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rollback Is Cheap"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An aborted txn leaves its tuples on disk, never visible",
+            "Those tuples are dead immediately",
+            "Commit state is external, so ROLLBACK is O(1)",
+            "Row count touched does not matter"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Commit Costs, Not Rollback",
+          "text": "COMMIT must flush WAL unless `synchronous_commit=off`. The expensive side is the successful one."
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT datname, age(datfrozenxid)",
+            "FROM pg_database;  -- distance past oldest unfrozen xid"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "What A Snapshot Holds",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "xmin: oldest running",
+                "xmax: next xid"
+              ],
+              [
+                "xip_list: in progress"
+              ]
+            ],
+            "caption": "snapshot"
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Snapshots and Visibility Rules",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Two Tests"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Part 1: tuple xmin committed AND not in the in-progress set",
+            "Part 2: tuple xmax is 0, aborted, or still in progress",
+            "Otherwise the version is gone for you",
+            "Your own uncommitted changes show via cid comparison"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rule Of Thumb",
+          "text": "Visible = inserted before your snapshot and not deleted before your snapshot."
+        },
+        {
+          "type": "heading",
+          "text": "Isolation Levels"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Snapshot",
+            "Conflict"
+          ],
+          "rows": [
+            [
+              "READ COMMITTED",
+              "new per statement",
+              "EPQ re-check"
+            ],
+            [
+              "REPEATABLE READ",
+              "one per txn",
+              "abort 40001"
+            ],
+            [
+              "SERIALIZABLE",
+              "one + SSI",
+              "predicate locks"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two SELECTs in one READ COMMITTED txn can differ",
+            "SSI detects dangerous read/write cycles and aborts",
+            "SQLSTATE 40001 — the app must retry"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The EPQ Surprise"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "REPEATABLE READ: 'could not serialize access due to concurrent update'",
+            "READ COMMITTED instead re-reads the newest version",
+            "Then it re-tests the WHERE clause on that version",
+            "That is EvalPlanQual (EPQ)"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "UPDATE acct SET bal = bal - 10",
+            "WHERE bal > 0;  -- may re-check a row you never saw",
+            "-- concurrent commit changes which rows qualify"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Sharing A Snapshot"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pg_export_snapshot();",
+            "SET TRANSACTION SNAPSHOT '00000003-0000001C-1';",
+            "-- how parallel pg_dump stays consistent",
+            "SELECT pg_snapshot_xmin(pg_current_snapshot());"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Key Insight",
+          "text": "The OLDEST snapshot pins every dead tuple newer than it. One idle transaction blocks cleanup database-wide."
+        },
+        {
+          "type": "heading",
+          "text": "The Three Operations",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Op",
+            "xmin",
+            "xmax",
+            "ctid"
+          ],
+          "rows": [
+            [
+              "INSERT",
+              "current xid",
+              "0",
+              "self"
+            ],
+            [
+              "DELETE",
+              "unchanged",
+              "current xid",
+              "self"
+            ],
+            [
+              "UPDATE old",
+              "unchanged",
+              "current xid",
+              "successor"
+            ],
+            [
+              "UPDATE new",
+              "current xid",
+              "0",
+              "self"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "How INSERT, UPDATE, DELETE Work",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "DELETE only sets xmax — the bytes stay in the page",
+            "UPDATE = DELETE + INSERT in one step",
+            "The old `t_ctid` redirects to the new version"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Update Chain"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "v1 xmax=100",
+              "v2 xmax=104",
+              "v3 xmax=0 live"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A concurrent writer walks the chain forward",
+            "It lands on the latest version, then re-tests its predicate"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "No Partial Row Update"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every UPDATE rewrites the ENTIRE row",
+            "Flipping one boolean on a 2 KB row costs a 2 KB rewrite",
+            "Non-HOT UPDATE inserts into EVERY index on the table",
+            "Even indexes on columns you never touched"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Write Amplification",
+          "text": "A table with 6 indexes turns one UPDATE into 1 heap write plus 6 index writes."
+        },
+        {
+          "type": "heading",
+          "text": "TOAST Softens It"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Values over ~2 KB move to a side table",
+            "Unchanged TOASTed column: the new version reuses the pointer",
+            "So a huge text field is not re-written every time"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Growth And fillfactor"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An UPDATE-only table still grows — new versions need room",
+            "`fillfactor` defaults to 100 for tables",
+            "Lower to 80-90 to reserve in-page room for versions",
+            "Deleted rows vanish at commit; space returns only after VACUUM"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "ALTER TABLE t SET (fillfactor = 85);",
+            "VACUUM FULL t;  -- rewrite so old pages get the reserve"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Heap-Only Tuple",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "HOT = an UPDATE that touches no index at all",
+            "Condition 1: no INDEXED column changed",
+            "Condition 2: the new version fits on the SAME page",
+            "Both must hold, every time"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "HOT update",
+                "lines": [
+                  "Same page",
+                  "Line pointer redirects",
+                  "Zero index entries",
+                  "Prunable in place"
+                ]
+              },
+              {
+                "title": "Non-HOT",
+                "lines": [
+                  "New page allowed",
+                  "Full index insert",
+                  "Every index touched",
+                  "Needs VACUUM"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "HOT Updates and Page Pruning",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "How Scans Still Find It"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The old line pointer becomes a redirect",
+            "The new tuple gets no index entry at all",
+            "Index scans land on the old pointer, follow the chain in-page",
+            "HOT chains never cross pages"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Why fillfactor Matters",
+          "text": "No free room on the page means no HOT. That is the whole reason update-heavy tables want `fillfactor` 80-90."
+        },
+        {
+          "type": "heading",
+          "text": "Pruning"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Any page access can trigger `heap_page_prune`",
+            "Dead HOT chain members collapse into free space",
+            "Cheap and local — no VACUUM needed",
+            "But it cannot remove index entries",
+            "`PageIsFull` hint tells backends a page is worth pruning"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Measure The Ratio"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT relname, n_tup_upd, n_tup_hot_upd",
+            "FROM pg_stat_user_tables;",
+            "-- hot/total near 1.0 is healthy"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ratio near 0 on a churning table = a real problem",
+            "Cause A: `fillfactor` too high",
+            "Cause B: an indexed column keeps changing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Classic Anti-Pattern"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Indexing `last_seen_at` or a status counter kills HOT",
+            "It kills it for the WHOLE table, not just that column",
+            "Fix: move the churning column to a narrow, unindexed table",
+            "PG16+ keeps HOT when only a BRIN summarizing index covers the change"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Two Benefits, One Cost",
+          "items": [
+            "Benefit: no index write amplification",
+            "Benefit: pruning reclaims space without VACUUM",
+            "Cost: low fillfactor = more pages, slower seq scans"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "When A Tuple Is Dead",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Its xmax is committed",
+            "AND it is older than every active snapshot's xmin horizon",
+            "Until then it must stay — someone can still see it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "VACUUM's Three Jobs"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Mark dead tuple space reusable inside the file",
+            "Remove the matching entries from every index",
+            "Update the visibility map"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Plain vs FULL"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "VACUUM",
+            "VACUUM FULL"
+          ],
+          "rows": [
+            [
+              "Space to OS",
+              "no",
+              "yes"
+            ],
+            [
+              "Lock",
+              "concurrent",
+              "ACCESS EXCLUSIVE"
+            ],
+            [
+              "Method",
+              "in place",
+              "rewrite file"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Dead Tuples, Bloat, and VACUUM",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Exception: VACUUM truncates wholly-empty trailing pages",
+            "That truncation grabs a brief ACCESS EXCLUSIVE lock",
+            "VACUUM FULL blocks all reads and writes",
+            "`pg_repack` / `pg_squeeze` compact online instead"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Two Maps"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Free Space Map (`fsm`): per-page free space, so INSERTs reuse room",
+            "Visibility Map (`vm`): 2 bits per page — all-visible, all-frozen",
+            "all-visible pages enable INDEX ONLY SCANs",
+            "The executor then skips the heap fetch entirely"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Two-Pass Scan"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "scan heap",
+              "collect dead tids",
+              "clean every index",
+              "free line pointers"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`maintenance_work_mem` sizes the dead-tid array",
+            "Too small = repeated index passes over the same table",
+            "PG17 replaced the array with a TID store",
+            "Far less memory, far fewer repeat index scans"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Monitoring"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT relname, n_dead_tup, n_live_tup, last_autovacuum",
+            "FROM pg_stat_user_tables ORDER BY n_dead_tup DESC;",
+            "SELECT * FROM pg_stat_progress_vacuum;  -- stuck run",
+            "SELECT * FROM pgstattuple('big_table');  -- exact, slow"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Dead Tuples, Bloat, and VACUUM (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Reusable ≠ Returned",
+          "text": "Plain VACUUM never shrinks the file. It only stops it from growing further."
+        },
+        {
+          "type": "heading",
+          "text": "The Launcher Loop",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Launcher wakes every `autovacuum_naptime` (default 60s)",
+            "It starts workers per database",
+            "`autovacuum_max_workers` defaults to 3",
+            "3 workers across hundreds of tables is a common bottleneck"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Trigger Formula"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "threshold = 50 + 0.2 * reltuples",
+            "# vacuum_threshold + vacuum_scale_factor",
+            "analyze  = 50 + 0.1 * reltuples"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Your UPDATE didn't change that row — it wrote a whole new copy and left the old one on disk. That one design choice explains free rollbacks, table bloat, autovacuum, and the 4.2-billion transaction cliff, all at once. 10 pages on tuple headers, snapshots, HOT updates, and the monitoring queries that catch a frozen horizon before it stops your writes.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#mvcc",
+      "#databases",
+      "#sql",
+      "#backendengineering",
+      "#dba",
+      "#systemdesign",
+      "#databaseinternals",
+      "#devnotes",
+      "#softwareengineering"
+    ]
+  }
+}

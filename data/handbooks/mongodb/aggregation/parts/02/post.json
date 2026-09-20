@@ -1,0 +1,579 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "MONGODB AGGREGATION — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Sorting, Paging, Index Use",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Pair sort with limit",
+          "text": "`$sort` followed by `$limit` keeps only the top-N in a bounded heap instead of sorting everything. Moving `$limit` next to `$sort` is the highest-leverage rewrite you own."
+        },
+        {
+          "type": "heading",
+          "text": "Paging",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "$skip 100000",
+                "lines": [
+                  "walks 100000 docs",
+                  "O(skip)",
+                  "degrades linearly"
+                ]
+              },
+              {
+                "title": "range paging",
+                "lines": [
+                  "$match on last id",
+                  "index seek",
+                  "O(limit)"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "[{$match:{_id:{$gt:lastSeenId}}},",
+            " {$sort:{_id:1}},",
+            " {$limit:20}]   // constant cost per page"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "MongoDB's sort is not stable for equal keys",
+            "Add `_id` as a tiebreaker for deterministic paging",
+            "Range key should be indexed and near-unique"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "ESR And Direction",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compound index serving `$match` plus `$sort`: Equality, Sort, Range",
+            "Getting S and R backwards forces an in-memory sort",
+            "Sort direction must match the index or be its exact reverse on all keys",
+            "Mixed directions need a matching mixed-direction index",
+            "Collation differences make an index unusable for the sort"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Windows Over Rows",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`$setWindowFields` (5.0+): running totals, ranks, moving averages",
+            "Spec is `partitionBy`, `sortBy` and an output window",
+            "No self-join needed for any of it",
+            "`$densify` (5.1) and `$fill` (5.3) close time-series gaps first"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Arrays sort oddly",
+          "items": [
+            "Ascending sorts by the array's minimum element",
+            "Descending sorts by its maximum element",
+            "Never by the array as a whole"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Golden Order",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "$match",
+              "$project",
+              "$lookup",
+              "$unwind",
+              "$group",
+              "$sort+$limit"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`$match` first, as selective as possible — the only index gate",
+            "`$project`/`$unset` early, before a blocking stage buffers docs",
+            "`$limit` as early as correctness allows, above `$lookup`/`$unwind`",
+            "`$unwind` as late as legal — every later stage sees the multiplied stream",
+            "Every deviation from this order should be deliberate"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Order, Optimizer and explain()",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What The Planner Does",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Rewrite",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "$match coalescing",
+              "adjacent merge"
+            ],
+            [
+              "$sort + $limit",
+              "top-N heap"
+            ],
+            [
+              "$limit + $limit",
+              "smaller wins"
+            ],
+            [
+              "$skip + $limit",
+              "swapped"
+            ],
+            [
+              "$match pushdown",
+              "before $unwind"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The line it will not cross",
+          "text": "It never pushes a `$match` past a `$group` on a field the group invented — that reordering would change results."
+        },
+        {
+          "type": "heading",
+          "text": "Reading explain",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.aggregate(p, { explain: true })",
+            "db.c.explain('executionStats')",
+            "  .aggregate(p)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Signal",
+            "Means"
+          ],
+          "rows": [
+            [
+              "IXSCAN",
+              "index used"
+            ],
+            [
+              "COLLSCAN",
+              "full scan"
+            ],
+            [
+              "SORT stage",
+              "blocking sort"
+            ],
+            [
+              "examined 1000:1",
+              "no index on $match"
+            ],
+            [
+              "examined = returned",
+              "healthy"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The `$cursor` entry shows the find() derived from your leading stages",
+            "That derived find() is the only part indexes apply to",
+            "`executionTimeMillisEstimate` per stage names the bottleneck",
+            "Read it; do not guess which stage is slow"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Spill, Hint, Fan-Out",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`allowDiskUse: true` spills blocking stages to `_tmp`",
+            "It turns an error into a slow query, far slower than fitting in memory",
+            "`aggregate(p, { hint: 'idx_name' })` forces an index when the planner picks badly",
+            "`$facet` runs several sub-pipelines over the same input in one pass",
+            "Only stages BEFORE `$facet` can use an index"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Writing results out",
+          "items": [
+            "`$out` replaces the target collection wholesale",
+            "`$merge` upserts incrementally into it",
+            "Basis for materialized views and on-demand rollups"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Misplaced Stages",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Wrong",
+            "Repair"
+          ],
+          "rows": [
+            [
+              "$match after $group",
+              "split predicate, raw fields first"
+            ],
+            [
+              "$unwind before $match",
+              "filter, then fan out"
+            ],
+            [
+              "$sort with no $limit",
+              "pair for top-N heap"
+            ],
+            [
+              "$limit below $lookup",
+              "hoist it above"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Filter raw stored fields early, derived fields late",
+            "Every doc unwound then discarded is pure waste",
+            "A wide `$project` of all fields costs BSON serialization for nothing"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Errors That Cost Real Latency",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Join Errors",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No index on `foreignField`: COLLSCAN inside the lookup plan",
+            "Latency then scales with the foreign collection size",
+            "`createIndex` on the foreign key is the whole fix",
+            "ObjectId versus string key gives silently empty results"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.items.createIndex({ sku: 1 })",
+            "// or normalize the key type:",
+            "{ $match: { $expr: { $eq: [",
+            "  '$_id', { $toObjectId: '$$cid' } ] } } }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Array Errors",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`$unwind` without `preserveNullAndEmptyArrays` deletes empty-array docs",
+            "`$push` on a high-cardinality group throws 'BSONObjectTooLarge'",
+            "Push only the fields you need, or use `$topN`",
+            "`$unwind` plus `$group` where `$reduce` would do it in place"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "{ $addFields: { total: { $sum:",
+            "  { $map: { input: '$items', as: 'i',",
+            "    in: { $multiply:",
+            "      ['$$i.qty','$$i.price'] } } } } } }"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Index Defeats",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`$expr` in a leading `$match` — denormalize the compared value instead",
+            "Unanchored `$regex`; only left-anchored `/^abc/` uses an index prefix",
+            "`$skip`-based deep pagination — range-page on an indexed sort key",
+            "`allowDiskUse` papering over an unindexed pipeline",
+            "Assuming `$group` preserves order — it does not"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Cache the query, not the pain",
+          "text": "Running the same expensive aggregation per request? `$merge` into a rollup collection on a schedule and serve reads from that."
+        },
+        {
+          "type": "qa",
+          "q": "Pipeline is slow. Where do you look, in order?",
+          "a_bullets": [
+            "`totalDocsExamined` versus `nReturned` first",
+            "Then whether a blocking SORT stage appeared",
+            "Then inside `$lookup` for a COLLSCAN",
+            "Only then start rewriting stages"
+          ],
+          "example_code": [
+            "db.c.explain('executionStats')",
+            "  .aggregate(pipeline)"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Stage Table and Shipping Checks",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Stage Card",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Stage",
+            "Class",
+            "Index"
+          ],
+          "rows": [
+            [
+              "$match",
+              "streaming",
+              "front only"
+            ],
+            [
+              "$project / $addFields",
+              "streaming",
+              "none"
+            ],
+            [
+              "$set / $unset",
+              "streaming",
+              "none"
+            ],
+            [
+              "$group",
+              "BLOCKING",
+              "rare skip-scan"
+            ],
+            [
+              "$sort",
+              "blocking unless served",
+              "yes if front"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Stage",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "$limit / $skip",
+              "bound stream; skip is O(skip)"
+            ],
+            [
+              "$unwind",
+              "one doc per element"
+            ],
+            [
+              "$lookup",
+              "left outer join, result array"
+            ],
+            [
+              "$facet / $bucket",
+              "many aggregations, one pass"
+            ],
+            [
+              "$out / $merge",
+              "write out, must be last"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`$group` memory tracks distinct group count",
+            "`$group` drops every field it does not name",
+            "`$limit` is the cheapest optimization you own",
+            "`$bucketAuto` builds histograms without picking boundaries"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "SQL Mapping",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "SQL",
+            "Aggregation"
+          ],
+          "rows": [
+            [
+              "WHERE",
+              "$match"
+            ],
+            [
+              "GROUP BY",
+              "$group._id"
+            ],
+            [
+              "HAVING",
+              "$match after $group"
+            ],
+            [
+              "SELECT / JOIN",
+              "$project / $lookup"
+            ],
+            [
+              "ORDER BY / LIMIT",
+              "$sort / $limit"
+            ],
+            [
+              "UNION ALL",
+              "$unionWith"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Numbers To Memorize",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "16 MB per document, in and out",
+            "100 MB per blocking stage",
+            "`allowDiskUse: true` to spill, at a real speed cost"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The whole handbook",
+          "text": "Everything an index can do for you happens in the stages before the first stage that changes the shape or the count of the documents."
+        },
+        {
+          "type": "heading",
+          "text": "Before You Ship",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Is the leading `$match` indexed?",
+            "Is `$limit` as early as legal, next to `$sort`?",
+            "Is `$unwind` as late as legal?",
+            "Is `foreignField` indexed?",
+            "Does explain show no surprise COLLSCAN or SORT?"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "[{$match:{status:'paid',",
+            "   date:{$gte:start}}},",
+            " {$project:{custId:1, items:1}},",
+            " {$unwind:'$items'},"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Where to go next",
+          "items": [
+            "`$setWindowFields` for time series",
+            "`$graphLookup` for hierarchies",
+            "Change streams for incremental rollups",
+            "Atlas `$search` for text relevance"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of MONGODB AGGREGATION. Your aggregation is slow for one reason: something before the first $match changed the shape of your documents, and the index quietly stopped applying. This field handbook walks all ten stages — $match, $group, $project, $unwind, $lookup and friends — with the cost model, the memory caps, and the explain() signals that tell you which stage is actually burning the milliseconds. Ten pages, one per chapter, every gotcha written down so you stop rediscovering them in production.",
+    "hashtags": [
+      "#mongodb",
+      "#aggregationpipeline",
+      "#nosql",
+      "#database",
+      "#backenddev",
+      "#databaseperformance",
+      "#queryoptimization",
+      "#devnotes",
+      "#softwareengineering",
+      "#codingtips",
+      "#indexing",
+      "#datamodeling"
+    ]
+  }
+}

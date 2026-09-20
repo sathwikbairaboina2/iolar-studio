@@ -1,0 +1,269 @@
+{
+  "title": "SQL Transactions & Isolation Levels: A Field Handbook",
+  "summary": "A dense study series on how relational databases keep concurrent work correct: ACID guarantees, the read anomalies each isolation level permits, the locking and MVCC machinery underneath, deadlocks, and the practical trade-offs of picking a level in Postgres, MySQL, and SQL Server.",
+  "chapters": [
+    {
+      "title": "What a Transaction Actually Is",
+      "points": [
+        "Definition: a transaction is a unit of work that moves the database from one consistent state to another, all-or-nothing",
+        "Transaction boundaries: BEGIN / START TRANSACTION ... COMMIT | ROLLBACK, and autocommit mode where every statement is its own transaction",
+        "The canonical example: transferring 100 from account A to account B is two UPDATEs that must both apply or neither",
+        "Implicit vs explicit transactions: MySQL and Postgres autocommit by default; SQL Server needs SET IMPLICIT_TRANSACTIONS ON or explicit BEGIN TRAN",
+        "SAVEPOINT sp1 / ROLLBACK TO SAVEPOINT sp1 / RELEASE SAVEPOINT for partial rollback inside a longer transaction",
+        "DDL and transactions: Postgres can roll back CREATE TABLE; MySQL and Oracle implicitly commit on DDL, so a mid-transaction ALTER silently ends your transaction",
+        "Transaction states: active, partially committed, committed, failed, aborted",
+        "Read-only transactions (SET TRANSACTION READ ONLY) and why they let the engine skip work",
+        "A rolled-back transaction still consumes sequence/AUTO_INCREMENT values — gaps in IDs are normal and not a bug"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "ACID, One Letter at a Time",
+      "points": [
+        "Atomicity: all statements commit or none do; implemented by undo logs / rollback segments",
+        "Consistency: the transaction takes the DB from one valid state to another, enforcing constraints, FKs, triggers — largely the application's and schema's job, not magic",
+        "Isolation: concurrent transactions must not see each other's partial work; this is the only letter with a tunable dial",
+        "Durability: once COMMIT returns, the change survives a crash; implemented by write-ahead logging plus fsync",
+        "Write-Ahead Logging (WAL) rule: the log record must hit stable storage before the data page does",
+        "Postgres synchronous_commit and MySQL innodb_flush_log_at_trx_commit=1|2|0 — the exact knobs that trade durability for throughput",
+        "Example: a crash right after COMMIT returns — recovery replays the redo log and reapplies the change",
+        "Comparison: ACID vs BASE (eventually consistent stores) and why distributed systems relax the letters",
+        "Common misconception: 'Consistency' in ACID is not the 'C' in CAP theorem — different meanings entirely"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "The Four Read Anomalies",
+      "points": [
+        "Dirty read: T1 reads a row that T2 wrote but has not committed; if T2 rolls back, T1 acted on data that never existed",
+        "Non-repeatable read: T1 reads a row twice and gets different values because T2 committed an UPDATE in between",
+        "Phantom read: T1 runs the same range query twice and the second run returns new rows because T2 committed an INSERT matching the predicate",
+        "Lost update: two transactions read the same value, both compute a new value, and the second write silently overwrites the first",
+        "Write skew: two transactions each read a set, verify an invariant, and write disjoint rows — each is fine alone, together they break the invariant (on-call doctor example: both doctors go off shift)",
+        "Read skew: T1 reads row X, T2 updates X and Y and commits, T1 reads Y — the pair is mutually inconsistent",
+        "Concrete dirty-read walkthrough with two numbered timelines and account balances",
+        "The anomaly hierarchy: each stronger isolation level removes anomalies from the top of this list",
+        "Anomalies are about interleaving, not speed — a slow query is not more likely to be wrong, but it is exposed for longer"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "The Four Standard Isolation Levels",
+      "points": [
+        "READ UNCOMMITTED: dirty reads allowed; almost never useful; in Postgres it silently behaves as READ COMMITTED",
+        "READ COMMITTED: each statement sees only committed data as of statement start; default in Postgres, Oracle, SQL Server",
+        "REPEATABLE READ: all reads see a snapshot as of transaction start; default in MySQL InnoDB",
+        "SERIALIZABLE: result must be equivalent to some serial ordering of the transactions",
+        "The ANSI anomaly table: level × {dirty read, non-repeatable read, phantom} with allowed/prevented per cell",
+        "Syntax: SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; and the session-scoped SET SESSION TRANSACTION ... variant",
+        "How to check the current level: SHOW transaction_isolation (Postgres), SELECT @@transaction_isolation (MySQL), DBCC USEROPTIONS (SQL Server)",
+        "The ANSI standard defines levels by which anomalies they forbid — engines are free to be stricter, which is why defaults differ",
+        "Postgres REPEATABLE READ blocks phantoms (snapshot isolation) even though ANSI permits them",
+        "MySQL REPEATABLE READ blocks phantoms for plain SELECT via MVCC but not for locking reads without gap locks"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "MVCC: How Snapshots Are Built",
+      "points": [
+        "Multi-Version Concurrency Control: writers create new row versions instead of overwriting, so readers never block writers and writers never block readers",
+        "Postgres row headers: xmin (creating transaction) and xmax (deleting transaction) decide visibility",
+        "The snapshot: a transaction records the set of in-progress XIDs; a row version is visible if xmin committed before the snapshot and xmax did not",
+        "MySQL InnoDB undo log and roll pointers: old versions are reconstructed by walking the undo chain backward",
+        "READ COMMITTED takes a fresh snapshot per statement; REPEATABLE READ takes one snapshot for the whole transaction",
+        "Dead tuples and bloat: VACUUM in Postgres, purge threads in InnoDB reclaim versions no snapshot can still see",
+        "A long-running transaction pins the oldest snapshot and blocks cleanup — the classic cause of table bloat and 'idle in transaction' pages",
+        "Example: idle-in-transaction session held open for hours grows a hot table's disk usage several times over",
+        "Comparison: MVCC (Postgres, InnoDB, Oracle) vs pure two-phase locking (older SQL Server default) for read behavior",
+        "SQL Server READ_COMMITTED_SNAPSHOT and SNAPSHOT isolation use tempdb version store rather than in-page versions"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Locks: Shared, Exclusive, and Everything Between",
+      "points": [
+        "Lock modes: shared (S) for reads, exclusive (X) for writes, and the compatibility matrix between them",
+        "Intent locks (IS, IX, SIX): announce at the table level what you plan to do at row level, so table-level requests need not scan every row",
+        "Granularity ladder: row lock, page lock, table lock, and lock escalation when a statement touches too many rows",
+        "Two-Phase Locking (2PL): a growing phase acquires locks, a shrinking phase releases them; strict 2PL holds all locks to COMMIT",
+        "Record locks, gap locks, and next-key locks in InnoDB — how gap locks stop phantoms by locking the space between index entries",
+        "Predicate locks / SIREAD locks in Postgres Serializable Snapshot Isolation track read dependencies instead of blocking",
+        "Explicit locking: SELECT ... FOR UPDATE, FOR SHARE / LOCK IN SHARE MODE, and LOCK TABLE",
+        "FOR UPDATE SKIP LOCKED and NOWAIT for queue-style workloads that must not pile up behind one row",
+        "Locks are held to end of transaction, not end of statement — a long transaction after a write starves everyone on that row",
+        "Inspecting locks: pg_locks joined to pg_stat_activity, MySQL performance_schema.data_locks, sys.dm_tran_locks"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Deadlocks: Detection, Cause, and Cure",
+      "points": [
+        "Definition: two or more transactions each hold a lock the other needs, forming a cycle in the wait-for graph",
+        "The minimal example: T1 updates row A then row B; T2 updates row B then row A",
+        "Detection: the engine builds a wait-for graph, finds the cycle, and kills a victim — Postgres after deadlock_timeout (default 1s), InnoDB near-instantly",
+        "The victim is usually the transaction with the least work done / fewest undo records; the client sees SQLSTATE 40P01 or MySQL error 1213",
+        "Prevention by ordering: always touch rows in a consistent order (for example, sort account IDs before updating)",
+        "Prevention by shrinking: keep transactions short, do not hold locks across network calls or user think-time",
+        "Timeouts as a blunt tool: innodb_lock_wait_timeout, lock_timeout, statement_timeout — these stop lock waits, not true deadlocks",
+        "Deadlocks caused by index choice: a table scan takes more locks than an index seek, widening the window",
+        "Reading the evidence: SHOW ENGINE INNODB STATUS 'LATEST DETECTED DEADLOCK', Postgres log deadlock detail, SQL Server deadlock graph",
+        "Mistake: treating deadlock as a fatal bug — deadlocks are expected under concurrency, so retry the whole transaction with backoff",
+        "Deadlock vs lock wait vs livelock: distinguishing them before choosing a fix"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Serializable in Practice",
+      "points": [
+        "Two implementations: locking serializability (strict 2PL, real blocking) vs Serializable Snapshot Isolation (SSI, optimistic)",
+        "Postgres SSI tracks rw-dependencies and aborts a transaction with 'could not serialize access due to read/write dependencies' (SQLSTATE 40001)",
+        "SSI means any transaction can fail at COMMIT — your application MUST have a retry loop, not a try/catch that logs",
+        "Retry pattern: catch 40001/40P01, roll back, sleep with jitter, replay the whole transaction from the beginning, cap at N attempts",
+        "Retries must replay reads too — reusing values read in the failed attempt reintroduces the anomaly you paid for",
+        "MySQL SERIALIZABLE degrades to implicitly adding LOCK IN SHARE MODE to every SELECT — pessimistic, and much slower",
+        "SQL Server SNAPSHOT vs SERIALIZABLE: SNAPSHOT is optimistic with update conflicts; SERIALIZABLE takes range locks",
+        "Cost: SSI adds predicate-lock bookkeeping and false-positive aborts; abort rate rises sharply with contention and long transactions",
+        "When SERIALIZABLE earns its keep: financial invariants, booking systems, anything with a write-skew shaped rule",
+        "Cheaper alternatives that handle specific cases: SELECT FOR UPDATE, a unique constraint, or a single atomic UPDATE ... WHERE"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Optimistic vs Pessimistic Concurrency",
+      "points": [
+        "Pessimistic: lock first, assume conflict — SELECT ... FOR UPDATE then UPDATE then COMMIT",
+        "Optimistic: read freely, verify at write time with a version column — UPDATE ... WHERE id = ? AND version = ?, then check the affected row count",
+        "The lost-update problem solved both ways, side by side, with the same two-user scenario",
+        "Compare-and-set as a single statement: UPDATE accounts SET balance = balance - 100 WHERE id = 1 AND balance >= 100 avoids the read-modify-write race entirely",
+        "Trade-off table: contention level, retry cost, lock-hold duration, deadlock risk, and reader impact for each approach",
+        "Rule of thumb: pessimistic wins under high contention on few rows; optimistic wins when conflicts are rare",
+        "ORM traps: Hibernate @Version, Django select_for_update(), Rails with_lock — and what they actually emit",
+        "Advisory locks (pg_advisory_xact_lock, GET_LOCK) for application-level mutual exclusion outside the row model",
+        "Idempotency keys and unique constraints as the concurrency control of last resort for retried API calls"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Engine Differences and Performance Trade-offs",
+      "points": [
+        "Default level per engine: Postgres READ COMMITTED, MySQL InnoDB REPEATABLE READ, SQL Server READ COMMITTED (locking), Oracle READ COMMITTED",
+        "MySQL REPEATABLE READ quirk: locking reads (FOR UPDATE) see the latest committed row, not the snapshot — a documented source of surprise",
+        "Postgres READ COMMITTED UPDATE re-evaluation: a blocked UPDATE re-checks its WHERE clause against the new row version after the blocker commits",
+        "SQL Server's READ_COMMITTED_SNAPSHOT ON turns the default into a non-blocking versioned read — usually the single highest-value setting change",
+        "Cost model: stronger isolation buys correctness with lock waits, version-store I/O, and abort-and-retry work",
+        "Long transactions are the universal enemy: bloat, replication lag, blocked DDL, lock pileups, and larger deadlock windows",
+        "Connection-pool interaction: a pooled connection left mid-transaction leaks isolation settings and locks to the next borrower",
+        "Read replicas offer snapshot reads at the price of replication lag — not a substitute for isolation",
+        "Measuring: pg_stat_activity wait_event, MySQL innodb_row_lock_time_avg, SQL Server blocking chains via sys.dm_exec_requests",
+        "Benchmarking rule: measure abort/retry rate alongside throughput, since retries hide as latency, not errors"
+      ],
+      "shape": [
+        "definition",
+        "comparison",
+        "mechanism",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Common Mistakes and How They Bite",
+      "points": [
+        "Doing read-modify-write in application code without a version check or a lock — the number-one lost-update source",
+        "Holding a transaction open across an HTTP call, message publish, or user prompt",
+        "Assuming SELECT ... then INSERT is safe against duplicates — only a unique constraint truly prevents them",
+        "Catching the serialization-failure exception and swallowing it instead of retrying the transaction",
+        "Raising isolation to SERIALIZABLE as a shotgun fix, then losing throughput to aborts nobody retries",
+        "Running a long analytics query inside a write transaction and pinning the oldest snapshot",
+        "Mixing DDL into a transaction on MySQL and unknowingly committing early",
+        "Forgetting that ROLLBACK does not undo side effects outside the DB: sent emails, queued jobs, file writes",
+        "Trusting an ORM's default transaction boundaries without reading the emitted SQL",
+        "Retrying a non-idempotent transaction without an idempotency key, causing a double charge",
+        "Setting a lock timeout but no statement timeout, so a runaway query still blocks the queue"
+      ],
+      "shape": [
+        "mistakes",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Transactions Cheat Sheet",
+      "points": [
+        "ACID in one line each: Atomicity = all or nothing, Consistency = valid states, Isolation = as if alone, Durability = survives crash",
+        "Anomaly matrix: READ UNCOMMITTED allows dirty/non-repeatable/phantom; READ COMMITTED allows non-repeatable/phantom; REPEATABLE READ allows phantom (per ANSI); SERIALIZABLE allows none",
+        "Defaults: Postgres RC, MySQL RR, SQL Server RC (locking), Oracle RC",
+        "Syntax block: BEGIN; SET TRANSACTION ISOLATION LEVEL ...; SAVEPOINT sp; ROLLBACK TO sp; COMMIT;",
+        "Locking reads: SELECT ... FOR UPDATE | FOR SHARE | FOR UPDATE NOWAIT | FOR UPDATE SKIP LOCKED",
+        "Error codes to retry: 40001 serialization failure, 40P01 deadlock detected, MySQL 1213 deadlock, 1205 lock wait timeout",
+        "Diagnostic commands: pg_locks + pg_stat_activity, SHOW ENGINE INNODB STATUS, sys.dm_tran_locks, EXPLAIN to shrink the lock footprint",
+        "Timeout knobs: lock_timeout, statement_timeout, idle_in_transaction_session_timeout, innodb_lock_wait_timeout",
+        "Decision rule: default RC + explicit FOR UPDATE or CAS for hot rows; escalate to SERIALIZABLE only for invariants across rows, with retries",
+        "Five habits: keep transactions short, order writes consistently, retry on 40001/40P01, never wait on humans or networks inside a transaction, enforce invariants with constraints where you can"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

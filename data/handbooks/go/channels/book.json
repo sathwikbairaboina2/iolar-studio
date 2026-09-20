@@ -1,0 +1,198 @@
+{
+  "title": "Go Channels: The Complete Field Notes",
+  "summary": "A dense, example-driven handbook on Go channels — buffered vs unbuffered semantics, select, closing rules, nil channels, and the fan-in/fan-out concurrency patterns built on top of them. Covers runtime internals, deadlock and leak gotchas, and a decision guide for picking the right channel shape.",
+  "chapters": [
+    {
+      "title": "Channels: The Basics",
+      "points": [
+        "A channel is a typed conduit: `ch := make(chan int)` — only `int` values pass through it",
+        "Channels implement CSP: \"Don't communicate by sharing memory; share memory by communicating\"",
+        "Send: `ch <- v`. Receive: `v := <-ch`. Receive-and-discard: `<-ch`",
+        "The arrow always points in the direction of data flow — that's the mnemonic for reading any channel expression",
+        "Zero value of a channel is `nil`; `var ch chan int` gives you a nil channel, not a usable one",
+        "`make(chan T)` = unbuffered (capacity 0); `make(chan T, n)` = buffered with capacity n",
+        "Directional types: `chan<- T` is send-only, `<-chan T` is receive-only; used in function signatures to enforce intent",
+        "A bidirectional `chan T` converts implicitly to `chan<- T` or `<-chan T`, but never back",
+        "`func worker(in <-chan Job, out chan<- Result)` — the compiler now rejects a receive on `out`",
+        "`len(ch)` = items currently buffered; `cap(ch)` = buffer capacity; both are 0 for unbuffered",
+        "Channels are reference-like: copying a channel value copies the pointer to the same hchan, so passing to goroutines is cheap",
+        "Channels are safe for concurrent use by any number of goroutines — no external mutex needed",
+        "A channel operation on a closed-or-open channel is a synchronization point: it establishes happens-before ordering",
+        "Example: `done := make(chan struct{})` — `struct{}` costs zero bytes, the idiomatic signal-only channel"
+      ]
+    },
+    {
+      "title": "Unbuffered Channels: Rendezvous",
+      "points": [
+        "Unbuffered channel = synchronous handoff; sender and receiver must both arrive before either proceeds",
+        "`ch := make(chan int)` then `ch <- 1` in main with no receiver = `fatal error: all goroutines are asleep - deadlock!`",
+        "The send does not \"place a value in the channel\" — it hands the value directly to a waiting receiver's stack slot",
+        "Happens-before guarantee: the send completes *before* the receive completes (spec: a send happens before the corresponding receive completes)",
+        "This makes unbuffered channels a synchronization primitive, not just a queue",
+        "Use case — completion signal: `go func(){ work(); done <- struct{}{} }(); <-done`",
+        "Use case — ping-pong / lockstep: two goroutines alternating turns need the rendezvous",
+        "Guarantee delivery: after `ch <- v` returns on an unbuffered channel, you know a receiver has it",
+        "Cost: every handoff parks one goroutine and schedules the other — ~100ns+ per operation vs ~10ns for an atomic",
+        "An unbuffered send blocks even if the receiver is \"about to\" receive — no speculative buffering",
+        "Backpressure is automatic and total: a slow consumer instantly throttles the producer",
+        "Rule of thumb: start unbuffered. Add a buffer only when you can name the reason.",
+        "Gotcha: `ch <- v` in the same goroutine that will later receive is always a self-deadlock",
+        "Diagram: sender parked on sendq → receiver arrives → direct copy → both unparked"
+      ]
+    },
+    {
+      "title": "Buffered Channels: Capacity and Backpressure",
+      "points": [
+        "`make(chan int, 3)` gives a FIFO ring buffer of 3 slots inside the hchan struct",
+        "Send blocks only when the buffer is full; receive blocks only when it's empty",
+        "Asynchronous within capacity: sender can run ahead of the receiver by up to `cap` items",
+        "Weaker guarantee: a completed send says nothing about whether anyone received it",
+        "`len(ch)` and `cap(ch)` are racy for decisions — the value can change before the next line runs",
+        "Semaphore pattern: `sem := make(chan struct{}, 10)`; acquire with `sem <- struct{}{}`, release with `<-sem`",
+        "Bounded worker limiting: buffer size N caps in-flight work at N, giving a memory ceiling",
+        "Fire-and-forget with capacity 1: `make(chan os.Signal, 1)` — required by `signal.Notify`, which never blocks",
+        "A buffer of size 1 also breaks a send/receive lockstep, letting producer and consumer overlap by one item",
+        "Buffer size is not a performance knob you tune blindly — an oversized buffer hides a slow consumer until memory blows up",
+        "Latency vs throughput trade-off: buffering smooths bursts but adds queueing delay and delays failure detection",
+        "Comparison row — unbuffered: sync, strong ordering guarantee, instant backpressure, more context switches",
+        "Comparison row — buffered: async up to cap, weaker guarantee, deferred backpressure, fewer context switches",
+        "Anti-pattern: sizing the buffer to \"the number of items\" to avoid thinking about blocking — that's an unbounded queue in disguise"
+      ]
+    },
+    {
+      "title": "Inside the Runtime: hchan",
+      "points": [
+        "Channels are the `runtime.hchan` struct: `buf` (ring array), `qcount`, `dataqsiz`, `sendx`, `recvx`, `sendq`, `recvq`, `lock`",
+        "Every channel op takes `hchan.lock` — a runtime mutex, not a Go `sync.Mutex`",
+        "`sendq` and `recvq` are wait queues of `sudog` records, each wrapping a parked goroutine",
+        "Fast path optimization: if a receiver is already parked in `recvq`, the sender copies straight into the receiver's stack — the buffer is skipped entirely",
+        "This direct handoff is why an unbuffered channel needs no buffer at all, and why a buffered channel with a waiting receiver behaves like an unbuffered one",
+        "Blocking = `gopark`: the goroutine leaves the run queue; the OS thread (M) is freed to run other goroutines",
+        "Waking = `goready`: the unblocking goroutine puts the parked one back on the run queue",
+        "Channel ops are goroutine-blocking, not thread-blocking — this is why 100k blocked goroutines cost KB, not OS threads",
+        "FIFO fairness: `sendq`/`recvq` are FIFO, so waiters are served in arrival order — no starvation for a queued goroutine",
+        "Cost model: uncontended channel op ≈ tens of ns; a op that parks/unparks ≈ hundreds of ns from the scheduler round trip",
+        "Memory: `make(chan T, n)` allocates one block — hchan header plus `n * sizeof(T)` bytes for the buffer",
+        "Values are copied into and out of the channel — sending a large struct copies it twice; send a pointer if that matters",
+        "Sending a pointer transfers ownership by convention; the runtime doesn't enforce it, and the race detector will catch it if you keep using it",
+        "Escape hatch note: `select` locks all involved channels in address order to avoid deadlock between competing selects"
+      ]
+    },
+    {
+      "title": "Closing Channels",
+      "points": [
+        "`close(ch)` marks the channel closed; it does not free it or drain buffered values",
+        "Receives on a closed channel return immediately with the zero value, forever — never block",
+        "Two-value receive detects it: `v, ok := <-ch`; `ok == false` means closed *and* drained",
+        "Buffered values survive a close: receivers get all remaining items first, then zero values",
+        "`for v := range ch` loops until the channel is closed and drained — the idiomatic consumer",
+        "Panic: `send on closed channel` — sending to a closed channel always panics, never returns an error",
+        "Panic: `close of closed channel` — double close panics",
+        "Panic: `close of nil channel` — closing a nil channel panics",
+        "THE RULE: only the sender closes, and only when there is exactly one sender. Never let a receiver close.",
+        "Multiple senders? Don't close from a sender. Use a separate `done` channel, or `sync.Once`, or a `WaitGroup` plus one closer goroutine",
+        "Closer pattern: `go func(){ wg.Wait(); close(out) }()` — the canonical way to close after N producers finish",
+        "Close is a broadcast: closing one channel wakes *every* goroutine blocked on receiving from it — that's how `done` channels cancel N workers",
+        "You don't need to close every channel — an unclosed channel is garbage collected like any value; close only to signal \"no more data\"",
+        "Gotcha: `v, ok := <-ch` where the sender legitimately sent the zero value — `ok` distinguishes it from a close; a bare `v` does not",
+        "Example — the trap: `close(results)` before workers finish sending causes `panic: send on closed channel` in a worker, crashing the process"
+      ]
+    },
+    {
+      "title": "select: Multiplexing",
+      "points": [
+        "`select` waits on multiple channel operations at once and proceeds with whichever is ready first",
+        "Syntax: `select { case v := <-a: ... case b <- x: ... }` — every case must be a channel operation",
+        "If multiple cases are ready, select picks one **uniformly at random** — not top-down, so no case starves",
+        "`default:` makes select non-blocking: if nothing is ready, default runs immediately",
+        "Non-blocking receive: `select { case v := <-ch: use(v); default: /* nothing ready */ }`",
+        "Non-blocking send (drop on full): `select { case ch <- v: default: /* buffer full, drop */ }`",
+        "Timeout: `case <-time.After(2*time.Second): return ErrTimeout` — a channel that fires once",
+        "`time.After` leaks its timer until it fires; in a hot loop use `time.NewTimer` and `defer t.Stop()`",
+        "Cancellation: `case <-ctx.Done(): return ctx.Err()` — the standard idiom in every worker loop",
+        "`select {}` with no cases blocks forever — an intentional \"park this goroutine\" (and a deadlock if all goroutines do it)",
+        "A select with only nil channels and no default blocks forever, same as `select {}`",
+        "Cases are evaluated before the select blocks: channel expressions and send operands are computed exactly once, top to bottom",
+        "Combine with `for`: `for { select { ... } }` is the event-loop shape of most Go services",
+        "Always guard a send inside a worker with `select` on `ctx.Done()` — an unguarded `out <- v` is the #1 source of goroutine leaks"
+      ]
+    },
+    {
+      "title": "nil Channels: The Off Switch",
+      "points": [
+        "A nil channel is a channel variable that was never made: `var ch chan int`",
+        "Send on nil channel: blocks forever. Receive on nil channel: blocks forever. `close(nil)`: panics.",
+        "In a lone goroutine this is a deadlock — but inside `select` it's a feature",
+        "Rule: a select case on a nil channel is never chosen; it is effectively disabled",
+        "Disable-a-case idiom: set the channel variable to nil when it's exhausted, and select stops considering it",
+        "Classic bug: `for { select { case v, ok := <-a: ... case v, ok := <-b: ... } }` — after `a` closes, its case fires on every iteration in a busy spin",
+        "Fix: `if !ok { a = nil; continue }` — the closed channel drops out of the select instead of spinning",
+        "Termination check: loop while `a != nil || b != nil`; when both are nil, every input is drained and you exit",
+        "Toggle a send: keep `out` nil until you have a value to send, then set it to the real channel — select only offers the send when there's data",
+        "Nil-vs-closed cheat row — nil: blocks forever, invisible to select, close panics",
+        "Nil-vs-closed cheat row — closed: returns instantly with zero value, always ready in select, send panics",
+        "This is why `v, ok := <-ch` matters: `ok == false` is the signal to nil out the variable",
+        "Nil channels also make optional dependencies clean — a nil metrics channel just means \"no metrics sink\", no branching",
+        "Gotcha: nilling a *struct field* channel that another goroutine reads is a data race — only nil a local variable"
+      ]
+    },
+    {
+      "title": "Fan-Out: Spreading Work",
+      "points": [
+        "Fan-out = one input channel, N goroutines all receiving from it, work distributed among them",
+        "The runtime does the load balancing: each worker takes the next item when it's free, so fast workers naturally take more",
+        "Shape: `for i := 0; i < n; i++ { go worker(jobs, results) }` — all N share the same `jobs` channel",
+        "Worker body: `for j := range jobs { results <- process(j) }` — the range exits when `jobs` closes",
+        "Closing `jobs` once terminates all N workers — a single close broadcasts to every blocked receiver",
+        "Choosing N: CPU-bound work → `runtime.NumCPU()`; I/O-bound work → much higher N, bounded by the downstream limit",
+        "Ordering is destroyed: results arrive in completion order, not submission order. Attach an index if order matters.",
+        "Alternative shape — bounded WaitGroup: spawn per job but gate with a `chan struct{}` semaphore of size N",
+        "`errgroup.Group` with `g.SetLimit(n)` is the modern stdlib-adjacent way to do bounded fan-out with error propagation",
+        "Results channel must have a reader as fast as the workers, or the workers block on send and the fan-out stalls",
+        "Error handling: send `struct{ val T; err error }` on the results channel rather than a second error channel — one channel keeps ordering sane",
+        "Cancellation: every worker's send must be `select { case results <- r: case <-ctx.Done(): return }`",
+        "Sizing the jobs buffer to N lets the dispatcher stay one round ahead without unbounded memory",
+        "Anti-pattern: unbounded `go` per item over a large input — thousands of goroutines all hitting one database is a self-inflicted outage"
+      ]
+    },
+    {
+      "title": "Fan-In: Merging Streams",
+      "points": [
+        "Fan-in = N input channels merged into one output channel that a single consumer reads",
+        "Naive select-based merge works for a fixed 2-3 inputs; it doesn't generalize to a slice of channels",
+        "General merge: one goroutine per input, all sending into a shared `out`, plus a `WaitGroup` to know when to close",
+        "Canonical code: `var wg sync.WaitGroup; wg.Add(len(cs)); for _, c := range cs { go func(c <-chan T){ defer wg.Done(); for v := range c { out <- v } }(c) }; go func(){ wg.Wait(); close(out) }()`",
+        "The `wg.Wait()` closer goroutine is mandatory — nobody else knows when the last producer finished",
+        "Pre-Go 1.22 gotcha: capture the loop variable (`go func(c ...){}(c)`) or every goroutine reads the same channel",
+        "Output ordering is nondeterministic and interleaved — fan-in gives you completion order, nothing more",
+        "Merging is a select over dynamic channels; if you truly need dynamic selection, `reflect.Select` exists but is slow and rarely worth it",
+        "Pipeline shape: generator → fan-out to workers → fan-in to merge → consumer, all chained by channels",
+        "Pipeline stage contract: each stage closes its own output channel and stops sending when `done`/`ctx` is closed",
+        "Early return leaks: if the consumer stops reading, every merge goroutine blocks forever on `out <- v` — this is the leak fan-in is famous for",
+        "Fix: `select { case out <- v: case <-ctx.Done(): return }` in the merge goroutine, and cancel the context on early return",
+        "Buffer `out` at `len(cs)` to let each producer place one item without waiting on the consumer",
+        "Rate-limit at the fan-in point, not per-producer — one consumer with a ticker is simpler than N throttled producers"
+      ]
+    },
+    {
+      "title": "Gotchas, Trade-offs, and the Cheat Sheet",
+      "points": [
+        "Goroutine leak #1: a sender blocked forever because the receiver returned early — always pair a send with `ctx.Done()`",
+        "Goroutine leak #2: `for range ch` on a channel nobody ever closes — the goroutine parks until process exit",
+        "Detect leaks with `go.uber.org/goleak` in tests, or a `runtime.NumGoroutine()` assertion before and after",
+        "`fatal error: all goroutines are asleep - deadlock!` is only reported when *every* goroutine is blocked; a partial deadlock is silent",
+        "Run tests with `-race`: the detector catches misuse of pointers sent over channels, not the channel ops themselves",
+        "Channels are not always the answer — a shared counter wants `sync/atomic`, and guarded state wants `sync.Mutex`",
+        "Perf row: `sync.Mutex` ≈ 20ns uncontended; buffered channel op ≈ 50-100ns; unbuffered handoff ≈ 100-300ns with a scheduler round trip",
+        "Use a channel when you're transferring ownership, distributing work, or communicating async results; use a mutex when you're guarding shared state",
+        "Panic table: send on closed = panic; close of closed = panic; close of nil = panic; receive from closed = zero value, no panic",
+        "Block table: nil channel blocks forever on send and receive; closed channel never blocks either way",
+        "`v, ok := <-ch` and `for range ch` are the only correct ways to observe a close from the receive side",
+        "Signal-only channels should be `chan struct{}` — zero allocation and the intent is unmistakable",
+        "Don't put a channel in a struct field unless its lifecycle is owned by that struct; ambiguous ownership is what causes double closes",
+        "Decision guide: one-shot signal → close a `done` channel; N results → buffered channel sized N; unknown count → WaitGroup plus a closer goroutine; cancellation → `context`, not a hand-rolled `done`",
+        "Closing summary: unbuffered = synchronization, buffered = queueing with a ceiling, close = broadcast, nil = disable, select = compose them all"
+      ]
+    }
+  ]
+}

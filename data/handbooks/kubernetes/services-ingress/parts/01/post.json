@@ -1,0 +1,1010 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "K8S NETWORKING HANDBOOK",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "Why Services Exist & Service Anatomy",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. The Pod IP Problem",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every Pod gets a routable IP — all Pods reach all Pods, no NAT",
+            "Pod IPs are ephemeral: reschedule, roll or crash gives a new one",
+            "Replicas scale, so the backend IP set is a moving target",
+            "Clients must never track membership themselves"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl get pod -o wide   # 10.244.1.5",
+            "kubectl rollout restart deploy/api",
+            "kubectl get pod -o wide   # 10.244.2.9",
+            "# client cached the old IP = 100% down"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "2. What A Service Is",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stable virtual IP + DNS name + port over changing Pods",
+            "Service = stable frontend, Pods = disposable backends",
+            "Load balancing across backends comes free",
+            "Service discovery: find healthy backends by name, not IP"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cluster-scoped abstraction, not a central proxy box",
+            "Implemented by kube-proxy on every single node",
+            "Workload-agnostic: Deployment, StatefulSet, DaemonSet, bare Pods"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Minimal Service YAML",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "spec:",
+            "  selector: {app: api}  # equality match",
+            "  ports:",
+            "  - port: 80            # svc listens here",
+            "    targetPort: 8080    # container port"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`port` and `targetPort` are independent numbers",
+            "`targetPort: http` resolves per-Pod via containerPort.name",
+            "Heterogeneous Pods may expose different real ports",
+            "Name every port once a Service has more than one",
+            "protocol TCP, UDP or SCTP — one Service can mix them"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Why Services Exist & Service Anatomy (cont.)",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl get endpointslices -o wide \\",
+            "  -l kubernetes.io/service-name=my-svc",
+            "kubectl describe svc my-svc  # ports+count"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. EndpointSlices",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Endpoints controller watches matching Pods, writes their IPs",
+            "EndpointSlice v1 replaced the single Endpoints object",
+            "Sharded at 100 endpoints per slice by default",
+            "Old model rewrote all 5000 endpoints on every Pod change",
+            "Only Ready Pods land in the ready list; rest carry ready: false"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. First Debug Move",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl get endpointslices \\",
+            "  -l kubernetes.io/service-name=my-svc",
+            "# nothing listed? not a network bug"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Empty Endpoints",
+          "text": "Almost always a selector/label mismatch or a failing readiness probe. Check labels before you touch the datapath."
+        },
+        {
+          "type": "heading",
+          "text": "1. The Virtual IP",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default type; allocated from --service-cluster-ip-range",
+            "Virtual and unroutable: no interface owns it, no ARP reply",
+            "Pinging it proves nothing — no host is listening",
+            "Intercepted and DNAT'd on the client's own node",
+            "Inside the cluster only; never reachable from outside"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Allocation Rules",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "API server writes spec.clusterIP at create time, then immutable",
+            "Pin one with clusterIP: 10.96.0.10 if in range and free",
+            "clusterIP: None makes it headless — DNS returns Pod IPs",
+            "NodePort and LoadBalancer are supersets that also allocate one"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Why Services Exist & Service Anatomy (cont.)",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl run tmp --rm -it \\",
+            "  --image=curlimages/curl -- curl \\",
+            "  http://my-svc.default.svc.cluster.local"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Balancing Is Per-Connection",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Roughly random/round-robin per connection, not per request",
+            "Long-lived HTTP/2 and gRPC connections pin to one backend",
+            "3 replicas, 1 gRPC client: one Pod serves everything forever",
+            "Fix with a real L7 proxy or client-side balancing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. kube-proxy Datapath",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "DaemonSet on every node, watching Services + EndpointSlices",
+            "Programs the kernel; modern modes never carry packets",
+            "iptables: KUBE-SERVICES matches VIP:port, jumps KUBE-SVC-xxx",
+            "statistic random probability chains give 1/n, then 1/(n-1)",
+            "KUBE-SEP-xxx does the DNAT; conntrack pins the connection"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Datapath",
+            "Sync at scale"
+          ],
+          "rows": [
+            [
+              "iptables",
+              "O(n) list walk",
+              "O(n)–O(n²), slow"
+            ],
+            [
+              "IPVS",
+              "O(1) hash",
+              "fast"
+            ],
+            [
+              "nftables",
+              "O(1) sets",
+              "fast"
+            ],
+            [
+              "eBPF (Cilium)",
+              "socket-level",
+              "no rules"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "iptables latency is measurable above roughly 5k Services",
+            "IPVS schedulers: rr, lc, dh, sh, sed, nq via --ipvs-scheduler",
+            "IPVS binds VIPs to dummy iface kube-ipvs0, so ip addr shows them",
+            "nftables mode is the successor to iptables, same model",
+            "Cilium kube-proxy-replacement DNATs at the socket, pre-packet"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Datapath Debug",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "iptables-save -t nat | grep my-svc",
+            "ipvsadm -Ln            # IPVS entries",
+            "nft list table ip kube-proxy"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "conntrack Exhaustion",
+          "text": "`nf_conntrack: table full, dropping packet` in dmesg under high churn. Raise nf_conntrack_max before blaming the app."
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "ClusterIP & Inside kube-proxy",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. NodePort Basics",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Allocates one port on every node, default 30000–32767",
+            "Superset: still has a ClusterIP, same backend set, still DNAT",
+            "Hit <any-node-IP>:<nodePort> from outside the cluster",
+            "Nodes running zero backing Pods still forward the traffic",
+            "Pin with nodePort: 30080, or let the allocator choose"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. externalTrafficPolicy",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "Cluster (default)",
+            "Local"
+          ],
+          "rows": [
+            [
+              "Source IP",
+              "SNAT'd to node",
+              "preserved"
+            ],
+            [
+              "Extra hop",
+              "yes",
+              "no"
+            ],
+            [
+              "No local Pod",
+              "forwards on",
+              "drops/rejects"
+            ],
+            [
+              "Spread",
+              "even",
+              "per-node skew"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Local: 1 Pod on node A, 3 on node B means A's Pod takes 50%",
+            "Local doubles as a health signal — LBs drop endpoint-less nodes",
+            "Cluster hides the real client IP from your Pod entirely"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. NodePort In Practice",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Needs an LB or DNS round-robin in front for real availability",
+            "Firewalls, security groups and proxies block those high ports",
+            "Fits bare metal, kind/minikube, and as an external LB target",
+            "Anti-pattern: dozens of prod apps on NodePorts — no TLS, no host routing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. LoadBalancer Type",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ClusterIP + NodePort + a provisioning request to the cloud",
+            "cloud-controller-manager writes status.loadBalancer.ingress back",
+            "EXTERNAL-IP <pending> = no CCM running, or the call failed",
+            "Classic LBs target NodePorts; IP-mode ones target Pod IPs directly"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "spec:",
+            "  type: LoadBalancer",
+            "  loadBalancerClass: svc.k8s.aws/nlb",
+            "  loadBalancerSourceRanges: [10.0.0.0/8]",
+            "  allocateLoadBalancerNodePorts: false"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "5. Cost And Limits",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One LB per Service: 20 microservices = 20 bills, 20 public IPs",
+            "That bill is the biggest practical reason Ingress exists",
+            "No cloud on bare metal: MetalLB (L2 ARP or BGP) or kube-vip",
+            "Pure L4 — no host routing, no paths, no header inspection"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "NodePort & LoadBalancer",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "loadBalancerClass picks the controller — several can coexist",
+            "sourceRanges adds CIDR firewalling at the LB itself",
+            "Skip NodePort allocation when the LB targets Pod IPs",
+            "Internal LB, cert ARN, idle timeout live in annotations"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Headless Services",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "clusterIP: None — no VIP, no kube-proxy rules programmed",
+            "DNS returns A/AAAA records for every ready Pod IP",
+            "For clients needing all backends: Kafka, Cassandra, quorum systems",
+            "Also the base for gRPC client-side load balancing",
+            "No balancing happens; the client picks, and owns that choice"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Stable Pod Identity",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "web-0.nginx.default.svc.cluster.local",
+            "# <pod>-<ord>.<svc>.<ns>.svc.cluster.local",
+            "# same name after every reschedule"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "StatefulSet spec.serviceName must match the headless Service",
+            "Mismatch and the per-Pod DNS records are never created",
+            "publishNotReadyAddresses: true to bootstrap a quorum",
+            "SRV: _http._tcp.my-svc.ns.svc.cluster.local gives port + target",
+            "No selector + hand-written EndpointSlice points DNS at external IPs"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Client-Side Caching",
+          "text": "A JVM with networkaddress.cache.ttl=-1 caches peers forever and quietly defeats headless discovery."
+        },
+        {
+          "type": "heading",
+          "text": "3. CoreDNS Layout",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "CoreDNS is a kube-system Deployment behind a ClusterIP: kube-dns",
+            "Usually 10.96.0.10; kubelet injects it into every resolv.conf",
+            "FQDN is <service>.<namespace>.svc.<cluster-domain>",
+            "payments works in-namespace; payments.prod crosses namespaces",
+            "Corefile: kubernetes plugin, forward . /etc/resolv.conf, cache 30"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Headless Services & Cluster DNS",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. The ndots:5 Tax",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "nameserver 10.96.0.10",
+            "search prod.svc.cluster.local cluster.local",
+            "options ndots:5  # <5 dots: search first"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "api.github.com has 2 dots: 3–4 NXDOMAINs before the real answer",
+            "Real latency, real CoreDNS load, not a theoretical cost",
+            "Fix: trailing dot api.github.com. or lower ndots via dnsConfig",
+            "NodeLocal DNSCache cuts CoreDNS load and UDP conntrack timeouts"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. dnsPolicy Values",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Value",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "ClusterFirst",
+              "default, cluster DNS"
+            ],
+            [
+              "ClusterFirstWithHostNet",
+              "required with hostNetwork"
+            ],
+            [
+              "Default",
+              "inherit node resolv.conf"
+            ],
+            [
+              "None",
+              "fully custom dnsConfig"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl exec pod -- cat /etc/resolv.conf",
+            "nslookup my-svc.default.svc.cluster.local",
+            "kubectl logs -n kube-system deploy/coredns"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "1. ExternalName",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "spec:",
+            "  type: ExternalName",
+            "  externalName: db.example.com  # CNAME"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "CoreDNS returns a CNAME: no proxy, no VIP, no endpoints",
+            "Gives an out-of-cluster dependency a stable in-cluster name",
+            "Migration: alias the legacy host, later swap to a selector Service",
+            "App config stays mysql.prod.svc.cluster.local in every environment",
+            "Ports on the object are ignored — clients use the real port"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Two ExternalName Traps",
+          "items": [
+            "HTTPS gets db.example.com's cert; SNI checks that name",
+            "A CNAME to a raw IP literal is invalid DNS, so it cannot work"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. Selectorless Services",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Omit spec.selector and hand-write the EndpointSlice yourself",
+            "Label it kubernetes.io/service-name: my-svc to bind it",
+            "You get a real ClusterIP and real kube-proxy balancing",
+            "Nothing reconciles it: no health checks, you own the lifecycle"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "ExternalName, Policies & Topology",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "ExternalName",
+            "Selectorless"
+          ],
+          "rows": [
+            [
+              "Data path",
+              "none, DNS only",
+              "full kube-proxy"
+            ],
+            [
+              "Balancing",
+              "no",
+              "yes"
+            ],
+            [
+              "Membership",
+              "external DNS",
+              "manual"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Traffic Policies",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "externalTrafficPolicy Cluster: SNAT, balanced, one extra hop",
+            "externalTrafficPolicy Local: source IP kept, node-local only",
+            "internalTrafficPolicy: Local keeps ClusterIP traffic on-node",
+            "Made for per-node agents: log shippers, node exporters"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Session Affinity",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "spec:",
+            "  sessionAffinity: ClientIP",
+            "  sessionAffinityConfig:",
+            "    clientIP: {timeoutSeconds: 10800}  # 3h"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pins one client IP to one backend for the whole window",
+            "Breaks behind NAT: a whole office egress IP lands on one Pod",
+            "Cookie affinity does not exist at L4 — that is Ingress work"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Topology & IP Families",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "service.kubernetes.io/topology-mode: Auto biases to same-zone",
+            "Engages only with enough endpoints per zone, else cluster-wide",
+            "trafficDistribution: PreferClose is the newer explicit field"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cross-zone bytes are billed: cost first, latency second",
+            "Zone-local can overload a zone — pair with topologySpreadConstraints",
+            "ipFamilyPolicy Single/Prefer/RequireDualStack plus ipFamilies"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Readiness Gates Traffic",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Only Ready Pods receive traffic; failing removes, never restarts",
+            "Liveness restarts the container, readiness only gates traffic",
+            "Confusing the two produces restart storms under load",
+            "startupProbe covers slow boots without weakening liveness"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. The Removal Race",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pod terminating, endpoint update, then rule sync on every node",
+            "Requests keep landing on the dying Pod during that window",
+            "Terminating endpoints publish serving: true, terminating: true",
+            "Proxies use that to drain long connections instead of cutting them"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Readiness, Drain & Why L4 Ends",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "'Process is up' readiness is useless — check the real dependency",
+            "DB pool, cache connection, warm model: whatever you actually need",
+            "Readiness calling a downstream marks every replica unready at once"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Graceful Shutdown",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "lifecycle:            # on the container",
+            "  preStop:",
+            "    exec: {command: [sleep, \"15\"]}",
+            "# pod spec:",
+            "terminationGracePeriodSeconds: 45"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "preStop sleep 5–15s lets endpoint removal propagate first",
+            "The standard fix for rolling-update 502s",
+            "Grace period must exceed preStop plus drain, or SIGKILL cuts requests"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "conntrack Sticks",
+          "text": "DNAT is per-connection: established TCP stays on the old backend. Stale UDP entries blackhole traffic to a deleted Pod until they expire."
+        },
+        {
+          "type": "heading",
+          "text": "4. Where L4 Stops",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Services route on IP and port; they do not know HTTP exists",
+            "Ingress is L7: Host header, URL path, TLS termination",
+            "Two things: the Ingress resource and the Ingress controller",
+            "An Ingress with no controller installed does exactly nothing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Controllers",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ingress-nginx, Traefik, HAProxy, Contour/Emissary, ALB, GCLB",
+            "The controller sits behind one type: LoadBalancer Service",
+            "N services behind 1 LB instead of N LBs — the whole economics",
+            "ingressClassName picks the owner; a class can be marked default"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Backends are Services, but controllers read EndpointSlices",
+            "Bypassing the ClusterIP gives per-request L7 balancing",
+            "That is what fixes the gRPC keep-alive pinning problem",
+            "HTTP/S only: raw TCP/UDP needs extensions or a LoadBalancer",
+            "Ingress is feature-frozen; Gateway API is the successor"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Rule Structure",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "rules:",
+            "- host: api.example.com  # Host header",
+            "  http:",
+            "    paths:",
+            "    - path: /v1          # + pathType"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Ingress Rules & TLS",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Each path names backend.service.name and .port",
+            "Name-based vhosting: api. and app. on one IP, split by Host",
+            "Path fanout: /api, /static and / to three Services, one host",
+            "A rule with no host matches any Host — a catch-all",
+            "spec.defaultBackend takes the rest instead of a stock 404"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. pathType Semantics",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "pathType",
+            "Matches"
+          ],
+          "rows": [
+            [
+              "Prefix",
+              "/foo, /foo/bar — not /foobar"
+            ],
+            [
+              "Exact",
+              "full path, case-sensitive"
+            ],
+            [
+              "ImplSpecific",
+              "controller rules, nginx regex"
+            ],
+            [
+              "omitted",
+              "invalid in networking.k8s.io/v1"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Longer path wins; Exact beats Prefix at equal length",
+            "Exact hosts beat wildcard hosts every time",
+            "*.example.com covers one label: foo yes, foo.bar no"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Rewrites",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "# no rewrite: /api/users stays whole",
+            "rewrite-target: /$2   # nginx annotation",
+            "path: /api(/|$)(.*)   # capture groups"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. TLS Wiring",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "tls:",
+            "- hosts: [api.example.com]",
+            "  secretName: api-tls  # kubernetes.io/tls",
+            "# keys: tls.crt (full chain), tls.key"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Secret must be type kubernetes.io/tls with exactly those two keys",
+            "tls.crt is leaf first, then intermediates — the full chain",
+            "Leaf-only: Chrome passes, curl and Java clients fail",
+            "Secret must sit in the Ingress namespace; no cross-namespace refs",
+            "SNI carries the hostname in ClientHello, so many certs share one IP"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Termination Modes",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Backend hop",
+            "Routing on"
+          ],
+          "rows": [
+            [
+              "Terminate",
+              "plaintext HTTP",
+              "host + path"
+            ],
+            [
+              "Passthrough",
+              "stays encrypted",
+              "SNI host only"
+            ],
+            [
+              "Re-encrypt",
+              "new TLS to Pod",
+              "host + path"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Ingress Rules & TLS (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Cert Errors Decoded",
+          "items": [
+            "ERR_CERT_COMMON_NAME_INVALID: host missing from the SANs",
+            "'default fake certificate': secretName wrong, missing or misplaced"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "cert-manager: ClusterIssuer plus one annotation, auto-renewed",
+            "HTTP-01 serves a token at /.well-known/acme-challenge/",
+            "DNS-01 needs no inbound and is the only wildcard route",
+            "ssl-redirect 301 plus HSTS at the edge, never in the app"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Annotation Soup",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The spec is deliberately minimal, so features became annotations",
+            "Timeouts, rate limits, auth-url, CORS, buffers, canary weights",
+            "Not portable: moving nginx to Traefik rewrites every one",
+            "Values are strings, silently ignored when misspelled"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "# prefix: nginx.ingress.kubernetes.io/",
+            "proxy-body-size: 50m",
+            "proxy-read-timeout: \"120\"",
+            "backend-protocol: GRPC  # or HTTPS",
+            "canary: \"true\"          # + canary-weight"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "2. Gateway API",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "GatewayClass",
+              "Gateway",
+              "HTTPRoute",
+              "Service",
+              "Pods"
+            ]
+          }
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Your Pod IP changed and half your traffic vanished — that is the exact problem every layer of Kubernetes networking exists to solve. Ten pages tracing one request end to end: ClusterIP virtual IPs and the kube-proxy datapath, NodePort SNAT traps, LoadBalancer bills, CoreDNS ndots tax, headless StatefulSet identity, Ingress TLS chains, and Gateway API. Save it for the next 502 you cannot explain.",
+    "hashtags": [
+      "#kubernetes",
+      "#k8s",
+      "#devops",
+      "#cloudnative",
+      "#sre",
+      "#platformengineering",
+      "#networking",
+      "#coredns",
+      "#ingress",
+      "#kubeproxy",
+      "#gatewayapi",
+      "#studynotes"
+    ]
+  }
+}

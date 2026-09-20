@@ -1,0 +1,199 @@
+{
+  "title": "Go Errors: Values, Wrapping, and Recovery",
+  "summary": "A dense field guide to Go's error model — errors as ordinary values, sentinel and custom error types, wrapping with %w, inspection via errors.Is/As/Unwrap, and the separate world of panic, recover, and defer. Covers internals, idioms, performance trade-offs, and the mistakes that bite in production code.",
+  "chapters": [
+    {
+      "title": "Errors Are Values",
+      "points": [
+        "`error` is a built-in interface, not a language construct: `type error interface { Error() string }`",
+        "Any type with an `Error() string` method satisfies `error` — no registration, no inheritance",
+        "Go has no exceptions for ordinary failure: functions return `(T, error)` as the last result",
+        "Idiom: `v, err := f(); if err != nil { return err }` — errors handled at the call site, not unwound",
+        "Zero value of `error` is `nil`; `nil` means success by convention, enforced only by discipline",
+        "Contract: when `err != nil`, other return values are undefined unless documented (e.g. `io.Reader` may return n>0 with err)",
+        "`errors.New(\"msg\")` returns `*errorString`, a pointer — so two `errors.New` with same text are never `==`",
+        "`fmt.Errorf(\"read %s: %v\", name, err)` formats a new error, flattening the cause into text",
+        "Error strings convention: lowercase, no trailing punctuation, no capitalisation — they get concatenated",
+        "Build context as a prefix chain: `openConfig: read /etc/app.conf: permission denied`",
+        "Errors are just data: they can be stored in slices, sent over channels, compared, and constructed at init time",
+        "`errors` package is tiny (New, Is, As, Unwrap, Join) — the power comes from the interface, not the package",
+        "Example: `var err error = myErr{}` — a non-pointer struct can implement error too",
+        "Comparison: Java/Python throw and unwind; Go returns and checks — control flow stays visible in the source"
+      ]
+    },
+    {
+      "title": "Creating and Returning Errors",
+      "points": [
+        "`errors.New(text)` — cheapest error, allocates once, good for package-level sentinels",
+        "`fmt.Errorf(format, args...)` — formats and allocates; use for per-call contextual detail",
+        "Custom error type: `type PathError struct { Op, Path string; Err error }` with `func (e *PathError) Error() string`",
+        "Always implement `Error()` on the pointer receiver `*T` if the type is large or you compare identity",
+        "Custom types carry structured fields callers can read: status codes, offsets, retry hints",
+        "Constructor pattern: `func NewParseError(line int, err error) error { return &ParseError{Line: line, Err: err} }`",
+        "Add context at the boundary you cross, not at every frame — one wrap per layer, not per call",
+        "Never include the function name plus the caller's noun redundantly (`getUser: getUser failed`)",
+        "Stdlib examples: `*os.PathError`, `*net.OpError`, `*json.SyntaxError`, `*strconv.NumError`",
+        "`error` returned by value vs pointer: pointer types make identity comparison meaningful and cheap",
+        "Return `nil` explicitly on success; never return a zero-value custom struct as error",
+        "For errors that need no allocation, declare package-level `var ErrX = errors.New(...)` once at init",
+        "Example: `if err != nil { return fmt.Errorf(\"load config %q: %w\", path, err) }` — verb `%w` explained next chapter",
+        "Gotcha: `errors.New` inside a hot loop allocates each iteration; hoist it out"
+      ]
+    },
+    {
+      "title": "Sentinel Errors",
+      "points": [
+        "Sentinel = exported package-level error value used as a signal: `var ErrNotFound = errors.New(\"not found\")`",
+        "Naming convention: `Err` prefix for values, `Error` suffix for types (`ErrClosed` vs `SyntaxError`)",
+        "Classic sentinels: `io.EOF`, `io.ErrUnexpectedEOF`, `sql.ErrNoRows`, `os.ErrNotExist`, `context.Canceled`, `context.DeadlineExceeded`",
+        "`io.EOF` is not a failure — it is the normal termination signal for `Read`; treating it as an error is a bug",
+        "Compare with `errors.Is(err, ErrNotFound)`, not `err == ErrNotFound`, so wrapping still works",
+        "Sentinels become part of your public API: once callers compare against them you cannot change or remove them",
+        "Trade-off: sentinels couple caller to package but are the simplest possible signal",
+        "Prefer a behaviour check (`interface { Temporary() bool }`) or custom type when the error carries data",
+        "Anti-pattern: comparing error text with `strings.Contains(err.Error(), \"not found\")` — brittle, breaks on rewording",
+        "Sentinels can be typed: `type errNotFound struct{}` with a singleton var, giving both identity and type matching",
+        "Constant errors trick: `type errString string; func (e errString) Error() string { return string(e) }; const ErrX = errString(\"x\")` — immutable, comparable",
+        "Sentinel must be a `var` when made by `errors.New` — you cannot make a `const` of pointer type",
+        "Gotcha: a caller can reassign your exported `var ErrX`; the const-error trick removes that hazard",
+        "Rule of thumb: export a sentinel only when callers must branch on that exact condition"
+      ]
+    },
+    {
+      "title": "Wrapping with %w and Unwrap",
+      "points": [
+        "`fmt.Errorf` with `%w` produces a wrapping error that keeps a reference to the cause",
+        "`fmt.Errorf(\"query user %d: %w\", id, err)` — text reads top-down, cause chain preserved bottom-up",
+        "`%w` vs `%v`: `%v` renders the cause as text and severs the chain; `%w` keeps it inspectable",
+        "The value returned by `%w` is an unexported `*fmt.wrapError` with fields `msg string` and `err error`",
+        "Unwrap contract: `func (e *T) Unwrap() error` returns the next error in the chain, or nil at the end",
+        "`errors.Unwrap(err)` calls that method once; it returns `nil` if the error does not implement `Unwrap`",
+        "Multiple `%w` in one `fmt.Errorf` (Go 1.20+) yields an error with `Unwrap() []error` — a tree, not a chain",
+        "`errors.Join(err1, err2, nil)` collects non-nil errors into one multi-error, skipping nils; returns nil if all nil",
+        "Joined errors format one per line; `Unwrap() []error` exposes them for `Is`/`As` traversal",
+        "Implementing `Unwrap` on a custom type: store `Err error` and return it — that is the whole contract",
+        "Wrapping is an API decision: exposing the cause lets callers depend on it, so wrap deliberately",
+        "To deliberately hide an implementation error, use `%v` — the chain stops and the internal type stays private",
+        "Example chain: `handler: service: repo: sql: no rows in result set` from three wraps over `sql.ErrNoRows`",
+        "Gotcha: `%w` on a nil error yields the literal text `%!w(<nil>)` — guard `err != nil` before wrapping",
+        "Pre-1.13 code used `github.com/pkg/errors` `Wrap`/`Cause`; `%w` + `errors.Is` is the stdlib replacement"
+      ]
+    },
+    {
+      "title": "errors.Is — Matching by Identity",
+      "points": [
+        "`errors.Is(err, target)` reports whether any error in `err`'s chain matches `target`",
+        "Algorithm: compare `err == target`; if not, try `err.Is(target)`; then `errors.Unwrap` and repeat until nil",
+        "Comparability guard: `Is` only uses `==` when the target's type is comparable — otherwise it panics-free skips",
+        "For `Unwrap() []error`, `Is` walks the tree depth-first and returns true if any branch matches",
+        "`errors.Is(err, nil)` is true only when `err` itself is nil — not a useful check, use `err == nil`",
+        "Custom matching: implement `func (e *MyErr) Is(target error) bool` to declare equivalence to another value",
+        "Real example: `os.ErrNotExist` matches `*os.PathError` wrapping a syscall errno via a custom `Is` method",
+        "`errors.Is(err, context.DeadlineExceeded)` is the correct timeout test — the raw value is often wrapped",
+        "`errors.Is(err, io.EOF)` after `io.Copy` or `bufio` calls that wrap the sentinel",
+        "Cost: `Is` is O(depth) pointer comparisons — trivial, safe inside handlers, avoid inside inner loops over millions of errors",
+        "Do not use `Is` to test types — that is `errors.As`'s job",
+        "Anti-pattern: `if err == sql.ErrNoRows` — breaks the moment any layer wraps with `%w`",
+        "Gotcha: a custom `Is` that always returns true makes every match succeed and silently swallows unrelated errors",
+        "Table row: `==` exact value only | `errors.Is` value anywhere in chain | `errors.As` type anywhere in chain"
+      ]
+    },
+    {
+      "title": "errors.As — Matching by Type",
+      "points": [
+        "`errors.As(err, &target)` finds the first error in the chain assignable to `*target` and assigns it",
+        "Target must be a non-nil pointer to a type implementing `error`, or to an interface — else `As` panics",
+        "Usage: `var pe *os.PathError; if errors.As(err, &pe) { log(pe.Path) }` — access the structured fields",
+        "Returns `bool`; only when true is the target populated — never read the target after a false result",
+        "Walk order matches `Is`: check assignability, then `err.As(target)` if defined, then `Unwrap`, repeat",
+        "Custom hook: `func (e *MyErr) As(target any) bool` lets a type present itself as another type",
+        "Interface target: `var t interface{ Timeout() bool }; errors.As(err, &t)` — behaviour-based matching",
+        "Use `As` for errors that carry data (line numbers, HTTP status, offsets); use `Is` for pure signals",
+        "`As` uses reflection (`reflectlite`) for the assignability check — a few hundred ns, negligible outside hot loops",
+        "Panic cases to memorise: nil target, non-pointer target, pointer to a non-error non-interface type",
+        "Example: `var ne net.Error; if errors.As(err, &ne) && ne.Timeout() { retry() }`",
+        "Example: `var se *json.SyntaxError; errors.As(err, &se)` gives `se.Offset` for a parse position",
+        "Gotcha: passing the value rather than its address (`errors.As(err, pe)`) compiles but panics at run time",
+        "Gotcha: matching `*MyErr` when the code returned `MyErr` by value — the types differ, `As` returns false"
+      ]
+    },
+    {
+      "title": "Panic: Mechanics and Internals",
+      "points": [
+        "`panic(v)` stops normal execution of the goroutine, runs deferred functions up the stack, then crashes the program",
+        "Panic value is `any`: usually an `error` or a string; `runtime.Error` for runtime-generated ones",
+        "Runtime panics: nil map write, nil pointer dereference, index out of range, slice bounds, integer divide by zero, type assertion failure, closed-channel send",
+        "Panic is per-goroutine but fatal for the process: an unrecovered panic in any goroutine kills everything",
+        "Unwinding runs each deferred call in LIFO order for every frame, printing the stack trace on exit with status 2",
+        "`GOTRACEBACK` env var controls trace verbosity: `none`, `single` (default), `all`, `system`, `crash`",
+        "Nested panic: panicking inside a deferred function during a panic prints both, labelled `panic: ... [recovered]`",
+        "`runtime.Goexit` also runs defers but terminates only the goroutine, with no panic value",
+        "Panic is for programmer errors and impossible states, never for expected failures like bad input or missing files",
+        "Stdlib panics rarely and loudly: `regexp.MustCompile`, `template.Must`, `sync.WaitGroup` misuse, `strconv` never",
+        "`Must*` convention: panic-on-error wrappers intended for package-level init where failure is unrecoverable",
+        "Cost: panic/recover is far more expensive than a return — stack walking, defer processing, no inlining",
+        "`fatal error:` (concurrent map writes, deadlock, out of memory) is NOT a panic and cannot be recovered",
+        "Example: `func mustEnv(k string) string { v, ok := os.LookupEnv(k); if !ok { panic(\"missing env \"+k) }; return v }`"
+      ]
+    },
+    {
+      "title": "Defer and Recover",
+      "points": [
+        "`recover()` stops a panic and returns its value — but only when called directly inside a deferred function",
+        "`recover()` outside a panic, or not directly deferred, returns `nil` and does nothing",
+        "Canonical form: `defer func() { if r := recover(); r != nil { err = fmt.Errorf(\"recovered: %v\", r) } }()`",
+        "Converting panic to error requires a *named* return value — a bare `return` result cannot be reassigned",
+        "`defer` arguments evaluate immediately; the call itself runs at function exit — classic loop-variable trap",
+        "Defers run LIFO; each `defer` in a loop stacks up until the function returns, so avoid `defer` inside long loops",
+        "After `recover`, execution resumes in the *caller* of the panicking function, not at the panic site",
+        "Recover cannot cross goroutines: `go f()` panicking is not caught by the parent's recover",
+        "Every goroutine you spawn needs its own recover if a panic there must not kill the process",
+        "Legitimate uses: HTTP server middleware, plugin/user-code boundaries, recursive parsers using panic for control flow, test helpers",
+        "`net/http` recovers panics per request by default and closes the connection — but the handler's work is lost",
+        "Re-panic pattern: `if r := recover(); r != nil { if !isMine(r) { panic(r) } }` — only swallow your own signals",
+        "Never recover blindly: swallowing a nil-pointer panic leaves corrupted state running",
+        "Gotcha: `recover()` inside a helper called by the deferred function returns nil — it must be the deferred call itself",
+        "Debug trick: `debug.PrintStack()` or `debug.Stack()` inside recover, since the original trace is otherwise lost"
+      ]
+    },
+    {
+      "title": "Patterns, Pitfalls, and Trade-offs",
+      "points": [
+        "The typed-nil trap: `var p *MyErr = nil; var e error = p; e != nil` is TRUE — interface has a type word",
+        "Fix: return `error` type variables, not concrete pointers; `if err != nil { return err }; return nil`",
+        "Never shadow: `if err := f(); err != nil` inside a block hides the outer `err` and can drop the failure",
+        "Do not log and return the same error — the caller logs it again, producing duplicate noise",
+        "Choose one boundary that logs (usually the top-level handler); everything below wraps and returns",
+        "Ignoring errors: `_ = f.Close()` is explicit and reviewable; a bare call is not — and `Close` on a writer can lose data",
+        "`defer f.Close()` on a *written* file swallows the flush error; capture it: `defer func(){ err = errors.Join(err, f.Close()) }()`",
+        "Error sets vs error trees: `errors.Join` for parallel failures (validation), `%w` chains for layered context",
+        "Retry decisions belong to behaviour, not identity: check `Timeout()`/`Temporary()`-style interfaces via `errors.As`",
+        "Comparison table row: sentinel = cheap, no data, tight coupling | custom type = data-rich, heavier API | opaque + behaviour = loosest coupling",
+        "Performance: `errors.New` and `fmt.Errorf` allocate; sentinel comparison does not; `As` costs reflection",
+        "Errors in concurrency: `errgroup.Group.Wait()` returns the first non-nil error and cancels the shared context",
+        "`context.Cause(ctx)` (Go 1.20+) returns the specific cancellation reason where `ctx.Err()` gives only Canceled/DeadlineExceeded",
+        "Testing: assert with `errors.Is`/`errors.As`, never on `err.Error()` strings; `t.Fatalf` on unexpected non-nil",
+        "Linters that catch these: `errcheck` (unchecked), `errorlint` (%v instead of %w, == on errors), `wrapcheck`"
+      ]
+    },
+    {
+      "title": "Summary and Decision Guide",
+      "points": [
+        "Errors are values returned explicitly; panics are for bugs that make continuing meaningless",
+        "Decision: expected failure returns an error; impossible state panics; nothing in between",
+        "Create: `errors.New` for fixed text, `fmt.Errorf` for context, a struct type when callers need fields",
+        "Wrap with `%w` when the cause is part of your contract; use `%v` to deliberately keep it private",
+        "Inspect with `errors.Is` for a known value, `errors.As` for a known type, an interface assertion for behaviour",
+        "Never `==` an error and never match on `err.Error()` text",
+        "Implement `Unwrap() error` on wrapper types; `Unwrap() []error` for multi-errors; `Is`/`As` only for aliasing",
+        "`errors.Join` merges independent failures; the chain becomes a tree that `Is`/`As` still traverse",
+        "`recover` only in a directly deferred closure, only at a real boundary, with a named return to convert to error",
+        "Every `go` statement is a new panic domain — recover there or accept process death",
+        "Watch the typed-nil interface trap and error shadowing; both silently turn failures into successes",
+        "One layer, one wrap, one log site — context accumulates without duplication",
+        "Cheat sheet: `errors.New` | `fmt.Errorf(%w)` | `errors.Is` | `errors.As` | `errors.Unwrap` | `errors.Join` | `panic` | `recover` | `defer`",
+        "Version notes: `%w`/`Is`/`As`/`Unwrap` landed in Go 1.13; multi-`%w`, `errors.Join`, and `context.Cause` in Go 1.20"
+      ]
+    }
+  ]
+}

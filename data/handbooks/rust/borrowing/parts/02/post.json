@@ -1,0 +1,745 @@
+{
+  "brand": "iolar",
+  "template": "sticky-wall",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "RUST BORROWING & LIFETIMES — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Reborrows, Splitting, and Fighting the Checker",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Closures Capture Too"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Capture mode is inferred from the body; `move` forces ownership.",
+            "A `FnMut` closure holds its `&mut` capture for its whole life.",
+            "Two closures capturing the same variable mutably is E0499.",
+            "Scope them apart, or pass the state in as an argument."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Escape Ladder",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "restructure",
+              "return owned",
+              "use indices",
+              "`Rc`/`RefCell`",
+              "`unsafe`"
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Self-Referential Structs",
+          "items": [
+            "A struct holding a reference into itself is rejected outright.",
+            "Fixes: store indices, `Rc`, an arena, or `Pin` plus unsafe.",
+            "No annotation makes it typecheck — the shape is the problem."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Cloning Is Allowed",
+          "text": "Cloning to satisfy the checker is legitimate for small values and cold paths. Measure before contorting a whole design around one borrow."
+        },
+        {
+          "type": "heading",
+          "text": "Moving The Check To Runtime",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Interior mutability = mutating through a `&T`.",
+            "The aliasing rule still holds — enforced at runtime instead.",
+            "`UnsafeCell<T>` is the only legal primitive for it.",
+            "Every other cell type is built on top of `UnsafeCell`."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "`UnsafeCell<T>`",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2"
+              ],
+              [
+                "c0_0",
+                "c0_1"
+              ],
+              [
+                "c1_0",
+                "c1_1"
+              ],
+              [
+                "c2_0",
+                "c2_1",
+                "c2_2"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "`UnsafeCell<T>`",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "single thread"
+              },
+              "b1": {
+                "text": "shared owners"
+              },
+              "b2": {
+                "text": "threads"
+              },
+              "c0_0": {
+                "text": "`Cell`"
+              },
+              "c0_1": {
+                "text": "`RefCell`"
+              },
+              "c1_0": {
+                "text": "`Rc`"
+              },
+              "c1_1": {
+                "text": "`Weak`"
+              },
+              "c2_0": {
+                "text": "`Mutex`"
+              },
+              "c2_1": {
+                "text": "`RwLock`"
+              },
+              "c2_2": {
+                "text": "`OnceLock`"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b0",
+                "to": "c0_1"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_1"
+              },
+              {
+                "from": "b2",
+                "to": "c2_2"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Interior Mutability: &T That Mutates",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Cell And RefCell",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Cell<T>`: get/set whole values, hands out no references.",
+            "`Cell` is zero overhead but single-thread only.",
+            "`RefCell<T>`: `borrow()` gives `Ref<T>`, `borrow_mut()` gives `RefMut<T>`.",
+            "A runtime counter tracks who is currently borrowing."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "rust",
+          "lines": [
+            "let c = RefCell::new(vec![1]);",
+            "c.borrow_mut().push(2);          // ok, guard drops",
+            "let _a = c.borrow();",
+            "// c.borrow_mut();  // panic: already borrowed"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "A Panic Instead Of An Error",
+          "text": "`RefCell` turns a compile error into a crash: \"already borrowed: BorrowMutError\". Use `try_borrow` / `try_borrow_mut` when you want a `Result` rather than a panic."
+        },
+        {
+          "type": "heading",
+          "text": "Sharing The Ownership"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Rc<T>`: single-threaded shared ownership by reference count.",
+            "`Rc<RefCell<T>>` is the canonical shared-mutable-graph pattern.",
+            "`Arc<T>`: atomic refcount, safe to send across threads.",
+            "`Arc<Mutex<T>>` or `Arc<RwLock<T>>` for cross-thread mutation."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Rule enforced",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`&mut`",
+              "compile time",
+              "free"
+            ],
+            [
+              "`Cell`",
+              "no refs handed out",
+              "~free"
+            ],
+            [
+              "`RefCell`",
+              "1 writer or N readers",
+              "counter check"
+            ],
+            [
+              "`Mutex`",
+              "1 accessor at a time",
+              "atomic + park"
+            ],
+            [
+              "`RwLock`",
+              "N readers or 1 writer",
+              "atomic + park"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Leaks, Cows And Once Cells"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Rc` cycles leak: the count never reaches zero.",
+            "Break a cycle with `Weak<T>` plus `upgrade()`.",
+            "`Cow<'a,T>` borrows until a mutation is actually needed.",
+            "`Cow::Borrowed` becomes `Cow::Owned` only on first write."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "rust",
+          "lines": [
+            "static CFG: OnceLock<String> = OnceLock::new();",
+            "CFG.get_or_init(|| load());  // write-once behind &self",
+            "// LazyLock for the same thing with no explicit call"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "When To Reach For It",
+          "items": [
+            "Only when the ownership graph is genuinely not a tree.",
+            "A `RefCell` panic is the aliasing bug the compiler would have caught.",
+            "Treat that panic as a design smell, not as the fix."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Every Error Has Three Lines",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Line where the borrow starts.",
+            "Line of the conflicting action.",
+            "Line of the borrow's later use.",
+            "Kill the third and it very often compiles."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Common Borrow Errors: Read and Fix",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "borrow starts",
+              "conflict here",
+              "later use",
+              "delete use",
+              "compiles"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Move And Assign Errors"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Means",
+            "Way out"
+          ],
+          "rows": [
+            [
+              "E0382",
+              "used after move",
+              "borrow or `clone()`"
+            ],
+            [
+              "E0505",
+              "moved while borrowed",
+              "end the borrow first"
+            ],
+            [
+              "E0507",
+              "move out of borrow",
+              "`mem::take()`, `Option::take()`"
+            ],
+            [
+              "E0506",
+              "assign while borrowed",
+              "assignment kills a live ref"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Aliasing Errors",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Means",
+            "Way out"
+          ],
+          "rows": [
+            [
+              "E0499",
+              "two `&mut` at once",
+              "sequence or `split_at_mut`"
+            ],
+            [
+              "E0502",
+              "`&mut` while `&` live",
+              "shorten the shared borrow"
+            ],
+            [
+              "E0596",
+              "binding not `mut`",
+              "add `mut` / `&mut self`"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Lifetime Errors",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Means",
+            "Way out"
+          ],
+          "rows": [
+            [
+              "E0597",
+              "does not live long enough",
+              "hoist the declaration"
+            ],
+            [
+              "E0515",
+              "return ref to local",
+              "return owned, or take a buffer"
+            ],
+            [
+              "E0716",
+              "temporary dropped",
+              "bind it with `let` first"
+            ],
+            [
+              "E0106",
+              "missing lifetime specifier",
+              "add `<'a>` or return owned"
+            ],
+            [
+              "E0521",
+              "borrowed data escapes",
+              "`move` closure or `'static`"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Classic Traps"
+        },
+        {
+          "type": "code",
+          "lang": "rust",
+          "lines": [
+            "v.push(v.len());          // ok: two-phase borrow",
+            "map.insert(k, map[&k2]);  // E0502: no two-phase here",
+            "let x = map[&k2]; map.insert(k, x);  // fix"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "E0502 In One Sentence",
+          "text": "Copy the small read value out of the collection before the mutation, and the shared borrow is dead by the time the `&mut` starts."
+        },
+        {
+          "type": "qa",
+          "q": "Which fix do you try first?",
+          "a_bullets": [
+            "Shorten the borrow — move or delete the later use.",
+            "Split the data — disjoint fields or `split_at_mut`.",
+            "Copy the small value out of the borrow.",
+            "Restructure the ownership; clone only as the last step."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Name The Broken Rule",
+          "items": [
+            "Either a referent died before its reference, or",
+            "an exclusive borrow overlapped another borrow.",
+            "Every one of these codes is one of those two."
+          ],
+          "ink": "accent"
+        },
+        {
+          "type": "heading",
+          "text": "The Whole Sheet",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Form",
+            "Powers",
+            "How many"
+          ],
+          "rows": [
+            [
+              "`T`",
+              "own, mutate, drop",
+              "one owner"
+            ],
+            [
+              "`&T`",
+              "read",
+              "many at once"
+            ],
+            [
+              "`&mut T`",
+              "read and write",
+              "exactly one"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Trade-offs, Comparisons, and Cheat-Sheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Choosing A Signature",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Take `&str` over `&String`, `&[T]` over `&Vec<T>`.",
+            "Take `T` only when you must store or consume it.",
+            "Return owned `String`/`Vec` at a public API boundary.",
+            "Return `&str`/`&[T]` for a cheap zero-copy view."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "what does the callee need?",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2",
+                "b3"
+              ],
+              [
+                "c0_0"
+              ],
+              [
+                "c1_0"
+              ],
+              [
+                "c2_0"
+              ],
+              [
+                "c3_0",
+                "c3_1"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "what does the callee need?",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "keep the data"
+              },
+              "b1": {
+                "text": "only read"
+              },
+              "b2": {
+                "text": "modify in place"
+              },
+              "b3": {
+                "text": "many owners"
+              },
+              "c0_0": {
+                "text": "own `T`"
+              },
+              "c1_0": {
+                "text": "`&T`"
+              },
+              "c2_0": {
+                "text": "`&mut T`"
+              },
+              "c3_0": {
+                "text": "`Rc` / `Arc`"
+              },
+              "c3_1": {
+                "text": "+ `RefCell` / `Mutex`"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "n0",
+                "to": "b3"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              },
+              {
+                "from": "b3",
+                "to": "c3_0"
+              },
+              {
+                "from": "b3",
+                "to": "c3_1"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "What Each Choice Costs"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choice",
+            "Runtime price"
+          ],
+          "rows": [
+            [
+              "borrow",
+              "0 bytes, 0 cycles"
+            ],
+            [
+              "clone",
+              "allocation + copy"
+            ],
+            [
+              "`Rc`",
+              "8-byte header, plain inc/dec"
+            ],
+            [
+              "`Arc`",
+              "atomic inc/dec"
+            ],
+            [
+              "`Mutex`",
+              "atomic, park on contention"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Against The Neighbours"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "C++ and raw pointers",
+                "lines": [
+                  "`const T&` / `T&` lookalikes",
+                  "No enforced aliasing",
+                  "Dangling is on you",
+                  "`unsafe`: same machine code"
+                ]
+              },
+              {
+                "title": "GC languages",
+                "lines": [
+                  "Safety bought at runtime",
+                  "Tracing pauses, no proof",
+                  "Rust: checks at compile time",
+                  "Cost: learning + false rejects"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "The Optimizer Bonus",
+          "text": "An exclusive `&mut` lets LLVM assume `noalias` — an optimization C compilers cannot make unless you hand-write `restrict`."
+        },
+        {
+          "type": "heading",
+          "text": "Where It Genuinely Hurts",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Doubly-linked lists, graphs and observers are not reference trees.",
+            "They do not typecheck without indices, `Rc` or `unsafe`.",
+            "Aliasing violations via raw pointers are UB even inside `unsafe`.",
+            "Validate those with `cargo +nightly miri test`."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Anti-Patterns To Drop",
+          "items": [
+            "Cloning reflexively before reading the error.",
+            "`Rc<RefCell<_>>` on every field of every struct.",
+            "Adding lifetimes until the message disappears.",
+            "Sprinkling `'static` bounds to silence E0521."
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Model To Keep",
+          "text": "A borrow is a promise about a region of code, and the checker's only job is verifying that promise. Read the error's three locations, name which of the two rules broke, then walk the ladder: shorten, split, copy, restructure, clone."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of RUST BORROWING & LIFETIMES. The borrow checker is not fighting you — it is asking one question you have not answered: which region of code must this reference stay valid for? 10 pages of dense field notes: shared vs mutable borrows, NLL and two-phase borrows, lifetime elision in three rules, reborrows and splitting, interior mutability costs, and every borrow error code with the fix that actually works. Save it for the next time rustc prints three line numbers at you.",
+    "hashtags": [
+      "#rustlang",
+      "#rust",
+      "#borrowchecker",
+      "#lifetimes",
+      "#systemsprogramming",
+      "#memorysafety",
+      "#learnrust",
+      "#programming",
+      "#codenotes",
+      "#softwareengineering",
+      "#devnotes",
+      "#100daysofcode"
+    ]
+  }
+}

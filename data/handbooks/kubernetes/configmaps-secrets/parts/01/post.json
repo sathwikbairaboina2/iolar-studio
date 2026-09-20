@@ -1,0 +1,1255 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KUBERNETES CONFIG HANDBOOK",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Config Outside the Image",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Twelve-Factor Split",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Config varies by deploy environment; code does not",
+            "Bake code into the image, inject config at runtime",
+            "Anti-pattern: rebuild the image to change a DB URL",
+            "That couples release cadence to config cadence"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Objects, One Shape",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ConfigMap: API object, non-confidential key/value data",
+            "Secret: same shape, sensitive data, extra handling",
+            "Both namespaced — never referenced cross-namespace",
+            "Both live in etcd, served by the API server"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Pods never read them from node disk directly. The kubelet pulls from the API server and projects the result."
+        },
+        {
+          "type": "heading",
+          "text": "Consumption Modes",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "1. Container environment variables",
+            "2. Files inside a volume",
+            "3. Command/args via $(VAR) substitution",
+            "4. Kubelet-read fields, e.g. imagePullSecrets"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fields And Limits",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Holds"
+          ],
+          "rows": [
+            [
+              "data (cm)",
+              "UTF-8 strings"
+            ],
+            [
+              "binaryData",
+              "base64 bytes"
+            ],
+            [
+              "data (secret)",
+              "always base64"
+            ],
+            [
+              "stringData",
+              "write-only, encoded for you"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "1 MiB Hard Cap",
+          "items": [
+            "Per ConfigMap and per Secret",
+            "etcd holds objects fully in memory",
+            "API server caches them too",
+            "binaryData: certs, tarballs, .p12"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Key Naming Rule",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "# keys must match [-._a-zA-Z0-9]+",
+            "LOG_LEVEL  nginx.conf  tls-ca.pem  # ok",
+            "..         ..hidden              # rejected"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Blobs, Then Behaviour",
+          "text": "ConfigMap and Secret are typed key/value blobs. Every interesting behaviour comes from HOW a Pod consumes them."
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "    secretKeyRef:          # same shape",
+            "      {name: db, key: password}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "annotations:",
+            "  checksum/config: {{ include (print",
+            "    $.Template.BasePath \"/cm.yaml\")",
+            "    . | sha256sum }}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Minimal Manifest",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "apiVersion: v1",
+            "kind: ConfigMap",
+            "metadata: {name: app}",
+            "data:",
+            "  LOG_LEVEL: \"debug\"   # property-like key"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Config Outside the Image (cont.)",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Second shape: file-like keys, nginx.conf: | block",
+            "Volume mounts turn each key into a filename",
+            "app.properties becomes a file app.properties"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl create configmap app \\",
+            "  --from-literal=LOG_LEVEL=debug \\",
+            "  --from-literal=PORT=8080"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "From Files And Dirs",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "--from-file=./nginx.conf   # key=nginx.conf",
+            "--from-file=conf=./nginx.conf  # renamed",
+            "--from-file=./configdir/   # one key per file",
+            "--from-env-file=app.env    # KEY=value lines"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Directory slurp skips subdirs, ignores hidden files",
+            "--from-env-file is the only per-line key form",
+            "Every other --from-file makes one file blob"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "YAML Typing Trap",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "data:",
+            "  DEBUG: true      # !!bool -> apply fails",
+            "  DEBUG: \"true\"    # string -> ok",
+            "  PORT:  \"8080\"    # quote 8080, 3.10, no"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "paragraph",
+          "text": "ConfigMap data values must be strings. Unquoted true, no, 8080, 3.10 get typed by YAML and the apply is rejected."
+        },
+        {
+          "type": "heading",
+          "text": "Generate, Never Hand-Write",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl create cm x --from-file=y \\",
+            "  --dry-run=client -o yaml > cm.yaml"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Kustomize configMapGenerator appends a content hash",
+            "Name becomes app-7d9f2k4b8c, references rewritten",
+            "Cleanest rollout mechanism there is",
+            "No schema, no validation: a typo'd key is accepted",
+            "It only fails at Pod start or app parse time"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Secret Types",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "type",
+            "Required keys",
+            "Read by"
+          ],
+          "rows": [
+            [
+              "Opaque",
+              "any",
+              "your app"
+            ],
+            [
+              "kubernetes.io/tls",
+              "tls.crt, tls.key",
+              "Ingress, cert-manager"
+            ],
+            [
+              "dockerconfigjson",
+              ".dockerconfigjson",
+              "kubelet only"
+            ],
+            [
+              "basic-auth",
+              "username, password",
+              "your app"
+            ],
+            [
+              "ssh-auth",
+              "ssh-privatekey",
+              "git-sync, CI"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Building ConfigMaps & Secrets",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Also service-account-token, and bootstrap.kubernetes.io/token",
+            "Bootstrap tokens serve kubeadm node join, not app config",
+            "Typed Secrets are validated at admission",
+            "tls Secret without tls.key is rejected — free validation"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "stringData Write Path",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "stringData:",
+            "  password: hunter2  # encoded into data",
+            "# same key in both? stringData wins"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Creating Without Leaking",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# leaks into shell history:",
+            "kubectl create secret generic db \\",
+            "  --from-literal=password=hunter2",
+            "# prefer:  --from-file=password=./pw.txt"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Since 1.24 a ServiceAccount auto-creates no token Secret",
+            "Pods get projected, short-lived, audience-bound tokens",
+            "Read path: -o jsonpath='{.data.password}' | base64 -d",
+            "Anyone with get secret RBAC runs that same command"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Encoding, Defined",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Binary-to-text mapping: 3 bytes become 4 ASCII chars",
+            "Lets arbitrary bytes survive JSON/YAML transport",
+            "No key, no secret, no protection",
+            "JSON has no binary type — a DER cert or keytab needs it"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "echo aHVudGVyMg== | base64 -d",
+            "# hunter2   -- no credential required"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Two Consequences",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A Secret manifest in git is a plaintext credential in git",
+            "By default Secrets sit unencrypted in etcd",
+            "Anyone with etcd disk or a backup reads every Secret"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Real Protection Layers",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Layer",
+            "Mechanism"
+          ],
+          "rows": [
+            [
+              "At rest",
+              "EncryptionConfiguration"
+            ],
+            [
+              "RBAC",
+              "get/list/watch = read"
+            ],
+            [
+              "External",
+              "ESO, Vault, CSI driver"
+            ],
+            [
+              "Git",
+              "SOPS, Sealed Secrets"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "resources:",
+            "- resources: [secrets]",
+            "  providers:",
+            "  - kms: {name: v2, ...}  # or aescbc"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Base64 Is Not Encryption",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "KMS v2 is the production choice: envelope encryption",
+            "DEK cached in the API server, KEK in cloud KMS/HSM",
+            "Supports key rotation without a full rewrite"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# after enabling or rotating encryption:",
+            "kubectl get secrets -A -o json \\",
+            "  | kubectl replace -f -   # rewrite all"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "list on a namespace leaks every Secret inside it",
+            "Plain base64 in a repo is a finding in every audit"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Thin Delta",
+          "text": "Versus ConfigMaps: tmpfs backing, omitted from kubectl describe, separately encryptable. That is the whole difference."
+        },
+        {
+          "type": "heading",
+          "text": "Single Key Refs",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "env:",
+            "- name: LOG_LEVEL",
+            "  valueFrom:",
+            "    configMapKeyRef:",
+            "      {name: app, key: LOG_LEVEL}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Bulk Import",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "envFrom:",
+            "- configMapRef: {name: app}",
+            "- secretRef:    {name: db}",
+            "- configMapRef: {name: ovr}",
+            "  prefix: APP_    # renames every key"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every key becomes an env var of the same name",
+            "prefix avoids collisions between two sources",
+            "Invalid env names like nginx.conf are silently skipped",
+            "You get an event, not an error"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Precedence, optional",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Rule",
+            "Winner"
+          ],
+          "rows": [
+            [
+              "env vs envFrom",
+              "explicit env"
+            ],
+            [
+              "two envFrom",
+              "later source"
+            ],
+            [
+              "optional: true",
+              "Pod still starts"
+            ],
+            [
+              "default",
+              "optional: false"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Missing required ref: Pod sits in CreateContainerConfigError",
+            "Read kubectl describe pod — container logs do not exist yet"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "$(VAR) Expansion",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "args: [\"--log=$(LOG_LEVEL)\"]",
+            "# works in command, args, later env values",
+            "# literal dollar: $$(NOT_EXPANDED)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Frozen At Start",
+          "text": "Env vars resolve once, at container start. Editing the ConfigMap never changes a running container's environment. Ever."
+        }
+      ]
+    },
+    {
+      "page_title": "Injecting as Env Vars",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Env leaks into kubectl describe pod and crash dumps",
+            "Visible in /proc/<pid>/environ and every child process",
+            "Many APM and error-reporting agents ship it upstream",
+            "Rule: env for small, stable, non-sensitive scalars"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Declaring A Volume",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "volumes:",
+            "- {name: cfg, configMap: {name: app}}",
+            "volumeMounts:",
+            "- {name: cfg, mountPath: /etc/app}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each key becomes a file at mountPath/<key>",
+            "Content is the value — no trailing newline added",
+            "items selects a subset and renames paths",
+            "Keys not listed in items are not projected at all"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Modes And Ownership",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "configMap:",
+            "  name: app",
+            "  defaultMode: 0400",
+            "  items:",
+            "  - {key: nginx.conf, path: conf.d/x.conf}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "defaultMode sets perms volume-wide; per-item mode wins",
+            "Write 0400 with the leading zero — else it is decimal",
+            "fsGroup in the Pod securityContext sets group ownership",
+            "Mode alone never fixes permission-denied for non-root"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "tmpfs, Read-Only",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Secret volumes are tmpfs — bytes never touch node disk",
+            "ConfigMap volumes use the same emptyDir-like path",
+            "Both mounts are read-only for the container",
+            "An app rewriting its own config file in place fails"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Shadowing",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Mounting onto a non-empty dir hides its original contents",
+            "Mount /etc and the image's own files vanish for that container",
+            "Use a dedicated dir plus a symlink, or subPath deliberately"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Worked Example: nginx",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "volumes:",
+            "- name: cfg",
+            "  configMap: {name: nginx-cm}",
+            "volumeMounts:",
+            "- {name: cfg, mountPath: /etc/nginx/conf.d}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Volumes and the Symlink Dance",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Live Updates",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The kubelet refreshes projected files automatically",
+            "kubectl edit configmap reaches running Pods, no restart",
+            "Latency = kubelet sync period (1 min) + cache TTL",
+            "Worst case ~2x sync period — eventual, not instant"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "changeDetectionStrategy",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "Watch",
+              "default, fastest"
+            ],
+            [
+              "TTL",
+              "poll on expiry"
+            ],
+            [
+              "Cache",
+              "coarsest"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Only Live Mode",
+          "text": "Volumes are the only mode that supports live reload. Any config the app should re-read at runtime must be a file."
+        },
+        {
+          "type": "heading",
+          "text": "Atomic Swap",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The kubelet never overwrites files in place",
+            "It writes a whole new version directory, flips a symlink",
+            "Readers never see a half-written file"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "$ ls -la /etc/app",
+            "..2024_01_15_10_30_00.123456/  # real files",
+            "..data -> ..2024_01_15_10_30_00.123456",
+            "app.conf -> ..data/app.conf"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "write new timestamped dir",
+              "create ..data_tmp symlink",
+              "rename() over ..data (atomic)",
+              "delete old dir"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Atomic as a set: never key A new while key B is stale",
+            "Plain ls hides the symlinks — always use ls -la",
+            "inotify on the file path gets no IN_MODIFY: inode changed",
+            "Watch the directory for IN_CREATE / IN_MOVED_TO on ..data"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Reload Works Once",
+          "text": "Naive fsnotify on the file path silently stops reloading after the first update. Classic bug, hours lost."
+        },
+        {
+          "type": "heading",
+          "text": "Held Descriptors",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An app that open()s once at boot holds the old inode",
+            "It keeps reading stale content forever",
+            "Reopen by path on every reload — never cache the fd"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reload Strategies",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Signal-based: nginx -s reload from a sidecar",
+            "In-process inotify, watching the directory",
+            "Plain polling with a stat or content-hash comparison",
+            "Stakater Reloader restarts the Deployment — coarse, foolproof"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "metadata:",
+            "  annotations:",
+            "    configmap.reloader.stakater.com/reload: app"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Volumes and the Symlink Dance (cont.)",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "The .. prefix on those internal names is exactly why ConfigMap keys may not begin with .. — the key would collide with the machinery."
+        },
+        {
+          "type": "heading",
+          "text": "subPath, Defined",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "volumeMounts:",
+            "- name: cfg",
+            "  mountPath: /etc/nginx/nginx.conf",
+            "  subPath: nginx.conf   # one file only"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Mounts a single file without shadowing the directory",
+            "The standard workaround for a populated config dir"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Never Updates",
+          "text": "subPath mounts receive no updates, ever. The kubelet resolves the subPath once at container start and bind-mounts that file."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The bind-mount targets an inode in the current version dir",
+            "When ..data flips, it still points at the old, unlinked inode",
+            "Documented behavior, not a bug"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Incident Symptom",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "kubectl exec shows the old content forever",
+            "A sibling non-subPath mount of the same ConfigMap is fresh",
+            "Two views of one object — deeply confusing at 3 a.m."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Four Fixes",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Fix",
+            "What you do"
+          ],
+          "rows": [
+            [
+              "A",
+              "mount whole volume to /etc/app-config"
+            ],
+            [
+              "B",
+              "initContainer copies/symlinks in"
+            ],
+            [
+              "C",
+              "subPathExpr: $(POD_NAME)"
+            ],
+            [
+              "D",
+              "accept it, force a rollout"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fix B is explicit but breaks live reload",
+            "Fix C still never updates; it avoids hardcoded paths",
+            "Fix D: hash-suffixed names or a pod-template annotation"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Two More subPath Traps",
+          "items": [
+            "Target file missing from the image?",
+            "kubelet creates a DIRECTORY of that name",
+            "App then fails to parse it",
+            "subPath with ../ is rejected: traversal check"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Setting Immutable",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "kind: ConfigMap",
+            "metadata: {name: app-config-7d9f2k4b}",
+            "immutable: true   # stable since 1.21",
+            "data: {LOG_LEVEL: \"debug\"}"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "The subPath Trap",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "data, binaryData, stringData can never change again",
+            "immutable itself cannot be flipped back to false",
+            "Only metadata — labels, annotations — stays mutable",
+            "To change content: delete and recreate, or use a new name"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Benefit One: Safety",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No accidental kubectl edit reconfiguring live Pods",
+            "One typo cannot reach hundreds of containers silently"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Benefit Two: Watches",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The kubelet closes the watch after the first read",
+            "Removes per-Pod watch load from the API server",
+            "5,000-node cluster, one shared ConfigMap = thousands of watches",
+            "This is the real motivation at scale"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Trade-offs And Ops",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pairs naturally with content-hash naming",
+            "You lose live reload — every change is a Pod restart",
+            "Suits config where a rollout is wanted anyway"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl patch cm app \\",
+            "  -p '{\"immutable\":true}'  # irreversible",
+            "# verify first -- no way back"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Garbage collection is on you: hash-named objects pile up",
+            "Prune with a label selector and a retention policy",
+            "Immutable objects still count against 1 MiB and quotas"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Quotas exist: count/configmaps, count/secrets",
+            "Past 1 MiB: 'Request entity too large' from the API server",
+            "One Secret per credential keeps blast radius small"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "The subPath Trap (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Env vs Volume",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "env",
+            "volume"
+          ],
+          "rows": [
+            [
+              "Live update",
+              "never",
+              "~1-2 sync periods"
+            ],
+            [
+              "subPath",
+              "n/a",
+              "never"
+            ],
+            [
+              "App code",
+              "os.Getenv",
+              "read + watch file"
+            ],
+            [
+              "Exposure",
+              "/proc, dumps",
+              "file, settable mode"
+            ],
+            [
+              "Data shape",
+              "flat strings",
+              "JSON/YAML/PEM/binary"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "env size: bounded by ARG_MAX, ~2 MB total env block",
+            "Plus the 1 MiB object limit on top",
+            "volume: 1 MiB object limit, zero ARG_MAX pressure"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Failure And Fit",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "env",
+            "volume"
+          ],
+          "rows": [
+            [
+              "Missing object",
+              "CreateContainerConfigError",
+              "same"
+            ],
+            [
+              "Missing key",
+              "skipped/optional",
+              "blocks if in items"
+            ],
+            [
+              "Legacy fit",
+              "twelve-factor apps",
+              "nginx, postgres, java"
+            ],
+            [
+              "Ordering",
+              "env beats envFrom",
+              "items replaces set"
+            ],
+            [
+              "Rotation",
+              "roll the Deployment",
+              "reload, else roll"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Secrets: volume mount, mode 0400, tmpfs",
+            "Feature flags and scalars: env",
+            "Anything an operator tweaks at 3 a.m.: volume",
+            "Hybrid is normal — envFrom a cm, mount a Secret, same container"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Three Strategies",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "1. Mutate in place, rely on volume reload",
+            "2. New hash-named object plus a rollout",
+            "3. External secret manager with its own refresh loop"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "In-Place Reload",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "kubectl apply the new ConfigMap; mounted files update",
+            "App reloads via inotify or SIGHUP",
+            "No rollout, no downtime — but requires app support"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Hash-Named Rollout",
+          "ink": "blue"
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Rotation Without Downtime",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "configMapGenerator:",
+            "- name: app",
+            "  files: [nginx.conf]",
+            "# emits app-<hash>, rewrites all refs"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "paragraph",
+          "text": "Why the annotation exists: editing a ConfigMap does not change the Deployment spec, so the controller sees nothing to roll."
+        },
+        {
+          "type": "heading",
+          "text": "External Managers",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ESO syncs Vault/AWS into a Secret on a refreshInterval",
+            "Secrets Store CSI mounts direct: enableSecretRotation",
+            "CSI keeps secrets out of etcd entirely",
+            "ESO lands in etcd — works with every existing consumer"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rotate With Overlap",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Provision the new credential before touching config",
+            "Deploy config that accepts both old and new, then drain",
+            "Revoke old only after every Pod picked up the new one",
+            "Check rollout status, not the ConfigMap version"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Certs And Audit",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "cert-manager renews the TLS Secret in place",
+            "Ingress controllers watch it and reload themselves",
+            "Apps mounting the cert need their own reload path",
+            "Audit with rollout history, resourceVersion, managedFields"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Debug step",
+            "Command"
+          ],
+          "rows": [
+            [
+              "1. Events",
+              "describe pod"
+            ],
+            [
+              "2. Content",
+              "get cm -o yaml"
+            ],
+            [
+              "3. Layout",
+              "exec ls -la mount"
+            ],
+            [
+              "4. File",
+              "exec cat file"
+            ],
+            [
+              "5. Env state",
+              "exec env"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Three Rules That Hold",
+          "text": "Env vars freeze at container start. Volume mounts update live via the ..data symlink flip. subPath mounts never update. Memorize these three."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "You edited the ConfigMap, the Pod still serves the old value, and two hours vanish. Here is why: env vars freeze at container start, volume mounts update live through an atomic ..data symlink flip, and subPath mounts never update at all. 10 pages of dense notes on ConfigMaps and Secrets — base64 vs real encryption, immutability, rotation with overlap, projected volumes, and the debug order that finds it in 60 seconds.",
+    "hashtags": [
+      "#kubernetes",
+      "#k8s",
+      "#devops",
+      "#platformengineering",
+      "#cloudnative",
+      "#sre",
+      "#configmap",
+      "#kubernetessecrets",
+      "#containers",
+      "#infrastructureascode",
+      "#backend",
+      "#studynotes"
+    ]
+  }
+}

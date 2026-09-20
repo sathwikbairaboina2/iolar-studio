@@ -1,0 +1,259 @@
+{
+  "title": "TCP: The Field Handbook — Handshake, Sequence Numbers, Congestion Control, TIME_WAIT & Keepalive",
+  "summary": "A dense, end-to-end study guide to how TCP actually works on the wire: connection setup and teardown, sequence/ack arithmetic, retransmission and windowing, the congestion control family from Reno to BBR, and the operational realities of TIME_WAIT and keepalive. Covers mechanics, tuning knobs, trade-offs, and the mistakes engineers make in production.",
+  "chapters": [
+    {
+      "title": "What TCP Is and Why It Exists",
+      "points": [
+        "Definition: TCP is a connection-oriented, reliable, ordered, byte-stream transport protocol over the unreliable, best-effort IP datagram service (RFC 793, updated by RFC 9293).",
+        "IP gives you: possible loss, duplication, reordering, corruption, and variable delay. TCP's job is to hide all five from the application.",
+        "'Byte stream' means TCP has no message boundaries: two write() calls of 100 bytes may arrive as one read() of 200, or four reads of 50. Applications must frame their own messages (length prefix or delimiter).",
+        "Connection identity is the 4-tuple: (source IP, source port, destination IP, destination port). Two connections may share three of four fields but never all four.",
+        "TCP provides five services: connection setup/teardown, reliable delivery (ACK + retransmit), in-order delivery (reassembly by sequence number), flow control (protect the receiver), congestion control (protect the network).",
+        "Flow control vs congestion control: flow control stops a fast sender from overrunning a slow receiver's buffer; congestion control stops senders from overrunning routers in the middle. Different problems, different windows.",
+        "Effective send window = min(receiver advertised window rwnd, sender congestion window cwnd). Whichever is smaller is your bottleneck.",
+        "TCP is full-duplex: each direction has its own independent sequence number space, window, and close.",
+        "Where TCP sits: application → TCP (ports, reliability) → IP (addressing, routing) → link (MAC, framing). Layer 4 of the OSI model.",
+        "Cost of the guarantees: head-of-line blocking, connection setup latency (1 RTT), and per-connection kernel state — the exact reasons QUIC and UDP-based protocols exist."
+      ]
+    },
+    {
+      "title": "The TCP Segment Header, Field by Field",
+      "points": [
+        "Header is 20 bytes minimum, up to 60 bytes with options; the Data Offset field counts header length in 32-bit words (5 = 20 bytes, 15 = 60 bytes max).",
+        "Source Port and Destination Port: 16 bits each, so 65535 max ports; ports 0-1023 are well-known/privileged.",
+        "Sequence Number (32 bits): byte offset of the first data byte in this segment within the stream.",
+        "Acknowledgment Number (32 bits): the next byte the sender of this segment expects to receive — cumulative, and valid only when the ACK flag is set.",
+        "Flags: SYN (synchronize sequence numbers), ACK (ack field valid), FIN (no more data from sender), RST (abort connection), PSH (deliver to app now, don't buffer), URG (urgent pointer valid — effectively deprecated), plus ECE/CWR for ECN and NS.",
+        "Window (16 bits): receiver's free buffer space in bytes — caps at 65535 without the Window Scale option.",
+        "Checksum (16 bits): covers header, payload, and a pseudo-header of source IP, destination IP, protocol, and length — this is how TCP detects IP-level address corruption.",
+        "Urgent Pointer: offset to urgent data; ambiguous across implementations (BSD vs RFC interpretation), avoid it.",
+        "Key options carried in SYN: MSS (Maximum Segment Size), Window Scale (shift count 0-14), SACK-Permitted, Timestamps (TSval/TSecr), and NOP/EOL for padding to 4-byte alignment.",
+        "Options negotiated in the SYN/SYN-ACK apply for the connection's lifetime — if a middlebox strips Window Scale from the SYN, you are stuck at a 64 KB window forever.",
+        "MSS is the payload size, not the packet size: typical Ethernet MSS = 1500 MTU − 20 IP − 20 TCP = 1460 bytes.",
+        "Example wire read: `Flags [S], seq 1234567, win 64240, options [mss 1460,sackOK,TS val 99 ecr 0,nop,wscale 7]` — a SYN offering SACK, timestamps, and a 128× window scale."
+      ]
+    },
+    {
+      "title": "The Three-Way Handshake",
+      "points": [
+        "Step 1 — SYN: client sends SYN with its Initial Sequence Number (ISN_c), plus its options (MSS, wscale, SACK-permitted, timestamps).",
+        "Step 2 — SYN-ACK: server replies with SYN carrying ISN_s and ACK = ISN_c + 1, plus its own options.",
+        "Step 3 — ACK: client sends ACK = ISN_s + 1. Connection is ESTABLISHED on the client after step 2's arrival, on the server after step 3's arrival.",
+        "SYN and FIN each consume one sequence number even though they carry no data — this is why the ack is ISN+1.",
+        "Why three ways and not two: both sides must synchronize sequence numbers and confirm the other's ISN was received; a two-way handshake cannot protect against a delayed duplicate SYN from an old connection.",
+        "Cost: one full RTT before the first byte of application data. With TLS 1.3 add 1 more RTT; TLS 1.2 adds 2.",
+        "ISN is randomized (RFC 6528: hash of the 4-tuple plus a secret, plus a clock) to defend against off-path sequence-number-guessing and blind injection attacks. Predictable ISNs were the classic Mitnick-era vulnerability.",
+        "State machine path: client CLOSED → SYN_SENT → ESTABLISHED. Server CLOSED → LISTEN → SYN_RECEIVED → ESTABLISHED.",
+        "Two queues on the server: the SYN queue (half-open, SYN_RECV state, sized by `tcp_max_syn_backlog`) and the accept queue (fully established, waiting on accept(), sized by min(backlog arg, `somaxconn`)).",
+        "SYN flood attack: attacker sends SYNs with spoofed sources and never completes step 3, exhausting the SYN queue. Defense is SYN cookies (`tcp_syncookies=1`) — the server encodes state into ISN_s and keeps no queue entry until the final ACK returns.",
+        "SYN cookies cost: options that don't fit in the cookie encoding may be lost, so use them as an overload valve, not a steady state.",
+        "TCP Fast Open (TFO, RFC 7413) sends data in the SYN using a server-issued cookie, saving 1 RTT on repeat connections — but middlebox breakage and replay concerns limit deployment.",
+        "Simultaneous open: both sides send SYN at once, both transition SYN_SENT → SYN_RECEIVED → ESTABLISHED. Legal, rare, no ambiguity because both sides ack the other's SYN.",
+        "Failure modes: no listener → RST (fast 'Connection refused'); packet dropped by firewall → SYN retries with exponential backoff (1s, 2s, 4s… roughly 130s total on Linux with `tcp_syn_retries=6`) then ETIMEDOUT."
+      ]
+    },
+    {
+      "title": "Sequence Numbers and Acknowledgments",
+      "points": [
+        "Sequence numbers count bytes, not packets. A segment with seq=1000 carrying 500 bytes covers bytes 1000-1499; the next segment starts at 1500.",
+        "ACK number is cumulative and means 'I have everything below this byte' — an ACK of 1500 acknowledges all bytes up to 1499, regardless of how many segments carried them.",
+        "The 32-bit sequence space wraps at ~4.29 GB. On a 10 Gbps link that wraps in ~3.4 seconds, which is why Timestamps + PAWS (Protection Against Wrapped Sequences, RFC 7323) is mandatory at high speed.",
+        "All sequence comparisons use modulo-2^32 arithmetic: 'A is before B' means (int32)(A − B) < 0, never a plain `<`.",
+        "Tools show relative sequence numbers by default (starting at 1) — Wireshark's `tcp.options.timestamp` and 'Relative sequence numbers' setting hide the raw ISN.",
+        "Duplicate ACKs: when a receiver gets an out-of-order segment, it immediately re-sends the same cumulative ACK. Three dupACKs are the loss signal for fast retransmit.",
+        "Delayed ACK: the receiver waits up to 500 ms (Linux typically ~40 ms) hoping to piggyback the ACK on outgoing data or to ack two full segments at once (RFC 1122 requires an ACK at least every 2nd segment).",
+        "SACK (Selective Acknowledgment, RFC 2018): option carries up to 3-4 blocks of received-but-noncontiguous ranges, so the sender retransmits only the true holes instead of everything after the first gap.",
+        "D-SACK (RFC 2883) reports a duplicate received segment, letting the sender learn it retransmitted unnecessarily and undo its congestion reduction.",
+        "Retransmission ambiguity (Karn's algorithm): you cannot tell if an ACK for a retransmitted segment answers the original or the retransmission, so RTT samples from retransmitted segments are discarded — unless Timestamps are on, which resolves it exactly.",
+        "Worked example — a lost middle segment: sender transmits seq 1000, 2000, 3000, 4000 (1000 bytes each); 2000 is lost. Receiver acks 2000, then 2000, then 2000, then 2000 (with SACK blocks 3000-5000). Sender sees 3 dupACKs, retransmits only 2000; the next ACK jumps straight to 5000.",
+        "RST vs FIN in the sequence space: FIN is an orderly close consuming one sequence number; RST is an abort that carries no reliable delivery guarantee and discards buffered data."
+      ]
+    },
+    {
+      "title": "Retransmission, RTO, and Loss Recovery",
+      "points": [
+        "Two ways to detect loss: timer expiry (RTO — slow, conservative) and duplicate ACKs / SACK (fast retransmit — fast, keeps the pipe moving).",
+        "RTT estimation (RFC 6298): SRTT = (1−α)·SRTT + α·RTT_sample with α=1/8; RTTVAR = (1−β)·RTTVAR + β·|SRTT − sample| with β=1/4; RTO = SRTT + max(G, 4·RTTVAR).",
+        "RTO floor and initial value: RFC says initial RTO = 1 s and minimum 1 s; Linux uses a 200 ms minimum (TCP_RTO_MIN) and a 120 s maximum.",
+        "Exponential backoff: every consecutive RTO doubles the timer (Karn's algorithm second half). Repeated timeouts are catastrophic for latency — a single 200 ms RTO becomes 400, 800, 1600 ms.",
+        "Fast retransmit (RFC 5681): on the 3rd duplicate ACK, retransmit the missing segment immediately without waiting for the RTO.",
+        "Fast recovery: after fast retransmit, halve cwnd rather than collapsing to 1 MSS, and inflate the window by 1 MSS per additional dupACK to keep transmitting while the hole is filled.",
+        "SACK-based recovery / RACK-TLP (RFC 8985) is the modern default in Linux: time-based loss detection using per-segment transmit times instead of dupACK counting, plus Tail Loss Probe to recover lost tail segments without a full RTO.",
+        "Tail loss is the pathological case: if the last segments of a response are lost there are no subsequent segments to trigger dupACKs, so recovery falls back to RTO — TLP exists specifically for this.",
+        "Spurious retransmissions: reordering in the network can trigger fast retransmit when nothing was lost; D-SACK plus F-RTO detect this and undo the cwnd reduction.",
+        "Retransmission is per-segment, not per-byte-range-optimal: without SACK, a single loss forces go-back-N-like behavior, retransmitting everything after the hole.",
+        "Head-of-line blocking: the receiver holds out-of-order data in its buffer but cannot deliver it to the application until the gap is filled — one lost packet stalls the whole stream, including unrelated multiplexed HTTP/2 streams.",
+        "Diagnose in the field with `ss -ti` (shows retrans, rto, rtt, cwnd) and `nstat -az | grep -i retrans` or `netstat -s | grep -i retrans`."
+      ]
+    },
+    {
+      "title": "Flow Control: The Sliding Window",
+      "points": [
+        "Purpose: the receiver advertises how much free buffer it has (rwnd) so the sender never overruns it. This is about the endpoint, not the network.",
+        "The sliding window has four regions: bytes sent and acked, bytes sent but unacked (in flight), bytes that may be sent now (usable window), bytes not yet sendable.",
+        "Usable window = rwnd − (bytes sent but not yet acked). When it hits zero the sender must stop.",
+        "Window Scale option (RFC 7323) multiplies the advertised window by 2^shift (shift 0-14, max window ~1 GB). Negotiated only in the SYN — both sides must offer it or it is off.",
+        "Bandwidth-delay product (BDP) = bandwidth × RTT. To saturate a 1 Gbps link at 100 ms RTT you need ~12.5 MB in flight — far past the unscaled 64 KB ceiling.",
+        "Zero-window: receiver advertises win=0 because its buffer is full (usually a slow or stalled application). Sender freezes and starts sending zero-window probes.",
+        "Zero-window probe (persist timer): sender periodically sends a 1-byte segment to elicit a window update, because a pure window-update ACK is not retransmitted and could be lost — without probes both sides would deadlock forever.",
+        "Silly Window Syndrome: receiver advertises tiny windows as the app reads a few bytes at a time, so the sender ships tiny segments with 40 bytes of header for 1 byte of data. Fixed by Clark's solution (receiver withholds the update until it can offer a full MSS or half the buffer) and by Nagle on the sender.",
+        "Nagle's algorithm: at most one small unacked segment outstanding; buffer small writes until the outstanding ACK arrives or a full MSS accumulates. Disable with `TCP_NODELAY`.",
+        "Nagle + delayed ACK interaction is the classic 40 ms latency bug: sender withholds a small final segment waiting for an ACK, receiver withholds the ACK waiting for data. Request/response protocols must set `TCP_NODELAY`.",
+        "`TCP_CORK` (Linux) is the opposite knob: hold data until a full segment forms or 200 ms passes — useful for header+body sendfile patterns.",
+        "Auto-tuning: modern Linux sizes buffers dynamically between the bounds in `net.ipv4.tcp_rmem` / `tcp_wmem`; setting SO_RCVBUF/SO_SNDBUF manually disables auto-tuning and is usually a downgrade."
+      ]
+    },
+    {
+      "title": "Congestion Control Fundamentals",
+      "points": [
+        "Why it exists: the 1986 NSFNET congestion collapse — throughput dropped ~1000×, from 32 kbps to 40 bps, as retransmissions of already-queued packets fed the fire. Van Jacobson's 1988 algorithms are the fix.",
+        "cwnd is a sender-side state variable with no wire representation — the receiver never sees it. Only rwnd is advertised.",
+        "Actual send limit = min(cwnd, rwnd), measured in bytes in flight (SND.NXT − SND.UNA).",
+        "Slow start: cwnd begins at IW (Initial Window, 10 MSS since RFC 6928; was 1-4) and doubles every RTT — cwnd += 1 MSS per ACK. Exponential growth, badly named.",
+        "ssthresh (slow start threshold) is the boundary: cwnd < ssthresh → slow start (exponential); cwnd ≥ ssthresh → congestion avoidance (linear, cwnd += MSS²/cwnd per ACK ≈ +1 MSS per RTT).",
+        "AIMD — Additive Increase, Multiplicative Decrease: +1 MSS per RTT while healthy, ×0.5 on loss. AIMD provably converges to fairness among flows sharing a bottleneck; AIAD and MIMD do not.",
+        "Loss as congestion signal: classic TCP assumes packet loss means a full router queue. This assumption breaks on wireless links where loss is corruption, causing needless throughput collapse.",
+        "Three reactions to loss, in escalating severity: dupACKs → fast retransmit + fast recovery (cwnd halved); RTO timeout → cwnd back to 1 MSS and re-enter slow start; repeated RTO → exponential backoff.",
+        "The sawtooth: cwnd climbs linearly, halves on loss, climbs again. Average utilization of a single AIMD flow on a full-BDP buffer is roughly 75%.",
+        "Bufferbloat: oversized, unmanaged router buffers mean loss-based TCP fills them entirely before detecting congestion, adding seconds of queuing delay. Mitigations are AQM (CoDel, FQ-CoDel, fq_codel qdisc) and delay-based CC.",
+        "ECN (Explicit Congestion Notification, RFC 3168): routers mark the IP header CE bit instead of dropping; receiver echoes with ECE, sender responds with CWR and reduces cwnd without any loss at all.",
+        "Congestion window validation: an idle connection's cwnd is stale — Linux resets or decays it after an idle period (`tcp_slow_start_after_idle`), which is why the first burst on a reused keep-alive connection can be slow."
+      ]
+    },
+    {
+      "title": "Congestion Control Algorithms Compared",
+      "points": [
+        "Tahoe (1988): slow start, congestion avoidance, fast retransmit. Any loss drops cwnd to 1 MSS. No fast recovery.",
+        "Reno: adds fast recovery — cwnd halves instead of collapsing. Recovers well from a single loss per window, poorly from multiple.",
+        "NewReno (RFC 6582): handles multiple losses in one window using partial ACKs, staying in fast recovery until all holes are filled. The reference baseline.",
+        "CUBIC (RFC 8312, Linux default since 2.6.19): window growth is a cubic function of time since the last congestion event, independent of RTT. Grows aggressively far from the last known ceiling (W_max), cautiously near it. RTT-fair, scales to high BDP.",
+        "BBR (Bottleneck Bandwidth and Round-trip propagation time, Google): models the path instead of reacting to loss — estimates delivery rate and min RTT, paces at the estimated bottleneck rate, keeps a small queue. Great on lossy or bufferbloated paths.",
+        "BBR trade-off: BBRv1 could be unfair to CUBIC flows and could push standing queues in shallow-buffer settings; BBRv2/v3 add ECN response and loss awareness.",
+        "Vegas: delay-based — infers congestion from rising RTT before loss occurs. Low latency, but loses badly when sharing a bottleneck with loss-based flows (it backs off, they don't).",
+        "DCTCP: data-center only. Uses fine-grained ECN marking to scale the reduction to the fraction of marked packets, holding queues to a few packets. Requires switch support and a controlled environment.",
+        "Comparison rows worth memorizing — signal / fairness / best fit: Reno (loss / RTT-biased / textbook), CUBIC (loss / RTT-fair / general internet), BBR (rate+RTT model / contested / lossy long-fat pipes), Vegas (delay / starves vs loss-based / homogeneous), DCTCP (ECN / excellent / data center).",
+        "Pacing: sending a whole cwnd as a burst causes queue spikes and loss; `fq` qdisc plus internal pacing smooths transmission. BBR requires pacing to function.",
+        "Inspect and change on Linux: `sysctl net.ipv4.tcp_congestion_control`, list options with `net.ipv4.tcp_available_congestion_control`, per-socket via `setsockopt(TCP_CONGESTION, \"bbr\")`.",
+        "Choosing: leave CUBIC for typical server traffic; consider BBR for high-RTT, lossy, or video-delivery paths; measure with real traffic — CC choice interacts with the qdisc, AQM, and the receiver's buffers."
+      ]
+    },
+    {
+      "title": "Connection Teardown and the Four-Way Close",
+      "points": [
+        "Graceful close is four segments because each direction closes independently: FIN, ACK, FIN, ACK.",
+        "Active closer path: ESTABLISHED → FIN_WAIT_1 (sent FIN) → FIN_WAIT_2 (its FIN acked) → TIME_WAIT (peer's FIN received and acked) → CLOSED after 2×MSL.",
+        "Passive closer path: ESTABLISHED → CLOSE_WAIT (received FIN) → LAST_ACK (sent its own FIN) → CLOSED on receiving the final ACK.",
+        "Half-close: `shutdown(fd, SHUT_WR)` sends FIN but keeps reading. The peer sees EOF on read yet can still send — the basis of protocols that stream a request then read a response.",
+        "Piles of CLOSE_WAIT sockets is always an application bug: the kernel got the FIN, but your code never called close(). Look for leaked file descriptors or a missing close in an error path.",
+        "Piles of FIN_WAIT_2 means the peer never sent its FIN; Linux reaps these after `tcp_fin_timeout` (default 60 s) for orphaned sockets.",
+        "RST aborts immediately: sent on data to a closed socket, on close() with SO_LINGER timeout 0, or on a connect to a port with no listener. Buffered unsent data is discarded and the peer sees ECONNRESET.",
+        "Simultaneous close: both sides send FIN concurrently, both pass through CLOSING → TIME_WAIT.",
+        "The final ACK is unreliable — nothing acknowledges it. This asymmetry is exactly why TIME_WAIT exists on the active closer.",
+        "Design rule: whoever closes first pays the TIME_WAIT cost. Architect so the client closes, not the server, when connection churn is high.",
+        "Worked trace: `Flags [F.], seq 5000, ack 9000` (client FIN) → `Flags [.], ack 5001` (server ACK) → `Flags [F.], seq 9000, ack 5001` (server FIN) → `Flags [.], ack 9001` (client final ACK, then TIME_WAIT)."
+      ]
+    },
+    {
+      "title": "TIME_WAIT: Why It Exists and How to Live With It",
+      "points": [
+        "Definition: after the active closer sends the final ACK, the socket sits in TIME_WAIT for 2×MSL (Maximum Segment Lifetime) before releasing the 4-tuple. Linux hardcodes this at 60 s (TCP_TIMEWAIT_LEN), not tunable via sysctl.",
+        "Reason 1 — reliably terminate the connection: if the final ACK is lost, the peer retransmits its FIN. A socket still in TIME_WAIT can re-ACK it; a fully closed socket would answer with an RST, and the peer would report an error on an otherwise clean close.",
+        "Reason 2 — let old duplicates die: a delayed segment from this incarnation of the 4-tuple must expire before the same 4-tuple is reused, or stale data could be injected into a new connection.",
+        "MSL is defined as 2 minutes by RFC 793, so 2×MSL = 4 minutes in theory; BSD and Linux use shorter practical values.",
+        "TIME_WAIT is not a leak and is not a bug. It is the protocol working. Thousands of TIME_WAIT sockets on a busy proxy is normal.",
+        "Real cost 1 — port exhaustion on the client/connecting side: outbound connections draw from `net.ipv4.ip_local_port_range` (~28k by default). At 500 new connections/sec with 60 s TIME_WAIT you need 30k ports — you will hit EADDRNOTAVAIL.",
+        "Real cost 2 — memory and hash-table pressure, bounded by `net.ipv4.tcp_max_tw_buckets`; exceeding it makes the kernel drop TIME_WAIT state and log 'TCP: time wait bucket table overflow'.",
+        "Correct fix, in order: use persistent/keep-alive connections and connection pooling (the real fix); make the server the closer if the client side is exhausting ports; widen `ip_local_port_range`; add source IPs or destination ports to expand the 4-tuple space.",
+        "`SO_REUSEADDR` lets a server bind a port that has connections in TIME_WAIT — this is why you set it on listening sockets and why you otherwise get 'Address already in use' on restart.",
+        "`net.ipv4.tcp_tw_reuse=1` allows reusing a TIME_WAIT socket for a new *outbound* connection when timestamps confirm safety. Safe and useful on clients; it does not help inbound.",
+        "`net.ipv4.tcp_tw_recycle` was the dangerous one: it broke connections from clients behind NAT sharing a source IP with differing timestamps. Removed from Linux in 4.12 — never enable it, never copy a blog post that recommends it.",
+        "Diagnose: `ss -tan state time-wait | wc -l`, `ss -s` for a state summary, `nstat -az TcpExtTCPTimeWaitOverflow`."
+      ]
+    },
+    {
+      "title": "TCP Keepalive",
+      "points": [
+        "Problem it solves: an idle TCP connection sends nothing, so neither side can distinguish 'peer is quiet' from 'peer crashed, cable pulled, or NAT dropped the mapping'. Half-open connections leak file descriptors and memory forever.",
+        "Mechanism: after an idle period, send a probe segment with a sequence number one byte *before* the current SND.NXT (deliberately old) carrying no data; the peer must respond with an ACK.",
+        "Three knobs on Linux: `tcp_keepalive_time` (idle seconds before the first probe, default 7200 = 2 hours), `tcp_keepalive_intvl` (seconds between probes, default 75), `tcp_keepalive_probes` (unanswered probes before giving up, default 9).",
+        "Default total detection time is 7200 + 9×75 ≈ 2 hours 11 minutes — uselessly long for almost every application.",
+        "Keepalive is OFF by default per socket. Enable with `setsockopt(SO_KEEPALIVE, 1)`; the sysctls are only defaults.",
+        "Per-socket overrides (Linux): `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT` — always prefer these over changing system-wide sysctls in a shared environment.",
+        "Practical setting for a service behind cloud load balancers or NAT: idle 60 s, interval 10 s, 3 probes → dead peer detected in ~90 s, and traffic keeps NAT/LB idle timers (often 60-350 s) from silently dropping the flow.",
+        "Three outcomes of a probe: ACK (peer alive, timer resets); RST (peer rebooted and has no such connection → ECONNRESET); silence for all probes (→ ETIMEDOUT).",
+        "TCP keepalive vs application-level heartbeat: keepalive is free and kernel-side but only proves the TCP stack is alive — a hung application process still answers keepalives. Heartbeats prove the app is alive but cost code and bandwidth. Use both for critical services.",
+        "`TCP_USER_TIMEOUT` is the complementary knob: it bounds how long unacknowledged *data* may remain in flight before the connection is dropped, which catches stalls that keepalive (idle-only) never triggers on.",
+        "Load balancer idle timeouts are the classic production bug: an AWS NLB/ELB silently drops a flow after its idle timeout; both endpoints think it is alive; the next write hangs until RTO exhaustion. Set keepalive idle below the LB timeout.",
+        "Inspect on a live socket: `ss -tio` shows `timer:(keepalive,...)` and the remaining time."
+      ]
+    },
+    {
+      "title": "Practical Tuning, Sockets, and Observability",
+      "points": [
+        "Socket options that matter: `TCP_NODELAY` (disable Nagle for request/response), `SO_KEEPALIVE` + keepalive triplet, `SO_REUSEADDR` (rebind over TIME_WAIT), `SO_REUSEPORT` (multiple processes accept on one port with kernel load balancing), `TCP_USER_TIMEOUT`, `TCP_CONGESTION`.",
+        "Backlog tuning: `listen(fd, backlog)` is capped by `net.core.somaxconn` (default raised to 4096 in modern kernels; long the notorious 128). `net.ipv4.tcp_max_syn_backlog` sizes the half-open queue separately.",
+        "Accept-queue overflow is silent by default — count it with `nstat -az TcpExtListenOverflows TcpExtListenDrops` and set `tcp_abort_on_overflow=0` (retry) vs 1 (RST) deliberately.",
+        "Buffer sysctls: `net.ipv4.tcp_rmem` and `tcp_wmem` are min/default/max triples for autotuning; `net.core.rmem_max`/`wmem_max` cap explicit setsockopt values. Raise the max for high-BDP paths, keep autotuning on.",
+        "Enable at high speed: window scaling (`tcp_window_scaling=1`), SACK (`tcp_sack=1`), timestamps (`tcp_timestamps=1`) — all default-on, but middleboxes and hardened configs sometimes disable them.",
+        "MTU and MSS: PMTU discovery relies on ICMP 'fragmentation needed'; firewalls that blackhole ICMP cause the PMTU black hole — connections establish then hang on the first large packet. Mitigate with `tcp_mtu_probing=1` or MSS clamping on the router.",
+        "Offloads change what you see: GSO/TSO/GRO/LRO mean tcpdump on the host shows 64 KB 'segments' that never existed on the wire. Capture at the switch or account for it before diagnosing MSS.",
+        "Observability toolkit — `ss -tin` (per-socket cwnd, rtt, retrans, pacing rate), `ss -s` (state totals), `nstat -az` / `netstat -s` (cumulative counters), `tcpdump -i any -nn 'tcp port 443'`, Wireshark's Statistics → TCP Stream Graphs, and `tcpretrans`/`tcpconnlat` from bcc/bpftrace.",
+        "Counters worth alerting on: TcpRetransSegs ratio, TcpExtTCPTimeouts, TcpExtListenOverflows, TcpExtTCPSynRetrans, TcpExtPruneCalled (receive buffer pressure).",
+        "Wireshark expert markers and what they mean: 'TCP Retransmission' (RTO), 'Fast Retransmission' (after dupACKs), 'Dup ACK' (gap), 'Out-Of-Order' (reordering, not loss), 'Zero Window' (receiver stalled), 'Window Full' (sender blocked by rwnd).",
+        "Never tune blind: change one sysctl, measure with the real workload, keep the before/after numbers. Most 'TCP tuning guides' on the internet are cargo-culted from 2009 kernels.",
+        "Persist tuning properly in `/etc/sysctl.d/*.conf` and container/network namespaces — sysctls are namespaced, so a host tweak may not reach your pods."
+      ]
+    },
+    {
+      "title": "Common Mistakes and Gotchas",
+      "points": [
+        "Assuming message boundaries: treating one read() as one application message. TCP is a byte stream — always frame explicitly.",
+        "Assuming a successful write() means delivery: it means the bytes reached the kernel send buffer, nothing more. Only an application-level ack proves receipt.",
+        "Assuming close() flushes: with default SO_LINGER the kernel tries to flush in the background, but a subsequent RST (or SO_LINGER 0) discards the data silently.",
+        "Setting `tcp_tw_recycle=1` because a blog said it fixes TIME_WAIT — it breaks NAT'ed clients and was removed in Linux 4.12.",
+        "Fighting TIME_WAIT instead of eliminating connection churn: the fix is connection reuse and pooling, not sysctl roulette.",
+        "Leaving keepalive at defaults and wondering why dead peers linger for two hours, or forgetting that SO_KEEPALIVE is off by default entirely.",
+        "Ignoring CLOSE_WAIT growth: it is your code failing to close sockets, not a kernel issue, and it ends in EMFILE.",
+        "Leaving Nagle on for a chatty request/response protocol and eating 40 ms delayed-ACK stalls; or disabling Nagle everywhere and shipping a storm of tiny packets.",
+        "Interpreting every retransmission as network breakage: a small retransmission rate is normal and is how TCP finds the available bandwidth.",
+        "Blaming TCP for application head-of-line blocking (e.g. HTTP/2 multiplexed over one connection) — the fix is QUIC's independent streams, not TCP tuning.",
+        "Setting SO_RCVBUF/SO_SNDBUF manually and thereby disabling receive-buffer autotuning, capping throughput on long-fat paths.",
+        "Forgetting that the 64 KB window ceiling applies when Window Scale is stripped by a middlebox — throughput mysteriously caps at 64 KB / RTT regardless of link speed.",
+        "Testing over localhost or a LAN and shipping to a 150 ms-RTT, 1%-loss path: slow start, BDP, and loss recovery only show their teeth at real latency. Emulate with `tc netem`."
+      ]
+    },
+    {
+      "title": "TCP in Context: Comparisons and Trade-offs",
+      "points": [
+        "TCP vs UDP — TCP: connection-oriented, reliable, ordered, congestion-controlled, byte stream, ~20-byte header, 1-RTT setup. UDP: connectionless, unreliable, unordered, no congestion control, datagram, 8-byte header, zero setup.",
+        "Pick UDP when: you can tolerate loss but not delay (real-time voice/video/games), you need multicast or broadcast, or you are building your own transport (QUIC, DNS, QUIC-based HTTP/3).",
+        "TCP vs QUIC — QUIC runs over UDP, moves reliability and congestion control to user space, merges the transport and TLS handshakes (1-RTT, 0-RTT on resumption), gives independent streams (no cross-stream head-of-line blocking), and survives IP changes via connection IDs.",
+        "QUIC costs: higher CPU per byte (user-space, per-packet crypto), less mature offload support, and blocked or throttled UDP on some networks.",
+        "TCP vs SCTP: SCTP offers message boundaries, multi-streaming, and multi-homing — technically superior for many uses, but middlebox support killed it outside telecom signaling and WebRTC data channels.",
+        "Latency budget of a fresh HTTPS request: 1 RTT for the TCP handshake + 1 RTT for TLS 1.3 (2 for TLS 1.2) + slow start ramp. Connection reuse is the single biggest performance lever.",
+        "Throughput ceiling of a single flow ≈ window / RTT. On a 100 ms path a 64 KB window caps you at ~5 Mbps regardless of the link; this is the argument for window scaling and parallel connections.",
+        "The Mathis equation approximates loss-limited throughput ≈ MSS / (RTT × √p) — halving RTT doubles throughput, and even 0.1% loss badly hurts long paths.",
+        "Reliability trade-off in one line: TCP's ordering guarantee is exactly what creates head-of-line blocking. You cannot have both without per-stream sequencing.",
+        "Comparison row for state cost: TCP keeps per-connection kernel state on both ends and in stateful middleboxes — this is what makes connection churn expensive and what makes TIME_WAIT and port exhaustion real operational limits.",
+        "Where TCP still wins: bulk transfer, anything needing broad middlebox compatibility, kernel offload performance, and universally available tooling."
+      ]
+    },
+    {
+      "title": "Summary: The TCP Mental Model",
+      "points": [
+        "One-line model: TCP turns a lossy packet network into an ordered byte pipe by numbering bytes, acknowledging cumulatively, retransmitting what is missing, and continuously guessing how fast the network can go.",
+        "Setup: SYN → SYN-ACK → ACK, 1 RTT, ISNs randomized, options (MSS, wscale, SACK, timestamps) fixed for the connection's life at this moment.",
+        "Sequence numbers count bytes; ACKs are cumulative and mean 'next byte expected'; SYN and FIN each consume one sequence number.",
+        "Loss is detected two ways — 3 dupACKs/SACK (fast, cwnd halved) or RTO (slow, cwnd to 1 MSS and back to slow start). Modern Linux uses RACK-TLP for both.",
+        "Two independent windows: rwnd protects the receiver's buffer and rides on the wire; cwnd protects the network and lives only in the sender. You send min(cwnd, rwnd).",
+        "Congestion control is slow start (exponential) up to ssthresh, then AIMD congestion avoidance (linear up, multiplicative down). CUBIC is the default; BBR models the path instead of reacting to loss.",
+        "Teardown is four-way and independent per direction; the side that closes first sits in TIME_WAIT for 60 s on Linux, and that is correct behavior protecting the final ACK and killing old duplicates.",
+        "Keepalive is opt-in per socket and useless at defaults — set idle/interval/count below your NAT and load balancer timeouts, and pair with TCP_USER_TIMEOUT.",
+        "Diagnostic reflex: `ss -tin` for the per-socket picture (cwnd, rtt, retrans), `ss -s` for state distribution, `nstat -az` for counters, tcpdump/Wireshark for the wire truth.",
+        "Three highest-leverage production levers: reuse connections (kills handshake latency, TIME_WAIT, and port exhaustion), set TCP_NODELAY for request/response traffic, and size keepalive to your infrastructure's idle timeouts.",
+        "The recurring lesson: nearly every 'TCP problem' is either an application not closing sockets, a middlebox stripping an option, or a timeout mismatch between layers — not the TCP algorithms themselves."
+      ]
+    }
+  ]
+}

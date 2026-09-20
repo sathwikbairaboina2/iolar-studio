@@ -1,0 +1,195 @@
+{
+  "title": "Rate Limiting: Token Bucket, Leaky Bucket, Sliding Window & Distributed Limits",
+  "summary": "A dense field guide to rate limiting in system design — why limits exist, how the four classic algorithms work internally, how to enforce them across a distributed fleet, and how to pick headers, keys, and responses that clients can actually cooperate with.",
+  "chapters": [
+    {
+      "title": "Why Rate Limit At All",
+      "points": [
+        "Rate limiting = capping how many operations a caller may perform per unit time; throttling = the enforcement action taken when the cap is exceeded",
+        "Four driving motives: protect capacity (avoid overload collapse), control cost (per-call cloud/LLM spend), enforce fairness (one tenant cannot starve others), and block abuse (credential stuffing, scraping, spam)",
+        "Without limits a system degrades non-linearly: queues grow, latency spikes, timeouts trigger client retries, retries add load — the retry storm / congestion collapse loop",
+        "Rate limiting is admission control at the edge; load shedding is admission control under duress; circuit breaking protects the caller from a sick dependency — three distinct tools, often confused",
+        "Rate limit vs quota: rate = requests per second/minute (short-horizon smoothness); quota = requests per month (billing/allocation horizon)",
+        "Rate limit vs concurrency limit: 100 rps caps arrival rate, 20 in-flight caps simultaneous work — a slow endpoint needs the concurrency limit, a cheap one needs the rate limit",
+        "Little's Law ties them: L = λ × W, so concurrency L follows from arrival rate λ and latency W; capping λ only bounds L if W stays bounded",
+        "Where limiters live: client-side (politeness, saves the round trip), API gateway / load balancer (cheapest, protects everything behind it), service middleware (knows the user and the cost), and database/queue level (last line of defense)",
+        "Real-world anchors: GitHub API 5000 req/hour authenticated, Stripe ~100 read req/sec, AWS API Gateway default 10,000 rps with a burst bucket — all are token-bucket-shaped",
+        "Key design question comes first: what is the limited resource — CPU, dollars, a downstream partner's contract, or a human's patience? The answer picks the algorithm"
+      ]
+    },
+    {
+      "title": "Anatomy of a Limiter: Keys, Windows, Decisions",
+      "points": [
+        "Every limiter is a function: decide(key, cost, now) → {allow | deny, retry_after}",
+        "The limit key decides fairness granularity: per API key, per user ID, per IP, per tenant, per endpoint, or a composite like tenant:endpoint",
+        "Per-IP keys break behind NAT/CGNAT (one office shares one IP) and behind CDNs (must read X-Forwarded-For carefully or an attacker spoofs it)",
+        "Per-user keys break for anonymous traffic — usually layer both: a loose IP limit for unauthenticated calls, a tight user limit after auth",
+        "Cost weighting: not all requests are equal — a GraphQL query or an LLM completion may cost 50 tokens while a health check costs 1; the limiter takes a cost argument",
+        "Multi-tier limits stack: 10 rps AND 1000 per hour AND 100k per month; a request must pass every tier, and the tightest failing tier supplies the Retry-After",
+        "Fail-open vs fail-closed: if the limiter store is down, fail-open keeps the product alive but drops protection; fail-closed protects the backend but causes a total outage — pick per endpoint (fail-open on reads, fail-closed on money movement)",
+        "Response contract: HTTP 429 Too Many Requests, with Retry-After (seconds or HTTP-date); 503 + Retry-After is for overload, not for per-client policy",
+        "Standard headers (IETF draft / de-facto): RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, or the older X-RateLimit-* trio — always emit them so clients can self-pace",
+        "Enforce vs observe: ship every new limit in shadow/dry-run mode first, log what would have been rejected, then flip to enforcing once the false-positive rate is known"
+      ]
+    },
+    {
+      "title": "Fixed Window Counter",
+      "points": [
+        "Mechanic: bucket the clock into fixed intervals (e.g. each minute), keep counter[key][window_id], increment on each request, reject when counter > limit",
+        "Window id is derived arithmetically: window_id = floor(now / window_size) — no timers, no background sweep",
+        "Redis form: INCR key then EXPIRE key window_size on first increment; two commands, ideally in one Lua script or a MULTI so the TTL can never be lost",
+        "Memory cost: O(1) per key — one integer and one TTL; the cheapest algorithm that exists",
+        "The boundary burst flaw: with limit 100/min a client sends 100 at 00:59.9 and 100 at 01:00.1 — 200 requests in 200 ms, 2× the intended rate",
+        "Worst case is exactly 2× the limit over a sliding window of the same length, regardless of window size",
+        "Windows are also synchronized across all clients, so every caller resets at the same instant — a thundering herd at each window boundary",
+        "Mitigation 1: jitter the window start per key, e.g. offset = hash(key) % window_size, spreading resets across the interval",
+        "Mitigation 2: shrink the window (100/min becomes 10 per 6s) — burst error shrinks with it but so does legitimate burst tolerance",
+        "Good fit: coarse quotas where 2× overshoot is harmless (daily API quotas, monthly billing counters), or as a cheap outer tier above a precise inner tier",
+        "Bad fit: protecting a capacity-constrained backend that genuinely cannot survive 2× the nominal rate"
+      ]
+    },
+    {
+      "title": "Sliding Window Log",
+      "points": [
+        "Mechanic: store the timestamp of every accepted request per key, evict entries older than now − window, then compare the surviving count to the limit",
+        "Exactly correct: at any instant it answers \"how many requests in the last N seconds\" with zero approximation — the reference implementation others are measured against",
+        "Redis form: a sorted set per key — ZREMRANGEBYSCORE key 0 (now-window), ZCARD key, ZADD key now member, EXPIRE key window, all inside one Lua script for atomicity",
+        "Member must be unique per request (UUID or now:counter) or two requests in the same millisecond collapse into one ZSET entry and one is silently free",
+        "Space complexity: O(N) per key where N is the limit — a 10,000/hour limit stores 10,000 timestamps per user; multiply by millions of users to see the problem",
+        "Time complexity: amortized O(log N) for the insert, plus O(k) for evicting k expired entries; a burst after a long idle period pays a large one-time eviction cost",
+        "Memory attack surface: an unauthenticated per-IP log limiter lets an attacker force allocation by cycling source IPs — cap key count with an LRU or bound the ZSET length",
+        "Denied requests should normally NOT be logged, or a client stuck in a retry loop keeps its own window permanently full and can never recover",
+        "Deletion-on-read makes the log self-cleaning, but abandoned keys still need a TTL ≥ window so idle users do not leak memory",
+        "Good fit: low-volume, high-value limits — login attempts, password resets, payment submissions, expensive report generation",
+        "Bad fit: high-QPS public endpoints where per-request memory and network payload dominate"
+      ]
+    },
+    {
+      "title": "Sliding Window Counter (The Practical Approximation)",
+      "points": [
+        "Idea: keep only two fixed-window counters — current and previous — and interpolate the overlap instead of storing every timestamp",
+        "Formula: estimate = current_count + previous_count × (overlap_fraction), where overlap_fraction = (window_size − elapsed_in_current) / window_size",
+        "Worked example: limit 100/min, previous minute 80, current minute 30, 25% of the current minute elapsed → 30 + 80 × 0.75 = 90 → allow (10 remaining)",
+        "Assumes the previous window's traffic was uniformly distributed; that assumption is what makes it an approximation rather than a truth",
+        "Error bounds are small in practice — Cloudflare reported roughly 0.003% of requests wrongly allowed/denied at production scale — and error is bounded by the burstiness inside the previous window",
+        "Cost: O(1) memory (two integers per key) with near-log-accuracy — the reason it is the default choice for large-scale edge limiting",
+        "Redis form: a small hash per key holding both counters plus the window id, updated in one Lua script that rolls current→previous when the window id advances",
+        "Smooths the fixed-window boundary burst: a client cannot double-dip at the boundary because the previous window still counts, weighted",
+        "Cannot answer \"which exact requests were counted\" — no audit trail, unlike the log; if you must prove per-request decisions, use the log",
+        "Choose it as the default HTTP-tier limiter; escalate to the log only for security-critical low-volume actions"
+      ]
+    },
+    {
+      "title": "Token Bucket",
+      "points": [
+        "Model: a bucket of capacity B tokens refills at rate r tokens/sec; each request removes cost tokens; if tokens < cost the request is denied (or waits)",
+        "Two independent knobs: r sets the sustained long-run rate, B sets the maximum burst — this separation is the algorithm's whole value",
+        "Lazy refill is the standard implementation: store (tokens, last_refill_ts) and on each request compute tokens = min(B, tokens + (now − last_refill_ts) × r) — no background timer thread",
+        "Idle credit: a client that goes quiet accumulates up to B tokens and may then fire B requests instantly — intentional, and what makes bursty clients feel fast",
+        "O(1) time and O(1) memory per key: two numbers, one float and one timestamp",
+        "Burst-vs-smoothness tuning: B = r gives one second of burst; B = 10r tolerates a 10-second spike; B = 1 degenerates to a strict rate limiter with no burst tolerance",
+        "Variable cost is natural — a 4000-token LLM call simply debits 4000 tokens; weighted GraphQL complexity limits are token buckets underneath",
+        "Two flavors: throttling (deny immediately, return 429) and shaping (block/queue the caller until tokens accrue) — client SDKs usually shape, servers usually throttle",
+        "Traffic policing analogy: token bucket is the standard traffic policer in networking (RFC 2697 srTCM two-rate/two-bucket variants extend it to committed vs peak rates)",
+        "Common misuse: setting B far larger than downstream capacity — the bucket permits a burst the database cannot absorb, so pair a large B with a concurrency limit",
+        "Default recommendation: token bucket is the best general-purpose choice for API rate limiting when clients are legitimately bursty"
+      ]
+    },
+    {
+      "title": "Leaky Bucket",
+      "points": [
+        "Model: requests enter a FIFO queue of fixed size; the queue drains at a constant rate r; when the queue is full new arrivals are dropped",
+        "Output rate is perfectly constant regardless of arrival pattern — the defining difference from token bucket, which allows bursts through",
+        "Two readings of the same name: leaky bucket as a queue (shapes traffic, adds latency) and leaky bucket as a meter (a counter that decreases at rate r — mathematically the mirror of token bucket)",
+        "The meter form (GCRA, Generic Cell Rate Algorithm) is the elegant implementation: store one value, the theoretical arrival time (TAT), and compare it to now",
+        "GCRA rule: allow if now ≥ TAT − burst_tolerance; on allow set TAT = max(now, TAT) + emission_interval, where emission_interval = 1/r — O(1) memory, one timestamp, no counters",
+        "Queue form trades latency for smoothness: a request may sit in the bucket for seconds, so it suits background jobs and outbound calls, not user-facing reads",
+        "Memory: O(queue_size) for the queue form, O(1) for the meter form; the queue form must also decide a drop policy — tail drop, head drop, or priority drop",
+        "Primary use case: protecting a downstream with a hard fixed capacity — a third-party API contractually capped at 50 rps, or a legacy system that falls over above a set rate",
+        "Bufferbloat trap: a large queue makes the limiter look generous while quietly adding huge tail latency; requests can be dequeued long after the client has timed out",
+        "Always pair the queue form with a deadline — drop or fast-fail anything whose client timeout has already elapsed rather than doing dead work",
+        "Origin: standardized in ATM networks for cell rate conformance; GCRA is why the meter form appears in modern libraries like throttled and redis-cell"
+      ]
+    },
+    {
+      "title": "Algorithm Comparison Table",
+      "points": [
+        "Fixed window — memory O(1); accuracy poor (2× boundary burst); burst allowed: yes, unintentionally; best for cheap coarse quotas",
+        "Sliding log — memory O(N) per key; accuracy exact; burst allowed: no; best for low-volume security-critical limits",
+        "Sliding counter — memory O(1) (two ints); accuracy ~99.99%; burst allowed: minimally; best for the general high-QPS edge default",
+        "Token bucket — memory O(1); accuracy exact for its own model; burst allowed: yes, up to B, by design; best for bursty API clients and weighted costs",
+        "Leaky bucket / GCRA — memory O(1) as a meter, O(queue) as a queue; accuracy exact; burst allowed: no, output perfectly smooth; best for protecting a fixed-capacity downstream",
+        "Latency added: only the leaky-bucket queue form adds waiting time; all others decide immediately",
+        "Client experience: token bucket feels fastest (bursts sail through), leaky bucket queue feels slowest but never spikes, fixed window feels erratic near boundaries",
+        "Auditability: only the sliding log can reconstruct which requests were counted and when",
+        "Two-line mental model — token bucket asks \"do I have credit saved up?\"; leaky bucket asks \"is it my turn yet?\"; sliding window asks \"how many have I done recently?\"",
+        "Layer them rather than choosing one: GCRA/leaky for the downstream contract, token bucket per API key, sliding counter per IP at the edge, fixed window for the monthly quota"
+      ]
+    },
+    {
+      "title": "Distributed Rate Limiting",
+      "points": [
+        "The core problem: N stateless app servers each holding a local limiter of L enforces N×L in aggregate — the limit silently multiplies by the fleet size",
+        "Naive fix — divide by N (each node gets L/N) — breaks under uneven load balancing, node failures, and autoscaling, and rejects traffic while other nodes sit idle",
+        "Centralized store is the standard answer: Redis or Memcached holds the counter, every node does one round trip per decision",
+        "Atomicity is mandatory: read-then-write from multiple nodes races and over-admits — use a Redis Lua script (single-threaded, atomic) or INCR/atomic primitives, never GET followed by SET",
+        "Latency tax: every request pays an extra network hop (typically 0.2–2 ms same-AZ); cross-AZ or cross-region hops make the limiter itself the bottleneck",
+        "Redis as a single point of failure: a limiter that fails-closed on Redis outage turns a cache incident into a full outage — set a tight client timeout (a few ms) and a documented fallback",
+        "Sharding by key spreads load naturally since limiter keys are independent; a hot key (one huge tenant) still concentrates on one shard and needs local pre-filtering",
+        "Replication is dangerous here: async replicas serve stale counts, so read from the primary or accept over-admission; Redis Cluster with a single owner per key avoids cross-slot Lua",
+        "Local + global two-tier design: each node keeps a local token bucket for its share, and periodically syncs consumed counts to the central store — cuts round trips by orders of magnitude for a bounded accuracy loss",
+        "Gossip/broadcast approach: nodes periodically exchange counts (Cloudflare, Kong style); eventually consistent, allows brief overshoot proportional to the sync interval",
+        "Cell/region isolation: enforce per-region limits independently rather than one global count, accepting that global = sum of regions; cross-region consensus for a rate limiter is almost never worth its latency",
+        "Envoy's global rate limit service (gRPC RLS) and Kubernetes/Istio integrations are the productionized version of this pattern — a dedicated ratelimit service in front of Redis",
+        "Clock skew between nodes shifts window boundaries and corrupts timestamp-based algorithms — compute time inside the Redis script (TIME command) so one clock rules"
+      ]
+    },
+    {
+      "title": "Client-Side Behavior and Backpressure",
+      "points": [
+        "A limiter is a contract with two sides — a server that rejects and a client that must back off, or the system oscillates",
+        "Exponential backoff: wait base × 2^attempt, capped at a maximum; without a cap, retries stretch to absurd delays",
+        "Jitter is not optional — synchronized clients retrying at exactly 2s, 4s, 8s re-collide; full jitter (sleep = random(0, backoff)) is the AWS-recommended form",
+        "Retry-After from the server beats the client's own guess; SDKs should honor it and only fall back to computed backoff when it is absent",
+        "Retry budgets: cap retries as a fraction of successful traffic (e.g. 10%) so a broad outage cannot triple the offered load — better than per-request retry counts",
+        "Idempotency is a prerequisite for retrying writes; send an idempotency key so a retried POST after a 429 or timeout cannot double-charge",
+        "Distinguish 429 (you exceeded your policy — back off and continue) from 503 (server overloaded — back off harder, possibly failover) — clients should treat them differently",
+        "Adaptive client-side limiting (AIMD, like TCP congestion control): additively increase the send rate on success, multiplicatively halve it on 429 — converges to the server's real capacity",
+        "Never retry on 400/401/403 — retrying a permanent failure just burns quota and can trip abuse detection",
+        "Client-side pre-limiting (a local token bucket matching the published quota) removes the pointless round trip that was going to be rejected anyway"
+      ]
+    },
+    {
+      "title": "Common Mistakes and Failure Modes",
+      "points": [
+        "Rate limiting by IP only: NAT lumps thousands of users together (a whole office rejected) while an attacker rotates through a residential proxy pool for free",
+        "Trusting X-Forwarded-For blindly — take the leftmost untrusted hop only after validating the trusted proxy chain, or a spoofed header makes the limit meaningless",
+        "Counting rejected requests against the limit: a client hammering in a retry loop keeps its own window saturated and can never recover — count accepted work, not attempts",
+        "No jitter on window resets: every client resets at the same second and stampedes the backend at each boundary",
+        "Setting the limit from a guess instead of a measurement — derive it from load-test capacity and observed p99 usage percentiles, then leave headroom",
+        "Forgetting the health check, webhook, and internal service-to-service paths — an aggressive global limit can throttle your own monitoring and make an incident invisible",
+        "Missing RateLimit-* headers: clients cannot self-pace, so they discover the limit only by being rejected, which maximizes wasted traffic",
+        "Non-atomic increment (GET then SET, or INCR with a separately-issued EXPIRE that can be lost) — the first races, the second leaks keys that never expire",
+        "Unbounded key cardinality: per-IP or per-path keys let an attacker create millions of limiter entries and exhaust the store's memory — bound it with an LRU and a TTL",
+        "Same limit for cheap and expensive endpoints: 100/min is generous for a key lookup and catastrophic for a report export — weight by cost or split the limits",
+        "Fail-closed everywhere without thinking: the limiter store's availability becomes the product's availability ceiling",
+        "No dry-run rollout and no observability — ship metrics for allowed/denied per key and per rule before enforcing, or the first sign of a bad limit is a customer escalation"
+      ]
+    },
+    {
+      "title": "Choosing, Tuning, and Summary",
+      "points": [
+        "Decision path: need a burst allowance → token bucket; need perfectly smooth output → leaky bucket/GCRA; need high-QPS cheap accuracy → sliding window counter; need an exact audit trail → sliding log; need a monthly quota → fixed window",
+        "Set the limit from data: measure the capacity where p99 latency starts to climb, take the p99 of legitimate per-user usage, and place the limit comfortably between them",
+        "Tune burst separately from rate — most \"the limit is too strict\" complaints are actually burst complaints, fixed by raising B, not r",
+        "Layer defenses: edge IP limit → authenticated per-key limit → per-endpoint cost limit → downstream concurrency limit; each catches what the previous cannot see",
+        "Always emit RateLimit-Limit / Remaining / Reset and a Retry-After on 429; document the limits publicly so client authors design for them",
+        "Roll out in three stages: observe (log-only), enforce for new customers, then enforce for all — with a per-tenant override escape hatch for the inevitable exception",
+        "Instrument: allowed vs denied counts per rule and per key, limiter store latency, and the fraction of tenants near their ceiling (the early warning that a limit is wrong)",
+        "Remember rate limiting does not replace capacity — it is a bound on the damage, not a source of throughput; the backend must still survive the limit you set times the number of tenants",
+        "Big picture: token bucket saves credit, leaky bucket enforces turns, sliding window remembers history, and distribution turns all three into a question about shared state",
+        "One-line summary: pick the simplest algorithm whose failure mode you can tolerate, enforce it atomically in one shared place, tell the client exactly what happened, and measure everything"
+      ]
+    }
+  ]
+}

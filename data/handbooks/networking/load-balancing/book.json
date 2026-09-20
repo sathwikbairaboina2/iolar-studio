@@ -1,0 +1,231 @@
+{
+  "title": "Load Balancing: A Field Handbook",
+  "summary": "A dense study-notes series on how load balancers work — L4 versus L7 forwarding, scheduling algorithms, health checking, session affinity and failover — with the mechanics, trade-offs and operational failure modes behind each.",
+  "chapters": [
+    {
+      "title": "What a Load Balancer Actually Is",
+      "points": [
+        "Definition: a load balancer is a reverse proxy or packet forwarder that distributes incoming requests across a pool of backend servers, presenting one virtual IP (VIP) to clients",
+        "Core goals in order: availability (survive backend death), scalability (add capacity horizontally), performance (cut tail latency), and operability (drain a node without downtime)",
+        "Vocabulary: VIP, backend/real server, pool (a.k.a. target group, upstream, backend set), listener/frontend, and the 'connection' vs 'request' distinction that drives everything later",
+        "The load balancer is itself a single point of failure unless made redundant — active/passive pairs with VRRP, or ECMP anycast across many LB nodes",
+        "Placement tiers: DNS-level (geo), edge/global (anycast), regional (L4), and internal service-to-service (L7 or sidecar mesh)",
+        "Hardware appliance (F5, Citrix ADC) vs software (HAProxy, NGINX, Envoy) vs cloud managed (ELB/NLB/ALB, GCLB) — cost and control trade-off",
+        "Example: 3 app servers behind one VIP; client resolves api.example.com to the VIP, never learns backend IPs, so backends can be replaced freely",
+        "Load balancing ≠ failover ≠ autoscaling: LB spreads work, failover removes dead work-takers, autoscaling changes how many exist. They are complementary, not substitutes",
+        "Why not just DNS round-robin: clients cache records past TTL, no health awareness, no weighting, and resolvers ignore short TTLs"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "The OSI Layers That Matter: L4 vs L7",
+      "points": [
+        "L4 balancing operates on TCP/UDP headers only: source IP, source port, dest IP, dest port, protocol — the 5-tuple. It never parses the payload",
+        "L7 balancing terminates the connection and parses application protocol (HTTP method, path, headers, cookies, gRPC service name, SNI for TLS)",
+        "L4 mechanism: connection is pinned to one backend at connect time and every packet in that flow goes to the same place for the flow's lifetime",
+        "L7 mechanism: LB holds a client-side connection and a separate pool of backend connections; each HTTP request can be routed independently",
+        "Consequence: a single long-lived HTTP/2 or gRPC connection sends all its streams to one backend under L4, causing severe imbalance; L7 balances per-request",
+        "TLS: L4 can pass encrypted bytes through untouched or use SNI-only routing; L7 must terminate TLS to read the request (or re-encrypt to the backend)",
+        "Comparison table rows: inspection depth, latency overhead, CPU cost, TLS handling, routing richness, connection reuse, observability",
+        "L7 gives you path routing (/api to service A, /static to B), header/cookie routing, retries, rewrites, response buffering, per-request metrics",
+        "L4 gives you protocol independence (works for Postgres, Redis, SMTP, QUIC), microsecond overhead, and huge connection counts per node",
+        "Common real design: L4 at the edge for raw scale and DDoS absorption, L7 behind it for routing intelligence"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Inside an L4 Balancer: NAT, DSR and Consistent Flow Hashing",
+      "points": [
+        "NAT mode: LB rewrites destination IP to the backend on the way in and rewrites the source back on the way out; return traffic must pass through the LB",
+        "Direct Server Return (DSR): LB rewrites only the L2 MAC address, backend replies straight to the client — asymmetric path, huge egress savings for video/CDN",
+        "DSR requirements and gotcha: backend must own the VIP on a loopback with ARP suppressed, and the LB cannot see or count responses",
+        "Tunnel mode (IPIP/GRE): LB encapsulates the packet so backends can live in a different L2 segment; costs MTU headroom and needs MSS clamping",
+        "Flow table: a stateful L4 LB stores a map of 5-tuple to chosen backend so mid-flow packets stay consistent; table size bounds max concurrent connections",
+        "Stateless hashing alternative: hash the 5-tuple to pick a backend with no per-flow memory; enables ECMP fan-out across many LB nodes",
+        "The rehash problem: with plain modulo hashing, adding or removing one backend remaps roughly all flows and resets every live connection",
+        "Maglev-style consistent hashing: a fixed-size lookup table with weighted permutations gives near-even spread and minimal disruption on membership change",
+        "Connection draining at L4: stop hashing new flows to the node but keep the existing flow-table entries until they close or a timeout expires",
+        "Example: Linux IPVS as an in-kernel L4 balancer; XDP/eBPF balancers (Katran, Cilium) push forwarding into the NIC driver path for millions of packets/sec"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Inside an L7 Balancer: Proxying HTTP Properly",
+      "points": [
+        "Request lifecycle: accept, TLS handshake, parse request line and headers, match a route, pick a backend, forward, stream the response, log",
+        "Two connection pools: client-facing keepalive connections and a separate backend connection pool that is reused across many clients",
+        "Protocol translation: accept HTTP/2 or HTTP/3 from clients while speaking HTTP/1.1 to legacy backends — the LB is a protocol adapter",
+        "X-Forwarded-For, X-Forwarded-Proto and Forwarded carry the original client identity; the PROXY protocol does the same for L4 hops",
+        "Buffering: full request buffering protects slow backends from slowloris clients but adds latency and memory; streaming mode does the opposite",
+        "Timeouts you must set: connect, TLS handshake, request header, idle/keepalive, backend response, and total request — each has a distinct failure it prevents",
+        "Retries and idempotency: retry only on connect failure or explicitly safe methods, always with a retry budget so a backend blip cannot amplify into a stampede",
+        "Circuit breaking and outlier detection: eject a backend after N consecutive 5xx, then re-admit it slowly, independent of the health check",
+        "Example: an Envoy/NGINX config sketch with an upstream block, health check, timeout, and a path-based route",
+        "Cost: TLS termination and header parsing put L7 CPU cost per request roughly an order of magnitude above L4 per packet"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Scheduling Algorithms: Picking the Backend",
+      "points": [
+        "Round robin: cycle through the pool in order — O(1), zero state, correct only when backends and requests are homogeneous",
+        "Weighted round robin: assign integer weights for heterogeneous hardware; smooth WRR spreads the heavy node's turns instead of bunching them",
+        "Least connections: send to the backend with fewest active connections — adapts to varying request durations, the safest general default",
+        "Weighted least connections: divide active connections by weight, so a 2x machine tolerates 2x the load",
+        "Least response time / least latency: combine active connections with an EWMA of observed latency; reacts to a slow node before connections pile up",
+        "Power of two choices (P2C): sample two random backends, pick the less loaded — near-least-connections quality with O(1) work and no global state, ideal for distributed LBs",
+        "Random: O(1), no state, surprisingly acceptable at large pool sizes but with a fat tail",
+        "Hash-based (source IP hash, URL hash, header hash): deterministic mapping used for affinity and cache locality, not for evenness",
+        "Consistent hashing with bounded loads: caps any node at (1+ε) times the mean so a hot key cannot melt one backend",
+        "Trade-off table: state required, evenness, reaction to slow backends, behaviour on pool change, suitability for L4 vs L7",
+        "Herd effect gotcha: pure least-connections across many independent LB instances can dogpile a freshly added empty backend — P2C or slow-start fixes it",
+        "Slow start / warm-up: ramp a new backend's weight from 0 to full over N seconds so JIT compilation and cold caches do not cause a latency spike"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Health Checks: Knowing Who Is Alive",
+      "points": [
+        "Active health check: LB periodically probes each backend on its own schedule — TCP connect, HTTP GET on a path, or a scripted protocol exchange",
+        "Passive health check (outlier detection): infer health from real traffic outcomes — connection errors, 5xx rate, timeouts — with zero probe cost and instant signal",
+        "Best practice: run both. Passive catches failures fast under load; active detects recovery and covers idle backends",
+        "Tuning triad: interval, timeout, and unhealthy/healthy thresholds. Detection time ≈ interval × unhealthy_threshold, so 5s × 3 = ~15s of blackholing",
+        "Flapping and hysteresis: require more consecutive successes to re-admit than failures to eject, so a marginal node does not oscillate",
+        "Liveness vs readiness: liveness asks 'is the process alive', readiness asks 'should it receive traffic now' — only readiness should gate the LB pool",
+        "Shallow vs deep checks: /healthz returning 200 unconditionally proves nothing; a deep check that pings the database can take the whole fleet down when the database blips",
+        "The correlated-failure trap: a dependency-checking health endpoint turns one shared dependency outage into a total outage because every backend fails at once",
+        "Minimum healthy threshold / fail-open: if fewer than X% of the pool is healthy, send traffic to everyone anyway — degraded is better than zero",
+        "Example: an HTTP health check config with interval 5s, timeout 2s, healthy 2, unhealthy 3, expected status 200",
+        "Health check load: N load balancers × M backends × 1/interval probes; at scale the checks themselves become meaningful traffic",
+        "Graceful shutdown sequence: fail readiness first, wait one full check interval plus drain time, then stop accepting — the reverse order drops in-flight requests"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Sticky Sessions and Session Affinity",
+      "points": [
+        "Definition: affinity binds a client to one backend for the life of a session so that server-local state (in-memory session, upload buffer, websocket) stays reachable",
+        "Cookie-based affinity, LB-inserted: the LB sets its own cookie (AWSALB, JSESSIONID-shadow) naming the backend; works only for HTTP and requires L7",
+        "Cookie-based affinity, application-controlled: the app's own session cookie is parsed by the LB; keeps the LB stateless but couples it to app cookie names",
+        "Source-IP affinity: hash the client IP. The only option at L4, and it breaks badly behind carrier NAT, corporate proxies and mobile network handoffs",
+        "Consistent hashing for affinity: preserves most mappings when the pool changes, unlike modulo hashing which reshuffles everyone",
+        "TLS session ID / SNI affinity: usable at L4 for TLS but weakened by session tickets and TLS 1.3 resumption behaviour",
+        "Costs: affinity defeats even load distribution, blocks clean draining, and makes any single backend's death a visible user-facing session loss",
+        "The real fix: externalize session state to Redis/Memcached/a database, or use signed stateless tokens (JWT), so any backend can serve any request",
+        "When affinity is genuinely right: in-flight multipart uploads, long-lived websockets, per-connection caches, and legacy apps you cannot modify",
+        "Gotcha: sticky + autoscaling means scale-in events kill sessions, and scale-out events do nothing for existing hot backends",
+        "Gotcha: sticky sessions can produce a 'zombie' imbalance where old backends stay saturated for hours while new ones sit idle",
+        "Example: an NGINX `sticky cookie srv_id expires=1h` upstream block versus an `ip_hash` block, and what each breaks"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Failover and Redundancy",
+      "points": [
+        "Backend failover: health check ejects a dead node and the algorithm redistributes; the only tunable that matters is detection time",
+        "LB failover, active/passive: VRRP or keepalived floats a virtual IP to the standby; failover is seconds, but half your hardware idles",
+        "LB failover, active/active: ECMP or anycast spreads flows across all LB nodes; a node loss rehashes only its share — if the hash is consistent",
+        "Anycast at the network layer: the same IP announced from many sites via BGP; withdrawing a route drains a whole site",
+        "DNS failover: cheap and cross-region, but resolver and browser caching makes real recovery time far longer than the TTL suggests",
+        "Health-check-driven DNS (Route 53) and its limits: minutes, not seconds — use for regional disaster recovery, never for instance failure",
+        "Multi-AZ and cross-zone balancing: without cross-zone, an unbalanced instance count per zone means unequal per-instance load",
+        "Failing open vs failing closed: when health data is untrustworthy, sending traffic to all backends usually beats sending it to none",
+        "Retry storms and the thundering herd: after failover the surviving nodes take the full load; retry budgets, jittered backoff and load shedding prevent a cascade",
+        "Capacity math for N+1: if you run N nodes at 80% and lose one, the rest need headroom — plan peak utilization at (N-1)/N of capacity",
+        "Split brain: two LBs both claiming the VIP because the heartbeat link died; fencing or a quorum witness is the mitigation",
+        "Graceful failover checklist: drain, verify zero in-flight, then remove — versus hard failover where you accept resetting live connections"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Common Mistakes and Production Gotchas",
+      "points": [
+        "Idle timeout mismatch: the backend's keepalive timeout shorter than the LB's causes intermittent 502s as the LB writes into a just-closed socket — always set backend timeout longer",
+        "Health check passing while the app is broken: a static 200 endpoint that never touches the code path users hit",
+        "Deep health checks causing correlated fleet-wide ejection during a shared dependency blip",
+        "Least-connections plus long-lived HTTP/2 connections: connection count stops correlating with actual load, so 'least connections' balances nothing",
+        "L4 in front of gRPC: every stream in a connection lands on one backend; you need L7 or client-side balancing",
+        "Sticky sessions accidentally enabled, hiding a real imbalance until a deploy exposes it",
+        "Forgetting X-Forwarded-For, so every log and rate limiter sees the LB's IP and either blocks nobody or blocks everybody",
+        "Trusting X-Forwarded-For from untrusted clients — header spoofing bypasses IP allowlists unless you only trust the rightmost hop from a known proxy",
+        "No connection draining on deploy: rolling restarts reset live connections and users see errors during a 'zero-downtime' release",
+        "Slow-start missing: a fresh JVM or cold cache node gets full load instantly and its p99 spikes until it warms",
+        "Ephemeral port exhaustion on the LB toward a single backend IP: ~64k source ports per destination tuple, fixed with more source IPs or backend keepalive reuse",
+        "Monitoring only the LB's own metrics: per-backend request rate, error rate and latency distribution are what reveal an imbalance"
+      ],
+      "shape": [
+        "definition",
+        "mistakes",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Load Balancing Cheatsheet",
+      "points": [
+        "Choose L4 when: non-HTTP protocol, extreme packet rate, TLS passthrough required, or microsecond overhead matters. Choose L7 when: path/header routing, per-request balancing, retries, or gRPC/HTTP2",
+        "Algorithm defaults: least connections for general HTTP, P2C for distributed/mesh LBs, consistent hash for cache locality, weighted RR only for known-uniform request cost",
+        "Health check starting point: interval 5s, timeout 2s, unhealthy 3, healthy 2, shallow endpoint, plus passive outlier detection at 5 consecutive 5xx",
+        "Timeout ordering rule: client timeout > LB total timeout > LB backend response timeout > backend's own internal timeout; backend keepalive idle > LB keepalive idle",
+        "Affinity decision: externalize state first; use cookie affinity only if you cannot, and never source-IP affinity for public mobile traffic",
+        "Failover tiers by recovery time: outlier detection (sub-second), active health check (~10-30s), VRRP VIP move (~1-3s), BGP/anycast withdrawal (~seconds), DNS (~minutes)",
+        "Deploy sequence: fail readiness, wait interval × threshold, drain connections, stop process, start new, wait for warm-up, re-admit with slow start",
+        "Key metrics: per-backend RPS and error rate, connection counts, health check state changes, LB CPU and connection table depth, p50/p99 latency split by backend",
+        "Tool map: HAProxy and IPVS for L4/L7 on-prem, NGINX and Envoy for L7 proxying, NLB (L4) versus ALB (L7) on AWS, and service mesh sidecars for client-side balancing",
+        "Capacity rule: size for N-1 nodes at peak, and confirm your retry budget cannot exceed the surviving capacity",
+        "One-line summary of the trade-off: every affinity or hashing decision trades even distribution for locality — know which one you are buying"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

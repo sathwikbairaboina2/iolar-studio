@@ -1,0 +1,196 @@
+{
+  "title": "Kafka Retention & Log Compaction: A Field Handbook",
+  "summary": "How Kafka decides what data to keep and what to delete — time and size retention, segment file mechanics, log compaction, tombstones, and the tuning traps that silently lose or hoard data. Covers internals, configuration, operations, and debugging for engineers running Kafka in production.",
+  "chapters": [
+    {
+      "title": "1. Why Kafka Needs Retention",
+      "points": [
+        "Kafka topic = append-only distributed commit log; messages are never deleted on consume, unlike a queue",
+        "Consumer offset is a read cursor, not a delete acknowledgment — 100 consumers read the same bytes",
+        "Retention is the ONLY mechanism that reclaims disk in Kafka; without it a broker fills its disk and goes offline",
+        "Retention is a per-partition, per-broker disk concern — a topic's total footprint = sum over partitions × replication factor",
+        "Two retention policies: `delete` (drop old data) and `compact` (keep latest value per key); `cleanup.policy` selects one or both",
+        "Default `cleanup.policy=delete` with `retention.ms=604800000` (7 days)",
+        "Retention defines the replay window: how far back a consumer can rewind after a bug or outage",
+        "Retention as a contract: producers, consumers, and DR all depend on the same window — changing it is a cross-team decision",
+        "Retention ≠ backup: a 7-day window means a bug found on day 8 is unrecoverable from Kafka",
+        "Broker-level defaults (`log.retention.hours`, `log.retention.bytes`) vs topic-level overrides (`retention.ms`, `retention.bytes`); topic config always wins",
+        "Retention is enforced by a background thread, not synchronously — expect lag between 'expired' and 'deleted'",
+        "Disk is sized as: peak-throughput × retention-window × replication-factor × (1 + headroom); headroom of 30-40% is standard",
+        "Example: 50 MB/s ingest, 7-day retention, RF=3 → 50 × 86400 × 7 × 3 ≈ 90 TB across the cluster",
+        "Mental model for the whole handbook: log = list of segment files; retention = rules for deleting or rewriting those files"
+      ]
+    },
+    {
+      "title": "2. Segment Files: The Unit of Deletion",
+      "points": [
+        "A partition directory on disk is `<topic>-<partition>/` and contains a series of segments",
+        "Each segment = `.log` (records) + `.index` (offset→byte position) + `.timeindex` (timestamp→offset) + optionally `.snapshot`, `.txnindex`",
+        "Segment filename is the base offset, zero-padded to 20 digits: `00000000000000368122.log`",
+        "Exactly one active segment per partition; all writes append to it, and it is NEVER eligible for deletion or compaction",
+        "Segment rolls when: size reaches `segment.bytes` (default 1 GB), OR age reaches `segment.ms` (default 7 days), OR the index fills",
+        "Kafka deletes whole segments — never individual records; this is why retention is coarse-grained",
+        "`.index` is sparse: one entry per `index.interval.bytes` (default 4096) of log, so lookups binary-search then scan forward",
+        "`.timeindex` powers time-based retention and `offsetsForTimes()` seek-by-timestamp",
+        "Deletion is two-phase: rename to `.deleted`, then remove after `file.delete.delay.ms` (default 60000) so in-flight reads survive",
+        "Retention checks run every `log.retention.check.interval.ms` (default 300000 = 5 min) — data lives past expiry until the next sweep",
+        "Segment size is the retention granularity: a 1 GB segment on a low-volume topic can hold weeks of data and delay deletion",
+        "Zero-copy sendfile serves reads straight from the page cache off `.log` files — segments are why Kafka reads are cheap",
+        "Inspect a segment: `kafka-dump-log.sh --files 00000000000000368122.log --print-data-log`",
+        "Trade-off: small segments = fast, precise reclamation but more open file handles and more frequent rolls"
+      ]
+    },
+    {
+      "title": "3. Time-Based Retention",
+      "points": [
+        "`retention.ms` — delete a segment once all its records are older than this window (broker default `log.retention.hours=168`)",
+        "Precedence for the broker default: `log.retention.ms` > `log.retention.minutes` > `log.retention.hours`",
+        "`retention.ms=-1` means infinite retention — never expire by time",
+        "The clock used is `message.timestamp.type`: `CreateTime` (producer's clock, default) or `LogAppendTime` (broker's clock)",
+        "With `CreateTime`, a producer with a skewed or future clock can pin a segment in place for years",
+        "`message.timestamp.difference.max.ms` rejects timestamps too far from broker time — the guard against clock-skew retention bugs",
+        "Deletion is decided on the segment's MAXIMUM (largest) record timestamp, not the minimum or the file mtime",
+        "One record with a future timestamp keeps the ENTIRE segment alive, along with every older record it contains",
+        "Actual retention ≥ configured retention, always: expiry + check interval + active-segment roll time + delete delay",
+        "Worst-case data lifetime ≈ `retention.ms` + `segment.ms` + `log.retention.check.interval.ms` + `file.delete.delay.ms`",
+        "Fix for 'why is my 1-hour retention keeping 8 hours of data': lower `segment.ms`, not `retention.ms`",
+        "GDPR/compliance caveat: time retention is best-effort deletion, never a guarantee of erasure by a deadline",
+        "Config example: `kafka-configs.sh --alter --entity-type topics --entity-name events --add-config retention.ms=86400000`",
+        "Shrinking `retention.ms` takes effect on the next check and can trigger a large, sudden burst of disk deletion and I/O"
+      ]
+    },
+    {
+      "title": "4. Size-Based Retention",
+      "points": [
+        "`retention.bytes` caps the size of a SINGLE PARTITION, not the topic and not the broker",
+        "Topic footprint on disk ≈ `retention.bytes` × partitions × replication factor — the most common capacity miscalculation",
+        "Example: `retention.bytes=10 GB`, 12 partitions, RF=3 → up to 360 GB cluster-wide, not 10 GB",
+        "`retention.bytes=-1` (default) means unlimited size; time is then the only limit",
+        "Broker default is `log.retention.bytes`, also per-partition",
+        "When both `retention.ms` and `retention.bytes` are set, they are OR'd: a segment dies if EITHER limit says so — whichever hits first",
+        "Size retention deletes the OLDEST segments first until the partition is back under the cap",
+        "The active segment does not count toward enforcement and cannot be removed, so a partition can exceed `retention.bytes`",
+        "Uneven keys → uneven partitions: a hot partition hits its size cap and drops data while cold partitions keep everything",
+        "Size retention is a disk safety net; time retention is the business SLA — set both, and lean on time for correctness",
+        "Sizing rule: `retention.bytes` ≈ (disk per broker × 0.7) ÷ (partitions per broker), leaving headroom for rebalances",
+        "A partition reassignment temporarily doubles a partition's disk on the target broker — retention math must budget for it",
+        "Log dir quota is not enforced by Kafka: exceeding disk marks the log dir offline and takes the replicas down",
+        "`kafka-log-dirs.sh --describe --bootstrap-server ...` reports actual per-partition size to reconcile against config"
+      ]
+    },
+    {
+      "title": "5. Log Compaction: Keep the Latest Value per Key",
+      "points": [
+        "`cleanup.policy=compact` retains at least the LAST value for every key, forever, and deletes superseded values",
+        "Turns a topic into a durable changelog / materialized table — replay from offset 0 rebuilds current state",
+        "Compaction requires a non-null key; null-keyed records on a compacted topic are dropped or rejected by the cleaner",
+        "Offsets are never renumbered or reused — after compaction the log has gaps, so consumers must tolerate non-contiguous offsets",
+        "Record order is preserved; compaction only removes records, never reorders them",
+        "The log splits into the head (active/dirty, not yet compacted) and the tail (cleaned, at most one record per key)",
+        "The log cleaner builds an in-memory offset map of key→latest offset, then rewrites segments while dropping stale entries",
+        "Small segments are merged into larger ones during the recopy, so compaction also defragments",
+        "Real users: `__consumer_offsets`, Kafka Streams KTable changelogs, Connect config topics, Debezium schema history, cache warm-up topics",
+        "Guarantee for consumers reading the head: a consumer keeping up sees EVERY message; a lagging one may miss intermediate values for a key",
+        "`min.compaction.lag.ms` — a record must be at least this old before it can be compacted away (default 0)",
+        "`max.compaction.lag.ms` — force compaction of a dirty segment after this long even if the dirty ratio is not met (key to GDPR deletes)",
+        "`cleanup.policy=compact,delete` — compact by key AND drop anything past `retention.ms`; used for bounded-history changelogs",
+        "Compaction is asynchronous and per-partition: 'latest value only' is eventual, never immediate"
+      ]
+    },
+    {
+      "title": "6. The Log Cleaner: How Compaction Actually Runs",
+      "points": [
+        "`log.cleaner.enable=true` by default; the cleaner is a pool of `log.cleaner.threads` (default 1) background threads",
+        "Each pass picks the partition with the highest dirty ratio = dirty bytes ÷ total bytes",
+        "`min.cleanable.dirty.ratio` (default 0.5) — a log is only cleaned once half of it is uncompacted; raise it to trade disk for less CPU/IO",
+        "Phase 1: scan the dirty section and build a hash map of key → highest offset seen",
+        "Phase 2: recopy the log from the start, keeping a record only if its offset matches the map (or the key is absent from the map)",
+        "The offset map is memory-bounded by `log.cleaner.dedupe.buffer.size` (default 128 MB) shared across cleaner threads",
+        "Keys are stored as a 16-byte MD5 hash + 8-byte offset = 24 bytes per key; usable capacity is buffer × `log.cleaner.io.buffer.load.factor` (0.9)",
+        "Capacity math: 128 MB × 0.9 ÷ 24 B ≈ 5 M keys per pass; more unique keys means multiple passes, not failure",
+        "If a SINGLE segment holds more keys than the buffer, the cleaner throws and that partition stops compacting — the classic silent stall",
+        "Fix for the stall: raise `log.cleaner.dedupe.buffer.size`, add threads, or lower `segment.bytes` on that topic",
+        "`log.cleaner.io.max.bytes.per.second` throttles cleaner I/O so compaction cannot starve produce/fetch traffic",
+        "Monitor `kafka.log:type=LogCleanerManager,name=max-dirty-ratio`, `time-since-last-run-ms`, and `uncleanable-partitions-count`",
+        "A dead cleaner thread is not restarted — the broker keeps serving while `__consumer_offsets` grows without bound; check `log-cleaner.log`",
+        "Compaction never touches the active segment, so the newest data always survives regardless of duplicate keys"
+      ]
+    },
+    {
+      "title": "7. Tombstones: Deleting a Key",
+      "points": [
+        "A tombstone is a record with a valid key and a NULL value — the delete marker in a compacted log",
+        "Producing a tombstone is the only way to remove a key from a compacted topic",
+        "Java: `producer.send(new ProducerRecord<>(\"topic\", key, null))`",
+        "The tombstone must survive long enough for every consumer to observe the delete, then it is removed too",
+        "`delete.retention.ms` (default 86400000 = 24 h) is how long a tombstone is kept AFTER the segment containing it is compacted",
+        "A consumer offline longer than `delete.retention.ms` can miss the delete entirely and keep a phantom key in its local state",
+        "Rule: set `delete.retention.ms` > max expected consumer downtime, and > the time to rebuild a Streams state store",
+        "Two-stage removal: pass 1 drops the older values for the key and keeps the tombstone; a later pass drops the tombstone itself",
+        "Consumers MUST handle a null value — a naive `value.field()` on a tombstone is a NullPointerException, the #1 compacted-topic crash",
+        "In Kafka Streams a null value into a KTable is interpreted as a delete of that key from the store",
+        "A tombstone is a record, so it consumes an offset and is replicated normally",
+        "Null value ≠ zero-length value: a 0-byte payload is a real value and does NOT delete the key",
+        "GDPR pattern: tombstone the key, then set `max.compaction.lag.ms` to force compaction inside the legal deadline",
+        "Debug: `kafka-console-consumer.sh --property print.key=true --property print.value=true` shows tombstones as `key\\tnull`"
+      ]
+    },
+    {
+      "title": "8. Choosing a Policy: Delete vs Compact vs Both",
+      "points": [
+        "`delete`: retain by time/size, all versions kept inside the window — for event streams, logs, metrics, clickstream",
+        "`compact`: retain the latest per key forever — for state, config, entity snapshots, offset storage",
+        "`compact,delete`: latest per key, bounded by time — for changelogs where ancient keys are dead weight",
+        "Semantics: a `delete` topic answers 'what happened recently'; a `compact` topic answers 'what is true now'",
+        "Disk shape: `delete` is bounded by the window; `compact` is bounded by cardinality × average value size",
+        "Compaction cost: continuous background CPU and disk I/O to recopy segments; deletion is a near-free unlink",
+        "Replay from 0: a `delete` topic gives a partial history; a `compact` topic gives a complete current-state snapshot",
+        "Key requirement: compaction needs a key with bounded cardinality — user IDs yes, UUID-per-event no",
+        "Unbounded key cardinality on a compacted topic grows forever and is the classic misuse; use `compact,delete` instead",
+        "Duplicates: a `delete` topic may hand a consumer many versions of a key; a fully-compacted tail hands over at most one",
+        "Ordering guarantee is identical for both policies — per-partition order is always preserved",
+        "Cannot be enabled per-record, only per-topic; a mixed workload needs two topics",
+        "Migrating `delete` → `compact` on an existing topic: pre-existing null-keyed records make the cleaner fail on that partition",
+        "Decision rule: if a consumer must bootstrap complete state from the topic, use `compact`; otherwise use `delete`"
+      ]
+    },
+    {
+      "title": "9. Operating Retention: Tuning, Ops, and Failure Modes",
+      "points": [
+        "Change retention live without a restart: `kafka-configs.sh --alter --entity-type topics --entity-name t --add-config retention.ms=3600000`",
+        "Revert to the broker default with `--delete-config retention.ms`, not by setting the value back by hand",
+        "Purge a topic fast: set `retention.ms=1000`, wait for the sweep, then delete the config — safer than deleting the topic",
+        "Alternative surgical purge: `kafka-delete-records.sh --offset-json-file offsets.json` truncates below a given offset",
+        "Disk full is a hard outage: the log dir is marked offline, replicas drop, and `min.insync.replicas` can block all producers",
+        "Alert on log-dir free % and `UnderReplicatedPartitions` well before the disk fills; retention changes take minutes, not seconds",
+        "`log.retention.check.interval.ms` too high delays reclamation; too low burns I/O scanning every partition",
+        "Compaction on `__consumer_offsets`: if its cleaner stalls, offset commits slow and consumer-group rebalances get pathological",
+        "Reassignment and disk: moving a partition copies the FULL retained log, so a long window means a slow, bandwidth-heavy rebalance",
+        "Tiered storage (KIP-405) moves closed segments to object storage — `local.retention.ms` governs local disk, `retention.ms` the total",
+        "Retention interacts with the transaction and producer-id state: `transactional.id.expiration.ms` and `.snapshot` files are cleaned separately",
+        "Observability: `kafka.log:type=Log,name=Size`, `NumLogSegments`, `LogEndOffset`, `LogStartOffset` per partition",
+        "`LogStartOffset` advancing is the observable signal that deletion actually happened",
+        "Consumers hitting `OffsetOutOfRangeException` means retention outran the consumer — fix lag or widen the window, then set `auto.offset.reset` deliberately"
+      ]
+    },
+    {
+      "title": "10. Gotchas, Checklist, and Recap",
+      "points": [
+        "Gotcha: `retention.bytes` is per-partition — multiply by partitions and RF before sizing disks",
+        "Gotcha: a huge `segment.bytes` on a low-traffic topic means data outlives `retention.ms` by weeks",
+        "Gotcha: the active segment is immortal — never expect a partition to reach zero bytes",
+        "Gotcha: a future-dated `CreateTime` from one bad producer freezes a whole segment",
+        "Gotcha: compaction guarantees the latest value, never 'exactly one record per key' — the head always has duplicates",
+        "Gotcha: a null-value consumer NPE is a tombstone, not corruption",
+        "Gotcha: a stalled log cleaner is silent; only the dirty-ratio metric and `log-cleaner.log` reveal it",
+        "Gotcha: unbounded key cardinality on a compacted topic is unbounded disk",
+        "Gotcha: compaction is not deduplication — two records with different keys and identical values both survive",
+        "Gotcha: retention is per-replica and enforced independently, so leader and follower disk usage can differ transiently",
+        "Checklist: set both `retention.ms` and `retention.bytes`; size `segment.ms` below `retention.ms`; give tombstones a `delete.retention.ms` longer than max consumer downtime",
+        "Checklist: alert on max-dirty-ratio, log-dir free space, `UnderReplicatedPartitions`, and consumer lag against the retention window",
+        "Recap of the mental model: log = segments; delete drops whole segments by time or size; compact rewrites segments keeping the newest value per key; tombstones express deletes and then expire themselves",
+        "Final rule: retention is a data-loss policy you write on purpose — the default 7 days is a decision whether or not you make it"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,850 @@
+{
+  "brand": "iolar",
+  "template": "marker-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KUBERNETES STORAGE HANDBOOK — PART 2",
+  "date": "06/09/2026",
+  "slides": [
+    {
+      "page_title": "StatefulSets, Replication Choice and Failure Seams",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Default is keep",
+          "text": "PVCs ==survive scale-down and deletion==; scaling back up **reuses** the old data. `persistentVolumeClaimRetentionPolicy` is the opt-in to automatic cleanup."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Local persistent volumes give ==raw-disk speed== but pin the pod to one node",
+            "Node loss is **data loss** unless the app replicates",
+            "Pick one replication layer on purpose, not by accident"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Restore drill",
+          "text": "Snapshot taken != data recoverable. Time a real restore: new PVC from `dataSource`, correct name, pod comes up healthy."
+        },
+        {
+          "type": "heading",
+          "text": "5. Comparison: Where to Replicate",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Layer",
+            "Example",
+            "Cost / risk"
+          ],
+          "rows": [
+            [
+              "App",
+              "Postgres stream, Cassandra",
+              "N full copies, app-aware"
+            ],
+            [
+              "Storage",
+              "Ceph, cloud disk",
+              "transparent, blind to data"
+            ],
+            [
+              "Local PV",
+              "raw NVMe",
+              "fastest, {red:node = SPOF}"
+            ],
+            [
+              "Both",
+              "app + replicated disk",
+              "pay **twice**, rarely needed"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "6. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Using a Deployment with one RWO PVC and scaling to 3",
+            "Deleting the StatefulSet and expecting the disks gone",
+            "Editing `volumeClaimTemplates` in place — the field is immutable",
+            "Trusting a snapshot schedule as a **backup**",
+            "Never rehearsing restore, including ==PVC recreation=="
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "Storage fails at __four seams__: ==binding==, ==attach/mount==, ==ownership== and ==reclaim== — and every one of them shows up in `kubectl describe` events before it shows up in your logs.",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "1. Symptom Table",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Real cause",
+            "First look"
+          ],
+          "rows": [
+            [
+              "PVC `Pending`",
+              "no PV, bad class, zone mismatch",
+              "`describe pvc`"
+            ],
+            [
+              "`Pending`, class OK",
+              "provisioner pod down",
+              "provisioner logs"
+            ],
+            [
+              "`ContainerCreating`",
+              "`FailedMount ... timed out`",
+              "kubelet + CSI node"
+            ],
+            [
+              "`Multi-Attach error`",
+              "RWO still on old node",
+              "`get volumeattachment`"
+            ],
+            [
+              "PVC stuck `Terminating`",
+              "finalizer waits on a pod",
+              "find the consumer"
+            ]
+          ],
+          "highlightRow": 3,
+          "frame": "solid"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Node goes **NotReady**, pod reschedules, old attach survives = Multi-Attach",
+            "Never force-patch a PVC finalizer — delete the __pod__ that holds it",
+            "`Released` PV never rebinds until `spec.claimRef` is cleared"
+          ],
+          "style": "cross",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "One page to revise the whole model: __objects__, __access modes__, __policies__, ==commands== and the debug order.",
+          "ink": "black"
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "volumeClaimTemplates, stable identity, retention"
+    },
+    {
+      "page_title": "Ownership, Ephemeral Pressure and the Storage Bill",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "2. Ownership: fsGroup",
+          "ink": "green"
+        },
+        {
+          "type": "paragraph",
+          "text": "Fresh volumes are __root-owned__; a non-root container gets `Permission denied`. `fsGroup` makes the kubelet {green:chown} the volume to that GID at mount.",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "securityContext:",
+            "  runAsUser: 1000",
+            "  fsGroup: 2000        # chown -R",
+            "  fsGroupChangePolicy:",
+            "    OnRootMismatch     # skip if ok"
+          ],
+          "note": "recursive chown = minutes on 1M files"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Key rule",
+          "text": "Read the __events__, not the spec: `describe pvc` names the binding fault, `describe pod` names the mount fault, and the cloud bill names everything you forgot to delete."
+        },
+        {
+          "type": "heading",
+          "text": "3. Rescue a Released PV",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl patch pv pv-01 -p \\",
+            "  '{\"spec\":{\"claimRef\":null}}'",
+            "# phase: Released -> Available"
+          ],
+          "note": "Retain policy only; data is still there"
+        },
+        {
+          "type": "heading",
+          "text": "4. Ephemeral Storage Pressure",
+          "ink": "orange"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`No space left on device`, then pods **Evicted** on `ephemeral-storage`",
+            "emptyDir + container logs + image layers all bill the __node disk__",
+            "Cap the pod with requests/limits; cap the scratch dir with `sizeLimit`"
+          ],
+          "style": "dot",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "resources:",
+            "  limits:",
+            "    ephemeral-storage: 2Gi",
+            "volumes:",
+            "- name: tmp",
+            "  emptyDir: {sizeLimit: 500Mi}"
+          ],
+          "note": "one pod cannot fill the node"
+        },
+        {
+          "type": "heading",
+          "text": "5. Cost and Quota",
+          "ink": "pink"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Cost trap",
+            "Still billed?",
+            "Sweep"
+          ],
+          "rows": [
+            [
+              "Orphaned `Retain` PVs",
+              "yes",
+              "`get pv` Released"
+            ],
+            [
+              "Unused snapshots",
+              "yes",
+              "`get volumesnapshot`"
+            ],
+            [
+              "Over-provisioned IOPS",
+              "yes",
+              "gp3 `iops` param"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "kind: ResourceQuota",
+            "spec:",
+            "  hard:",
+            "    requests.storage: 500Gi",
+            "    gold.storageclass.storage.",
+            "    k8s.io/requests.storage: 100Gi"
+          ],
+          "note": "per-class cap stops silent SSD sprawl"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "# storageClassName unset:",
+            "#   -> default class",
+            "storageClassName: \"\"",
+            "# empty string: no dynamic",
+            "#   provisioning, static only"
+          ],
+          "note": "unset and \"\" are NOT the same"
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "volumeClaimTemplates, stable identity, retention"
+    },
+    {
+      "page_title": "Object Map, Access Modes and Core Commands",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Object Map",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "chain",
+          "spec": {
+            "title": "Who owns what",
+            "steps": [
+              {
+                "text": "Volume",
+                "note": "pod lifetime, `spec.volumes`",
+                "ink": "orange"
+              },
+              {
+                "text": "PVC",
+                "note": "namespaced request",
+                "ink": "blue"
+              },
+              {
+                "text": "PV",
+                "note": "cluster resource, one claim",
+                "ink": "green"
+              },
+              {
+                "text": "StorageClass",
+                "note": "provisioning profile",
+                "ink": "purple"
+              },
+              {
+                "text": "CSI driver",
+                "note": "the implementation",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. Access Modes",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Scope",
+            "Backing"
+          ],
+          "rows": [
+            [
+              "RWO",
+              "one **node**",
+              "block (EBS, PD)"
+            ],
+            [
+              "ROX",
+              "many, read-only",
+              "block or shared"
+            ],
+            [
+              "RWX",
+              "many read-write",
+              "NFS, EFS, CephFS"
+            ],
+            [
+              "RWOP",
+              "one **pod**, cluster-wide",
+              "CSI only"
+            ]
+          ],
+          "frame": "solid"
+        },
+        {
+          "type": "heading",
+          "text": "3. Policies and Binding",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Value",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "reclaim",
+              "{red:Delete}",
+              "disk dies with PVC"
+            ],
+            [
+              "reclaim",
+              "{green:Retain}",
+              "data kept, manual cleanup"
+            ],
+            [
+              "binding",
+              "Immediate",
+              "bind now, zone risk"
+            ],
+            [
+              "binding",
+              "WaitForFirstConsumer",
+              "bind where pod lands"
+            ]
+          ],
+          "frame": "solid"
+        },
+        {
+          "type": "heading",
+          "text": "4. Commands",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl get pvc,pv,sc",
+            "kubectl describe pvc <name>",
+            "kubectl get volumeattachment",
+            "kubectl get csidrivers",
+            "kubectl get volumesnapshot"
+          ],
+          "note": "describe pvc first, always"
+        },
+        {
+          "type": "heading",
+          "text": "5. Grow, Snapshot, Clone",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "spec:",
+            "  resources:",
+            "    requests: {storage: 50Gi}",
+            "# confirm: status.capacity",
+            "# shrink: never supported"
+          ],
+          "note": "class needs allowVolumeExpansion"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "dataSource:            # restore",
+            "  kind: VolumeSnapshot",
+            "  name: pg-2026-09-06",
+            "# clone: kind of the source is",
+            "#   PersistentVolumeClaim"
+          ],
+          "note": "new PVC >= snapshot size"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "StatefulSet + `volumeClaimTemplates` = one disk per pod",
+            "Pair with ==WaitForFirstConsumer== for per-zone volumes",
+            "Set `persistentVolumeClaimRetentionPolicy` on purpose"
+          ],
+          "style": "checkbox",
+          "ink": "green"
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "Debugging storage, fsGroup and the bill"
+    },
+    {
+      "page_title": "Debug Order, Volume Types and the RWO Rolling Update Trap",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Permissions and Stateful",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "securityContext:",
+            "  fsGroup: 2000",
+            "  fsGroupChangePolicy:",
+            "    OnRootMismatch"
+          ],
+          "note": "skips slow recursive chown"
+        },
+        {
+          "type": "heading",
+          "text": "7. Debug Order",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "PVC events",
+                "sub": "describe pvc",
+                "ink": "blue"
+              },
+              {
+                "text": "SC + provisioner",
+                "sub": "logs",
+                "ink": "purple"
+              },
+              {
+                "text": "VolumeAttachment",
+                "sub": "attached?",
+                "ink": "orange"
+              },
+              {
+                "text": "CSI node DaemonSet",
+                "sub": "mount logs",
+                "ink": "green"
+              },
+              {
+                "text": "kubelet",
+                "sub": "last stop",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "8. Volume Types Recap",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Lifetime",
+            "Use for"
+          ],
+          "rows": [
+            [
+              "emptyDir",
+              "pod",
+              "scratch, sidecar logs"
+            ],
+            [
+              "`medium: Memory`",
+              "pod",
+              "tmpfs, bills mem limit"
+            ],
+            [
+              "hostPath",
+              "node",
+              "node agents, risky"
+            ],
+            [
+              "configMap / secret",
+              "pod",
+              "inject data, read-only"
+            ],
+            [
+              "PVC / inline ephemeral",
+              "cluster",
+              "real durable storage"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "9. RWO Rolling Update Trap",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Multi-Attach error` = old node still holds the disk",
+            "Deployment RollingUpdate + one RWO PVC = **stuck** new pod",
+            "RWO means one __node__ — same-node pods still share it"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "strategy:",
+            "  type: Recreate    # RWO safe",
+            "# or StatefulSet +",
+            "#   volumeClaimTemplates"
+          ],
+          "note": "old pod must detach first"
+        },
+        {
+          "type": "heading",
+          "text": "10. CSI Sidecars",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Sidecar",
+            "Watches",
+            "Driver call"
+          ],
+          "rows": [
+            [
+              "external-provisioner",
+              "PVCs",
+              "CreateVolume"
+            ],
+            [
+              "external-attacher",
+              "VolumeAttachment",
+              "ControllerPublish"
+            ],
+            [
+              "external-resizer",
+              "PVC size",
+              "ExpandVolume"
+            ],
+            [
+              "external-snapshotter",
+              "VolumeSnapshot",
+              "CreateSnapshot"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Add-on check",
+          "text": "Snapshot CRDs + snapshot-controller are ==not installed by default==. No `volumesnapshotclasses` = no snapshots, whatever the driver claims."
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "Objects, Modes, Commands and Rules of Thumb"
+    },
+    {
+      "page_title": "Mount Gotchas, Binding Facts, Expansion and Snapshot Limits",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "11. Mount Gotchas",
+          "ink": "orange"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Mounting over a non-empty dir __hides__ the original files",
+            "`subPath` mounts one file — no live configMap refresh",
+            "`subPathExpr` expands env vars like the pod name",
+            "`volumeMode: Block` = raw device at `volumeDevices`"
+          ],
+          "style": "cross",
+          "ink": "orange"
+        },
+        {
+          "type": "heading",
+          "text": "12. Stable Names",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "data-postgres-0",
+            "data-postgres-1",
+            "# <template>-<sts>-<ordinal>"
+          ],
+          "note": "rescheduled pod reattaches same disk"
+        },
+        {
+          "type": "heading",
+          "text": "13. Binding Facts",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Rule",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "One PVC ↔ one PV",
+              "exclusive, never split"
+            ],
+            [
+              "PVC 10Gi on 50Gi PV",
+              "binds, **40Gi wasted**"
+            ],
+            [
+              "`volumeName` set",
+              "forces that exact PV"
+            ],
+            [
+              "`selector` labels",
+              "static pool matching"
+            ],
+            [
+              "`pvc-protection`",
+              "in-use PVC only `Terminating`"
+            ]
+          ],
+          "frame": "solid"
+        },
+        {
+          "type": "heading",
+          "text": "14. PV Phases",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Phase",
+            "Means"
+          ],
+          "rows": [
+            [
+              "Available",
+              "free, waiting for a claim"
+            ],
+            [
+              "Bound",
+              "held by one PVC"
+            ],
+            [
+              "{red:Released}",
+              "PVC gone, data __not__ reclaimed"
+            ],
+            [
+              "Failed",
+              "reclaim itself errored"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "15. Expansion Rules",
+          "ink": "purple"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Class must set ==allowVolumeExpansion: true==",
+            "Two stages: ControllerExpand then **NodeExpand** (filesystem)",
+            "Watch `status.capacity`, never `spec` — spec lies early",
+            "Old drivers need a pod restart to finish the resize",
+            "Shrink is **never** supported — new volume + copy"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "16. Snapshot Truths",
+          "ink": "pink"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Snapshots are ==crash-consistent==, not application-consistent",
+            "Quiesce, or use the DB's own backup, for a transactional copy",
+            "Clone `dataSource` = same __class__ and same __namespace__ only",
+            "Snapshots live in the **backend** — deleting the namespace still bills"
+          ],
+          "style": "cross",
+          "ink": "pink"
+        },
+        {
+          "type": "heading",
+          "text": "17. Class Gotchas",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "metadata:",
+            "  annotations:",
+            "    storageclass.kubernetes.io/",
+            "    is-default-class: \"true\""
+          ],
+          "note": "two defaults or none = Pending claims"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Classes are effectively __immutable__ — make a new one and migrate",
+            "Reclaim is inherited at provision time; default is {red:Delete}",
+            "Tier by name (`fast-ssd`, `standard`, `cheap-cold`), not by backend"
+          ],
+          "style": "dot",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "18. CSI Services",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Service",
+            "Calls"
+          ],
+          "rows": [
+            [
+              "Identity",
+              "capabilities, probe"
+            ],
+            [
+              "Controller",
+              "CreateVolume, ControllerPublish"
+            ],
+            [
+              "Node",
+              "NodeStage, NodePublish"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Rules of thumb",
+          "text": "Default to {green:dynamic provisioning}. **Retain** anything you would cry over. RWX only when the app truly needs it. And ==rehearse the restore== — a snapshot you never restored is not a backup."
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "Objects, Modes, Commands and Rules of Thumb"
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of KUBERNETES STORAGE HANDBOOK. Your pod restarts and the data is gone — that's a Volume doing exactly what it was designed to do. This handbook walks the whole storage stack by hand: ephemeral volumes, the PV/PVC binding contract, access modes and topology, StorageClasses and dynamic provisioning, CSI drivers, expansion, snapshots, per-pod StatefulSet storage, and the failure modes nobody warns you about. Ends with a one-page cheatsheet you can actually keep.",
+    "hashtags": [
+      "#kubernetes",
+      "#k8s",
+      "#devops",
+      "#cloudnative",
+      "#persistentvolume",
+      "#storage",
+      "#csi",
+      "#statefulsets",
+      "#platformengineering",
+      "#sre",
+      "#handwrittennotes",
+      "#techstudynotes"
+    ]
+  },
+  "spilledFrom": 1
+}

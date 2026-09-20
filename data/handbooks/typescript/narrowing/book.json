@@ -1,0 +1,211 @@
+{
+  "title": "TypeScript Narrowing: A Field Guide to typeof, instanceof, Discriminated Unions, Predicates & never",
+  "summary": "A complete study-notes handbook on how TypeScript's control flow analysis turns wide union types into precise ones — covering every built-in narrowing guard, user-defined type predicates and assertion functions, discriminated-union design, and using never for compile-time exhaustiveness. Includes internals, comparison tables, failure modes, and a closing cheat sheet.",
+  "chapters": [
+    {
+      "title": "What Narrowing Is & Why It Exists",
+      "points": [
+        "Definition: narrowing is TypeScript refining a variable's declared type to a more specific type inside a region of code, based on runtime checks the compiler can understand.",
+        "Declared type vs narrowed type: `let x: string | number` always has declared type `string | number`; the narrowed type is per-location and can be `string` in one branch, `number` in another.",
+        "Motivation: unions are unusable without narrowing — `x.toUpperCase()` on `string | number` errors because the operation must be valid for EVERY member of the union.",
+        "Control Flow Analysis (CFA): the compiler walks a graph of your code's branches and assigns each identifier reference a type based on the checks that dominate it.",
+        "Narrowing is purely compile-time: it emits zero runtime code; `typeof x === 'string'` was already valid JavaScript and stays in the output unchanged.",
+        "Code example: `function pad(x: string | number) { if (typeof x === 'number') return ' '.repeat(x); return x.trim(); }` — both branches type-check because each is narrowed.",
+        "Narrowing widens back: after an `if` block ends, the variable returns to its declared type unless the branch exited (return/throw/continue).",
+        "The five narrowing tools this handbook covers: `typeof`, `instanceof`, discriminant property checks, user-defined type predicates, and `never` for exhaustiveness.",
+        "Related but distinct: type assertions (`as`) tell the compiler to stop checking; narrowing PROVES the type. Prefer narrowing — assertions are unchecked and can lie.",
+        "Rule of thumb: if you're reaching for `as`, ask first whether a guard could earn the same type honestly."
+      ]
+    },
+    {
+      "title": "How Control Flow Analysis Works (Mechanics)",
+      "points": [
+        "TypeScript builds a control flow graph per function body: nodes for assignments, conditions, loop back-edges, and branch joins.",
+        "Each reference to a variable triggers a backward walk up the flow graph, collecting narrowing conditions until it reaches the declaration or an assignment.",
+        "Assignment narrowing: `let x: string | number; x = 'hi';` narrows `x` to `string` after the assignment, without any guard.",
+        "Branch join / union-back: at the merge point after an if/else, the type is the union of the types flowing out of each branch.",
+        "`return`, `throw`, `break`, `continue` mark a branch as unreachable afterward — this is why early returns narrow the rest of the function body.",
+        "Example of early-return narrowing: `if (typeof x !== 'string') return; x.trim();` — after the guard, `x` is `string` for the remainder of the scope.",
+        "Negation flips the narrowing: the `else` branch of `typeof x === 'string'` receives `Exclude<T, string>` — the union minus the matched members.",
+        "Loops: CFA iterates to a fixed point over back-edges, which is why a variable assigned inside a loop can have a wider type at the top of the next iteration.",
+        "Cost note: narrowing analysis is lazy and cached per flow node; deeply nested conditionals in one giant function are a known cause of slow type-checking.",
+        "Practical implication: many small functions narrow faster and more predictably than one 400-line function with 30 branches."
+      ]
+    },
+    {
+      "title": "typeof Guards",
+      "points": [
+        "`typeof` narrows against JavaScript's seven runtime type strings: `'string'`, `'number'`, `'bigint'`, `'boolean'`, `'symbol'`, `'undefined'`, `'object'`, `'function'`.",
+        "TypeScript special-cases `typeof` in conditions — it is not just a string comparison, the compiler maps the literal to a type.",
+        "Example: `function fmt(v: string | number | boolean) { if (typeof v === 'number') return v.toFixed(2); if (typeof v === 'string') return v.trim(); return v ? 'yes' : 'no'; }`",
+        "THE classic gotcha: `typeof null === 'object'`, so `if (typeof v === 'object')` on `string | null | User` narrows to `User | null`, not `User`.",
+        "Correct null-safe form: `if (typeof v === 'object' && v !== null)` or simply `if (v !== null && typeof v === 'object')`.",
+        "Arrays are objects: `typeof [] === 'object'` — use `Array.isArray(x)` (which is a built-in type predicate `x is any[]`) to separate arrays.",
+        "`typeof x === 'function'` narrows to the callable members of a union — useful for `T | (() => T)` lazy-value APIs.",
+        "The comparison string must be a literal: `const k = 'string'; if (typeof v === k)` does NOT narrow unless `k` is `const`-inferred as a literal type.",
+        "Only works on primitives + function + object — it cannot distinguish two different object interfaces. That's what discriminated unions are for.",
+        "`typeof` works on the value, so it narrows only the identifier itself; `typeof obj.kind === 'string'` narrows the property, and TypeScript 4.4+ can narrow through readonly/const-held discriminants."
+      ]
+    },
+    {
+      "title": "Truthiness, Equality & the `in` Operator",
+      "points": [
+        "Truthiness narrowing: `if (x)` removes `null`, `undefined`, `0`, `''`, `NaN`, and `false` from the union.",
+        "The falsy-value trap: `if (count)` on `number | undefined` also excludes the legitimate value `0`. Use `if (count !== undefined)` instead.",
+        "Same trap for strings: `if (name)` excludes `''`; prefer explicit `!= null` when empty string is valid data.",
+        "Loose `!= null` is a deliberate idiom: `x != null` excludes BOTH `null` and `undefined` in one check, and TypeScript understands it.",
+        "Equality narrowing across two unions: comparing `a === b` where `a: string | number` and `b: string | boolean` narrows both to `string` inside the branch.",
+        "Literal equality: `if (status === 'ready')` narrows a string-literal union to that exact member; the `else` branch gets the remaining members.",
+        "The `in` operator: `if ('radius' in shape)` narrows to the union members that declare a `radius` property.",
+        "`in` gotcha: it narrows by DECLARED properties, not runtime presence — an optional property `radius?: number` puts the type in both branches (TS 4.9+ narrows the negative branch better).",
+        "Code example: `type Fish = { swim(): void }; type Bird = { fly(): void }; function move(a: Fish | Bird) { if ('swim' in a) a.swim(); else a.fly(); }`",
+        "Optional chaining and narrowing compose: `if (user?.profile?.email)` narrows `email` to non-nullish for the whole branch.",
+        "Non-null assertion `!` is NOT narrowing — it silences the check without proof and will still crash at runtime if wrong."
+      ]
+    },
+    {
+      "title": "instanceof and Class-Based Narrowing",
+      "points": [
+        "`x instanceof C` narrows `x` to `C` by checking the prototype chain at runtime — it works on classes and any constructor function.",
+        "Mechanics: `instanceof` consults `C.prototype` against `x`'s prototype chain, so it respects inheritance — a `Dog` instance passes `instanceof Animal`.",
+        "Canonical use: error handling. `try { ... } catch (e) { if (e instanceof HttpError) return e.status; if (e instanceof Error) return e.message; throw e; }`",
+        "`catch` variables are typed `unknown` under `useUnknownInCatchVariables` (on by default with `strict`) — `instanceof` is the standard way to make them usable.",
+        "Only works on things with a prototype: interfaces and type aliases have no runtime representation, so `x instanceof MyInterface` is a compile error.",
+        "Fails across realms: an array or Error from an iframe, worker, or Node `vm` context has a different prototype and fails `instanceof` despite being the right shape. Use `Array.isArray` or a tag check.",
+        "Fails across duplicated package copies: two versions of the same library in node_modules produce two distinct classes; `instanceof` returns false.",
+        "Transpiled/subclassed built-ins (`class MyError extends Error`) break under ES5 targets — set `target: es2015`+ or restore the prototype in the constructor.",
+        "`Symbol.hasInstance` can customize `instanceof` behavior at runtime, but TypeScript still narrows to the class type — a hole worth knowing.",
+        "Comparison: `instanceof` proves identity/lineage; `in` and discriminants prove shape. Prefer shape checks for plain data objects crossing boundaries."
+      ]
+    },
+    {
+      "title": "Discriminated (Tagged) Unions — The Core Pattern",
+      "points": [
+        "Definition: a union of object types that all share a common property whose type is a distinct literal in each member — the discriminant, or tag.",
+        "Three requirements: (1) common property name, (2) literal type in each member (not `string`), (3) the members are joined in a union type.",
+        "Canonical example: `type Shape = { kind: 'circle'; r: number } | { kind: 'square'; side: number } | { kind: 'rect'; w: number; h: number }`.",
+        "Checking the tag narrows the whole object: `if (s.kind === 'circle') return Math.PI * s.r ** 2;` — `s.r` is now accessible and typed `number`.",
+        "`switch (s.kind)` is the idiomatic form — each `case` narrows the object inside that clause automatically.",
+        "Why literal types matter: `kind: string` narrows nothing; use `kind: 'circle'` in the type, or `as const` on object literals so the tag isn't widened to `string`.",
+        "Discriminants can be booleans or enums too: `{ ok: true; data: T } | { ok: false; error: E }` is a discriminated union on `ok`.",
+        "Real-world shape: async state — `type State<T> = { status: 'idle' } | { status: 'loading' } | { status: 'success'; data: T } | { status: 'error'; error: Error }`.",
+        "This design makes illegal states unrepresentable: you cannot have `status: 'loading'` while also holding `data`, which a single optional-fields interface would allow.",
+        "Anti-pattern it replaces: `interface State { loading?: boolean; data?: T; error?: Error }` — every field optional, every access needs a null check, invalid combinations compile fine.",
+        "Nested discriminants work: TypeScript narrows on `msg.payload.type` as well, as long as each level is a literal union."
+      ]
+    },
+    {
+      "title": "Type Predicates: Writing Your Own Guards",
+      "points": [
+        "Syntax: a function whose return type is `param is Type` — `function isString(x: unknown): x is string { return typeof x === 'string' }`.",
+        "The predicate parameter must be one of the function's own parameters, named exactly; `this is Type` is also legal on methods.",
+        "At the call site, a `true` result narrows the argument to `Type`; a `false` result narrows it to the complement in the `else` branch.",
+        "Use case 1 — reusable checks: `function isDefined<T>(v: T | null | undefined): v is T { return v != null }` then `arr.filter(isDefined)` gives `T[]` instead of `(T | null)[]`.",
+        "Use case 2 — validating unknown input at the boundary: parsing JSON, reading env vars, handling `postMessage` payloads.",
+        "Code example: `function isUser(v: unknown): v is User { return typeof v === 'object' && v !== null && 'id' in v && typeof (v as User).id === 'string' }`.",
+        "DANGER: predicates are unchecked promises. The compiler does not verify your body actually proves the claim — `function isUser(x: unknown): x is User { return true }` compiles.",
+        "Therefore treat every predicate body as security-critical code and unit-test it with both valid and invalid inputs.",
+        "Predicates compose: build `isNonEmptyArray`, `isRecord`, `isOneOf` and combine, rather than writing one giant validator.",
+        "Alternative to hand-writing: schema libraries (zod, valibot, io-ts) generate the guard and the type together, eliminating the drift risk.",
+        "TypeScript 5.5+ infers predicates automatically for simple one-expression functions, so `const isNum = (x: unknown) => typeof x === 'number'` may narrow without an explicit annotation — but annotate anyway for clarity and for older targets."
+      ]
+    },
+    {
+      "title": "Assertion Functions & `asserts` Signatures",
+      "points": [
+        "Syntax: `function assertIsString(x: unknown): asserts x is string { if (typeof x !== 'string') throw new TypeError('not a string') }`.",
+        "Difference from a predicate: a predicate RETURNS a boolean you branch on; an assertion THROWS and narrows everything after the call, with no branch needed.",
+        "Example: `assertIsString(input); input.toUpperCase();` — the second line type-checks because the call site narrows the rest of the scope.",
+        "Bare form `asserts x` (no `is Type`) narrows away `null`/`undefined`/falsy — the typing for a classic `invariant(cond, msg)` helper.",
+        "Hard requirement: an assertion function must have an EXPLICIT type annotation at the call site's binding. `const assert = (x: unknown): asserts x is string => {...}` fails — TypeScript requires an explicit type on the const, or use a `function` declaration.",
+        "Assertion functions cannot be arrow functions assigned without annotation, and cannot be methods accessed dynamically — the compiler must see the declaration statically.",
+        "Use it at trust boundaries where continuing with bad data is meaningless: config loading, startup checks, invariants inside algorithms.",
+        "Don't use it for expected control flow — throwing for a normal 'user typed the wrong thing' case is worse than returning a discriminated result.",
+        "Node's `assert` module and libraries like `tiny-invariant` ship `asserts` signatures, so importing them narrows for free.",
+        "Trade-off vs predicates: assertions produce shorter code, but hide a throw at every call site — worse for exhaustive error handling, better for genuine invariants."
+      ]
+    },
+    {
+      "title": "`never` and Compile-Time Exhaustiveness",
+      "points": [
+        "`never` is the bottom type: the type with zero possible values. It is assignable TO every type, and nothing (except `never`) is assignable to it.",
+        "Where `never` appears naturally: functions that always throw or never return (`function fail(): never`), the type of an impossible narrowing, and `Exclude<'a'|'b', 'a'|'b'>`.",
+        "The exhaustiveness idiom: in the `default` case of a switch over a discriminated union, assign the variable to a `never`-typed binding.",
+        "Canonical helper: `function assertNever(x: never): never { throw new Error('Unhandled: ' + JSON.stringify(x)) }`.",
+        "Full example: `switch (s.kind) { case 'circle': ...; case 'square': ...; default: return assertNever(s) }` — if you later add `'rect'` to `Shape`, the default case fails to compile.",
+        "Why this is the payoff of discriminated unions: adding a union member turns into a list of compile errors at every place that must handle it, instead of a silent runtime fallthrough.",
+        "`never` in a union is absorbed: `string | never` simplifies to `string`. This is why an over-narrowed variable silently becomes `never` rather than erroring at the guard.",
+        "Debugging tip: if a property access errors with 'Property x does not exist on type never', you have contradictory guards — you narrowed the union down to nothing.",
+        "`never[]` is the type of `[]` inferred without context — a common source of 'not assignable to never' errors when pushing into an untyped empty array.",
+        "Distributive conditional types use `never` to filter: `type NonNull<T> = T extends null | undefined ? never : T` removes members from a union.",
+        "Keep the runtime `throw` in `assertNever` — the compile-time check protects your code, not data arriving from a server that's ahead of your build."
+      ]
+    },
+    {
+      "title": "Choosing a Guard: Comparison Table",
+      "points": [
+        "typeof — narrows: primitives + function/object. Runtime cost: free. Works on interfaces: no. Cross-realm safe: yes. Best for: `string | number | undefined` unions.",
+        "instanceof — narrows: class instances via prototype chain. Runtime cost: prototype walk. Works on interfaces: no. Cross-realm safe: NO. Best for: error hierarchies, class-based domain models.",
+        "`in` operator — narrows: by declared property name. Runtime cost: prototype-chain key lookup. Works on interfaces: yes. Cross-realm safe: yes. Best for: quick shape splits with no tag available.",
+        "Discriminant check (`===` on a literal tag) — narrows: exact union member. Runtime cost: one comparison. Works on interfaces: yes. Cross-realm safe: yes. Best for: modeled domain state. THE default choice.",
+        "Type predicate (`x is T`) — narrows: anything you can express. Runtime cost: whatever you write. Correctness: UNVERIFIED by the compiler. Best for: validating `unknown` at boundaries.",
+        "Assertion function (`asserts x is T`) — narrows: rest of the scope, no branch. Throws on failure. Best for: invariants and startup checks.",
+        "Truthiness (`if (x)`) — narrows: removes all falsy members. Hazard: silently eats `0` and `''`. Best for: object-or-nullish only.",
+        "Decision rule 1: data you own and model → discriminated union, always.",
+        "Decision rule 2: data crossing a trust boundary (network, storage, user) → type predicate or schema validator, never `as`.",
+        "Decision rule 3: errors and class instances within one realm → `instanceof`; across realms or package copies → tag check.",
+        "Decision rule 4: nullish handling → `!= null` or explicit `!== undefined`, not truthiness.",
+        "Escape hatch ranking, best to worst: narrowing > predicate > `as` > `as unknown as` > `@ts-ignore`."
+      ]
+    },
+    {
+      "title": "Where Narrowing Silently Breaks",
+      "points": [
+        "Callback invalidation: narrowing is lost inside a callback because the compiler can't prove when it runs. `if (x) { arr.forEach(() => x.foo()) }` errors on `x` possibly undefined.",
+        "Fix for callbacks: copy to a `const` first — `const v = x; if (v) arr.forEach(() => v.foo())` — a `const` narrowing survives into closures.",
+        "`let` vs `const`: narrowing on a `let` is invalidated by any assignment in the flow; `const` bindings hold their narrowed type indefinitely.",
+        "Function call invalidation: `if (obj.a) { mutate(); obj.a.foo() }` — TypeScript does NOT re-widen after arbitrary calls for properties (a known unsoundness), so this compiles but can crash. Copy the property to a local.",
+        "Aliasing: narrowing a property (`obj.a.b`) is discarded if any part of the path could have been reassigned; destructure into locals to make it stick.",
+        "Discriminant widened to `string`: passing an object literal into a `string`-typed parameter or storing it without `as const` loses the literal tag and kills narrowing.",
+        "Optional discriminants: `kind?: 'circle'` includes `undefined` in the tag union and breaks exhaustiveness. Make discriminants required.",
+        "Non-literal comparison: `if (s.kind === someVar)` doesn't narrow unless `someVar` has a literal type.",
+        "Array element narrowing doesn't persist: `if (arr[0] === 'x')` does not narrow `arr[0]` at a later index access — TypeScript can't prove the array wasn't mutated (except with `noUncheckedIndexedAccess` awareness).",
+        "Generic type parameters resist narrowing: inside `function f<T>(x: T)`, guards narrow the value but not `T` itself; you often need overloads or a conditional return type.",
+        "`any` destroys narrowing: any value typed `any` passes every guard and produces no useful narrowed type. Use `unknown` for untrusted input so the compiler forces you to narrow.",
+        "Excess property checks are not narrowing — a wider object still satisfies a union member structurally, so `in` checks on overlapping shapes can pick the wrong branch."
+      ]
+    },
+    {
+      "title": "Advanced Patterns & Trade-offs",
+      "points": [
+        "Narrowing generic unions: pair a type predicate with a generic — `function isKind<K extends Shape['kind']>(s: Shape, k: K): s is Extract<Shape, { kind: K }> { return s.kind === k }`.",
+        "`Extract<Union, Shape>` and `Exclude<Union, Shape>` are the type-level equivalents of the positive and negative branches of a guard.",
+        "Branded/nominal types: `type UserId = string & { __brand: 'UserId' }` plus a predicate gives you validated-at-the-boundary values that can't be swapped with a raw string.",
+        "The Result pattern: `type Result<T, E> = { ok: true; value: T } | { ok: false; error: E }` — narrowing replaces try/catch and makes error handling exhaustive.",
+        "Exhaustive lookup alternative to switch: `const handlers: { [K in Shape['kind']]: (s: Extract<Shape, {kind: K}>) => number }` — the mapped type forces every case at compile time with no `assertNever` needed.",
+        "Trade-off — discriminated unions vs class hierarchies: unions centralize behavior in switches (easy to add operations, painful to add cases); classes centralize per-case (easy to add cases, painful to add operations). This is the expression problem.",
+        "Trade-off — validation cost: a full runtime schema check on every API response costs real CPU on large payloads; validate at the boundary once, then trust the narrowed type inward.",
+        "Performance of the checks themselves: a tag `===` is the cheapest; `in` and `instanceof` walk the prototype chain; a deep recursive validator is O(size of payload).",
+        "Compile-time cost: very large unions (hundreds of members) with many narrowing sites are a known type-checker slowdown; prefer nesting unions or splitting modules.",
+        "`satisfies` complements narrowing: `const config = {...} satisfies Config` keeps literal types (so discriminants stay narrow) while still checking against the target type — `as Config` would widen them.",
+        "Prefer parse-don't-validate: return a NEW narrowed type from your boundary function rather than returning a boolean about the old one."
+      ]
+    },
+    {
+      "title": "Summary & Cheat Sheet",
+      "points": [
+        "The one-line model: narrowing = the compiler reading the same runtime checks a human reads, and updating the type accordingly.",
+        "Primitives → `typeof`. Classes → `instanceof`. Plain objects you model → discriminant tag. Unknown input → type predicate. Invariants → `asserts`. Impossible cases → `never`.",
+        "Always model state as a discriminated union instead of an interface full of optional fields — it makes illegal states unrepresentable.",
+        "Always close a `switch` over a union with `default: return assertNever(x)` so adding a case becomes a compile error, not a runtime bug.",
+        "Always type untrusted input as `unknown`, never `any` — `unknown` forces the guard, `any` skips it.",
+        "Remember the three classic traps: `typeof null === 'object'`, truthiness swallowing `0` and `''`, and narrowing lost inside callbacks.",
+        "Copy narrowed values into `const` locals before using them in closures or after function calls.",
+        "Type predicates are promises the compiler can't check — test them like production code, or generate them from a schema.",
+        "Prefer narrowing over `as`: an assertion silences the compiler, a guard convinces it.",
+        "Enable `strict`, `strictNullChecks`, and `useUnknownInCatchVariables` — narrowing is only valuable when the compiler was going to complain in the first place.",
+        "Final check for any union you write: can I name the tag, can I switch on it exhaustively, and does adding a member break the build in every place it should?"
+      ]
+    }
+  ]
+}

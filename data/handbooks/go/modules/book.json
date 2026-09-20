@@ -1,0 +1,206 @@
+{
+  "title": "Go Modules: The Field Handbook",
+  "summary": "A dense, page-by-page tour of Go's module system — go.mod and go.sum mechanics, semantic import versioning, the MVS algorithm, replace/exclude/retract directives, workspaces, vendoring, and build tags. Covers internals, day-to-day commands, trade-offs, and the mistakes that break builds.",
+  "chapters": [
+    {
+      "title": "Why Modules Exist",
+      "points": [
+        "A module is a collection of packages versioned as one unit, rooted at the directory holding go.mod",
+        "Before modules: GOPATH forced all code into $GOPATH/src/<import path>, one global version per dependency",
+        "GOPATH had no version records — `go get` always fetched master, so builds were not reproducible",
+        "dep, glide, godep, govendor were community band-aids; modules (Go 1.11, default in 1.16) replaced them all",
+        "Module path = the import prefix for every package in the module, e.g. `github.com/user/repo`",
+        "Package import path = module path + subdirectory: module `example.com/m` + dir `util` = `example.com/m/util`",
+        "Module path must be resolvable by the go command: a URL for public repos, or a private path covered by GOPRIVATE",
+        "`go mod init example.com/m` creates go.mod; init infers the path from VCS remote or vendor config when omitted",
+        "Modules are self-contained: code can live anywhere on disk, not just in GOPATH",
+        "GOPATH still exists but only holds the module cache ($GOPATH/pkg/mod) and installed binaries ($GOPATH/bin)",
+        "GO111MODULE values: `on` (default since 1.16), `off` (legacy GOPATH mode), `auto` (module mode only inside a module tree)",
+        "A repo can hold multiple modules (nested go.mod files); the innermost go.mod wins for a given package",
+        "Build reproducibility is the core promise: same go.mod + go.sum + Go version = same bits",
+        "Modules are the unit of versioning, dependency, and distribution — not the unit of compilation (packages are)"
+      ]
+    },
+    {
+      "title": "Anatomy of go.mod",
+      "points": [
+        "`module example.com/m` — declares the module path; changing it changes every consumer's import path",
+        "`go 1.22` — the language version line; gates language features and toolchain behavior, NOT a minimum runtime",
+        "Since Go 1.21 the `go` line is a hard requirement: a newer `go` line makes older toolchains refuse to build",
+        "`toolchain go1.22.3` — the toolchain the go command switches to when the local one is older (Go 1.21+)",
+        "`require example.com/dep v1.4.2` — a direct or indirect dependency at a minimum version",
+        "`// indirect` marks a requirement not imported by this module's own packages",
+        "Indirect entries appear when a dependency lacks its own go.mod, or to record a version bumped by MVS",
+        "`exclude example.com/dep v1.4.1` — pretend that one version does not exist during selection",
+        "`replace old => new` — swap a module's source or version, main-module only",
+        "`retract v1.2.0` — the module author's own withdrawal of a published version",
+        "Block form groups directives: `require ( ... )` with one module per line",
+        "go.mod is line-oriented and machine-edited: `go mod edit -require=`, `-droprequire=`, `-replace=`, `-go=`",
+        "Comments after directives survive `go mod tidy`; free-form ordering does not — tidy sorts and regroups",
+        "Every `require` line is a MINIMUM, never a pin and never a maximum",
+        "go.mod must be committed; it is the source of truth the build reads before touching the network"
+      ]
+    },
+    {
+      "title": "Versions and Pseudo-Versions",
+      "points": [
+        "Versions follow SemVer: vMAJOR.MINOR.PATCH, always with a leading `v`",
+        "MAJOR = breaking change, MINOR = backwards-compatible feature, PATCH = backwards-compatible fix",
+        "Prerelease suffix: `v1.2.0-beta.1` sorts BEFORE `v1.2.0` and is never chosen by @latest",
+        "Build metadata `+incompatible` marks a v2+ tag from a repo with no go.mod at that major version",
+        "Pseudo-version = synthetic version for an untagged commit: `v0.0.0-20230518120500-abcdef123456`",
+        "Pseudo-version format: base version, UTC commit timestamp `yyyymmddhhmmss`, 12-char commit hash",
+        "Three pseudo-version shapes: no prior tag (`v0.0.0-`), after a prerelease (`v1.2.3-0.2023...`), after a release (`v1.2.4-0.2023...`)",
+        "Pseudo-versions sort below the next real tag, so a real release always wins over a commit-of-the-day",
+        "`v0.x.y` carries no compatibility promise — the ecosystem treats every v0 minor as potentially breaking",
+        "`@latest` = highest release tag, ignoring prereleases and retracted versions",
+        "Other query forms: `@v1.4.2`, `@upgrade`, `@patch`, `@none`, `@<branch>`, `@<commit>`, `@master`",
+        "`go get example.com/dep@none` removes the requirement entirely",
+        "Tags must be pushed to be usable — a local tag is invisible to the proxy and to `go get`",
+        "Unstable-looking version, stable rule: version strings are compared field-by-field numerically, not lexically"
+      ]
+    },
+    {
+      "title": "Semantic Import Versioning",
+      "points": [
+        "The rule: major version 2 and above must appear in the module path — `example.com/m/v2`",
+        "The reason: two incompatible majors are two different modules, so both can coexist in one build",
+        "Import compatibility rule: if an import path is unchanged, the package must be backwards compatible",
+        "v0 and v1 share the bare path — `example.com/m` covers both; no `/v1` suffix exists",
+        "Releasing v2: bump the module line to `module example.com/m/v2`, rewrite every internal self-import to `/v2`, tag `v2.0.0`",
+        "Two release layouts: major-version branch (tag v2.0.0 on branch), or major subdirectory (`/v2/go.mod`, tag `v2/v2.0.0`)",
+        "Subdirectory layout lets one commit hold several majors; branch layout keeps history linear",
+        "`+incompatible`: a v2+ tag WITHOUT a go.mod gets `v2.0.0+incompatible` and is treated as pre-modules code",
+        "A module cannot have both `v2.0.0` and `v2.0.0+incompatible` semantics — adding go.mod at v2 supersedes the incompatible path",
+        "One build may contain `example.com/m v1.5.0` and `example.com/m/v2 v2.1.0` simultaneously — separate packages, separate types",
+        "Consequence: a type from v1 is NOT assignable to the same-named type from v2; conversion code is on you",
+        "Diamond dependency across majors is legal and common — libraries can migrate independently",
+        "Common mistake: tagging v2.0.0 without changing the module path — consumers get `+incompatible` or a `go.mod has post-v1 module path` error",
+        "Error to memorize: \"module declares its path as X but was required as Y\" = path/major mismatch",
+        "Gradual migration path: keep v1 alive with fixes, ship v2 as a new module, deprecate v1 with `// Deprecated:` and `retract`"
+      ]
+    },
+    {
+      "title": "MVS: How Versions Get Picked",
+      "points": [
+        "Minimal Version Selection: the build uses the MINIMUM version that satisfies all requirements, not the maximum",
+        "Algorithm: walk the module requirement graph from the main module, collect every required version of each module, keep the highest of those",
+        "\"Highest of the minimums\" — not \"highest available\", which is what npm/Cargo-style solvers do",
+        "MVS is deterministic and needs no solver, no lockfile-driven backtracking, and no SAT search",
+        "Adding a new dependency never silently upgrades unrelated modules — versions only move when you move them",
+        "Result: builds are stable over time; a new upstream release does not change your build until you ask",
+        "Trade-off: you may sit on an old version far longer than intended, missing fixes — upgrading is an explicit chore",
+        "Trade-off: no version ranges or constraint expressions, so no \"<2.0\" caps; conflicts are resolved by upgrading, never downgrading",
+        "Module graph pruning (Go 1.17+): for deps whose go.mod says `go 1.17` or later, only their direct deps' go.mod files are loaded",
+        "Pruning makes the graph small and the load fast; the price is more `// indirect` lines recorded in your go.mod",
+        "`go mod graph` prints the full requirement edge list `from@version to@version`",
+        "`go list -m all` prints the selected version of every module in the build list",
+        "`go mod why -m example.com/dep` explains the shortest import path that keeps a module in the build",
+        "Downgrading with `go get dep@v1.2.0` may force downgrades of modules that required a higher version",
+        "Upgrade commands: `go get -u ./...` (minor+patch), `go get -u=patch ./...` (patch only), `go get dep@latest` (one module)"
+      ]
+    },
+    {
+      "title": "go.sum, Proxy, and Checksum Database",
+      "points": [
+        "go.sum records cryptographic hashes for every module version in the graph — it is NOT a lockfile",
+        "Two lines per module: one for the module zip (`h1:...`) and one for its go.mod (`/go.mod h1:...`)",
+        "`h1:` is a base64 SHA-256 of a sorted file-hash listing inside the zip",
+        "Verification: any downloaded content whose hash differs from go.sum aborts the build with a SECURITY ERROR",
+        "\"checksum mismatch\" means the upstream content changed for a fixed version — investigate, do not blindly delete go.sum",
+        "GOPROXY default: `https://proxy.golang.org,direct` — try the proxy, then fall back to the origin VCS",
+        "The proxy is an immutable cache: once a version is fetched, deleted upstream tags still resolve",
+        "GONOPROXY / GOPRIVATE bypass the proxy for matching path prefixes (comma-separated glob patterns)",
+        "GONOSUMDB / GONOSUMCHECK are obsolete names; use GONOSUMDB's successor GONOSUMCHECK→`GONOSUMDB`→ current `GONOSUMDB`/`GOPRIVATE` + `GONOSUMDB` — practically: set `GOPRIVATE` and it sets both",
+        "GOSUMDB default `sum.golang.org` is a transparency log; `GOFLAGS=-mod=mod` and `GONOSUMDB` do not disable it — `GONOSUMDB`/`GOPRIVATE` do",
+        "`GOFLAGS=-mod=readonly` is the default since 1.16: the build fails instead of editing go.mod for you",
+        "Module cache lives at `$GOPATH/pkg/mod`, read-only on disk; `go clean -modcache` wipes it",
+        "`GOMODCACHE` relocates the cache; `GOFLAGS`, `GONOSUMDB`, `GOPRIVATE` are all readable via `go env`",
+        "`go mod verify` re-hashes everything in the cache against go.sum",
+        "`go mod download` pre-populates the cache — the standard CI warm-up step before the build",
+        "Always commit go.sum; deleting it and regenerating trusts whatever the network serves today"
+      ]
+    },
+    {
+      "title": "replace, exclude, retract, and Workspaces",
+      "points": [
+        "`replace example.com/dep => ../local/dep` — point a dependency at a local directory for live editing",
+        "`replace example.com/dep => example.com/fork v1.4.2` — swap in a fork by module path and version",
+        "`replace example.com/dep v1.4.1 => example.com/dep v1.4.2` — replace one specific version only",
+        "replace directives in NON-main modules are ignored; only the main module's replaces apply",
+        "Consequence: publishing a library with a local-path replace breaks every consumer — strip it before tagging",
+        "A filesystem replace target must contain its own go.mod, and its own requirements still feed MVS",
+        "replace does not change the import path in your source — code still imports the original path",
+        "`exclude example.com/dep v1.4.1` — skip a known-bad version; MVS picks the next higher one",
+        "exclude is also main-module-only and is rarely the right tool — prefer bumping the require line",
+        "`retract v1.3.0` / `retract [v1.0.0, v1.2.0]` — the AUTHOR withdraws versions; add a `// reason` comment",
+        "Retracted versions stop appearing in `@latest` and `go list -m -versions`, but remain fetchable if pinned",
+        "Retraction is published in a NEW higher version's go.mod — you cannot retract without releasing again",
+        "Workspaces (Go 1.18+): `go work init ./a ./b` creates go.work listing multiple local modules",
+        "go.work is the multi-repo replacement for scattered replace directives — and should be gitignored for personal setups",
+        "go.work directives: `use ./dir`, `replace`, `go`; `GOWORK=off` disables workspace mode for one command",
+        "Precedence: go.work replace > main go.mod replace > require"
+      ]
+    },
+    {
+      "title": "Vendoring",
+      "points": [
+        "`go mod vendor` copies every package needed to build and test the main module into `./vendor`",
+        "Only packages actually imported are copied — not whole modules, and not tests of dependencies",
+        "`vendor/modules.txt` records module paths, versions, `## explicit` markers, and go versions",
+        "modules.txt is verified for consistency against go.mod; a stale mismatch fails the build",
+        "Auto-detection: if `./vendor/modules.txt` exists and the go line is 1.14+, `-mod=vendor` is the default",
+        "In vendor mode the network and the module cache are never touched — no proxy, no go.sum verification",
+        "Force either way: `go build -mod=vendor` or `go build -mod=mod`",
+        "Pros: hermetic builds, works offline, survives upstream deletion, whole dependency diff is reviewable in PRs",
+        "Cons: repo bloat, noisy diffs, must re-run `go mod vendor` after every dependency change, easy to drift",
+        "Vendoring is the answer for airgapped builds and vendor-review compliance; a private proxy (Athens, Artifactory) is the modern alternative",
+        "`go mod vendor` drops non-Go assets not needed to build, which breaks deps relying on embedded testdata or generated files",
+        "Vendored trees do NOT apply replace directives afresh — replaces are resolved at vendor time and baked in",
+        "CI check: run `go mod vendor && git diff --exit-code vendor/` to catch out-of-date vendor dirs",
+        "Vendor and workspaces interact poorly: `go work vendor` (Go 1.22+) vendors a whole workspace"
+      ]
+    },
+    {
+      "title": "Build Tags and Conditional Compilation",
+      "points": [
+        "Modern syntax: `//go:build linux && amd64` on its own line, above package, followed by a blank line",
+        "Legacy syntax: `// +build linux,amd64` — comma = AND, space = OR, `!` = NOT; Go 1.17+ writes both, 1.18+ needs only the new one",
+        "`gofmt` synchronizes the two forms automatically — never hand-edit only one",
+        "The constraint must appear before the package clause with nothing but blank lines and other comments between",
+        "Filename-based constraints are implicit: `file_linux.go`, `file_amd64.go`, `file_linux_amd64.go`, `file_windows_test.go`",
+        "Recognized filename suffixes are GOOS and GOARCH values only — `foo_prod.go` is NOT a constraint",
+        "Boolean grammar in the new form: `&&`, `||`, `!`, parentheses — a real expression, unlike the old comma syntax",
+        "Custom tags come from `go build -tags=integration,jsoniter` (comma-separated, or space-separated in older Go)",
+        "Implicit tags always available: GOOS, GOARCH, `unix` (1.19+), `cgo`, `gc`/`gccgo`, and every `go1.N` up to the current release",
+        "`go1.21` style tags are cumulative: a `go1.21` tag is satisfied by Go 1.22, so it means \"1.21 or later\"",
+        "`//go:build ignore` is a convention, not magic — `ignore` is simply a tag nobody sets, so the file is skipped",
+        "Classic use: `//go:build ignore` on a `gen.go` run via `go run gen.go` from a `//go:generate` line",
+        "Excluded files are invisible to the compiler AND to `go mod tidy`'s import scan — their imports may vanish from go.mod",
+        "Fix for that: `go mod tidy` considers all build tags for GOOS/GOARCH but NOT custom tags — keep tools in a `tools.go` with a build tag plus explicit imports",
+        "`go list -tags=integration ./...` and `go vet -tags=...` must be given the same tags or they analyze a different program",
+        "Common mistake: missing blank line after `//go:build` makes it a doc comment, silently compiling the file everywhere"
+      ]
+    },
+    {
+      "title": "Workflow, Pitfalls, and Cheat Sheet",
+      "points": [
+        "Daily loop: edit imports, run `go mod tidy`, review the go.mod diff, commit go.mod and go.sum together",
+        "`go mod tidy` adds every missing requirement and removes every unused one — it is the only correct way to prune",
+        "`go mod tidy -go=1.21` rewrites the go line and re-prunes the graph for that version's rules",
+        "`go get` (Go 1.22+) only edits dependencies; use `go install pkg@version` to install binaries",
+        "`go install example.com/cmd/tool@latest` builds a tool ignoring the current module's go.mod entirely",
+        "Pin build tools by importing them in a `tools.go` guarded with `//go:build tools`, so tidy keeps their versions",
+        "CI recipe: `go mod download` then `go build ./...` then `go test ./...` with `-mod=readonly` (the default)",
+        "CI guard: `go mod tidy && git diff --exit-code go.mod go.sum` fails the build on an untidy tree",
+        "Pitfall: committing a local `replace ... => ../x` — works for you, breaks everyone; use go.work instead",
+        "Pitfall: `missing go.sum entry; to add it: go mod download <mod>` — means go.sum is stale, not that the dep is missing",
+        "Pitfall: private repos over HTTPS need `GOPRIVATE=github.com/org/*` plus a git credential helper or `insteadOf` SSH rewrite",
+        "Pitfall: force-pushing a tag — the proxy already cached the old content, producing a checksum mismatch for everyone",
+        "Pitfall: `go get -u ./...` bumps everything at once; prefer targeted upgrades and read release notes",
+        "Debugging trio: `go list -m all` (what is selected), `go mod why -m X` (why it is here), `go mod graph` (who required it)",
+        "Summary: go.mod = minimums, go.sum = integrity, MVS = highest-of-minimums, /vN = major in path, vendor = hermetic copy, build tags = which files even exist"
+      ]
+    }
+  ]
+}

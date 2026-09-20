@@ -1,0 +1,965 @@
+{
+  "brand": "iolar",
+  "template": "margin-qa",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA PRODUCERS",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "The Producer Path: What Send Actually Does",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Send Is Asynchronous",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`KafkaProducer` is thread-safe — one instance per app",
+            "`send()` returns `Future<RecordMetadata>`, no broker hit",
+            "Caller thread: serialize, partition, append to batch",
+            "Sender (I/O) thread: group by broker, write the socket"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "Future<RecordMetadata> f = p.send(rec);",
+            "// returns now; nothing on the wire yet",
+            "RecordMetadata m = f.get();  // blocks",
+            "m.offset();  // broker-assigned position"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Five Stages Of A Send"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "serialize",
+              "partition",
+              "accumulate",
+              "Sender groups",
+              "ProduceRequest"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`RecordAccumulator`: deque of batches per TopicPartition",
+            "Pool sized by `buffer.memory`, default 32 MB",
+            "Serializers make `byte[]`; broker stores opaque bytes",
+            "Success gives topic, partition, offset, timestamp"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Partitioner Rules"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Case",
+            "Target",
+            "Note"
+          ],
+          "rows": [
+            [
+              "explicit partition",
+              "that one",
+              "beats everything"
+            ],
+            [
+              "key present",
+              "`murmur2(key) % N`",
+              "same key, same part"
+            ],
+            [
+              "key is null",
+              "sticky partitioner",
+              "default since 2.4"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sticky fills one partition's batch, then switches",
+            "Bigger batches, lower latency, even long-run spread"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "The Producer Path: What Send Actually Does (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Callbacks And Blocking"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`send(rec, (md, ex) -> ...)` — exactly one arg non-null",
+            "Callback runs on the Sender thread: never block in it",
+            "Slow work there stalls sends for every partition",
+            "`send().get()` is ~100x slower — batching collapses"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Gotcha: the useless try/catch",
+          "text": "A `try/catch` around `send()` catches only serialization and buffer-full errors. Broker-side failures never appear there — they arrive in the callback or the future."
+        },
+        {
+          "type": "heading",
+          "text": "Shutdown"
+        },
+        {
+          "type": "qa",
+          "q": "`flush()` or `close()`?",
+          "a_bullets": [
+            "`flush()` blocks until all buffered records complete",
+            "`close()` flushes, then releases the connection",
+            "Skipping `close()` drops the whole accumulator"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Dial",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`acks` = how many replicas confirm before the broker replies",
+            "`acks=all` is the same value as `acks=-1`",
+            "Default `acks=all` since Kafka 3.0 with idempotence on",
+            "Older clients defaulted to `acks=1`"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "acks",
+            "Waits for",
+            "Failure result"
+          ],
+          "rows": [
+            [
+              "`0`",
+              "nothing",
+              "silent loss, offset -1"
+            ],
+            [
+              "`1`",
+              "leader log write",
+              "loss on leader failover"
+            ],
+            [
+              "`all`",
+              "all ISR fetch",
+              "loss only on full ISR loss"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "acks=all Is Not Enough"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pair it with `min.insync.replicas` or 'all ISR' means 'the leader'",
+            "`min.insync.replicas=2` with RF=3 is the standard safe triple",
+            "Tolerates one broker down, rejects writes at two down",
+            "ISR below minISR: broker throws `NotEnoughReplicasException`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "An error beats silence",
+          "text": "`NotEnoughReplicasException` reaches the producer, so a write that cannot be made durable fails loudly instead of vanishing."
+        },
+        {
+          "type": "heading",
+          "text": "What acks Does Not Do"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`acks=all` waits for page cache, not `fsync` to disk",
+            "Durability here is replication, not flush",
+            "`unclean.leader.election.enable=true` silently defeats it",
+            "An out-of-sync replica becoming leader truncates acked writes"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "acks: The Durability Dial",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "acks=1",
+                "lines": [
+                  "one leader write",
+                  "lowest safe latency",
+                  "loses on failover"
+                ]
+              },
+              {
+                "title": "acks=all",
+                "lines": [
+                  "+1 follower fetch RTT",
+                  "single-digit ms in-DC",
+                  "survives leader loss"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Cost In Practice"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Throughput hit is far smaller than people assume",
+            "Batching amortizes the wait across many records",
+            "`acks=0` is incompatible with idempotence and transactions",
+            "The producer refuses to start with both configured"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Choice Table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Workload",
+            "Pick"
+          ],
+          "rows": [
+            [
+              "metrics, logs, traces",
+              "`acks=1`"
+            ],
+            [
+              "payments, orders",
+              "`acks=all`"
+            ],
+            [
+              "CDC, event sourcing",
+              "`acks=all`"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "acks=all",
+            "min.insync.replicas=2   # topic level",
+            "replication.factor=3",
+            "unclean.leader.election.enable=false"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Batch Unit",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One batch = many records for one TopicPartition",
+            "Compressed and CRC'd as a single unit",
+            "`batch.size` (16384 B) is a byte cap, not a record count",
+            "A full batch ships at once, whatever `linger.ms` says"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Race"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`linger.ms` (default 0): wait for more records before sending",
+            "`linger.ms=0` still batches while a request is in flight",
+            "Ships on whichever fires first: size full OR linger elapsed",
+            "Worst-case producer-side delay is about `linger.ms`"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "batch.size full",
+                "lines": [
+                  "byte cap reached",
+                  "send immediately",
+                  "linger ignored"
+                ]
+              },
+              {
+                "title": "linger.ms elapsed",
+                "lines": [
+                  "timer fires",
+                  "send partial batch",
+                  "bounded added delay"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Sizing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "High throughput: `batch.size=32768..131072`, `linger.ms=5..100`",
+            "Bigger batches: more throughput, better ratio, fewer requests",
+            "A record over `batch.size` gets its own oversized batch",
+            "`max.request.size` (1 MB) caps one `ProduceRequest`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "buffer.memory runs out",
+          "text": "`buffer.memory` (32 MB) is the whole accumulator pool. When exhausted, `send()` blocks up to `max.block.ms` (60s), then throws `TimeoutException`."
+        }
+      ]
+    },
+    {
+      "page_title": "Batching: batch.size and linger.ms",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Compression"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Codec",
+            "Ratio",
+            "CPU"
+          ],
+          "rows": [
+            [
+              "`gzip`",
+              "good",
+              "high"
+            ],
+            [
+              "`snappy`",
+              "middle",
+              "low"
+            ],
+            [
+              "`lz4`",
+              "fair",
+              "lowest"
+            ],
+            [
+              "`zstd`",
+              "best",
+              "moderate"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Applied per batch, so bigger batches compress much better",
+            "Broker stores the compressed batch as-is; consumers decompress",
+            "Saves disk and network end to end",
+            "Broker `message.max.bytes` must be >= `max.request.size`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Gotcha: broker recompression",
+          "text": "If the broker's `compression.type` differs from the producer's, it decompresses and recompresses every batch, burning broker CPU. Set the broker side to `producer`."
+        },
+        {
+          "type": "heading",
+          "text": "Metrics To Watch"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`batch-size-avg` — are batches actually filling up?",
+            "`records-per-request-avg` — amortization per round trip",
+            "`compression-rate-avg` — is the codec paying off?",
+            "`record-queue-time-avg` — accumulator backing up"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "batch.size=131072",
+            "linger.ms=20",
+            "compression.type=lz4",
+            "buffer.memory=67108864  # 64 MB"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Time, Not Count",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`retries` defaults to `Integer.MAX_VALUE` in modern clients",
+            "The retry count is no longer the real bound — time is",
+            "`delivery.timeout.ms` (120s) is the true upper bound on `send()`",
+            "It covers batching, every retry and every in-flight attempt"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Startup invariant",
+          "text": "`delivery.timeout.ms >= linger.ms + request.timeout.ms`. The producer refuses to start otherwise, so a bad tuning attempt fails fast."
+        },
+        {
+          "type": "heading",
+          "text": "Timeout Map"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Config",
+            "Default",
+            "Bounds"
+          ],
+          "rows": [
+            [
+              "`delivery.timeout.ms`",
+              "120s",
+              "whole send lifecycle"
+            ],
+            [
+              "`request.timeout.ms`",
+              "30s",
+              "one attempt's reply"
+            ],
+            [
+              "`retry.backoff.ms`",
+              "100ms",
+              "gap between attempts"
+            ],
+            [
+              "`retry.backoff.max.ms`",
+              "1000ms",
+              "backoff cap, jittered"
+            ],
+            [
+              "`max.block.ms`",
+              "60s",
+              "metadata or full buffer"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Retries, Timeouts and In-Flight Requests",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`max.block.ms` also bounds `partitionsFor()`",
+            "It is unrelated to the delivery timeout — different clock"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Retriable Or Not"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Retriable",
+                "lines": [
+                  "`NotLeaderOrFollower`",
+                  "`LeaderNotAvailable`",
+                  "`NetworkException`",
+                  "`RequestTimedOut`",
+                  "`NotEnoughReplicas`"
+                ]
+              },
+              {
+                "title": "Never retriable",
+                "lines": [
+                  "`RecordTooLarge`",
+                  "`SerializationException`",
+                  "`AuthorizationException`",
+                  "`InvalidTopicException`"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "In-Flight And Ordering"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`max.in.flight.requests.per.connection` (5) is per broker",
+            "Without idempotence, in-flight > 1 plus retries can reorder",
+            "Batch 2 succeeds while retried batch 1 lands after it",
+            "The old fix, `max.in.flight=1`, crushed throughput"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Idempotence gives ordering back",
+          "text": "With `enable.idempotence=true` ordering holds up to 5 in-flight requests, so you keep pipelining and lose nothing."
+        },
+        {
+          "type": "heading",
+          "text": "Unknown Outcomes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A retry after a lost ack duplicates — the at-least-once core",
+            "Delivery timeout gives `TimeoutException` with unknown outcome",
+            "The record may already sit in the log",
+            "Retry storms hold `buffer.memory` hostage and block producers"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "delivery.timeout.ms=120000",
+            "request.timeout.ms=30000",
+            "retry.backoff.ms=100",
+            "max.in.flight.requests.per.connection=5"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "What It Buys",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`enable.idempotence=true` — on by default since Kafka 3.0",
+            "Broker-side retries stop producing duplicates",
+            "Ordering survives up to 5 in-flight requests",
+            "Cost is near zero: leave it on"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "PID And Sequences"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Producer gets a Producer ID via `InitProducerId` at startup",
+            "Issued by the transaction coordinator",
+            "Every batch carries (PID, epoch, base sequence)",
+            "Sequences increment per partition, per producer"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "seq 41",
+              "seq 42",
+              "seq 43",
+              "seq 44",
+              "seq 45",
+              "retry 43?"
+            ],
+            "caption": "broker seq window"
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Idempotent Producer: Exactly-Once Per Partition",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Broker keeps the last 5 sequences per PID per partition",
+            "Held in memory and in the log's producer state snapshot"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Dedupe Path"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Already-committed sequence: acked again, never appended",
+            "Broker returns the original offset for the deduped batch",
+            "So the callback still sees a valid `RecordMetadata`",
+            "Out-of-order sequence: `OutOfOrderSequenceException`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The server enforces order",
+          "text": "Sequence checking lives on the broker, not the client. That is exactly why `max.in.flight` up to 5 stays safe under retries."
+        },
+        {
+          "type": "heading",
+          "text": "Enforced Config"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Forced to"
+          ],
+          "rows": [
+            [
+              "`acks`",
+              "`all`"
+            ],
+            [
+              "`retries`",
+              "`> 0`"
+            ],
+            [
+              "`max.in.flight`",
+              "`<= 5`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Set automatically when idempotence is on",
+            "A conflicting explicit value throws `ConfigException`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Scope Limits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Guarantees hold per partition, per producer session",
+            "A new instance gets a new PID and loses dedupe history",
+            "Epoch bump fences a zombie: older-epoch writes rejected",
+            "Idle too long and state expires: `UNKNOWN_PRODUCER_ID`"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "enable.idempotence=true",
+            "# state ages out with segments or:",
+            "transactional.id.expiration.ms=604800000"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Not end-to-end exactly-once",
+          "text": "Idempotence kills client retry duplicates only. An application-level re-send above the client still writes the record twice."
+        },
+        {
+          "type": "heading",
+          "text": "Beyond One Partition",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Extends idempotence to an atomic set of writes",
+            "Spans many partitions and many topics at once",
+            "Set `transactional.id` to a stable, unique per-instance string",
+            "That id survives restarts and is what enables fencing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "API Sequence"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "initTransactions()",
+              "beginTransaction()",
+              "send()...",
+              "commit or abort"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Transactions: Atomic Multi-Partition Writes",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "p.initTransactions();  // once, at start",
+            "p.beginTransaction();",
+            "p.send(rec1); p.send(rec2);",
+            "p.sendOffsetsToTransaction(off, grp);",
+            "p.commitTransaction();  // or abort"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`initTransactions()` fences any prior producer with that id",
+            "It bumps the epoch and aborts the old open transaction",
+            "Coordinator writes commit/abort markers into every touched partition"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reading Transactions"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`isolation.level`",
+            "Consumer sees"
+          ],
+          "rows": [
+            [
+              "`read_uncommitted`",
+              "aborted records too (default)"
+            ],
+            [
+              "`read_committed`",
+              "committed only, up to LSO"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Reading transactional output requires opting in",
+            "LSO is the Last Stable Offset — the read ceiling",
+            "`read_committed` waits for the marker: extra end-to-end latency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Consume-Process-Produce"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`sendOffsetsToTransaction(offsets, groupMetadata)` joins the commit",
+            "The offset commit and the output writes land together",
+            "Exactly the mechanism behind `processing.guarantee=exactly_once_v2`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Limits And Errors"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`transaction.timeout.ms` (60s) <= broker max (default 15 min)",
+            "Otherwise `initTransactions()` fails at startup",
+            "Commit is a two-phase marker write — throughput cost is real",
+            "Batch many records per transaction, never commit per record"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Transactions: Atomic Multi-Partition Writes (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Fatal versus recoverable",
+          "text": "`ProducerFencedException`, `OutOfOrderSequenceException` and authorization errors are fatal: close the producer. `KafkaException` on commit is ambiguous only for retriable causes, and `abortTransaction()` is the safe response to most failures."
+        },
+        {
+          "type": "heading",
+          "text": "Three Semantics",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Semantic",
+            "Config",
+            "Trade"
+          ],
+          "rows": [
+            [
+              "at-most-once",
+              "`acks=0` or `retries=0`",
+              "no dupes, can lose"
+            ],
+            [
+              "at-least-once",
+              "`acks=all` + retries",
+              "no loss, can dupe"
+            ],
+            [
+              "exactly-once",
+              "idempotence + transactions",
+              "no loss, no dupes"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "At-most-once suits high-volume metrics only",
+            "At-least-once was the pre-0.11 default, still the pragmatic norm",
+            "Exactly-once needs `read_committed` consumers to close the loop",
+            "Idempotence covers one partition; transactions cover many"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Comparison Rows"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Latency",
+            "Durability",
+            "Dupes"
+          ],
+          "rows": [
+            [
+              "`acks=0`",
+              "lowest",
+              "none",
+              "none"
+            ],
+            [
+              "`acks=1`",
+              "low",
+              "leader only",
+              "on retry"
+            ],
+            [
+              "`all` + idem",
+              "slightly higher",
+              "ISR-wide",
+              "none"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`acks=0`: loss is likely under any failure",
+            "`acks=1`: loss on leader failover",
+            "`all` + idempotence: loss only on total ISR loss"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where Kafka Stops"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Exactly-once processing inside Kafka, not delivery outside it",
+            "An external DB sink still needs idempotent upserts",
+            "Or a dedupe key, or the transactional outbox pattern"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The consumer decides too",
+          "text": "Commit offsets before processing and you have at-most-once; commit after and you have at-least-once. Producer config alone does not set the semantics."
+        },
+        {
+          "type": "heading",
+          "text": "Idempotent Consumers"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Dedupe on a business key or on (topic, partition, offset)",
+            "Store that marker with the write itself",
+            "A duplicate only hurts if the effect is not idempotent",
+            "'set balance to X' is safe; 'add X' is not"
+          ]
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Most Kafka data loss is not a broker problem — it is a `send()` whose return value nobody read. This handbook walks the whole producer path: the two threads behind one call, what each `acks` level really waits for, how `batch.size` and `linger.ms` race each other, and why `enable.idempotence=true` is free correctness. Ten pages of dense notes, config recipes and the invariants worth memorizing.",
+    "hashtags": [
+      "#kafka",
+      "#apachekafka",
+      "#distributedsystems",
+      "#backendengineering",
+      "#systemdesign",
+      "#dataengineering",
+      "#eventdriven",
+      "#softwareengineering",
+      "#devops",
+      "#javadeveloper",
+      "#streamprocessing",
+      "#codingnotes"
+    ]
+  }
+}

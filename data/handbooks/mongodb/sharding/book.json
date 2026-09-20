@@ -1,0 +1,196 @@
+{
+  "title": "MongoDB Sharding: From Shard Keys to Balanced Clusters",
+  "summary": "A dense field guide to horizontal scaling in MongoDB — how a sharded cluster is wired together, how shard keys turn documents into chunks, how the balancer keeps data even, and why query routing (targeted vs scatter-gather) makes or breaks your key choice. Ends with a decision framework and the mistakes that force expensive resharding.",
+  "chapters": [
+    {
+      "title": "Why Shard At All: Scaling Limits & Cluster Anatomy",
+      "points": [
+        "Vertical scaling (bigger box) hits a hard ceiling in RAM, IOPS, and cost-per-GB; sharding scales horizontally across commodity nodes",
+        "Sharding is for capacity problems: working set > RAM of one node, write throughput > one primary's capacity, or dataset > single-server disk",
+        "Replication ≠ sharding: replica sets give HA and read scaling of the *same* data; sharding partitions *different* data across shards",
+        "Cluster has three components: shards (each itself a replica set), config servers (CSRS — a replica set storing metadata), and mongos routers",
+        "mongos is stateless: it caches routing tables from config servers and forwards ops; you run many mongos, typically one per app server",
+        "Config servers store the authoritative chunk map: collection → shard key ranges → owning shard, in config.chunks and config.collections",
+        "Since MongoDB 3.4 config servers must be a replica set (CSRS); the legacy 3-mirror SCCC mode is gone",
+        "A sharded collection's data lives only on shards; unsharded collections in a sharded DB live on that DB's primary shard",
+        "Rule of thumb: don't shard prematurely — sharding adds operational cost, cross-shard latency, and irreversible key decisions",
+        "Signs it's time: sustained disk-full growth curve, single primary saturated on writes, index size exceeding RAM causing page-fault storms",
+        "Shard *before* you're desperate — migrating chunks off a full node needs free disk and I/O headroom you won't have at 95% full",
+        "sh.status() prints the whole picture: shards, databases, primary shards, sharded collections, shard keys, chunk counts, and balancer state",
+        "Minimum sane production topology: 3-node CSRS + 2+ shards of 3-node replica sets + N mongos = 10+ processes",
+        "Cluster-wide reads/writes cost more hops: app → mongos → shard(s) → back; budget an extra network round trip in latency SLOs"
+      ]
+    },
+    {
+      "title": "The Shard Key: Definition, Rules & Constraints",
+      "points": [
+        "The shard key is one or more indexed fields whose value determines which chunk — and therefore which shard — a document lives on",
+        "sh.shardCollection(\"db.coll\", { userId: 1 }) shards on a single field; { tenantId: 1, createdAt: 1 } is a compound shard key",
+        "Every document must have a value for every shard key field; missing fields are only allowed as explicit nulls in some versions — never rely on it",
+        "A supporting index on the shard key prefix must exist before sharding (it's created automatically on an empty collection)",
+        "Shard key fields are immutable in value ordering semantics; since MongoDB 4.2 you *can* update a shard key value, but only inside a transaction or retryable write, and it may move the document across shards",
+        "Shard key can't be a multikey (array) index, a text index, or a geoHaystack index",
+        "Maximum shard key size was 512 bytes historically; keep keys small regardless — they're stored in every chunk boundary and index entry",
+        "Three properties decide key quality: cardinality (how many distinct values), frequency (how skewed the distribution), and monotonicity (does it always increase)",
+        "Cardinality caps parallelism: a boolean key gives at most 2 chunks-worth of ranges and can never spread over 3 shards",
+        "Frequency skew creates hot chunks: if 40% of orders belong to one whale customer, customerId alone builds a jumbo chunk",
+        "Monotonic keys (ObjectId, timestamp, auto-increment) send all inserts to the max-key chunk on one shard — the classic hotspot",
+        "Since MongoDB 5.0 you can reshardCollection to a new key, and 4.4 added refineCollectionShardKey to *append* fields to an existing key",
+        "refineCollectionShardKey only adds suffix fields — it never removes or reorders, so the original prefix still dictates routing",
+        "Unique constraints on a sharded collection are only enforceable if the unique index is prefixed by the shard key — global uniqueness on other fields is not possible"
+      ]
+    },
+    {
+      "title": "Chunks: The Unit of Distribution",
+      "points": [
+        "A chunk is a contiguous, half-open range of shard key values: [min, max) — inclusive lower bound, exclusive upper bound",
+        "The first chunk of a new sharded collection spans { $minKey: 1 } to { $maxKey: 1 } — everything on one shard",
+        "Default chunk size is 128 MB (64 MB before MongoDB 6.0); configurable per-cluster or per-collection",
+        "Chunks are a logical metadata concept, not a physical file — splitting a chunk moves no data, it only writes new boundary metadata",
+        "Chunk splitting is triggered by inserts/updates when a mongos observes a chunk has likely exceeded the size threshold (auto-split)",
+        "MongoDB 6.0+ removed auto-splitting in favor of the balancer's data-size-based migration decisions",
+        "Jumbo chunk: a chunk that can't be split because all its documents share one shard key value; it is marked jumbo and skipped by the balancer",
+        "Jumbo chunks are permanent hot spots — they pin unbounded data to one shard and are the #1 symptom of low-cardinality keys",
+        "Small chunk size = more chunks, more migrations, more metadata churn; large chunk size = fewer, longer migrations and coarser balance",
+        "sh.splitAt(\"db.coll\", { userId: 5000 }) forces a split at an exact key; sh.splitFind() splits the chunk containing a matching doc",
+        "Manual pre-splitting is the standard technique for bulk loading: pre-create ranges and distribute them before writing any data",
+        "config.chunks documents record min, max, shard, and a version (lastmod) used for routing-table staleness detection",
+        "Chunk count is not data balance: 100 chunks of 1 MB and 10 chunks of 128 MB are wildly uneven — MongoDB 6.0+ balances by data size, not chunk count",
+        "db.collection.getShardDistribution() reports per-shard doc counts, data size, and average object size — the real check for skew"
+      ]
+    },
+    {
+      "title": "Ranged vs Hashed Sharding",
+      "points": [
+        "Ranged sharding partitions on the natural sort order of the shard key — nearby key values land in the same chunk",
+        "Hashed sharding stores a hash of the key field and partitions on the hash, scattering adjacent values across shards",
+        "sh.shardCollection(\"db.events\", { _id: \"hashed\" }) creates a hashed key; the hashed index must exist or be auto-created",
+        "Hashed sharding solves the monotonic-insert hotspot: sequential ObjectIds hash to uniformly distributed values",
+        "Cost of hashing: range queries become scatter-gather, because a contiguous value range maps to non-contiguous hashes",
+        "Ranged sharding keeps range queries targeted — a query for createdAt between two dates touches only the chunks covering it",
+        "Compound hashed keys (MongoDB 4.4+) allow exactly one hashed field alongside ranged fields: { region: 1, userId: \"hashed\" }",
+        "Compound hashed lets you keep locality on the prefix (zone-pin by region) while spreading within it",
+        "Hashed sharding on an empty collection auto-creates 2 chunks per shard by default; tune with numInitialChunks",
+        "Hashing floats vs ints: 2.0 and 2 hash the same, but a value that loses precision (2.3) can hash inconsistently — avoid floating-point shard keys",
+        "Sort order on a hashed key is meaningless — sorted range scans still require merging results from every shard",
+        "Zone sharding requires ranged semantics on the zoned fields; you can't zone-pin by a purely hashed key",
+        "Comparison row — inserts: ranged monotonic = hotspot; hashed = even. Range reads: ranged = targeted; hashed = broadcast",
+        "Comparison row — equality reads: both targeted, since an equality on the full key resolves to one hash or one range"
+      ]
+    },
+    {
+      "title": "Query Routing: Targeted vs Scatter-Gather",
+      "points": [
+        "A targeted (routable) query includes the shard key (or its prefix), so mongos consults the chunk map and contacts exactly the owning shard(s)",
+        "A scatter-gather (broadcast) query omits the shard key; mongos sends it to every shard and merges the results",
+        "Latency of scatter-gather is bounded by the *slowest* shard, not the average — tail latency dominates as shard count grows",
+        "Scatter-gather cost scales with N shards: 10 shards means 10× the work for a query that could have been one hop",
+        "Equality on the full shard key targets one chunk; a range predicate on a ranged key targets the chunks the range overlaps",
+        "Prefix rule: with key { a: 1, b: 1, c: 1 }, a query on { a } or { a, b } is targeted; a query on { b, c } alone is not",
+        "explain(\"executionStats\") on a sharded collection shows shards[] — count the entries to see if the query was targeted",
+        "SHARD_MERGE / SINGLE_SHARD stage names in explain output tell you directly which routing path was taken",
+        "Updates and deletes: updateOne/deleteOne historically required the shard key or _id; MongoDB 7.0+ allows them without it by broadcasting",
+        "updateMany and deleteMany always broadcast unless the filter carries the shard key",
+        "Sorted queries without the shard key: each shard sorts locally, mongos performs a merge-sort — memory pressure lands on the router",
+        "Aggregation pipelines split into a shards part and a merging part; $group, $sort, and $lookup often force a merge on one shard or on mongos",
+        "$lookup against a sharded foreign collection was unsupported before 5.1 — check version before designing joins",
+        "Design implication: pick the shard key from your highest-QPS read path, not from what feels like the natural primary key"
+      ]
+    },
+    {
+      "title": "The Balancer & Chunk Migration",
+      "points": [
+        "The balancer is a background process running on the config server primary that evens out data across shards",
+        "MongoDB 6.0+ balances on *data size* per shard; earlier versions balanced on chunk count, which tolerated skew",
+        "Migration threshold: the balancer acts when the difference between the most- and least-loaded shard exceeds 3 chunks (or the size imbalance threshold in 6.0+)",
+        "Migration protocol phases: clone documents, catch up on deltas, enter critical section (writes to that range block), commit metadata, delete source data",
+        "The critical section is short but real — writes to the migrating range are briefly blocked, so migrations show up as latency spikes",
+        "Range deletion after a migration is asynchronous; orphaned documents linger on the donor until the deleter task runs",
+        "Orphaned documents can inflate count() and appear in unfiltered direct-to-shard reads; always read through mongos",
+        "One shard can participate in multiple concurrent migrations since 3.4; parallelism is roughly floor(numShards / 2)",
+        "sh.stopBalancer() / sh.startBalancer() toggle it; sh.getBalancerState() and sh.isBalancerRunning() report status",
+        "Balancing windows: set activeWindow in config.settings to confine migrations to off-peak hours",
+        "Balancer is disabled automatically during some maintenance ops and must be off for filesystem-snapshot backups to get a consistent chunk map",
+        "moveChunk / moveRange lets you migrate a specific range manually — used to drain a shard or fix a stubborn hotspot",
+        "sh.disableBalancing(\"db.coll\") turns off balancing for a single collection without stopping the cluster balancer",
+        "Migrations consume disk I/O and network on both shards; a heavily imbalanced cluster can spend hours catching up after adding a shard"
+      ]
+    },
+    {
+      "title": "Zones, Tags & Adding/Removing Shards",
+      "points": [
+        "Zones (formerly tags) pin shard key ranges to specific shards — the mechanism for data locality and tiered storage",
+        "sh.addShardToZone(\"shard0\", \"EU\") labels a shard; sh.updateZoneKeyRange(\"db.users\", { region: \"EU\", _id: MinKey }, { region: \"EU\", _id: MaxKey }, \"EU\") assigns the range",
+        "Use case — data residency: keep EU customer documents on shards physically hosted in EU data centers",
+        "Use case — tiered hardware: recent data zoned to NVMe shards, archival ranges zoned to cheap spinning-disk shards",
+        "Zone ranges must be defined on a prefix of the shard key, and zones use ranged semantics even with compound hashed keys",
+        "The balancer enforces zones first, then evens out within the zone — a misconfigured zone can starve or overload a shard",
+        "Overlapping zone ranges are rejected; gaps are allowed and unzoned ranges float freely across all shards",
+        "sh.addShard(\"rs2/host1:27017,host2:27017\") adds a shard by its replica set connection string",
+        "A newly added shard starts empty; the balancer drains chunks toward it gradually — expect hours of background migration",
+        "removeShard(\"shard2\") starts draining; call it repeatedly to poll state until it reports \"completed\"",
+        "Before a shard can be fully removed, you must movePrimary for any unsharded databases whose primary shard it is",
+        "movePrimary is a blocking, full-data copy of the unsharded collections — schedule it, don't fire it during peak",
+        "Draining a shard requires the remaining shards to have room for its data plus migration headroom",
+        "Adding a shard does not retroactively re-split jumbo chunks — bad key choices stay bad no matter how many shards you buy"
+      ]
+    },
+    {
+      "title": "Choosing a Shard Key: A Decision Framework",
+      "points": [
+        "Step 1 — enumerate your top query patterns by volume and latency sensitivity; the shard key serves reads, not aesthetics",
+        "Step 2 — check cardinality: distinct values must exceed the number of chunks you'll ever need (aim for millions, not dozens)",
+        "Step 3 — check frequency with a $group + $sort on candidate fields to find the fat tail before production does",
+        "Step 4 — check monotonicity: if the value is time-derived or an incrementing counter, plan for hashing or a compound prefix",
+        "Step 5 — verify write distribution: simulate inserts and measure per-shard write rate, not just per-shard byte count",
+        "Pattern — multi-tenant SaaS: { tenantId: 1, _id: 1 } gives tenant-local targeting and splits big tenants by _id",
+        "Pattern — time series: { deviceId: 1, timestamp: 1 } keeps a device's history contiguous while spreading devices across shards",
+        "Pattern — high-volume logs with no natural grouping: { _id: \"hashed\" } for pure write throughput, accepting scatter-gather reads",
+        "Anti-pattern — { createdAt: 1 } alone: every insert lands on the max-key chunk; the cluster writes at one shard's speed",
+        "Anti-pattern — { status: 1 } or any low-cardinality enum: guarantees jumbo chunks and permanent imbalance",
+        "Anti-pattern — a random UUID as the only key: perfect distribution but every range query and sort is a broadcast",
+        "Compound keys let you trade: prefix controls locality and targeting, suffix controls splittability within the prefix",
+        "The prefix must appear in your hot queries — a compound key whose prefix you never filter on gives you scatter-gather anyway",
+        "Write the key choice down with its assumptions; when traffic shape changes, that document tells you whether to reshard"
+      ]
+    },
+    {
+      "title": "Common Mistakes, Diagnosis & Repair",
+      "points": [
+        "Mistake — sharding too early: an unsharded replica set on modern hardware handles far more than most teams assume",
+        "Mistake — sharding too late: migrating a full, hot cluster needs I/O headroom and free disk you no longer have",
+        "Mistake — treating chunk count as balance; use getShardDistribution() for actual bytes per shard",
+        "Mistake — connecting directly to a shard's mongod for reads; you'll see orphans and miss data on other shards",
+        "Mistake — expecting global unique indexes; only shard-key-prefixed unique indexes work, enforce the rest in application logic",
+        "Mistake — leaving the balancer running during a filesystem snapshot backup, producing an inconsistent chunk map",
+        "Symptom — one shard at 90% CPU while others idle: hot chunk from a monotonic or low-cardinality key",
+        "Symptom — jumbo chunks in sh.status(): key cardinality is too low for the data volume in that range",
+        "Symptom — every query slow and touching all shards: shard key absent from the hot query path",
+        "Repair — refineCollectionShardKey adds a high-cardinality suffix (e.g. append _id) to break up jumbo chunks; requires the new index first",
+        "Repair — reshardCollection (5.0+) rewrites the collection under a new key; it duplicates the data during the operation, so plan disk headroom",
+        "Resharding runs online but has a short critical section at commit; expect a write pause at the very end",
+        "Repair for orphans — cleanupOrphaned / the range deleter; in 4.4+ orphan filtering happens automatically on shard reads",
+        "Monitoring must include: per-shard write ops, per-shard data size, chunk migration counts, balancer round failures, and jumbo chunk count"
+      ]
+    },
+    {
+      "title": "Recap: The Sharding Cheat Sheet",
+      "points": [
+        "Cluster = shards (replica sets) + config servers (CSRS) + mongos routers; only mongos knows the whole map",
+        "Shard key → chunk → shard. That chain is the whole model; everything else is bookkeeping around it",
+        "Good key = high cardinality + flat frequency + non-monotonic + present in your hot queries. Miss any one and you pay for it",
+        "Ranged sharding: targeted range queries, monotonic-insert hotspots. Hashed: even writes, broadcast ranges",
+        "Compound hashed { region: 1, userId: \"hashed\" } is the middle path — locality on the prefix, spread within it",
+        "Targeted query = shard key present = one shard = one hop. Scatter-gather = every shard = slowest-shard latency",
+        "Chunk default size 128 MB (6.0+); jumbo chunk = unsplittable = permanent hotspot",
+        "Balancer runs on the config primary, balances by data size in 6.0+, and can be confined to an activeWindow",
+        "Migration blocks writes to the moving range only during a short critical section; range deletion is async",
+        "Zones pin ranges to shards for residency and tiered storage; the balancer honors zones before evenness",
+        "Escape hatches: refineCollectionShardKey (append suffix, 4.4+) and reshardCollection (full rewrite, 5.0+)",
+        "Diagnostic toolkit: sh.status(), getShardDistribution(), explain(\"executionStats\").shards, config.chunks, currentOp for migrations",
+        "Adding shards fixes capacity, never a bad key — buy hardware only after the key is right",
+        "Final rule: choose the shard key for the query you run a million times a day, then verify it with real data before you commit"
+      ]
+    }
+  ]
+}

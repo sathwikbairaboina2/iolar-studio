@@ -1,0 +1,202 @@
+{
+  "title": "Rust Borrowing & Lifetimes: The Field Handbook",
+  "summary": "A dense study-notes handbook on Rust's borrowing system — shared vs mutable references, how the borrow checker enforces aliasing rules, how lifetimes and their annotations work, and how to read and fix the errors it emits. Covers fundamentals, internals, practical patterns, escape hatches, and trade-offs.",
+  "chapters": [
+    {
+      "title": "Why Borrowing Exists: Ownership Recap",
+      "points": [
+        "Ownership rule set: each value has exactly one owner; owner goes out of scope, value is dropped",
+        "Move semantics: `let b = a;` for a non-Copy type invalidates `a` — using it after is E0382 use of moved value",
+        "Copy types (i32, bool, char, f64, &T, fixed arrays of Copy) are duplicated on assignment, not moved",
+        "Clone is an explicit, possibly expensive deep copy: `let b = a.clone();` keeps `a` valid",
+        "Problem borrowing solves: passing `String` to a function moves it; you'd have to return it back just to keep using it",
+        "Borrow = temporary access to a value without taking ownership; the owner keeps responsibility for dropping",
+        "`&value` creates a reference; `*r` dereferences; `.` auto-derefs so `r.len()` works on `&String`",
+        "References are non-owning pointers — dropping a reference never frees anything",
+        "The three memory bugs borrowing prevents at compile time: use-after-free, double-free, data races",
+        "Zero runtime cost: a `&T` is a raw pointer at runtime; all checks are erased after compilation",
+        "Comparison: C++ references/pointers give the same speed but no compile-time aliasing guarantee; GC languages get safety but pay at runtime",
+        "Example: `fn len(s: &String) -> usize { s.len() }` called as `len(&owned)` leaves `owned` usable afterward",
+        "Terminology: the value is the *referent*, the act is a *borrow*, the reference's validity window is its *lifetime*",
+        "Stack vs heap: `String` = pointer + len + capacity on stack, bytes on heap; a `&String` points at that stack triple"
+      ]
+    },
+    {
+      "title": "Shared References &T: The Read-Only Borrow",
+      "points": [
+        "`&T` = shared (immutable) borrow: read access, no mutation through it",
+        "Many shared references to the same value may coexist — aliasing is fine without mutation",
+        "`let r1 = &v; let r2 = &v;` both valid simultaneously; both readable",
+        "You cannot mutate the owner while a shared borrow is live — that is E0502",
+        "`&T` is `Copy`: passing or assigning a shared reference duplicates the pointer, never moves it",
+        "Method calls auto-borrow: `v.len()` desugars to `Vec::len(&v)`",
+        "Deref coercion: `&String` coerces to `&str`, `&Vec<T>` to `&[T]`, `&Box<T>` to `&T` — prefer `&str`/`&[T]` in signatures",
+        "Returning `&T` from a method ties the result's lifetime to the receiver: `v.first()` borrows `v`",
+        "Iterating with `for x in &v` yields `&T` and leaves `v` owned afterward; `for x in v` moves and consumes it",
+        "Shared references are `Send`/`Sync` friendly: `&T` is `Send` iff `T: Sync` — the basis for scoped-thread read sharing",
+        "Common mistake: taking `&self` and trying to push to a field — needs `&mut self`",
+        "Size: `&T` for a sized `T` is one word; `&str` and `&[T]` are *fat* pointers (pointer + length, two words)",
+        "`&&T` (double reference) shows up in closures like `filter(|x: &&i32| **x > 0)` — auto-deref hides it in comparisons",
+        "Rule of thumb: default every parameter to `&T` and only escalate to `&mut T` or ownership when needed"
+      ]
+    },
+    {
+      "title": "Mutable References &mut T: Exclusive Access",
+      "points": [
+        "`&mut T` = exclusive borrow: write access, and *no* other reference (shared or mutable) may exist at the same time",
+        "The core rule: at any point, either one `&mut T`, or any number of `&T` — never both",
+        "The owner must itself be mutable: `let mut v = ...;` before `&mut v` compiles, else E0596",
+        "`&mut T` is NOT `Copy` — passing it to a function moves it, unless the compiler reborrows",
+        "Write through it with `*r = value;` or by calling `&mut self` methods: `r.push(3)`",
+        "Exclusivity is what makes data races impossible: no writer can coexist with any reader",
+        "Exclusivity also enables optimization — the compiler emits LLVM `noalias`, allowing values to stay in registers across calls",
+        "`&mut T` coerces to `&T` implicitly where a shared reference is expected (covariance in mutability)",
+        "Two mutable borrows of the same value = E0499 cannot borrow as mutable more than once",
+        "`std::mem::swap(&mut a, &mut b)`, `replace`, and `take` are the standard tools to move values out from behind `&mut`",
+        "You cannot move a non-Copy value out of a `&mut` — E0507 cannot move out of borrowed content; use `.take()` or `.clone()`",
+        "`&mut T` is invariant in T — a `&mut Vec<&'long str>` is NOT usable as `&mut Vec<&'short str>`, which prevents smuggling short data into long storage",
+        "Example error and fix: `let a = &mut v; let b = &mut v; a.push(1);` → sequence the borrows, or use `split_at_mut`",
+        "Prefer narrow `&mut` scopes: `{ let r = &mut v; r.push(1); }` releases before the next read"
+      ]
+    },
+    {
+      "title": "The Borrow Checker: Rules and NLL",
+      "points": [
+        "The borrow checker runs on MIR after type checking; it is a static dataflow analysis, not a runtime check",
+        "Its job: prove every reference's referent outlives the reference and that aliasing rules hold on every control-flow path",
+        "Lexical lifetimes (pre-2018): a borrow lasted until the end of its enclosing block — often rejected obviously fine code",
+        "NLL (non-lexical lifetimes, Rust 2018): a borrow ends at its *last use*, not the closing brace",
+        "Under NLL, `let r = &v; println!(\"{r}\"); v.push(1);` compiles because `r` is dead before the mutation",
+        "Two-phase borrows: `v.push(v.len())` compiles — the `&mut v` is reserved, shared-readable, and only activated at the call",
+        "The checker is path-sensitive: a borrow created in one `if` branch does not constrain the other branch",
+        "It is *field-sensitive*: `&mut s.a` and `&s.b` on disjoint struct fields coexist fine",
+        "It is NOT index-sensitive: `&mut v[0]` and `&mut v[1]` conflict because indexing goes through `IndexMut` on the whole Vec",
+        "Method calls are opaque: the checker uses only the signature, never the body — a signature returning `&T` borrows the receiver even if the body doesn't",
+        "Conservatism: the checker rejects some sound programs (false positives), never accepts an unsound one",
+        "Polonius is the in-progress next-generation checker; it accepts patterns like conditional-return-of-borrow that NLL still rejects",
+        "`unsafe` does not disable the borrow checker — it only unlocks raw pointers, which the checker ignores entirely",
+        "Debugging aid: `cargo rustc -- -Z nll-facts` and `#![feature(nll)]`-era diagnostics; in practice read the three-part error (borrow starts / conflicts / first use)"
+      ]
+    },
+    {
+      "title": "Lifetimes: Regions, Scopes, Dangling",
+      "points": [
+        "A lifetime is a region of code (a set of program points) over which a reference must stay valid",
+        "Lifetimes are inferred everywhere by default; annotations only *describe* relationships, they never change how long data lives",
+        "The dangling case: returning `&x` from a function where `x` is a local → E0106/E0515 cannot return reference to local variable",
+        "`'a: 'b` reads \"'a outlives 'b\" — every point in 'b is inside 'a",
+        "`'static` is the whole program duration; string literals are `&'static str`, and `Box::leak` produces `'static` data",
+        "`T: 'static` as a bound means \"T contains no non-static references\" — it does NOT mean the value lives forever",
+        "Subtyping/variance: a longer lifetime can be used where a shorter is wanted; `&'long T` coerces to `&'short T`",
+        "`&T` is covariant in T, `&mut T` is invariant in T, `fn(T)` is contravariant in its argument",
+        "Drop order matters: locals drop in reverse declaration order, so a reference declared before its referent can outlive it → E0597",
+        "Temporaries die at the end of the enclosing statement: `let r = &String::from(\"x\").len();` patterns and E0716 temporary value dropped while borrowed",
+        "Temporary lifetime extension: `let r = &String::from(\"x\");` *does* compile — a `let`-bound temporary is extended to the binding's scope",
+        "Common gotcha: `.lock().unwrap()` in a `match` scrutinee or `if let` holds the guard temporary for the whole block",
+        "Lifetimes are erased before codegen — they have zero runtime representation and zero cost",
+        "Reference: lifetime of the *reference variable* vs lifetime *parameter* on the type — the annotation constrains the referent's region"
+      ]
+    },
+    {
+      "title": "Lifetime Annotations: Syntax and Elision",
+      "points": [
+        "Declaration syntax: `fn f<'a>(x: &'a str) -> &'a str` — 'a is a generic parameter like a type parameter",
+        "The classic: `fn longest<'a>(x: &'a str, y: &'a str) -> &'a str` — output valid for the shorter of the two inputs",
+        "Why the annotation is needed: without it the compiler can't tell which input the output borrows from",
+        "Independent inputs get independent lifetimes: `fn first<'a, 'b>(x: &'a str, _y: &'b str) -> &'a str` frees the caller from tying them together",
+        "Elision rule 1: each elided input reference gets its own distinct lifetime parameter",
+        "Elision rule 2: with exactly one input lifetime, it is assigned to every elided output lifetime",
+        "Elision rule 3: if one input is `&self` or `&mut self`, the lifetime of `self` is assigned to all elided outputs",
+        "So `fn get(&self) -> &str` means `fn get<'a>(&'a self) -> &'a str` — the returned str borrows the whole struct",
+        "Structs holding references need annotations: `struct Parser<'a> { input: &'a str, pos: usize }`",
+        "Every impl on such a struct repeats the parameter: `impl<'a> Parser<'a> { fn rest(&self) -> &'a str { ... } }`",
+        "Returning `&'a str` (tied to the field) vs `&str` (tied to `&self`) is a real behavioral difference — the former lets the caller drop the parser",
+        "Bounds combine with generics: `fn print<'a, T: Display + 'a>(x: &'a T)`; `where 'a: 'b` expresses outlives constraints",
+        "`impl Trait` capture and `dyn Trait + 'a`: trait objects default to `'static` unless a lifetime bound is written",
+        "Higher-ranked bounds: `for<'a> Fn(&'a str) -> &'a str` — a closure that works for *any* caller lifetime",
+        "Anonymous lifetime `'_` documents that a type is borrowing without naming the region: `fn parse(s: &str) -> Parser<'_>`",
+        "Rule of thumb: never add a lifetime to make an error disappear — first ask which data the output actually points into"
+      ]
+    },
+    {
+      "title": "Reborrows, Splitting, and Fighting the Checker",
+      "points": [
+        "Implicit reborrow: passing `r: &mut T` to `fn f(x: &mut T)` reborrows `*r` instead of moving `r`, so `r` is usable after",
+        "Explicit reborrow `&mut *r` is needed when the target type is generic and inference would otherwise move the reference",
+        "Struct field splitting: `let a = &mut s.x; let b = &mut s.y;` is allowed — disjoint fields, disjoint borrows",
+        "Field splitting fails across a method: `fn get_x(&mut self)` borrows *all* of self; inline the field access instead",
+        "`slice::split_at_mut(mid)` returns two non-overlapping `&mut [T]` — implemented with unsafe internally because the checker can't prove disjointness",
+        "`iter_mut()` yields `&mut T` per element safely; `for x in v.iter_mut() { *x += 1; }`",
+        "`v.get_mut(i)` returns `Option<&mut T>` — avoids the panic of `&mut v[i]` and makes the borrow explicit",
+        "Cannot mutate a collection while iterating it: `for x in &v { v.push(...) }` is E0502 — collect indices or changes first, apply after",
+        "`retain`, `drain`, `dedup_by`, and `swap_remove` are the in-place mutation-during-traversal escape hatches",
+        "Entry API avoids double-lookup double-borrow: `map.entry(k).or_insert_with(Vec::new).push(v)`",
+        "Closures capture by inference: `move` forces ownership; a `FnMut` closure holds a `&mut` capture for its whole life",
+        "Two closures both mutably capturing the same variable = E0499; scope them, or pass the state as an argument",
+        "Self-referential structs are rejected outright — the fix is indices, `Rc`, arena allocation, or `Pin` + unsafe",
+        "Escape ladder, in order of preference: restructure code → return owned/clone → indices instead of references → `Rc`/`RefCell` → `unsafe`",
+        "Cloning to satisfy the checker is legitimate for small values or cold paths — measure before contorting the design"
+      ]
+    },
+    {
+      "title": "Interior Mutability: &T That Mutates",
+      "points": [
+        "Interior mutability = mutating through a `&T`, with the aliasing rule enforced at runtime instead of compile time",
+        "`UnsafeCell<T>` is the only legal primitive for it; every other cell type is built on it",
+        "`Cell<T>`: get/set whole values by copy or replace, no references handed out, zero overhead, single-thread only",
+        "`RefCell<T>`: `borrow()` → `Ref<T>`, `borrow_mut()` → `RefMut<T>`, tracked by a runtime counter",
+        "`RefCell` violation panics at runtime: \"already borrowed: BorrowMutError\" — moves a compile error to a crash",
+        "`try_borrow`/`try_borrow_mut` return `Result` for the fallible version",
+        "`Rc<T>`: single-threaded shared ownership by reference count; `Rc<RefCell<T>>` is the canonical shared-mutable-graph pattern",
+        "`Arc<T>`: atomic refcount for threads; `Arc<Mutex<T>>` or `Arc<RwLock<T>>` for shared mutation across threads",
+        "`Mutex` = one accessor at a time; `RwLock` = many readers or one writer — the borrow rules re-implemented at runtime",
+        "Cost comparison: `&mut` = free; `Cell` ≈ free; `RefCell` = 1 counter check; `Mutex` = atomic + possible syscall on contention",
+        "Reference cycles with `Rc` leak memory — the counter never reaches zero; break them with `Weak<T>` and `upgrade()`",
+        "`Cow<'a, T>` (Clone-on-Write) borrows until a mutation is actually needed: `Cow::Borrowed` → `Cow::Owned`",
+        "`OnceCell`/`OnceLock`/`LazyLock` for write-once initialization behind `&self`",
+        "Design rule: reach for interior mutability only when the ownership graph is genuinely not a tree",
+        "Diagnosis tip: a `RefCell` panic tells you the aliasing bug the compiler would have caught — treat it as a design smell, not a fix"
+      ]
+    },
+    {
+      "title": "Common Borrow Errors: Read and Fix",
+      "points": [
+        "How to read any borrow error: line where the borrow *starts*, line of the *conflicting* action, line of the borrow's *later use* — kill the third and it often compiles",
+        "E0382 borrow/use of moved value — a non-Copy value was moved; fix by borrowing, cloning, or restructuring",
+        "E0499 cannot borrow `x` as mutable more than once — sequence the borrows, or split fields/slices",
+        "E0502 cannot borrow `x` as mutable because it is also borrowed as immutable — shorten the shared borrow (NLL) or copy the read value out first",
+        "E0506 cannot assign to `x` because it is borrowed — the assignment invalidates a live reference",
+        "E0505 cannot move out of `x` because it is borrowed — a reference outlives the move; drop or end the borrow first",
+        "E0507 cannot move out of borrowed content — use `clone()`, `mem::take()`, `Option::take()`, or return a reference",
+        "E0596 cannot borrow as mutable, not declared as mutable — add `mut` to the binding or `&mut self` to the method",
+        "E0597 `x` does not live long enough — the referent's scope ends before the reference's; hoist the declaration up",
+        "E0515 cannot return reference to local variable — return the owned value instead, or take the buffer as a parameter",
+        "E0716 temporary value dropped while borrowed — bind the temporary to a `let` before referencing it",
+        "E0106 missing lifetime specifier — a returned reference has no input to borrow from; add `<'a>` or return owned",
+        "E0521 borrowed data escapes outside of method / closure — usually a `thread::spawn` needing `move` or `'static`",
+        "Classic self-borrow trap: `v.push(v.len())` works via two-phase borrows, but `map.insert(k, map[&k2])` does not",
+        "Classic loop trap: holding `&v[0]` across `v.push(...)` — the push may reallocate, so the checker rejects it (and would be a use-after-free in C)",
+        "Fix strategy order: shorten the borrow, split the data, copy the small value, restructure the ownership, then finally clone"
+      ]
+    },
+    {
+      "title": "Trade-offs, Comparisons, and Cheat-Sheet",
+      "points": [
+        "Cheat-sheet: `T` = own it and can drop it; `&T` = read, many at once; `&mut T` = read+write, exactly one",
+        "Signature choice: `&str` over `&String`, `&[T]` over `&Vec<T>`, take `T` only when you must store or consume it",
+        "Return choice: return owned `String`/`Vec` for a public API boundary; return `&str`/`&[T]` for cheap zero-copy views",
+        "Cost table: borrow = 0 bytes 0 cycles; clone = allocation + copy; `Rc` = 8-byte header + non-atomic inc/dec; `Arc` = atomic inc/dec; `Mutex` = atomic + park on contention",
+        "Compared to C++: `&T`/`&mut T` are like `const T&`/`T&` but with compiler-enforced aliasing and no dangling",
+        "Compared to GC languages: Rust moves aliasing checks to compile time — no pauses, no runtime tracing, but a learning cost and occasional false rejections",
+        "Compared to `unsafe` raw pointers: same machine code, all guarantees dropped, so you owe the invariants manually",
+        "Performance upside: exclusive `&mut` lets LLVM assume `noalias`, enabling optimizations C compilers cannot make without `restrict`",
+        "Ergonomic cost: some correct designs (doubly-linked lists, graphs, observers) simply do not typecheck as reference trees",
+        "Aliasing-rule violations through raw pointers are UB even in `unsafe` — validate with Miri (`cargo +nightly miri test`)",
+        "Decision flow: does the callee need to keep the data? own it. Only read? `&T`. Modify in place? `&mut T`. Multiple owners? `Rc`/`Arc`. Shared mutation? add `RefCell`/`Mutex`",
+        "Anti-patterns: cloning reflexively, `Rc<RefCell<_>>` everywhere, annotating lifetimes until it compiles, `'static` bounds to silence an error",
+        "Mental model to keep: a borrow is a *promise about a region of code*, and the checker's only job is verifying that promise",
+        "Practice loop: read the error's three locations, name which of the two rules broke, then choose from the fix ladder — shorten, split, copy, restructure, clone"
+      ]
+    }
+  ]
+}

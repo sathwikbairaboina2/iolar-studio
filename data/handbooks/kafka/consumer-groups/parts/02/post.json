@@ -1,0 +1,541 @@
+{
+  "brand": "iolar",
+  "template": "blackboard",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA CONSUMER GROUPS — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Committing: Auto, Sync, Async (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Two rules",
+          "items": [
+            "Commit only offsets whose side effects are durable",
+            "Committing a partition you no longer own throws CommitFailedException",
+            "That exception means you missed a rebalance"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "poll() Does Everything",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Not just a fetch: it joins the group",
+            "It fires rebalance callbacks and drives coordination",
+            "A consumer that stops polling is dead to the group",
+            "Thread health is irrelevant, only polls count"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Failure Detectors"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Config",
+            "Default",
+            "Catches"
+          ],
+          "rows": [
+            [
+              "`heartbeat.interval.ms`",
+              "3000",
+              "cadence only"
+            ],
+            [
+              "`session.timeout.ms`",
+              "45000",
+              "dead process"
+            ],
+            [
+              "`max.poll.interval.ms`",
+              "300000",
+              "stuck processor"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep heartbeat at or below one third of session timeout",
+            "Since KIP-62 heartbeats run on a background thread",
+            "So the two detectors are fully independent",
+            "Session timeout is wall clock between heartbeats"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fetch Sizing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`max.poll.records` default 500 caps records per poll",
+            "Primary lever for keeping processing under the interval",
+            "`fetch.min.bytes` and `fetch.max.wait.ms` trade latency for throughput",
+            "`fetch.max.bytes`, `max.partition.fetch.bytes` bound memory per response"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Sizing rule",
+          "text": "`max.poll.records` times worst-case per-record time must sit comfortably under `max.poll.interval.ms`."
+        },
+        {
+          "type": "heading",
+          "text": "Loop And Shutdown"
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "while (running) {",
+            "  var recs = consumer.poll(ofMillis(100));",
+            "  process(recs);",
+            "  consumer.commitAsync();",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "The Poll Loop and Its Timeouts",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "wakeup()",
+              "WakeupException",
+              "commitSync()",
+              "close(Duration)",
+              "LeaveGroup"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Call `wakeup()` from another thread",
+            "`poll()` throws `WakeupException`, catch it",
+            "`close(Duration)` sends LeaveGroup",
+            "Group rebalances now, not after the session timeout"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Threading"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The consumer is NOT thread-safe",
+            "One consumer per thread, or hand records to a worker pool",
+            "With a pool you manage offsets yourself",
+            "`pause()` partitions while workers lag",
+            "Commit only below the lowest in-flight record"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Symptom To Cause",
+          "ink": "accent"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Cause"
+          ],
+          "rows": [
+            [
+              "CommitFailedException",
+              "poll interval blown"
+            ],
+            [
+              "Endless rebalance loop",
+              "one slow member"
+            ],
+            [
+              "Duplicates every deploy",
+              "no revoke-commit, no `close()`"
+            ],
+            [
+              "Idle, zero partitions",
+              "more consumers than partitions"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Blown interval: lower `max.poll.records`, or raise the interval",
+            "Slow member: find the record, add a per-record timeout",
+            "Duplicates: graceful shutdown plus commit on revoke",
+            "Idle: add partitions or shrink the fleet"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Offset Surprises"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Cause"
+          ],
+          "rows": [
+            [
+              "Replay after a quiet weekend",
+              "retention plus `earliest`"
+            ],
+            [
+              "Silent data skip",
+              "`latest` on a new group"
+            ],
+            [
+              "Lag on one partition",
+              "hot-key producer skew"
+            ],
+            [
+              "Reads stall",
+              "hung open transaction"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An idle weekend can beat `offsets.retention.minutes`",
+            "New group: set `earliest` or seed offsets deliberately",
+            "Hot key: change the key or write a custom partitioner",
+            "Stalls only bite `read_committed` readers, at the Last Stable Offset"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Common Failure Modes and Fixes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Static Membership Bites"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "FencedInstanceIdException: two pods share one `group.instance.id`",
+            "Rebalance on every restart: boot slower than `session.timeout.ms`",
+            "Fix: raise the timeout above real pod restart time"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Poison Pills"
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "try { handle(rec); }",
+            "catch (Exception e) {",
+            "  log.error(\"dlq\", e);",
+            "  dlq.send(rec);  // never re-loop",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A record that always throws re-delivers forever",
+            "try/catch per record, route to a dead-letter topic",
+            "Catching, skipping and committing anyway is silent data loss",
+            "If you skip, log it loudly"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Anti-Patterns"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Blocking network call inside the loop with no timeout",
+            "That is the number-one cause of poll-interval eviction",
+            "`Thread.sleep()` for backpressure",
+            "Use `pause()` and `resume()` so heartbeats and polls continue"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Debug kit",
+          "items": [
+            "`--describe` for lag",
+            "`--describe --state` for group state",
+            "`--members --verbose` for assignment",
+            "Metrics: `records-lag-max`, `commit-latency-avg`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sizing",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Partitions = peak throughput divided by per-consumer throughput",
+            "Then add headroom on top",
+            "You can add partitions later, never remove them"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Config Checklist"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Set",
+            "To"
+          ],
+          "rows": [
+            [
+              "`partition.assignment.strategy`",
+              "CooperativeSticky, 2 phases"
+            ],
+            [
+              "`group.instance.id`",
+              "StatefulSet ordinal"
+            ],
+            [
+              "`session.timeout.ms`",
+              "above restart time"
+            ],
+            [
+              "`enable.auto.commit`",
+              "`false`"
+            ],
+            [
+              "`max.poll.records`",
+              "tune down first"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Kill auto-commit wherever a duplicate or a loss matters",
+            "Commit explicitly after processing",
+            "Shorter batches beat longer deadlines"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Design Checklist and Summary",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Code Checklist"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`ConsumerRebalanceListener`: commit on revoke, no commit on lost",
+            "Shutdown hook plus `wakeup()`, always `close()`",
+            "`close()` turns a 45-second stall into an instant rebalance",
+            "Make every consumer idempotent"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Semantics Choice"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Kafka to Kafka",
+                "lines": [
+                  "Transactional exactly-once",
+                  "`sendOffsetsToTransaction()`",
+                  "`read_committed`"
+                ]
+              },
+              {
+                "title": "Kafka to database",
+                "lines": [
+                  "Offsets in your DB txn",
+                  "At-least-once plus idempotency",
+                  "Simpler and cheaper"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Idempotency beats transactions in most systems",
+            "Reach for exactly-once only for Kafka-to-Kafka pipelines",
+            "Alert on lag trend and rebalance rate, not absolute lag"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Memorize This"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "heartbeat.interval.ms",
+            "  <  session.timeout.ms",
+            "    << max.poll.interval.ms"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Session timeout catches a dead process",
+            "Poll interval catches a stuck processor",
+            "Two detectors, two different failures"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Who owns what",
+            "rows": [
+              [
+                "n0"
+              ],
+              [
+                "b0",
+                "b1",
+                "b2",
+                "b3"
+              ],
+              [
+                "c0_0"
+              ],
+              [
+                "c1_0"
+              ],
+              [
+                "c2_0"
+              ],
+              [
+                "c3_0"
+              ]
+            ],
+            "nodes": {
+              "n0": {
+                "text": "Who owns what",
+                "shape": "diamond"
+              },
+              "b0": {
+                "text": "group"
+              },
+              "b1": {
+                "text": "coordinator"
+              },
+              "b2": {
+                "text": "leader"
+              },
+              "b3": {
+                "text": "`__consumer_offsets`"
+              },
+              "c0_0": {
+                "text": "the partitions"
+              },
+              "c1_0": {
+                "text": "the membership"
+              },
+              "c2_0": {
+                "text": "the assignment"
+              },
+              "c3_0": {
+                "text": "the progress"
+              }
+            },
+            "edges": [
+              {
+                "from": "n0",
+                "to": "b0"
+              },
+              {
+                "from": "n0",
+                "to": "b1"
+              },
+              {
+                "from": "n0",
+                "to": "b2"
+              },
+              {
+                "from": "n0",
+                "to": "b3"
+              },
+              {
+                "from": "b0",
+                "to": "c0_0"
+              },
+              {
+                "from": "b1",
+                "to": "c1_0"
+              },
+              {
+                "from": "b2",
+                "to": "c2_0"
+              },
+              {
+                "from": "b3",
+                "to": "c3_0"
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Whole handbook, one line",
+          "text": "Poll often, commit only what you finished, move as few partitions as possible, and assume you will see every record at least twice."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of KAFKA CONSUMER GROUPS. Your consumer group is not slow because Kafka is slow — it is slow because it keeps rebalancing. 10 pages on how partitions get assigned, why the poll loop is really a heartbeat, what a committed offset actually means (last processed + 1), and the exact configs that turn a 45-second stall into an instant handoff. Save it for the next CommitFailedException.",
+    "hashtags": [
+      "#kafka",
+      "#apachekafka",
+      "#consumergroups",
+      "#distributedsystems",
+      "#backendengineering",
+      "#dataengineering",
+      "#eventdriven",
+      "#systemdesign",
+      "#streamprocessing",
+      "#softwareengineering",
+      "#devnotes",
+      "#iolar"
+    ]
+  }
+}

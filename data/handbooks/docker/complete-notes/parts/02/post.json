@@ -1,0 +1,1904 @@
+{
+  "brand": "iolar",
+  "template": "sketchnote",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "DOCKER COMPLETE NOTES — PART 2",
+  "date": "06/09/2026",
+  "slides": [
+    {
+      "page_title": "Build Cache and Image Layers",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Every Dockerfile instruction stacks a ==layer==; ordering them well keeps the **cache** warm, and a ==multi-stage== build ships only the artifact, not the toolchain."
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Layer",
+                "lines": [],
+                "text": "One per RUN, COPY, ADD. Read-only, stacked.",
+                "icon": "docker"
+              },
+              {
+                "title": "Build Cache",
+                "lines": [],
+                "text": "Reused when instruction + inputs unchanged.",
+                "icon": "linux"
+              },
+              {
+                "title": "Multi-Stage",
+                "lines": [],
+                "text": "Many FROMs; final copies artifacts only.",
+                "icon": "go"
+              },
+              {
+                "title": "BuildKit",
+                "lines": [],
+                "text": "Parallel stages, cache and secret mounts.",
+                "icon": "docker"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "1. Layers and the Cache",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every ==RUN==, ==COPY== and ==ADD== commits a new layer",
+            "Cache **hit** when instruction text and its inputs are unchanged",
+            "Deleted files in a later layer still exist in earlier ones",
+            "Secret copied then removed is **still** in the image"
+          ],
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Layer Stack",
+            "rows": [
+              [
+                "base"
+              ],
+              [
+                "pkgs"
+              ],
+              [
+                "manifest"
+              ],
+              [
+                "deps"
+              ],
+              [
+                "src"
+              ]
+            ],
+            "nodes": {
+              "base": {
+                "text": "FROM node:20",
+                "shape": "icon",
+                "icon": "nodedotjs"
+              },
+              "pkgs": {
+                "text": "RUN apt-get ...",
+                "shape": "box"
+              },
+              "manifest": {
+                "text": "COPY package.json",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "deps": {
+                "text": "RUN npm install",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "src": {
+                "text": "COPY . . (changes most)",
+                "shape": "box",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "base",
+                "to": "pkgs",
+                "label": "rare"
+              },
+              {
+                "from": "pkgs",
+                "to": "manifest"
+              },
+              {
+                "from": "manifest",
+                "to": "deps"
+              },
+              {
+                "from": "deps",
+                "to": "src",
+                "label": "often"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. Cache Invalidation",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Invalidation is ==top-down==: one miss rebuilds **every** later instruction",
+            "Order least to most changing: base, packages, manifests, install, source",
+            "`--no-cache` forces a full rebuild",
+            "`docker builder prune` clears the build cache"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "COPY package*.json ./",
+            "RUN npm ci            # cached",
+            "COPY . .              # changes"
+          ],
+          "note": "source edit never reinstalls deps"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN apt-get update && \\",
+            "  apt-get install -y curl && \\",
+            "  rm -rf /var/lib/apt/lists/*"
+          ],
+          "note": "later RUN rm never shrinks earlier layer"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "# syntax=docker/dockerfile:1",
+            "RUN --mount=type=cache,\\",
+            "  target=/root/.npm npm ci",
+            "RUN --mount=type=secret,\\",
+            "  id=tok cat /run/secrets/tok"
+          ],
+          "note": "pass with --secret id=tok,src=.tok"
+        },
+        {
+          "type": "heading",
+          "text": "5. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`COPY . .` **before** dependency install: every edit reinstalls all",
+            "`RUN rm` in a later layer: file still in the earlier layer",
+            "Copy a secret, delete it later: still in the image history",
+            "`apt-get install` and cleanup in separate RUNs: cache lists stay"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "(Fast builds and small images)"
+    },
+    {
+      "page_title": "Build Cache and Image Layers (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. Multi-Stage Example",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM golang:1.23 AS builder",
+            "WORKDIR /src",
+            "COPY . .",
+            "RUN go build -o app",
+            "FROM alpine",
+            "COPY --from=builder /src/app /app",
+            "ENTRYPOINT [\"/app\"]"
+          ],
+          "note": "final image has no compiler or source"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Multi-Stage Build",
+            "rows": [
+              [
+                "src",
+                "builder"
+              ],
+              [
+                "bin"
+              ],
+              [
+                "alpine",
+                "final"
+              ]
+            ],
+            "nodes": {
+              "src": {
+                "text": "source + go.mod",
+                "shape": "box"
+              },
+              "builder": {
+                "text": "builder stage ~800MB",
+                "shape": "icon",
+                "icon": "go"
+              },
+              "bin": {
+                "text": "/src/app binary",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "alpine": {
+                "text": "alpine base",
+                "shape": "icon",
+                "icon": "linux"
+              },
+              "final": {
+                "text": "final image ~15MB",
+                "shape": "icon",
+                "icon": "docker",
+                "ink": "green"
+              }
+            },
+            "edges": [
+              {
+                "from": "src",
+                "to": "builder"
+              },
+              {
+                "from": "builder",
+                "to": "bin",
+                "label": "go build"
+              },
+              {
+                "from": "bin",
+                "to": "final",
+                "label": "COPY --from"
+              },
+              {
+                "from": "alpine",
+                "to": "final"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Build tools and source stay out: Go images ==~800MB== to ==~15MB==",
+            "`docker build --target builder .` stops at a stage; run tests there",
+            "BuildKit (default) builds independent stages in **parallel**",
+            "`RUN --mount=type=cache` keeps package caches between builds",
+            "`RUN --mount=type=secret` reads a secret that never hits a layer"
+          ],
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "4. Base Image Comparison",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Base",
+            "Size",
+            "Shell",
+            "Catch"
+          ],
+          "rows": [
+            [
+              "debian (full)",
+              "~120MB",
+              "bash",
+              "biggest"
+            ],
+            [
+              "debian-slim",
+              "~75MB",
+              "bash",
+              "fewer tools"
+            ],
+            [
+              "alpine",
+              "~5MB",
+              "sh",
+              "musl compat issues"
+            ],
+            [
+              "distroless",
+              "~2MB",
+              "**none**",
+              "no debug shell"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Key Takeaways",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Layer per RUN / COPY / ADD; cache reuses unchanged ones",
+            "Order stable first, source last; manifests before install",
+            "Chain with `&&` and clean up in the **same** layer",
+            "Multi-stage: build big, ship the artifact on a slim base",
+            "BuildKit mounts for caches and secrets"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Debug a fat image",
+          "text": "`docker history myimg` shows each layer's size and command; the big layer usually points to a missing cleanup or a `COPY . .` too early."
+        },
+        {
+          "type": "paragraph",
+          "text": "A container's writable layer dies with the container, so anything worth keeping must live in a ==volume== or ==bind mount== outside that layer."
+        },
+        {
+          "type": "heading",
+          "text": "1. Why Volumes Exist",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Writable layer is **ephemeral**: `docker rm` deletes every file written there",
+            "Image upgrade = new container = new empty layer; old data gone",
+            "Volumes live ==outside the layer== and survive rm, restart, upgrade",
+            "Three ways to mount: named volume, bind mount, tmpfs"
+          ],
+          "frame": "dashed",
+          "ink": "green"
+        }
+      ],
+      "cont": true,
+      "hero": "docker",
+      "subtitle": "(Fast builds and small images)"
+    },
+    {
+      "page_title": "Volumes: Named, Bind and tmpfs Mounts",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Named volume",
+                "lines": [],
+                "text": "Docker-managed under `/var/lib/docker/volumes`; portable, backed up with docker tools",
+                "icon": "docker",
+                "ink": "green"
+              },
+              {
+                "title": "Bind mount",
+                "lines": [],
+                "text": "Maps a host path into the container; live code in dev",
+                "icon": "laptop",
+                "ink": "blue"
+              },
+              {
+                "title": "tmpfs",
+                "lines": [],
+                "text": "In-memory only, gone on stop; secrets or scratch",
+                "icon": "memory",
+                "ink": "orange"
+              },
+              {
+                "title": "Anonymous volume",
+                "lines": [],
+                "text": "`VOLUME` in Dockerfile or `-v /data` with no name; piles up",
+                "icon": "linux",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Where Container Data Lives",
+            "rows": [
+              [
+                "app"
+              ],
+              [
+                "layer",
+                "vol",
+                "bind",
+                "tmp"
+              ],
+              [
+                "gone",
+                "host",
+                "dir",
+                "ram"
+              ]
+            ],
+            "nodes": {
+              "app": {
+                "text": "Container process",
+                "shape": "icon",
+                "icon": "docker"
+              },
+              "layer": {
+                "text": "Writable layer",
+                "shape": "box",
+                "ink": "red"
+              },
+              "vol": {
+                "text": "Named volume",
+                "shape": "box",
+                "ink": "green"
+              },
+              "bind": {
+                "text": "Bind mount",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "tmp": {
+                "text": "tmpfs",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "gone": {
+                "text": "Lost on docker rm",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "host": {
+                "text": "/var/lib/docker/volumes",
+                "shape": "icon",
+                "icon": "linux"
+              },
+              "dir": {
+                "text": "Host path $(pwd)/src",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "ram": {
+                "text": "RAM, gone on stop",
+                "shape": "icon",
+                "icon": "memory"
+              }
+            },
+            "edges": [
+              {
+                "from": "app",
+                "to": "layer",
+                "label": "writes"
+              },
+              {
+                "from": "app",
+                "to": "vol"
+              },
+              {
+                "from": "app",
+                "to": "bind"
+              },
+              {
+                "from": "app",
+                "to": "tmp"
+              },
+              {
+                "from": "layer",
+                "to": "gone",
+                "label": "docker rm"
+              },
+              {
+                "from": "vol",
+                "to": "host"
+              },
+              {
+                "from": "bind",
+                "to": "dir"
+              },
+              {
+                "from": "tmp",
+                "to": "ram",
+                "label": "stop"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. Three Mount Types",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Flag",
+            "Lives at",
+            "Survives rm"
+          ],
+          "rows": [
+            [
+              "{icon:docker} Named",
+              "`-v data:/path`",
+              "`/var/lib/docker/volumes`",
+              "{green:yes}"
+            ],
+            [
+              "{icon:laptop} Bind",
+              "`-v $(pwd)/src:/app/src`",
+              "host directory",
+              "{green:yes}"
+            ],
+            [
+              "{icon:memory} tmpfs",
+              "`--tmpfs /run`",
+              "memory only",
+              "{red:no, gone on stop}"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker volume create data",
+            "docker run -d postgres:16 \\",
+            "-v data:/var/lib/postgresql/data",
+            "docker run -v $(pwd)/src:/app/src",
+            "docker run --tmpfs /run app",
+            "docker run --mount type=bind,\\",
+            "src=$(pwd)/cfg,dst=/etc/app,\\",
+            "readonly nginx"
+          ],
+          "note": "--mount errors on missing host path"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# backup a named volume to host",
+            "docker run --rm -v data:/from \\",
+            "  -v $(pwd):/to alpine \\",
+            "  tar czf /to/backup.tgz -C /from .",
+            "# restore: swap /from and /to"
+          ],
+          "note": "throwaway alpine does the tar"
+        },
+        {
+          "type": "heading",
+          "text": "5. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Storing the database in the ==container layer==, then `docker rm` or upgrade wipes it",
+            "Anonymous volumes pile up; run with `--rm -v` or name them",
+            "Bind mount + container root: files on host owned by **root**; match uid with `USER` or `chown`",
+            "`docker volume prune` deletes every unused volume; ==check first==, it is data loss"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every container gets its own ==network namespace==; Docker wires those namespaces together with __bridges__, an embedded __DNS__ and iptables port rules."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "(Named volumes, bind mounts, tmpfs)"
+    },
+    {
+      "page_title": "Volumes: Named, Bind and tmpfs Mounts (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. Mount Rules in Practice",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "First mount of an **empty** named volume ==copies image files== at that path into it",
+            "Bind mount ==hides== the image's files at that path; host dir wins",
+            "Read-only: `-v config:/etc/app:ro` blocks container writes",
+            "`-v` and `--mount` give the same result; `--mount` is explicit key=value",
+            "`-v` silently __creates__ a missing host directory; `--mount` errors instead"
+          ],
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "4. Named Volume vs Bind Mount",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Named volume",
+            "Bind mount"
+          ],
+          "rows": [
+            [
+              "Managed by",
+              "{green:Docker}",
+              "{blue:you, host path}"
+            ],
+            [
+              "Portable",
+              "yes, same on every OS",
+              "host-path dependent"
+            ],
+            [
+              "Backup",
+              "docker tools, tar pattern",
+              "host tools"
+            ],
+            [
+              "Image files",
+              "copied on first mount",
+              "hidden"
+            ],
+            [
+              "Best for",
+              "**databases**, app state",
+              "**live code** in dev"
+            ]
+          ],
+          "highlightRow": 4
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker volume ls",
+            "docker volume inspect data",
+            "docker volume rm data",
+            "docker volume prune  # data loss!",
+            "docker volume create \\",
+            "  --driver <plugin> nfsdata"
+          ],
+          "note": "prune asks once, then unused volumes are gone"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "State goes in a ==named volume==, never the writable layer",
+            "Bind mounts for live code in dev; volumes for data in prod",
+            "Prefer `--mount` in scripts: explicit, fails loudly on typos",
+            "`--driver` plugs in NFS, cloud block storage or other backends",
+            "Back up with the alpine tar pattern before `prune` or upgrades"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Quick test",
+          "text": "Run `docker rm` on your DB container. If you cannot `docker run` a fresh one and see the same rows, the data was in the wrong place."
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Net Namespace",
+                "lines": [],
+                "text": "Own interfaces, IP, routes, ==port space==",
+                "icon": "linux"
+              },
+              {
+                "title": "Bridge",
+                "lines": [],
+                "text": "docker0 default; private 172.17.x.x, NAT out",
+                "icon": "docker"
+              },
+              {
+                "title": "Embedded DNS",
+                "lines": [],
+                "text": "127.0.0.11 resolves ==container names==",
+                "icon": "route53"
+              },
+              {
+                "title": "Port Publish",
+                "lines": [],
+                "text": "-p host:container = iptables **DNAT**",
+                "icon": "elb"
+              }
+            ]
+          }
+        }
+      ],
+      "cont": true,
+      "hero": "docker",
+      "subtitle": "(Named volumes, bind mounts, tmpfs)"
+    },
+    {
+      "page_title": "Networking: Bridges, DNS and Ports",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Definition: Namespace + Bridge",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each container: own interfaces, IP, routing table and port space",
+            "Default bridge `docker0`: private IPs ==172.17.x.x==, internet via **NAT**",
+            "Default bridge has no name lookup; containers reach each other by IP only",
+            "Two containers can both listen on port 80: separate port spaces"
+          ],
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Default Bridge: NAT to Internet",
+            "rows": [
+              [
+                "web",
+                "api"
+              ],
+              [
+                "br"
+              ],
+              [
+                "host"
+              ],
+              [
+                "net"
+              ]
+            ],
+            "nodes": {
+              "web": {
+                "text": "web 172.17.0.2",
+                "shape": "icon",
+                "icon": "docker"
+              },
+              "api": {
+                "text": "api 172.17.0.3",
+                "shape": "icon",
+                "icon": "docker"
+              },
+              "br": {
+                "text": "docker0 bridge",
+                "shape": "icon",
+                "icon": "linux"
+              },
+              "host": {
+                "text": "host eth0 (NAT)",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "net": {
+                "text": "Internet",
+                "shape": "icon",
+                "icon": "cloudfront"
+              }
+            },
+            "edges": [
+              {
+                "from": "web",
+                "to": "br"
+              },
+              {
+                "from": "api",
+                "to": "br"
+              },
+              {
+                "from": "br",
+                "to": "host",
+                "label": "MASQUERADE"
+              },
+              {
+                "from": "host",
+                "to": "net"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. Mechanism: DNS and Ports",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker network create appnet`: user-defined bridge with ==name resolution==",
+            "Embedded DNS at `127.0.0.11` answers `db` with the container's IP",
+            "`-p 8080:80` adds an iptables **DNAT** rule host:8080 to container:80",
+            "`-p 127.0.0.1:5432:5432` binds only on ==localhost== of the host",
+            "`-P` publishes every `EXPOSE`d port on a random high host port"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker network create appnet",
+            "docker run -d --network appnet \\",
+            "  --name db postgres:16",
+            "docker run -d --network appnet \\",
+            "  --network-alias db pgbouncer",
+            "-p 127.0.0.1:5432:5432 # local"
+          ],
+          "note": "--network-alias: many containers, one name"
+        },
+        {
+          "type": "heading",
+          "text": "3. Example: web talks to db",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "On one user-defined network `web` dials `db:5432` on the ==container port==",
+            "Published ports are only for the **outside**; peers never need `-p`",
+            "`host.docker.internal` = the host (Desktop); Linux needs `--add-host=host.docker.internal:host-gateway`",
+            "`docker network connect appnet web`: a container can sit on ==several networks==",
+            "`docker network ls | inspect appnet | disconnect appnet web`"
+          ],
+          "frame": "dashed",
+          "ink": "pink"
+        },
+        {
+          "type": "heading",
+          "text": "5. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Using `localhost` to reach another container; that is **your own** loopback",
+            "App bound to `127.0.0.1` inside: published port connects, then refused; bind ==0.0.0.0==",
+            "Relying on names on the default bridge; only user-defined bridges get DNS",
+            "Adding `-p` for container-to-container traffic; it is only for outside"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "Compose turns a pile of `docker run` commands into ==one YAML file== that starts, wires and stops every service as a unit."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "(Namespaces, Bridges, DNS and Ports)"
+    },
+    {
+      "page_title": "Networking: Bridges, DNS and Ports (cont.)",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "User-defined Network appnet",
+            "rows": [
+              [
+                "user"
+              ],
+              [
+                "web"
+              ],
+              [
+                "dns",
+                "db"
+              ]
+            ],
+            "nodes": {
+              "user": {
+                "text": "browser :8080",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "web": {
+                "text": "web :80",
+                "shape": "icon",
+                "icon": "nginx"
+              },
+              "dns": {
+                "text": "DNS 127.0.0.11",
+                "shape": "icon",
+                "icon": "route53"
+              },
+              "db": {
+                "text": "db :5432",
+                "shape": "icon",
+                "icon": "postgresql"
+              }
+            },
+            "edges": [
+              {
+                "from": "user",
+                "to": "web",
+                "label": "-p 8080:80"
+              },
+              {
+                "from": "web",
+                "to": "dns",
+                "label": "db?"
+              },
+              {
+                "from": "web",
+                "to": "db",
+                "label": "db:5432"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Comparison: Network Drivers",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Driver",
+            "Isolation",
+            "Reach",
+            "Note"
+          ],
+          "rows": [
+            [
+              "bridge",
+              "own namespace",
+              "NAT + `-p`",
+              "default"
+            ],
+            [
+              "host",
+              "**none**",
+              "host stack",
+              "fast, Linux only"
+            ],
+            [
+              "none",
+              "loopback only",
+              "nothing",
+              "isolated jobs"
+            ],
+            [
+              "overlay",
+              "own namespace",
+              "multi-host",
+              "Swarm, ==VXLAN=="
+            ],
+            [
+              "macvlan",
+              "own MAC + IP",
+              "physical LAN",
+              "looks like a device"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Namespace per container: own IP, routes, ports",
+            "User-defined bridge + DNS: connect by ==name==",
+            "`-p` = DNAT for outsiders; peers use container ports",
+            "host = speed, none = isolation, overlay = many hosts"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Rule of thumb",
+          "text": "Put every service of one app on its own `docker network create` bridge, talk by name on container ports, and publish only the edge port."
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Services",
+                "lines": [],
+                "text": "One entry per container; `image` or `build`",
+                "icon": "docker"
+              },
+              {
+                "title": "Default network",
+                "lines": [],
+                "text": "`<project>_default`; DNS by service name",
+                "icon": "network"
+              },
+              {
+                "title": "Named volumes",
+                "lines": [],
+                "text": "Declared top-level, prefixed by project",
+                "icon": "storage"
+              },
+              {
+                "title": "depends_on",
+                "lines": [],
+                "text": "Orders startup; healthy only with a healthcheck",
+                "icon": "checklist"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "1. What Compose Is",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Compose== = one YAML, many services, managed as a unit",
+            "`docker compose` is the v2 **plugin**; replaces `docker-compose` v1 binary",
+            "Top-level keys: `services`, `networks`, `volumes`, `configs`, `secrets`",
+            "`version:` key is __obsolete__ and ignored",
+            "Project name = directory name or `-p`; prefixes containers, networks, volumes"
+          ],
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. How a Service Runs",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Service keys: `image`/`build`, `ports`, `environment`, `env_file`, `volumes`, `networks`",
+            "Also `depends_on`, `command`, `restart`, `healthcheck`; each service = 1+ containers",
+            "Default network `<project>_default`; services resolve by ==service name== (`db:5432`)",
+            "`up -d`: builds missing images, creates networks + volumes, starts services",
+            "`down`: removes containers + networks; add **-v** to drop volumes too"
+          ]
+        }
+      ],
+      "cont": true,
+      "hero": "docker",
+      "subtitle": "(Namespaces, Bridges, DNS and Ports)"
+    },
+    {
+      "page_title": "Compose: Commands and a web + db Example",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Compose Project Layout",
+            "rows": [
+              [
+                "file"
+              ],
+              [
+                "web",
+                "db"
+              ],
+              [
+                "net",
+                "vol"
+              ]
+            ],
+            "nodes": {
+              "file": {
+                "text": "compose.yaml",
+                "shape": "icon",
+                "icon": "docker"
+              },
+              "web": {
+                "text": "web (build: .)",
+                "shape": "icon",
+                "icon": "python"
+              },
+              "db": {
+                "text": "db postgres:16",
+                "shape": "icon",
+                "icon": "postgresql"
+              },
+              "net": {
+                "text": "myapp_default network",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "vol": {
+                "text": "myapp_pgdata volume",
+                "shape": "icon",
+                "icon": "storage"
+              }
+            },
+            "edges": [
+              {
+                "from": "file",
+                "to": "web"
+              },
+              {
+                "from": "file",
+                "to": "db"
+              },
+              {
+                "from": "web",
+                "to": "db",
+                "label": "db:5432"
+              },
+              {
+                "from": "web",
+                "to": "net"
+              },
+              {
+                "from": "db",
+                "to": "net"
+              },
+              {
+                "from": "db",
+                "to": "vol"
+              }
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker compose up -d",
+            "docker compose logs -f web",
+            "docker compose exec web sh",
+            "docker compose ps        # status",
+            "docker compose config   # resolved",
+            "docker compose down -v  # +volumes"
+          ],
+          "note": "also build, pull, restart, stop"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "docker compose up -d",
+            "rows": [
+              [
+                "up"
+              ],
+              [
+                "build",
+                "net"
+              ],
+              [
+                "db"
+              ],
+              [
+                "hc"
+              ],
+              [
+                "web"
+              ]
+            ],
+            "nodes": {
+              "up": {
+                "text": "docker compose up -d",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "build": {
+                "text": "build missing images",
+                "shape": "icon",
+                "icon": "docker"
+              },
+              "net": {
+                "text": "create network + volumes",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "db": {
+                "text": "start db",
+                "shape": "icon",
+                "icon": "postgresql"
+              },
+              "hc": {
+                "text": "healthcheck passes?",
+                "shape": "diamond",
+                "ink": "orange"
+              },
+              "web": {
+                "text": "start web",
+                "shape": "icon",
+                "icon": "python"
+              }
+            },
+            "edges": [
+              {
+                "from": "up",
+                "to": "build"
+              },
+              {
+                "from": "up",
+                "to": "net"
+              },
+              {
+                "from": "build",
+                "to": "db"
+              },
+              {
+                "from": "net",
+                "to": "db"
+              },
+              {
+                "from": "db",
+                "to": "hc"
+              },
+              {
+                "from": "hc",
+                "to": "web",
+                "label": "service_healthy"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Example: web + db",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "services:",
+            "  web:",
+            "    build: .",
+            "    ports: [\"8000:8000\"]",
+            "    depends_on:",
+            "      db:",
+            "        condition: service_healthy"
+          ],
+          "note": "condition needs a healthcheck on db"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "  db:",
+            "    image: postgres:16",
+            "    healthcheck:",
+            "      test: [\"CMD\", \"pg_isready\"]",
+            "    volumes:",
+            "      - pgdata:/var/lib/postgresql/data",
+            "volumes:",
+            "  pgdata: {}"
+          ],
+          "note": "named volume declared at top level"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`${DB_PASSWORD}` read from the shell or a ==.env== beside the compose file",
+            "`${VAR:-default}` supplies a fallback value",
+            "`docker-compose.override.yml` merges __automatically__; `-f base.yml -f prod.yml` stacks files",
+            "`profiles: [debug]` on a service; starts only with `--profile debug`",
+            "`up --scale worker=3` runs replicas; no `container_name`, no fixed host port"
+          ],
+          "frame": "dashed",
+          "ink": "purple"
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "Multi-Container Apps in One File"
+    },
+    {
+      "page_title": "Compose: Commands and a web + db Example (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Compose vs Orchestrators",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Feature",
+            "Compose",
+            "Swarm / Kubernetes"
+          ],
+          "rows": [
+            [
+              "Hosts",
+              "single host",
+              "cluster"
+            ],
+            [
+              "Scheduling",
+              "none",
+              "places containers"
+            ],
+            [
+              "Self-healing",
+              "`restart` policy only",
+              "reschedules pods"
+            ],
+            [
+              "Rolling updates",
+              "no",
+              "yes"
+            ],
+            [
+              "Best for",
+              "dev, small deploys",
+              "production scale"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Expecting `depends_on` to wait for DB **connections**; it only waits for start",
+            "Keeping a `version:` key; it is ignored and just warns",
+            "`container_name` or fixed host port on a scaled service; replicas collide",
+            "Running `down` without `-v`, then wondering why old data persists",
+            "Two projects in same-named folders share a prefix; pass `-p`"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One YAML; `docker compose up -d` to start, `down -v` for a clean slate",
+            "Services talk by ==service name== on `<project>_default`",
+            "`depends_on` + `condition: service_healthy` + a `healthcheck`",
+            "Override files, `.env` and profiles separate environments",
+            "Compose = single host; use an orchestrator for scheduling and self-healing"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Started is not ready",
+          "text": "Give `db` a `healthcheck` and use `condition: service_healthy`; plain `depends_on` fires the moment the container starts, before Postgres accepts connections."
+        },
+        {
+          "type": "paragraph",
+          "text": "A ==registry== is where built images live so any host can `docker pull` them; this page covers pushing, pulling, tagging, and keeping the registry clean and safe."
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Registry",
+                "lines": [],
+                "text": "HTTP service serving layers + manifests",
+                "icon": "docker"
+              },
+              {
+                "title": "Repository",
+                "lines": [],
+                "text": "one named image, many tags",
+                "icon": "s3"
+              },
+              {
+                "title": "Tag",
+                "lines": [],
+                "text": "mutable pointer, e.g. `1.4.2`",
+                "icon": "git"
+              },
+              {
+                "title": "Digest",
+                "lines": [],
+                "text": "`sha256:...` immutable content id",
+                "icon": "kms"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Image tier",
+            "Example",
+            "Trust"
+          ],
+          "rows": [
+            [
+              "Official",
+              "`library/nginx`",
+              "curated by Docker"
+            ],
+            [
+              "Verified publisher",
+              "`bitnami/redis`",
+              "vendor maintained"
+            ],
+            [
+              "Community",
+              "`someuser/app`",
+              "**vet it** first"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker login registry.example.com` saves creds in `~/.docker/config.json`",
+            "Production: use a ==credential helper==, not plaintext config",
+            "Only **changed layers** are transferred; unchanged ones are skipped",
+            "Registry ==deduplicates== layers across repositories by digest",
+            "`docker run` pulls automatically when the image is missing locally"
+          ]
+        }
+      ],
+      "cont": true,
+      "hero": "docker",
+      "subtitle": "Multi-Container Apps in One File"
+    },
+    {
+      "page_title": "Registries: Push, Pull and Tag Strategy",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What a Registry Is",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Registry==: HTTP service that stores and serves image **layers** and **manifests**",
+            "==Repository== = one named image (`org/myapp`) holding many tags",
+            "{icon:docker} **Docker Hub** is the default public registry when no host is given",
+            "Others: {icon:github} `ghcr.io`, {icon:ecr} AWS ECR, {icon:googlecloud} Artifact Registry, Azure ACR, GitLab registry"
+          ],
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Push and Pull Mechanics",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Push / Pull Flow",
+            "rows": [
+              [
+                "dev",
+                "tag",
+                "push"
+              ],
+              [
+                "reg"
+              ],
+              [
+                "pull",
+                "srv"
+              ]
+            ],
+            "nodes": {
+              "dev": {
+                "text": "myapp:1.0 local",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "tag": {
+                "text": "docker tag",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "push": {
+                "text": "docker push",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "reg": {
+                "text": "ghcr.io/org/myapp",
+                "shape": "icon",
+                "icon": "github"
+              },
+              "pull": {
+                "text": "docker pull",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "srv": {
+                "text": "prod host",
+                "shape": "icon",
+                "icon": "linux"
+              }
+            },
+            "edges": [
+              {
+                "from": "dev",
+                "to": "tag"
+              },
+              {
+                "from": "tag",
+                "to": "push"
+              },
+              {
+                "from": "push",
+                "to": "reg",
+                "label": "changed layers only"
+              },
+              {
+                "from": "reg",
+                "to": "pull",
+                "label": "by tag or digest"
+              },
+              {
+                "from": "pull",
+                "to": "srv"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Example: Publish to GHCR",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker login ghcr.io",
+            "docker tag myapp:1.0 \\",
+            "  ghcr.io/org/myapp:1.0",
+            "docker push ghcr.io/org/myapp:1.0",
+            "docker pull ghcr.io/org/myapp:1.0"
+          ],
+          "note": "the tag encodes the destination"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# self-hosted registry",
+            "docker run -d -p 5000:5000 \\",
+            "  registry:2",
+            "# daemon.json for plain HTTP:",
+            "\"insecure-registries\":",
+            "  [\"reg.local:5000\"]"
+          ],
+          "note": "HTTP registries must be in daemon.json"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker image inspect myapp:1.0 \\",
+            "  --format '{{.RepoDigests}}'",
+            "docker pull myapp@sha256:3f1a..."
+          ],
+          "note": "digest pull = immutable deploy"
+        },
+        {
+          "type": "heading",
+          "text": "4. Tag Strategy vs Digest",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Reference",
+            "Example",
+            "Use for"
+          ],
+          "rows": [
+            [
+              "semver",
+              "`1.4.2`",
+              "exact release"
+            ],
+            [
+              "major / minor",
+              "`1.4`, `1`",
+              "auto minor updates"
+            ],
+            [
+              "git SHA",
+              "`sha-9bd55a7`",
+              "**traceability**"
+            ],
+            [
+              "digest",
+              "`@sha256:...`",
+              "immutable deploys"
+            ],
+            [
+              "latest",
+              "`latest`",
+              "**never** in prod"
+            ]
+          ],
+          "highlightRow": 3
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Docker Hub ==rate limits== anonymous and free pulls",
+            "CI breaks when limits hit: use a **mirror** or authenticated pulls",
+            "Push every image with semver + major + git SHA tags together"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Key Takeaways",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Registry stores layers and manifests; repository = name + many tags",
+            "Tag then push; the tag names the destination registry",
+            "Only changed layers move; digests dedupe across repos",
+            "Deploy by digest or semver, never `latest`",
+            "Configure cleanup: ECR lifecycle policy or registry GC"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Scan and sign",
+          "text": "Scan with Docker Scout or Trivy for ==CVEs== before pushing; sign with **cosign** or Docker Content Trust so hosts can verify the image origin."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "(Docker Hub, GHCR, ECR and self-hosted)"
+    },
+    {
+      "page_title": "Registries: Push, Pull and Tag Strategy (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`COPY . .` without a `.dockerignore` ships **.env** files and private keys",
+            "Deploying `latest`: tag moves, rollback becomes guesswork",
+            "Old tags kept forever: set ECR ==lifecycle policies== or run `registry:2` garbage collection",
+            "Unscanned, unsigned images pulled straight into production"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "Containers share the host kernel (page 3), so hardening means ==least privilege== plus hard caps: give the process only what it needs and bound what it can consume."
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "Non-root",
+                "lines": [],
+                "text": "`USER app`; root inside is root on host if isolation breaks",
+                "icon": "user",
+                "ink": "green"
+              },
+              {
+                "title": "Capabilities",
+                "lines": [],
+                "text": "`--cap-drop=ALL`, add back only what app needs",
+                "icon": "shield",
+                "ink": "blue"
+              },
+              {
+                "title": "Read-only FS",
+                "lines": [],
+                "text": "`--read-only` + `--tmpfs`; nothing persists",
+                "icon": "lock",
+                "ink": "purple"
+              },
+              {
+                "title": "Limits",
+                "lines": [],
+                "text": "memory, cpus, pids, log size via cgroups",
+                "icon": "gauge",
+                "ink": "orange"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "1. Least Privilege",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`USER app` in Dockerfile: container root is ==host root== if isolation breaks",
+            "**Rootless** mode: daemon runs without root; no privileged ports, slower networking",
+            "Never `--privileged` in prod: all capabilities + device access = host root",
+            "`--cap-drop=ALL --cap-add=NET_BIND_SERVICE` keeps only the port-80 bind"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Blast Radius of One App Bug",
+            "rows": [
+              [
+                "bug"
+              ],
+              [
+                "root",
+                "user"
+              ],
+              [
+                "sock"
+              ],
+              [
+                "host"
+              ]
+            ],
+            "nodes": {
+              "bug": {
+                "text": "App bug (RCE)",
+                "shape": "box",
+                "ink": "red"
+              },
+              "root": {
+                "text": "root in container",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "user": {
+                "text": "USER app + cap-drop",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "sock": {
+                "text": "/var/run/docker.sock",
+                "shape": "icon",
+                "icon": "docker"
+              },
+              "host": {
+                "text": "Host root",
+                "shape": "icon",
+                "icon": "linux",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "bug",
+                "to": "root",
+                "label": "runs as root"
+              },
+              {
+                "from": "bug",
+                "to": "user",
+                "label": "contained"
+              },
+              {
+                "from": "root",
+                "to": "sock",
+                "label": "mounted"
+              },
+              {
+                "from": "sock",
+                "to": "host",
+                "label": "docker run -v /:/host"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. Lock Down the Runtime",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run --read-only \\",
+            "  --tmpfs /tmp \\",
+            "  --cap-drop=ALL \\",
+            "  --cap-add=NET_BIND_SERVICE \\",
+            "  --user 1000:1000 app:1.4"
+          ],
+          "note": "no --privileged, ever"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Non-root user, dropped caps, read-only fs by ==default==",
+            "Secrets at runtime only; pin and scan images in CI",
+            "Always set memory, cpus, pids and log limits",
+            "Never `--privileged`, never mount docker.sock in prod"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Deny by default",
+          "text": "Start from `--cap-drop=ALL --read-only --user app`, then add back only what breaks. The cgroup knobs here are the same ones page 3 explained."
+        },
+        {
+          "type": "paragraph",
+          "text": "A production-grade container is ==disposable==: one process, an immutable image, state kept outside, and signals that reach the app."
+        }
+      ],
+      "cont": true,
+      "hero": "docker",
+      "subtitle": "(Docker Hub, GHCR, ECR and self-hosted)"
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of DOCKER COMPLETE NOTES. Ever wondered what actually happens when you type docker run? These handwritten notes take you from namespaces and cgroups to Compose, registries and production hardening in one series. Save this carousel, it's your whole Docker study sheet.",
+    "hashtags": [
+      "#docker",
+      "#containers",
+      "#devops",
+      "#dockercompose",
+      "#dockerfile",
+      "#kubernetes",
+      "#cloudcomputing",
+      "#backenddevelopment",
+      "#studynotes",
+      "#handwrittennotes",
+      "#learntocode",
+      "#programming"
+    ]
+  },
+  "spilledFrom": 1
+}

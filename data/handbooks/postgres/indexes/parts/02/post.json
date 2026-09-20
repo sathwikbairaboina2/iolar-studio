@@ -1,0 +1,624 @@
+{
+  "brand": "iolar",
+  "template": "terminal-dark",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES INDEXES — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "BRIN Opclasses, Partial and Expression Indexes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "PG 14 Opclasses"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Opclass",
+            "What it fixes"
+          ],
+          "rows": [
+            [
+              "`int8_minmax_multi_ops`",
+              "several intervals per range"
+            ],
+            [
+              "",
+              "tolerates outliers"
+            ],
+            [
+              "`int8_bloom_ops`",
+              "per-range bloom filter"
+            ],
+            [
+              "",
+              "equality on uncorrelated data"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "CLUSTER Creates Correlation",
+          "text": "`CLUSTER` on a btree index physically reorders the table, but it takes an ACCESS EXCLUSIVE lock and the table does not stay clustered."
+        },
+        {
+          "type": "sidebox",
+          "title": "BRIN Refuses",
+          "items": [
+            "No sorting",
+            "No uniqueness",
+            "No index-only scans"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Partial Index",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON orders (created_at)",
+            "WHERE status = 'pending';",
+            "-- only pending rows enter the index"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Smaller index means faster scans",
+            "Less write amplification on the table",
+            "Excluded rows cost nothing on `INSERT` or `UPDATE`"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Classic pattern: index the tiny hot slice of a huge table",
+            "Unprocessed jobs waiting in a queue",
+            "`soft_deleted = false` rows",
+            "Active subscriptions among millions of dead ones"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Planner Must Prove It"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "index used",
+                "lines": [
+                  "`WHERE status = 'pending'`",
+                  "literal repeats predicate",
+                  "implication provable"
+                ]
+              },
+              {
+                "title": "index ignored",
+                "lines": [
+                  "`WHERE status = $1`",
+                  "parameter, value unknown",
+                  "proof is syntactic only"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep the index `WHERE` clause simple",
+            "Repeat it literally in every query that should use it"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE UNIQUE INDEX ON users (email)",
+            "WHERE deleted_at IS NULL;",
+            "-- one live email, many deleted ones"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Cheapest Win Available",
+          "items": [
+            "`WHERE col IS NOT NULL` on a mostly-NULL column",
+            "Shrinks the index by orders of magnitude",
+            "Costs the queries nothing at all"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Expression Index"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON users (lower(email));",
+            "WHERE lower(email) = lower($1)  -- used",
+            "WHERE email = $1          -- never used"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "IMMUTABLE Or Nothing",
+          "text": "Any function in an expression index must be IMMUTABLE. `now()`, `current_date` and unqualified `timestamptz` to `date` casts are not."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Expression",
+            "Serves"
+          ],
+          "rows": [
+            [
+              "`date_trunc('day', ts)`",
+              "daily buckets"
+            ],
+            [
+              "`(data->>'user_id')`",
+              "jsonb field lookup"
+            ],
+            [
+              "`(col::text)`",
+              "type-matched compare"
+            ],
+            [
+              "`(a + b)`",
+              "computed predicate"
+            ],
+            [
+              "`md5(long_text)`",
+              "long-key equality"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Expression Stats, Index-Only Scans, INCLUDE",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "The planner collects separate statistics on the expression result",
+            "Sometimes worth creating an index just for those estimates"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- partial and expression combine freely",
+            "CREATE INDEX ON events ((payload->>'type'))",
+            "WHERE created_at > '2026-01-01';"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "What You Pay, What Else Works",
+          "items": [
+            "The function runs on every insert and update of the row",
+            "`citext` handles case-insensitive matching natively",
+            "Or a generated column plus an ordinary index (PG 12+)"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Skip The Heap",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An index-only scan returns every needed column from the index",
+            "The heap is not touched at all",
+            "Single biggest speedup available on wide tables"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Two Requirements",
+          "items": [
+            "Every column referenced anywhere is in the index",
+            "That means `SELECT`, `WHERE`, `ORDER BY`, `GROUP BY`",
+            "The heap page is marked all-visible in the visibility map",
+            "Needed because index tuples carry no MVCC info"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Visibility Map"
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "p0 vis+froz",
+                "p1 vis"
+              ],
+              [
+                "p2 dirty",
+                "p3 vis+froz"
+              ]
+            ],
+            "caption": "2 bits per heap page"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Only `VACUUM` sets the bits",
+            "Any write to the page clears them",
+            "So a freshly written table still hits the heap",
+            "Run `VACUUM`, or wait for autovacuum, then re-measure"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Heap Fetches"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "EXPLAIN (ANALYZE) SELECT id FROM t",
+            "WHERE id BETWEEN 1 AND 100;",
+            "-- Heap Fetches: 0   true index-only",
+            "-- Heap Fetches: 100 stale visibility map"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "INCLUDE Columns"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t (a) INCLUDE (b, c);",
+            "-- b and c live in leaf pages only",
+            "CREATE UNIQUE INDEX ON t (email)",
+            "  INCLUDE (name);  -- unique on email"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "INCLUDE columns are not searchable and not sortable",
+            "Keeping them out of the key keeps internal pages small",
+            "They may be types btree cannot index at all",
+            "A `UNIQUE` index covers extras without widening the constraint"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Covering Costs, Concurrent Builds, Index Health",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`count(*)` over a range can go index-only",
+            "Which is why a narrow covering index beats a seq scan",
+            "Dashboard counters are the obvious case"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Access method",
+            "Index-only scan"
+          ],
+          "rows": [
+            [
+              "btree",
+              "yes"
+            ],
+            [
+              "GiST",
+              "some opclasses"
+            ],
+            [
+              "SP-GiST",
+              "yes"
+            ],
+            [
+              "GIN, hash, BRIN",
+              "never"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Do Not Cover Everything",
+          "text": "A covering index is wider, so fewer entries fit per page: bigger index, slower writes. Never blindly INCLUDE every selected column."
+        },
+        {
+          "type": "sidebox",
+          "title": "Two Habits",
+          "items": [
+            "Lower `autovacuum_vacuum_scale_factor` on the hot table",
+            "Keeps the visibility map fresh enough to stay index-only",
+            "`SELECT *` guarantees a heap fetch, always",
+            "List the columns you actually need"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Build Without Blocking",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX CONCURRENTLY ON t (a);",
+            "-- two table passes, no ACCESS EXCLUSIVE",
+            "-- cannot run in a transaction block",
+            "REINDEX INDEX CONCURRENTLY idx;  -- PG 12+"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Bloat Is MVCC",
+          "items": [
+            "`UPDATE` writes a new row version",
+            "Plus a new entry in every non-HOT-updated index",
+            "A HOT update skips index maintenance entirely",
+            "Needs unchanged indexed columns and room on the page"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Measuring Indexes"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT relname, idx_scan",
+            "FROM pg_stat_user_indexes",
+            "WHERE idx_scan = 0;  -- never used",
+            "SELECT pg_size_pretty(pg_relation_size('i'));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Check across a full business cycle before dropping anything",
+            "Monthly jobs make an index look dead on a Tuesday",
+            "`pgstattuple` or `pg_stat_user_indexes` estimate bloat",
+            "`REINDEX CONCURRENTLY` rebuilds a bloated index online",
+            "`DROP INDEX CONCURRENTLY` removes one without blocking readers"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "When A Concurrent Build Fails"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT indexrelid::regclass FROM pg_index",
+            "WHERE indisvalid = false;",
+            "DROP INDEX CONCURRENTLY bad_idx;",
+            "-- then retry the build"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A failed concurrent build leaves an INVALID index behind",
+            "It is never used by any query",
+            "But it is still maintained on every write",
+            "Drop it concurrently, then start the build again"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Maintenance, Mistakes, and Choosing",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Index Killers"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Query",
+            "Why",
+            "Repair"
+          ],
+          "rows": [
+            [
+              "`date(created_at) = d`",
+              "function wraps column",
+              "use a range"
+            ],
+            [
+              "int col vs text param",
+              "type mismatch",
+              "cast the parameter"
+            ],
+            [
+              "`LIKE '%foo'`",
+              "leading wildcard",
+              "pg_trgm GIN"
+            ],
+            [
+              "index on a boolean",
+              "low cardinality",
+              "partial on rare value"
+            ],
+            [
+              "`a = 1 OR b = 2`",
+              "bitmap OR or seq scan",
+              "UNION ALL"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`varchar` vs `text` under different collations disables it too",
+            "Too many indexes on a write-heavy table hurts every row change",
+            "Each one is a synchronous write plus WAL"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Stale Stats Beat Every Index",
+          "text": "Run `ANALYZE` after bulk loads, and raise `default_statistics_target` (default 100) on skewed columns."
+        },
+        {
+          "type": "heading",
+          "text": "Worked Example",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- index thrown away",
+            "WHERE date(created_at) = '2026-01-01'",
+            "-- index used",
+            "WHERE created_at >= '2026-01-01'",
+            "  AND created_at <  '2026-01-02'"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Same rows returned, one index scan instead of a seq scan",
+            "The predicate moves from `Filter` to `Index Cond`",
+            "`Rows Removed by Filter` falls to zero"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Foreign Keys Get No Index",
+          "text": "`PRIMARY KEY` and `UNIQUE` create an index implicitly. `FOREIGN KEY` columns get none — a classic source of slow cascading deletes."
+        },
+        {
+          "type": "sidebox",
+          "title": "Retune For SSD",
+          "items": [
+            "Set `random_page_cost = 1.1` on SSD",
+            "The 4.0 default assumes spinning disks",
+            "It quietly suppresses index use everywhere"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Choosing An Index"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Index"
+          ],
+          "rows": [
+            [
+              "Equality on scalars",
+              "btree"
+            ],
+            [
+              "Equality on huge values",
+              "hash"
+            ],
+            [
+              "Containment, jsonb, arrays, FTS",
+              "GIN"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Index"
+          ],
+          "rows": [
+            [
+              "Ranges, geometry, KNN, exclusion",
+              "GiST"
+            ],
+            [
+              "Prefix, point, IP partitioning",
+              "SP-GiST"
+            ],
+            [
+              "Huge correlated append-only",
+              "BRIN"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Workflow To Internalise"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "EXPLAIN ANALYZE BUFFERS",
+              "estimate vs actual",
+              "Filter to Index Cond",
+              "check Heap Fetches",
+              "pg_stat_user_indexes"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of POSTGRES INDEXES. Most slow Postgres queries already have an index — it just is not the one the planner can use. This handbook opens up btree, hash, GIN, GiST and BRIN from the inside: page splits, posting lists, block summaries, visibility bits, and the exact reason `WHERE date(created_at) = ...` throws your index away. Ten pages, from the cost constants to the workflow that turns a Filter into an Index Cond.",
+    "hashtags": [
+      "#postgresql",
+      "#postgres",
+      "#sql",
+      "#database",
+      "#databaseengineering",
+      "#backend",
+      "#backenddeveloper",
+      "#dataengineering",
+      "#performancetuning",
+      "#softwareengineering",
+      "#devnotes",
+      "#codingnotes"
+    ]
+  }
+}

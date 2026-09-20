@@ -1,0 +1,529 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "NODE ASYNC HANDBOOK — PART 2",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "Crash Semantics, Cancellation, Context",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Express 4: wrap with `asyncHandler(fn)` or you leak.",
+            "Express 5 forwards rejections to `next()` for you.",
+            "Under PM2 / systemd / k8s, crash-and-restart is correct.",
+            "Flush logs first, then `process.exit(1)`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Cancellation Truth",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Promises cannot be cancelled — settling is permanent.",
+            "Cancelling = tell the operation to stop, then reject.",
+            "`AbortController` / `signal` is the standard mechanism."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const c = new AbortController();",
+            "const r = fetch(url, { signal: c.signal });",
+            "c.abort();   // fires 'abort', sets signal.aborted"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Accepts { signal }",
+            "Since"
+          ],
+          "rows": [
+            [
+              "fetch",
+              "18"
+            ],
+            [
+              "fs/promises reads",
+              "15"
+            ],
+            [
+              "events.once",
+              "15"
+            ],
+            [
+              "timers/promises",
+              "15"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "AbortError is control flow",
+          "text": "`err.name === 'AbortError'` means you cancelled it. Don't page anyone; don't count it as an app error."
+        },
+        {
+          "type": "heading",
+          "text": "3. Signals Kit",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const t = AbortSignal.timeout(5000);  // self-fires",
+            "const s = AbortSignal.any([req.signal, t]);",
+            "await fs.readFile(p, { signal: s });"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Timeout By Race",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const t = setTimeout(() => ctl.abort(), 5000);",
+            "try { await work({ signal: ctl.signal }); }",
+            "finally { clearTimeout(t); }  // or it hangs"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`race([work(), sleep(5000)])` works but leaks two ways.",
+            "The loser keeps running; the timer keeps the loop alive.",
+            "`timers/promises` setTimeout(ms, v, {signal}) is the fix.",
+            "Cleanup in `finally`: connections, handles, listeners."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Shutdown & Error Context",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SIGTERM: stop accepting, abort in-flight, drain, exit.",
+            "Give the drain a hard deadline — then exit anyway."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Crash Semantics, Cancellation, Context (cont.)",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "try { await loadUser(id); }",
+            "catch (e) {",
+            "  throw new Error('load user', { cause: e });",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "1. Carrying Context",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const als = new AsyncLocalStorage();",
+            "als.run({ reqId }, () => handle(req));",
+            "// anywhere downstream:",
+            "als.getStore().reqId;   // survives await"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`als.run(store, fn)` establishes, `getStore()` reads.",
+            "No threading a param through twelve functions.",
+            "`async_hooks` init/before/after/destroy explain HOW.",
+            "Heavy — that layer is for APM vendors, not app code."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Probes Worth Owning",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const h = monitorEventLoopDelay();  // perf_hooks",
+            "h.enable();",
+            "report('loop_p99', h.percentile(99));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Report p99 lag as a health metric, not a debug print.",
+            "Leaked handles: `process.getActiveResourcesInfo()`.",
+            "Or `why-is-node-running` when the process won't exit.",
+            "`node --inspect` shows async stacks + pending microtasks."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The silent bug",
+          "text": "A forgotten `await`: the function returns a pending promise, callers read `undefined`, errors vanish. `no-floating-promises` + `require-await` catch most of them."
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "await expect(fn()).rejects.toThrow(MyErr);",
+            "jest.advanceTimersByTime(5000);",
+            "// fake timers must advance or promises never settle"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Pick The Primitive",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Wins",
+            "Costs"
+          ],
+          "rows": [
+            [
+              "callbacks",
+              "no alloc, repeatable",
+              "no compose, no catch"
+            ],
+            [
+              "promises",
+              "compose, settle once",
+              "microtask + object"
+            ],
+            [
+              "async/await",
+              "readable, stacks",
+              "hides parallelism"
+            ],
+            [
+              "EventEmitter",
+              "many values",
+              "no backpressure"
+            ],
+            [
+              "streams",
+              "many + backpressure",
+              "more API surface"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Debugging Async & Choosing The Tool",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "One future value → promise.",
+            "Many values over time → stream or async iterator.",
+            "Recurring notifications → EventEmitter.",
+            "EventEmitter needs an 'error' listener or it crashes."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Cost Model",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One `.then` step ≈ one microtask + one object.",
+            "Millions of tiny promises show up as GC pressure.",
+            "Batch hot loops instead of promising per item.",
+            "CPU work: `worker_threads` (cheap) or `child_process`."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "N tasks",
+            "Time",
+            "Resources"
+          ],
+          "rows": [
+            [
+              "serial",
+              "O(N × lat)",
+              "O(1)"
+            ],
+            [
+              "unbounded",
+              "O(lat)",
+              "O(N)"
+            ],
+            [
+              "limit K",
+              "O(N/K × lat)",
+              "O(K)"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Interop & Migration",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const read = util.promisify(fs.readFile);",
+            "const cbRead = util.callbackify(read);",
+            "const [msg] = await events.once(em, 'ready');"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Promisify at the boundary, keep the core promise-native.",
+            "Never mix a callback and a promise in one signature."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Await Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "missing await",
+              "no-floating-promises; void x.catch()"
+            ],
+            [
+              "await in loop, independent",
+              "Promise.all or pool"
+            ],
+            [
+              "forEach(async …)",
+              "for...of or map + all"
+            ],
+            [
+              "not returning inner promise",
+              "return it"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Promise Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "new Promise around a promise",
+              "return it directly"
+            ],
+            [
+              ".catch(() => {})",
+              "log with context, rethrow"
+            ],
+            [
+              "callback + promise in one API",
+              "pick one shape"
+            ],
+            [
+              "expecting all to cancel losers",
+              "it cancels nothing"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Promise.all` preserves INPUT order, not completion order.",
+            "Swallowed errors become silent data corruption."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Mistakes, Fixes, Cheat Sheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. Scale & Timing Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "all over unbounded list",
+              "p-limit or chunk"
+            ],
+            [
+              "JSON.parse on 50MB",
+              "stream it"
+            ],
+            [
+              "sync crypto in handler",
+              "threadpool or worker"
+            ],
+            [
+              "race without clearTimeout",
+              "finally or AbortSignal"
+            ],
+            [
+              "late .catch attach",
+              "attach at creation"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Mental Model",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One JS thread, a loop of six phases, libuv does the waiting.",
+            "Microtasks drain between every single callback.",
+            "sync > nextTick > promises > timers/poll/check.",
+            "Ladder: callbacks → promises → async/await, each on the last."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Combinator"
+          ],
+          "rows": [
+            [
+              "all must succeed",
+              "all"
+            ],
+            [
+              "every outcome",
+              "allSettled"
+            ],
+            [
+              "first settled",
+              "race"
+            ],
+            [
+              "first success",
+              "any"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Recipe: create promises first, `await Promise.all` second.",
+            "Add `p-limit` the moment the list isn't fixed and small.",
+            "Every chain ends in `.catch`; every entry point in try/catch.",
+            "Every fire-and-forget carries its own `.catch`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Production Kit",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Safety net: unhandledRejection + uncaughtException + supervisor.",
+            "Cancellation: AbortController, timeout, any, finally, SIGTERM.",
+            "Observability: monitorEventLoopDelay, AsyncLocalStorage.",
+            "Leaks: getActiveResourcesInfo before you blame the GC."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "rules: {",
+            "  'no-floating-promises': 2, 'await-thenable': 2,",
+            "  'no-misused-promises': 2, 'require-await': 1,",
+            "  'no-await-in-loop': 1   // warning, not error",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Final rule of thumb",
+          "text": "Async solves waiting, limits solve overload, cancellation solves waiting forever. Production needs all three."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of NODE ASYNC HANDBOOK. Your Node server has one thread — and every sync line you write is a queue everyone else stands in. This 10-page handwritten handbook walks the whole async stack: the six loop phases, error-first callbacks and Zalgo, promise mechanics, the combinator picker, the accidental-serial await trap, bounded concurrency with p-limit, unhandled-rejection crash semantics, and AbortController cleanup. Save it for the next time a fan-out takes down your connection pool.",
+    "hashtags": [
+      "#nodejs",
+      "#javascript",
+      "#asyncawait",
+      "#eventloop",
+      "#promises",
+      "#backenddev",
+      "#webdev",
+      "#codenotes",
+      "#programming",
+      "#softwareengineering",
+      "#devtips",
+      "#100daysofcode"
+    ]
+  }
+}
