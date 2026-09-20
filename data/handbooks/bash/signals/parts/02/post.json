@@ -78,6 +78,19 @@
           ]
         },
         {
+          "type": "bullets",
+          "items": [
+            "A subshell is a forked copy of the whole shell",
+            "Variables, traps and options are copied, not shared",
+            "Nothing set inside can reach back to the parent"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Fork Boundaries & Strict Mode Flags",
+      "blocks": [
+        {
           "type": "heading",
           "text": "Everything That Forks",
           "ink": "blue"
@@ -163,14 +176,6 @@
           }
         },
         {
-          "type": "bullets",
-          "items": [
-            "A subshell is a forked copy of the whole shell",
-            "Variables, traps and options are copied, not shared",
-            "Nothing set inside can reach back to the parent"
-          ]
-        },
-        {
           "type": "heading",
           "text": "The Fork Reset Rule"
         },
@@ -204,6 +209,122 @@
           "style": "takeaway",
           "title": "Why $(...) Feels Broken",
           "text": "A trap set inside command substitution dies with that subshell, and the parent's EXIT trap does not run when a subshell exits."
+        },
+        {
+          "type": "heading",
+          "text": "Group Without Forking"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Construct",
+            "Forks?",
+            "Parent sees"
+          ],
+          "rows": [
+            [
+              "`( cmd )`",
+              "yes",
+              "nothing"
+            ],
+            [
+              "`{ cmd; }`",
+              "**no**",
+              "vars + traps"
+            ],
+            [
+              "`$( cmd )`",
+              "yes",
+              "stdout only"
+            ],
+            [
+              "`cmd &`",
+              "yes",
+              "`$!` only"
+            ],
+            [
+              "`a | b`",
+              "both",
+              "nothing"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Portability Warning",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ERR is a bash ==pseudo-signal==, not POSIX",
+            "`dash` and `sh` ignore it silently — no warning",
+            "So the shebang must be `#!/usr/bin/env bash`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Strict Mode, Flag By Flag"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Turns on",
+            "Bites when"
+          ],
+          "rows": [
+            [
+              "`-e`",
+              "exit on error",
+              "status is data"
+            ],
+            [
+              "`-u`",
+              "unset is fatal",
+              "`$1` optional"
+            ],
+            [
+              "`-o pipefail`",
+              "pipe fails loud",
+              "`grep` finds none"
+            ],
+            [
+              "`-E`",
+              "ERR inherits",
+              "never"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where set -e Lies"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Skipped inside `if`, `while`, `&&`, `||`, and after `!`",
+            "A function called in a test context loses it entirely",
+            "So `if big_fn; then` disarms it for the whole call tree",
+            "Never ship `-e` as your only error handling"
+          ],
+          "style": "cross"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "set -o pipefail",
+            "curl -s \"$url\" | jq .id",
+            "rc=${PIPESTATUS[0]}  # curl's"
+          ],
+          "note": "read it before the next command"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Functions Lose ERR",
+          "text": "Without `set -E`, a failure inside a function, `$(...)` or subshell never fires your ERR trap — diagnostics vanish exactly where you need them."
         }
       ]
     },
@@ -435,7 +556,12 @@
             "trap cleanup EXIT INT TERM HUP",
             "main \"$@\"   # work goes after the trap"
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Anatomy of the Cleanup Skeleton",
+      "blocks": [
         {
           "type": "diagram",
           "kind": "flow",
@@ -448,11 +574,48 @@
               "cleanup"
             ]
           }
+        },
+        {
+          "type": "heading",
+          "text": "Reading The Skeleton"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Order is the lesson: strict mode before anything runs",
+            "Acquire, then trap on the **next** line — not later",
+            "Work only starts once the safety net exists",
+            "Cleanup then fires from any step, win or lose"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "cleanup() {",
+            "  local rc=$?",
+            "  trap - EXIT INT TERM",
+            "  rm -rf -- \"${tmpdir:-}\" || true",
+            "  exit \"$rc\"",
+            "}"
+          ],
+          "note": "disarm first, status last"
+        },
+        {
+          "type": "sidebox",
+          "title": "Skip One Step",
+          "items": [
+            "Trap before acquire → handler reads an unset var",
+            "Work before trap → the first failure leaks it",
+            "No disarm → a signal re-enters cleanup mid-run"
+          ],
+          "ink": "red"
         }
       ]
     },
     {
-      "page_title": "Production Patterns and Summary",
+      "page_title": "Production Handlers, Reaping & Locks",
       "blocks": [
         {
           "type": "heading",
@@ -484,6 +647,18 @@
           "type": "code",
           "lang": "bash",
           "lines": [
+            "{ kill -TERM \"${kids[@]}\"",
+            "  sleep 2",
+            "  kill -KILL \"${kids[@]}\"",
+            "  wait \"${kids[@]}\"",
+            "} 2>/dev/null"
+          ],
+          "note": "braces group without forking"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
             "exec 9>/var/lock/my.lock",
             "flock -n 9 || exit 1   # already running",
             "# fd closes on death — even on SIGKILL"
@@ -497,6 +672,46 @@
         },
         {
           "type": "heading",
+          "text": "Reuse, Don't Reinvent"
+        }
+      ]
+    },
+    {
+      "page_title": "Reuse, Testing & the Signal Table",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Use",
+            "Instead of"
+          ],
+          "rows": [
+            [
+              "`timeout -k 5 10 cmd`",
+              "hand-rolled TERM/KILL"
+            ],
+            [
+              "`flock -n 9`",
+              "PID-file locking"
+            ],
+            [
+              "`mktemp -d -t app.XX`",
+              "`/tmp/$$` names"
+            ],
+            [
+              "`wait -n`",
+              "polling for children"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Check 124, Not Output",
+          "text": "`timeout` exits ==124== when the deadline fired and 137 when the follow-up KILL was needed. Branch on the code, never on parsed text."
+        },
+        {
+          "type": "heading",
           "text": "Prove It Works"
         },
         {
@@ -506,7 +721,8 @@
             "Assert the temp dir is gone and status is 143",
             "Repeat with Ctrl-C and assert 130",
             "`shellcheck` in CI catches unquoted and double-quoted traps"
-          ]
+          ],
+          "style": "check"
         },
         {
           "type": "heading",

@@ -137,7 +137,7 @@
       ]
     },
     {
-      "page_title": "How the Dockerfile Builds Layers",
+      "page_title": "One Instruction, One Layer",
       "blocks": [
         {
           "type": "heading",
@@ -193,6 +193,16 @@
           ]
         },
         {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM scratch      # empty base",
+            "COPY hello /hello # the one layer",
+            "ENTRYPOINT [\"/hello\"]  # metadata"
+          ],
+          "note": "metadata instructions add zero bytes"
+        },
+        {
           "type": "heading",
           "text": "5. COPY vs ADD"
         },
@@ -206,20 +216,14 @@
           ]
         },
         {
-          "type": "heading",
-          "text": "6. Context Ships First"
-        },
-        {
-          "type": "sidebox",
-          "title": "Build Context",
-          "items": [
-            "Classic builder tars and ships the ==whole context== up front",
-            "BuildKit (==default since Docker 23==) streams only `COPY`/`ADD` files, cached between builds",
-            "3GB dir costs 3GB only if an instruction copies it",
-            "`.dockerignore` still earns its keep: cache busts and leaked secrets",
-            "Context size and image size are separate costs",
-            "BuildKit: DAG, parallel stages, skips unused ones"
-          ]
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "COPY --chown=app:app src/ /app/",
+            "COPY --chmod=0755 run.sh /usr/bin/",
+            "# RUN chmod -R /app ✗ recopies all"
+          ],
+          "note": "a later chmod duplicates every file"
         },
         {
           "type": "callout",
@@ -268,7 +272,125 @@
       ]
     },
     {
-      "page_title": "The Build Cache: How It Decides to Reuse",
+      "page_title": "Cache Keys & Where ARG Belongs",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20-alpine",
+            "ARG GIT_SHA   # ✗ nukes all below",
+            "RUN npm ci    # rebuilt each push",
+            "# move ARG down, just before use:",
+            "ARG GIT_SHA   # ✓ here: 1 miss",
+            "LABEL rev=$GIT_SHA"
+          ],
+          "note": "declare a changing ARG just before use"
+        }
+      ]
+    },
+    {
+      "page_title": "Context, Cache Keys & What Busts Them",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Context Ships First"
+        },
+        {
+          "type": "sidebox",
+          "title": "Build Context",
+          "items": [
+            "Classic builder tars and ships the ==whole context== up front",
+            "BuildKit (==default since Docker 23==) streams only `COPY`/`ADD` files, cached between builds",
+            "3GB dir costs 3GB only if an instruction copies it",
+            "`.dockerignore` still earns its keep: cache busts and leaked secrets",
+            "Context size and image size are separate costs",
+            "BuildKit: DAG, parallel stages, skips unused ones"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "RUN Keys Are Literal Text",
+          "items": [
+            "Key = the ==command string==, nothing else",
+            "Docker never inspects what the command did",
+            "Edit a comment inside a RUN and it misses",
+            "Same text + old index = **stale** packages"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Edit",
+            "What rebuilds"
+          ],
+          "rows": [
+            [
+              "README.md",
+              "`COPY . .` and below"
+            ],
+            [
+              "package.json",
+              "`npm ci` and below"
+            ],
+            [
+              "touch, same bytes",
+              "nothing — still a hit"
+            ],
+            [
+              "ARG value",
+              "its use and below"
+            ],
+            [
+              "base tag moved",
+              "only with `--pull`"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker build --progress=plain .",
+            "#  CACHED [2/5] COPY package*.json",
+            "#  CACHED [3/5] RUN npm ci",
+            "#  [4/5] COPY . .   <- first miss"
+          ],
+          "note": "everything below the first miss rebuilds"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Bust One Step On Purpose",
+          "text": "Put `ARG CACHEBUST` directly above the step, then build with `--build-arg CACHEBUST=$(date +%s)`. Only that step and the ones below it rerun."
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "ADD https://x.io/t.tgz /tmp/  # ✗",
+            "RUN curl -fsSL -o /t.tgz \\",
+            "      https://x.io/t.tgz \\",
+            " && echo \"$SHA  /t.tgz\" \\",
+            "    | sha256sum -c -          # ✓"
+          ],
+          "note": "ADD never verifies a checksum"
+        },
+        {
+          "type": "qa",
+          "q": "Why does a README typo reinstall every dep?",
+          "a_bullets": [
+            "`COPY . .` sits above `RUN npm ci`",
+            "New file content = new COPY cache key",
+            "So every step below it rebuilds",
+            "Fix: copy manifests first, add `.dockerignore`"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Ordering Layers So the Cache Holds",
       "blocks": [
         {
           "type": "heading",
@@ -492,7 +614,7 @@
       ]
     },
     {
-      "page_title": "Multi-Stage Builds",
+      "page_title": ".dockerignore: Filtering the Context",
       "blocks": [
         {
           "type": "heading",
@@ -611,17 +733,46 @@
           "style": "tip",
           "title": "node_modules Gotcha",
           "text": "Ignore it and `RUN npm ci` inside the image instead — host-built native modules are the wrong architecture anyway."
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Secrets That Must Never Reach a Layer",
+      "blocks": [
         {
           "type": "callout",
           "style": "takeaway",
           "title": "Layers Are Public",
           "text": "`COPY . .` with no ignore file ships `.git` history and `.env` into a layer. Anyone who pulls can extract them; deleting later does not help."
+        },
+        {
+          "type": "heading",
+          "text": "8. Secrets Never Reach A Layer"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "ARG TOKEN      # ✗ docker history",
+            "RUN --mount=type=secret,id=npm \\",
+            "      npm ci   # ✓ never a layer"
+          ],
+          "note": "the mount lives only for that RUN"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker history` prints every ARG and RUN line",
+            "`ENV` also keeps the value in the running container",
+            "Pass it at build: `--secret id=npm,src=.npmrc`",
+            "Already baked one in? **Rotate** it — `rm` is not enough"
+          ],
+          "style": "cross"
         }
       ]
     },
     {
-      "page_title": ".dockerignore and the Build Context",
+      "page_title": "Measuring and Shrinking the Image",
       "blocks": [
         {
           "type": "heading",
@@ -753,6 +904,21 @@
           "ink": "red"
         },
         {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN adduser -S -u 10001 app",
+            "COPY --chown=10001 dist/ /app/",
+            "USER 10001:10001   # numeric = safe"
+          ],
+          "note": "numeric UID works on distroless too"
+        }
+      ]
+    },
+    {
+      "page_title": "1.1GB to 150MB, Non-Root, Exec Form",
+      "blocks": [
+        {
           "type": "heading",
           "text": "7. Worked Comparison"
         },
@@ -767,6 +933,63 @@
               "--omit=dev = 150MB"
             ]
           }
+        },
+        {
+          "type": "heading",
+          "text": "8. Never Ship As Root"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default `USER` is **root** — an escape starts there",
+            "Node images already ship a `node` user",
+            "scratch/distroless have no `/etc/passwd`: use a number",
+            "Set `USER` in the final stage, after the installs"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "9. Exec Form Or Lose SIGTERM"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "CMD node dist/main.js  # ✗ sh -c",
+            "CMD [\"node\",\"dist/main.js\"]  # ✓",
+            "HEALTHCHECK --interval=30s \\",
+            "  CMD [\"node\",\"health.js\"]"
+          ],
+          "note": "shell form swallows SIGTERM"
+        },
+        {
+          "type": "heading",
+          "text": "10. Local Cost & Debug"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Tells you"
+          ],
+          "rows": [
+            [
+              "`docker system df`",
+              "images + cache cost"
+            ],
+            [
+              "`docker builder prune`",
+              "reclaims cache disk"
+            ],
+            [
+              "`history --no-trunc`",
+              "real size per layer"
+            ],
+            [
+              "`run -it <stage> sh`",
+              "poke an intermediate"
+            ]
+          ]
         }
       ]
     },
@@ -887,252 +1110,6 @@
             "No `/tmp`, no timezone database, no passwd file",
             "Copy `/usr/share/zoneinfo` if you need local time",
             "Only fully static: Go CGO_ENABLED=0, Rust musl target"
-          ]
-        }
-      ]
-    },
-    {
-      "page_title": "Choosing a Base, Secrets & Safe Pinning",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "7. Picking One"
-        },
-        {
-          "type": "qa",
-          "q": "Why does `docker exec -it app sh` fail on my distroless image?",
-          "a_bullets": [
-            "There is no shell in the image at all",
-            "Use the `:debug` variant or `docker debug`",
-            "Static compiled binary → scratch or distroless-static",
-            "JVM, Node, Python needing glibc → distroless-* or slim",
-            "Need an ops shell in production → alpine or slim"
-          ],
-          "example_code": [
-            "docker run --rm -it \\",
-            "  --entrypoint=sh app:debug"
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "tip",
-          "title": "Compare On Four Axes",
-          "text": "Size, build time, CVE surface, debuggability. And this is all about the final stage — the builder should stay fat and full of tools."
-        },
-        {
-          "type": "heading",
-          "text": "1. The Big Five",
-          "ink": "red"
-        },
-        {
-          "type": "table",
-          "headers": [
-            "Anti-pattern",
-            "Why it hurts",
-            "Fix"
-          ],
-          "rows": [
-            [
-              "COPY . . first",
-              "reinstalls deps",
-              "split manifest"
-            ],
-            [
-              "split apt update",
-              "stale index",
-              "chain &&"
-            ],
-            [
-              "rm in later RUN",
-              "no size win",
-              "same RUN or stage"
-            ],
-            [
-              "ARG secret",
-              "in docker history",
-              "--mount=secret"
-            ],
-            [
-              "FROM latest",
-              "not reproducible",
-              "pin digest"
-            ]
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "2. Secrets Done Right"
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "ARG NPM_TOKEN  # ✗ readable in history",
-            "RUN --mount=type=secret,id=npmrc,\\",
-            "    target=/root/.npmrc npm ci",
-            "# ✓ never lands in any layer"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "3. Downloads With Proof"
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "ADD --checksum=sha256:$SHA \\",
-            "  https://x/f.tgz /   # ✓ verified",
-            "# syntax < 1.6 → curl + verify:",
-            "RUN curl -fsSL -o f.tgz https://x/f.tgz \\",
-            " && echo \"$SHA f.tgz\" | sha256sum -c"
-          ],
-          "note": "--checksum: remote URLs only"
-        },
-        {
-          "type": "heading",
-          "text": "4. Pin And Refresh"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "`node:latest` means surprise major-version breakage",
-            "Pin `node:20.11.1-alpine` or a full digest",
-            "CI reusing a `latest` cache without `--pull` misses patches",
-            "The base tag moved upstream; you kept the old bits"
-          ]
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "FROM node:20        # ✗ floats weekly",
-            "FROM node:20.11.1-alpine  # better",
-            "FROM node@sha256:9f0c...  # ✓ frozen"
-          ],
-          "note": "digest pin survives a moved tag"
-        },
-        {
-          "type": "heading",
-          "text": "5. Never Ship As Root"
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "RUN adduser --system app",
-            "USER app        # or USER 65532:65532",
-            "# default USER is root: escape = root"
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "History Is Readable",
-          "text": "`docker history <img>` prints every build arg and command. Anything you passed as ARG belongs to whoever pulls the image."
-        }
-      ]
-    },
-    {
-      "page_title": "Common Mistakes and Anti-Patterns",
-      "blocks": [
-        {
-          "type": "sidebox",
-          "title": "Reproducibility Kit",
-          "items": [
-            "Pin the base by __digest__, never by tag",
-            "Commit the lockfile — `npm ci` refuses without one",
-            "`BUILDKIT_INLINE_CACHE=1` ships cache metadata",
-            "Weekly `--no-cache --pull` so CVE fixes land"
-          ],
-          "ink": "green"
-        },
-        {
-          "type": "heading",
-          "text": "6. Surface And Churn"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "curl, vim, netcat, build-essential in prod: size and attack surface",
-            "No `.dockerignore`: huge context, cache churn, leaked secrets",
-            "`.git` drags hundreds of MB and changes every commit",
-            "One giant RUN: great size, rebuilds the toolchain on any change"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "1. Node: Build Stage",
-          "ink": "blue"
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "FROM node:20-alpine AS build",
-            "WORKDIR /app",
-            "COPY package*.json ./",
-            "RUN npm ci",
-            "COPY . .",
-            "RUN npm run build"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "2. Node: Runtime Stage"
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "FROM node:20-alpine",
-            "WORKDIR /app",
-            "COPY package*.json ./",
-            "RUN npm ci --omit=dev",
-            "COPY --from=build /app/dist ./dist"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "3. Ship It Safely"
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "USER node",
-            "CMD [\"node\",\"dist/main.js\"]  # exec form",
-            "HEALTHCHECK --interval=30s \\",
-            "  CMD [\"node\",\"health.js\"]",
-            "LABEL org.opencontainers.image.source=$REPO"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "4. Python: slim + venv"
-        },
-        {
-          "type": "code",
-          "lang": "dockerfile",
-          "lines": [
-            "FROM python:3.12-slim AS build",
-            "RUN python -m venv /opt/venv",
-            "COPY requirements.txt .",
-            "RUN /opt/venv/bin/pip install \\",
-            "  --no-cache-dir -r requirements.txt"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "5. Go Recipe"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "`go mod download` before `COPY . .`",
-            "`CGO_ENABLED=0 go build -ldflags=\"-s -w\"`",
-            "Final base: `gcr.io/distroless/static:nonroot`",
-            "Shell-form CMD wraps in `/bin/sh -c` and swallows SIGTERM"
           ]
         }
       ]
