@@ -1,4 +1,21 @@
+import { createHash } from 'crypto';
 import type { Finding } from './gates';
+
+/**
+ * A stable handle for one finding, used as the approval token.
+ *
+ * It is derived from the finding's content, never from its position in the review: the
+ * campaign regenerates review.json, and a positional key would silently re-point at a
+ * different finding between the listing a person read and the --apply they ran. Content
+ * addressing makes a stale token fail to resolve, which is the safe direction — the person
+ * is told the finding is gone rather than handed a rewrite they never approved.
+ */
+export function findingKey(f: Finding): string {
+  return createHash('sha1')
+    .update([f.pass, f.rule, f.page, f.summary].join('\u0000'))
+    .digest('hex')
+    .slice(0, 8);
+}
 
 /**
  * What may happen to a finding without a human in the loop.

@@ -52,3 +52,24 @@ describe('requestFor', () => {
     expect(r.toLowerCase()).toContain('do not remove');
   });
 });
+
+describe('findingKey', () => {
+  it('is stable for the same finding regardless of its position in the review', async () => {
+    const { findingKey } = await import('@/lib/verify/triage');
+    const a = f({ pass: 'facts', rule: 'facts.ai', page: 4, summary: 'closures cannot be pickled' });
+    const b = f({ pass: 'facts', rule: 'facts.ai', page: 4, summary: 'closures cannot be pickled' });
+    expect(findingKey(a)).toBe(findingKey(b));
+  });
+
+  it('differs when the finding differs', async () => {
+    const { findingKey } = await import('@/lib/verify/triage');
+    expect(findingKey(f({ summary: 'one' }))).not.toBe(findingKey(f({ summary: 'two' })));
+    expect(findingKey(f({ page: 1 }))).not.toBe(findingKey(f({ page: 2 })));
+    expect(findingKey(f({ pass: 'facts' }))).not.toBe(findingKey(f({ pass: 'pedagogy' })));
+  });
+
+  it('is short enough to paste on a command line', async () => {
+    const { findingKey } = await import('@/lib/verify/triage');
+    expect(findingKey(f({}))).toMatch(/^[0-9a-f]{8}$/);
+  });
+});

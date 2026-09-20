@@ -2,14 +2,15 @@
  * Reads every review.json the campaign produced and acts on it.
  *
  * Cosmetic findings (visual, brand) are applied and the part re-rendered. Editorial ones
- * (facts, pedagogy) are printed as a numbered proposal, and applied only with --apply <key>.
+ * (facts, pedagogy) are printed as a proposal; --apply <key> previews the revision and
+ * --apply <key> --write commits it.
  * Minors are counted and left alone.
  *
- *   npx tsx scripts/triage.mts [--subject <slug>] [--auto] [--apply <key>]
+ *   npx tsx scripts/triage.mts [--subject <slug>] [--auto] [--apply <key> [--write]]
  */
 import { listSubjects, listChapters, listParts, loadPost, savePost } from '../lib/store';
 import { loadReview } from '../lib/verify/review';
-import { disposition, triageOrder, requestFor } from '../lib/verify/triage';
+import { disposition, triageOrder, requestFor, findingKey } from '../lib/verify/triage';
 import { revisePost } from '../lib/ai/revise';
 import { diffPosts } from '../lib/ai/diff';
 import type { Finding } from '../lib/verify/gates';
@@ -18,6 +19,7 @@ const args = process.argv.slice(2);
 const only = args.includes('--subject') ? args[args.indexOf('--subject') + 1] : null;
 const applyKey = args.includes('--apply') ? args[args.indexOf('--apply') + 1] : null;
 const auto = args.includes('--auto');
+const write = args.includes('--write');
 
 type Item = { key: string; subject: string; chapter: string; part: number; finding: Finding };
 
@@ -29,7 +31,11 @@ async function collect(): Promise<Item[]> {
         const review = await loadReview(s.slug, c.slug, p);
         if (!review) continue;
         for (const [i, finding] of triageOrder(review.findings).entries()) {
-          items.push({ key: `${s.slug}/${c.slug}/${p}#${i}`, subject: s.slug, chapter: c.slug, part: p, finding });
+          void i;
+          items.push({
+            key: `${s.slug}/${c.slug}/${p}#${findingKey(finding)}`,
+            subject: s.slug, chapter: c.slug, part: p, finding,
+          });
         }
       }
     }
@@ -37,10 +43,26 @@ async function collect(): Promise<Item[]> {
   return items;
 }
 
-async function applyOne(item: Item) {
+/**
+ * Runs the revision and shows what it would change. Saves ONLY when `write` is set.
+ *
+ * Approving a finding is not the same as approving the prose a model wrote to fix it, and
+ * the editorial queue is thousands long — sight-unseen application is exactly the risk the
+ * approval gate exists to prevent. So `--apply` previews and `--apply --write` commits.
+ */
+async function applyOne(item: Item, write: boolean) {
   const before = await loadPost(item.subject, item.chapter, item.part);
   const after = await revisePost(before, requestFor(item.finding), 'slide', Math.max(item.finding.page - 1, 0));
   const diff = diffPosts(before, after);
+
+  console.log(`\n${item.key}: ${diff.length} slide(s) would change`);
+  for (const sd of diff) console.log(`  ${JSON.stringify(sd).slice(0, 400)}`);
+
+  if (!write) {
+    console.log(`\nPREVIEW ONLY — nothing written. Commit it with:`);
+    console.log(`  npx tsx scripts/triage.mts --apply ${item.key} --write`);
+    return;
+  }
   await savePost(item.subject, item.chapter, item.part, after);
   console.log(`applied ${item.key}: ${diff.length} slide(s) changed`);
 }
@@ -58,12 +80,12 @@ async function run() {
   if (applyKey) {
     const item = items.find((i) => i.key === applyKey);
     if (!item) { console.error(`no finding with key ${applyKey}`); process.exit(1); }
-    await applyOne(item);
+    await applyOne(item, write);
     return;
   }
 
   if (auto) {
-    for (const it of buckets.auto) await applyOne(it);
+    for (const it of buckets.auto) await applyOne(it, true);
     console.log('re-render the touched parts with: npx tsx scripts/quality-campaign.mts');
     return;
   }
