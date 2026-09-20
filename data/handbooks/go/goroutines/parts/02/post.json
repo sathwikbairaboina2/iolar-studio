@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "How Goroutines Leak",
+      "page_title": "Leak Anatomy: Symptoms and Fixes",
       "blocks": [
         {
           "type": "bullets",
@@ -37,8 +37,7 @@
             "select {",
             "case v := <-ch: use(v)",
             "case <-ctx.Done(): return ctx.Err() }"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -81,11 +80,24 @@
             "Each leaked one holds its stack and every captured variable.",
             "So a goroutine leak is always a memory leak too."
           ]
+        },
+        {
+          "type": "heading",
+          "text": "First Signal",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Export `runtime.NumGoroutine()` as a metric.",
+            "Alert on a rising trend, not an absolute number.",
+            "One cheap call; catches most leaks before an outage."
+          ]
         }
       ]
     },
     {
-      "page_title": "How Goroutines Leak (cont.)",
+      "page_title": "The Nine Causes and pprof Triage",
       "blocks": [
         {
           "type": "heading",
@@ -136,19 +148,6 @@
         },
         {
           "type": "heading",
-          "text": "First Signal",
-          "ink": "blue"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Export `runtime.NumGoroutine()` as a metric.",
-            "Alert on a rising trend, not an absolute number.",
-            "One cheap call; catches most leaks before an outage."
-          ]
-        },
-        {
-          "type": "heading",
           "text": "Goroutine pprof"
         },
         {
@@ -158,8 +157,7 @@
             "# import _ \"net/http/pprof\" first",
             "curl localhost:6060/debug/pprof/goroutine?debug=2",
             "curl localhost:6060/debug/pprof/goroutine?debug=1"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "table",
@@ -194,13 +192,7 @@
             "`go tool pprof -http=:8080 http://host/debug/pprof/goroutine`.",
             "`go tool pprof -base old.pprof new.pprof` isolates real growth."
           ]
-        }
-      ],
-      "cont": true
-    },
-    {
-      "page_title": "Finding and Debugging Leaks",
-      "blocks": [
+        },
         {
           "type": "callout",
           "style": "takeaway",
@@ -220,8 +212,7 @@
             "    defer goleak.VerifyNone(t)",
             "    …",
             "}  // or goleak.VerifyTestMain(m)"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -231,7 +222,12 @@
             "Cheap guard: spawn component, cancel ctx, wait, assert baseline `NumGoroutine()`.",
             "`go test -race` catches races that ride along with leaky lifecycles."
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Traces, Dumps, and Scheduler Trade-offs",
+      "blocks": [
         {
           "type": "sidebox",
           "title": "Race detector cost",
@@ -333,12 +329,7 @@
               "thousands"
             ]
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "Finding and Debugging Leaks (cont.)",
-      "blocks": [
+        },
         {
           "type": "heading",
           "text": "Against Other Runtimes"
@@ -368,6 +359,31 @@
             ]
           ]
         },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Not a real-time scheduler",
+          "text": "10 ms slices and a 61-tick global check mean no latency guarantee. Hard-latency work needs `LockOSThread` plus OS-level priority."
+        },
+        {
+          "type": "heading",
+          "text": "Bounding The Spawn"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "sem := make(chan struct{}, 8)",
+            "sem <- struct{}{}          // acquire",
+            "defer func(){ <-sem }()    // release",
+            "// or: g.SetLimit(8)"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Costs, Knobs, and Bounded Concurrency",
+      "blocks": [
         {
           "type": "bullets",
           "items": [
@@ -429,12 +445,6 @@
           ]
         },
         {
-          "type": "callout",
-          "style": "cloud",
-          "title": "Not a real-time scheduler",
-          "text": "10 ms slices and a 61-tick global check mean no latency guarantee. Hard-latency work needs `LockOSThread` plus OS-level priority."
-        },
-        {
           "type": "sidebox",
           "title": "Top production failure",
           "items": [
@@ -445,21 +455,6 @@
           ]
         },
         {
-          "type": "heading",
-          "text": "Bounding The Spawn"
-        },
-        {
-          "type": "code",
-          "lang": "go",
-          "lines": [
-            "sem := make(chan struct{}, 8)",
-            "sem <- struct{}{}          // acquire",
-            "defer func(){ <-sem }()    // release",
-            "// or: g.SetLimit(8)"
-          ],
-          "runnable": false
-        },
-        {
           "type": "bullets",
           "items": [
             "Buffered channel of size N = semaphore: unbounded goroutines, bounded parallelism.",
@@ -467,13 +462,7 @@
             "Worker pool: N goroutines ranging one jobs channel, results on a second.",
             "`errgroup` propagates the first error and cancels the shared context."
           ]
-        }
-      ],
-      "cont": true
-    },
-    {
-      "page_title": "Trade-offs, Comparisons, and Summary",
-      "blocks": [
+        },
         {
           "type": "heading",
           "text": "Ownership Rules"
@@ -502,6 +491,17 @@
               "caller can't stop it"
             ]
           ]
+        }
+      ]
+    },
+    {
+      "page_title": "Shutdown, Anti-Patterns, and Takeaways",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "`os.Exit` skips everything",
+          "text": "A hard exit runs no deferred cleanup in any goroutine. Same for `main` returning — every other goroutine dies mid-flight."
         },
         {
           "type": "bullets",
@@ -511,12 +511,6 @@
             "Select on `ctx.Done()` in every loop that can block.",
             "Graceful shutdown: close input, `Wait` for workers, then close outputs."
           ]
-        },
-        {
-          "type": "callout",
-          "style": "tip",
-          "title": "`os.Exit` skips everything",
-          "text": "A hard exit runs no deferred cleanup in any goroutine. Same for `main` returning — every other goroutine dies mid-flight."
         },
         {
           "type": "heading",

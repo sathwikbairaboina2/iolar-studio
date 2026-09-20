@@ -30,8 +30,7 @@
             "\tgo worker(jobs, results) // one chan",
             "}",
             "close(jobs) // all N range loops exit"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -100,8 +99,7 @@
             "case results <- r: // normal path",
             "case <-ctx.Done(): return // no leak",
             "}"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -119,14 +117,25 @@
             "\tval T",
             "\terr error // one chan, sane ordering",
             "}"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
           "style": "takeaway",
           "title": "Anti-Pattern",
           "text": "An unbounded `go` per item over a large input: thousands of goroutines all hitting one database is a self-inflicted outage."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "generator",
+              "fan-out workers",
+              "fan-in merge",
+              "consumer"
+            ]
+          }
         }
       ]
     },
@@ -148,18 +157,6 @@
           ]
         },
         {
-          "type": "diagram",
-          "kind": "flow",
-          "spec": {
-            "nodes": [
-              "generator",
-              "fan-out workers",
-              "fan-in merge",
-              "consumer"
-            ]
-          }
-        },
-        {
           "type": "heading",
           "text": "The General Merge",
           "ink": "green"
@@ -171,8 +168,7 @@
             "var wg sync.WaitGroup",
             "wg.Add(len(cs))",
             "out := make(chan T, len(cs)) // one slot each"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -230,14 +226,8 @@
             "case out <- v: // consumer still reading",
             "case <-ctx.Done(): return // early exit",
             "}"
-          ],
-          "runnable": false
-        }
-      ]
-    },
-    {
-      "page_title": "Fan-In: Merging N Channels (cont.)",
-      "blocks": [
+          ]
+        },
         {
           "type": "heading",
           "text": "The Loop Var Trap",
@@ -252,8 +242,7 @@
             "\t\tfor v := range c { out <- v }",
             "\t}(c)",
             "}"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -262,7 +251,12 @@
             "Every merge goroutine then drained the same input",
             "Passing the channel as a parameter fixes it"
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Merge Leaks And Who Closes",
+      "blocks": [
         {
           "type": "callout",
           "style": "tip",
@@ -335,13 +329,7 @@
             "They are the only two correct ways from the receive side",
             "A bare receive cannot tell zero value from closed"
           ]
-        }
-      ],
-      "cont": true
-    },
-    {
-      "page_title": "Leaks, Closing & Panic Rules",
-      "blocks": [
+        },
         {
           "type": "heading",
           "text": "Who Closes",
@@ -364,15 +352,6 @@
             "\twg.Wait()",
             "\tclose(out) // after N producers finish",
             "}()"
-          ],
-          "runnable": false
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Buffered values survive a close; receivers drain first",
-            "Closing wakes every goroutine blocked on receive",
-            "That broadcast is how one `done` cancels N workers"
           ]
         },
         {
@@ -380,6 +359,29 @@
           "style": "takeaway",
           "title": "Worked Example",
           "text": "Call `close(results)` before the workers finish and the next `results <- r` gives `panic: send on closed channel`, taking the whole process down."
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "select {",
+            "case v := <-ch: use(v)",
+            "default: // nothing ready, move on",
+            "}"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Channel Or Mutex, And select",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Buffered values survive a close; receivers drain first",
+            "Closing wakes every goroutine blocked on receive",
+            "That broadcast is how one `done` cancels N workers"
+          ]
         },
         {
           "type": "heading",
@@ -458,17 +460,21 @@
           "lang": "go",
           "lines": [
             "select {",
-            "case v := <-ch: use(v)",
-            "default: // nothing ready, move on",
+            "case ch <- v: // sent, buffer had room",
+            "default: // full, **drop** the value",
             "}"
           ],
-          "runnable": false
-        }
-      ]
-    },
-    {
-      "page_title": "Gotchas And The Cheat Sheet",
-      "blocks": [
+          "note": "non-blocking send, drop on full"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Case expressions are evaluated once, top to bottom",
+            "Only then does the select block on the ready set",
+            "`for { select { ... } }` is the event-loop shape",
+            "Timeout arm: `case <-time.After(d): return ErrTimeout`"
+          ]
+        },
         {
           "type": "callout",
           "style": "tip",
@@ -498,6 +504,19 @@
           ]
         },
         {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "if !ok { a = nil; continue }",
+            "// loop while a != nil || b != nil"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "nil Channels And The Decision Guide",
+      "blocks": [
+        {
           "type": "bullets",
           "items": [
             "A closed input stays ready and busy-spins the loop",
@@ -505,13 +524,31 @@
           ]
         },
         {
+          "type": "heading",
+          "text": "Toggle A Send",
+          "ink": "green"
+        },
+        {
           "type": "code",
           "lang": "go",
           "lines": [
-            "if !ok { a = nil; continue }",
-            "// loop while a != nil || b != nil"
+            "var out chan T // nil: case is off",
+            "if ready { out = ch } // arm it",
+            "select {",
+            "case out <- v: out = nil // disarm",
+            "case <-ctx.Done(): return",
+            "}"
           ],
-          "runnable": false
+          "note": "select skips a nil send case"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep `out` nil until you actually hold a value",
+            "select then offers the send only when there is data",
+            "No flag checks and no nested inner select",
+            "Both inputs nil? Every stream is drained, so exit"
+          ]
         },
         {
           "type": "heading",
@@ -525,6 +562,26 @@
             "Only when that struct owns its whole lifecycle",
             "Ambiguous ownership is what causes double closes"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Guard Every Send",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`case <-ctx.Done(): return ctx.Err()` in every worker loop",
+            "An unguarded `out <- v` is the **#1** source of leaks",
+            "`select {}` with no cases parks that goroutine forever",
+            "Nil a local variable, never a field another goroutine reads"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Whole Handbook",
+          "text": "Unbuffered is synchronization, buffered is queueing with a ceiling, close is a broadcast, nil is an off switch, and select composes them all."
         },
         {
           "type": "heading",
@@ -555,12 +612,6 @@
               "`context`, not hand-rolled"
             ]
           ]
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "The Whole Handbook",
-          "text": "Unbuffered is synchronization, buffered is queueing with a ceiling, close is a broadcast, nil is an off switch, and select composes them all."
         }
       ]
     }
