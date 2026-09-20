@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { runPython, expectedOutput, outputMatches } from '@/lib/verify/sandbox';
+import {
+  runPython, expectedOutput, outputMatches, buildPrelude, runPythonWithPrelude,
+} from '@/lib/verify/sandbox';
 
 describe('runPython', () => {
   it('runs a correct snippet and captures stdout', async () => {
@@ -54,4 +56,37 @@ describe('outputMatches', () => {
   it('rejects a genuinely different value', () => {
     expect(outputMatches('[1, 2]', '[1, 2, 3]')).toBe(false);
   });
+});
+
+describe('buildPrelude', () => {
+  it('is empty for no preceding blocks', () => {
+    expect(buildPrelude([])).toBe('');
+  });
+
+  it('lets a later block see names the earlier block defined', async () => {
+    const prelude = buildPrelude([["d = {'a': 1}"]]);
+    const r = await runPythonWithPrelude(prelude, "print('a' in d)\n");
+    expect(r.ok).toBe(true);
+    expect(r.stdout.trim()).toBe('True');
+  }, 30_000);
+
+  it('suppresses the prelude own output so only the block under test prints', async () => {
+    const prelude = buildPrelude([['print("NOISE")', 'v = 7']]);
+    const r = await runPythonWithPrelude(prelude, 'print(v)\n');
+    expect(r.stdout).not.toContain('NOISE');
+    expect(r.stdout.trim()).toBe('7');
+  }, 30_000);
+
+  it('survives a prelude block that raises', async () => {
+    const prelude = buildPrelude([['    def __next__(s):', '        return 1'], ['w = 3']]);
+    const r = await runPythonWithPrelude(prelude, 'print(w)\n');
+    expect(r.ok).toBe(true);
+    expect(r.stdout.trim()).toBe('3');
+  }, 30_000);
+
+  it('still reports a genuine error in the block under test', async () => {
+    const r = await runPythonWithPrelude(buildPrelude([['x = 1']]), 'raise ValueError("boom")\n');
+    expect(r.ok).toBe(false);
+    expect(r.stderr).toContain('ValueError');
+  }, 30_000);
 });

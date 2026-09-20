@@ -6,7 +6,7 @@ import { rendersDir } from '../paths';
 import { loadBook } from '../ai/book';
 import { uncoveredPoints } from '../ai/fit';
 import { checkCodeBlock, checkTables, checkHeadings, type Finding } from './gates';
-import { runPython, expectedOutput, outputMatches } from './sandbox';
+import { runPythonWithPrelude, buildPrelude, expectedOutput, outputMatches } from './sandbox';
 
 /** Dropping one of these is a safety problem, not a trim. */
 const CAVEAT = /security|leak|spoof|inject|auth|escape|sanitiz|overflow|race|deadlock|corrupt/i;
@@ -25,13 +25,20 @@ export async function runGates(subject: string, chapter: string, part: number): 
   // Execute the snippets that claim their own output. The old schema carried a "runnable"
   // flag; this engine's code block has none, so a snippet selects itself by asserting a value
   // in a trailing print comment — an illustrative fragment makes no claim and is left alone.
+  // Blocks run with the Python blocks before them replayed as a prelude: a handbook page
+  // teaches in fragments, so "'c' in d" two blocks after "d = {...}" is correct content,
+  // not a broken snippet. That also retires the old "first line is indented, skip it"
+  // guard — an indented fragment is exactly the case the prelude exists to judge.
+  const seenPy: string[][] = [];
   for (const [si, slide] of post.slides.entries()) {
     for (const [bi, b] of slide.blocks.entries()) {
       if (b.type !== 'code' || !/^py(thon)?$/i.test(b.lang)) continue;
       const claim = expectedOutput(b.lines);
-      if (!claim || /^\s/.test(b.lines[0] ?? '')) continue;
-      const code = b.lines.join('\n');
-      const result = await runPython(code);
+      const lines = b.lines;
+      if (!claim) { seenPy.push(lines); continue; }
+      const code = lines.join('\n');
+      const result = await runPythonWithPrelude(buildPrelude(seenPy), code);
+      seenPy.push(lines);
 
       if (result.stderr.includes('python not available')) continue; // no interpreter: skip, do not fail
 

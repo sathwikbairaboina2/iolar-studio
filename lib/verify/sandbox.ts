@@ -90,3 +90,37 @@ export function outputMatches(actual: string, expected: string): boolean {
   const norm = (s: string) => s.replace(/['"]/g, '"').replace(/\s+/g, ' ').trim();
   return norm(actual).includes(norm(expected));
 }
+
+/**
+ * Replays the Python blocks that came before this one so a fragment can see the names its
+ * page already defined. The source is base64'd rather than interpolated: handbook snippets
+ * contain every quote style, and a raw triple-quoted wrapper would collide with them.
+ *
+ * Each block is replayed independently and its failure swallowed — severed fragments are
+ * legal handbook content, and one that cannot run must not fail the block under test.
+ */
+export function buildPrelude(blocks: string[][]): string {
+  const sources = blocks.map((lines) => lines.join('\n')).filter((s) => s.trim());
+  if (!sources.length) return '';
+  const encoded = sources.map((s) => JSON.stringify(Buffer.from(s, 'utf8').toString('base64')));
+  return [
+    'import base64 as _b64, io as _io, contextlib as _ctx',
+    `_pre = [${encoded.join(', ')}]`,
+    'for _src in _pre:',
+    '    try:',
+    '        with _ctx.redirect_stdout(_io.StringIO()), _ctx.redirect_stderr(_io.StringIO()):',
+    '            exec(compile(_b64.b64decode(_src).decode("utf-8"), "<prelude>", "exec"), globals())',
+    '    except BaseException:',
+    '        pass',
+    'del _b64, _io, _ctx, _pre, _src',
+  ].join('\n');
+}
+
+/** Runs `code` with `prelude` replayed first. An empty prelude is just `runPython`. */
+export async function runPythonWithPrelude(
+  prelude: string,
+  code: string,
+  opts: { timeoutMs?: number } = {}
+): Promise<RunResult> {
+  return runPython(prelude ? `${prelude}\n${code}` : code, opts);
+}
