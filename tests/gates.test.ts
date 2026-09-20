@@ -73,4 +73,24 @@ describe('checkHeadings', () => {
     ] as Slide[];
     expect(checkHeadings(slides)).toEqual([]);
   });
+
+  it('keeps a repeat inside one section major', () => {
+    const slides = [
+      { page_title: 'AWS IAM', blocks: [{ type: 'heading', text: '1. Best Practices' }] },
+      { page_title: 'AWS IAM (cont.)', blocks: [{ type: 'heading', text: '4. Best Practices' }] },
+    ] as Slide[];
+    const found = checkHeadings(slides).filter((f) => f.rule === 'heading.unique');
+    expect(found).toHaveLength(1);
+    expect(found[0].severity).toBe('major');
+  });
+
+  it('downgrades a repeat across different sections to minor', () => {
+    const slides = [
+      { page_title: 'AWS IAM', blocks: [{ type: 'heading', text: '8. Best Practices' }] },
+      { page_title: 'VPC Networking', blocks: [{ type: 'heading', text: '8. Best Practices' }] },
+    ] as Slide[];
+    const found = checkHeadings(slides).filter((f) => f.rule === 'heading.unique');
+    expect(found).toHaveLength(1);
+    expect(found[0].severity).toBe('minor');
+  });
 });

@@ -131,25 +131,38 @@ export function checkTables(block: Block, page = 0, blockIndex?: number): Findin
   return out;
 }
 
-/** Headings repeat across a part when the planner loses track of what it already wrote. */
+/** "AWS VPC (cont.)" and "AWS VPC" are the same section. */
+const baseTitle = (t: string) => t.replace(/ \(cont\.\)$/, '').trim().toLowerCase();
+
+/**
+ * Headings repeat across a part when the planner loses track of what it already wrote.
+ * They also repeat legitimately: a notes chapter gives every service its own "Best
+ * Practices". Same section is the planner losing track; different sections is the shape of
+ * the material, so it is recorded and not treated as a defect to fix.
+ */
 export function checkHeadings(slides: Slide[]): Finding[] {
-  const seen = new Map<string, number>();
+  const seen = new Map<string, { page: number; section: string }>();
   const out: Finding[] = [];
   slides.forEach((slide, si) => {
+    const section = baseTitle(slide.page_title ?? '');
     slide.blocks.forEach((b, bi) => {
       if (b.type !== 'heading') return;
       const key = b.text.replace(/^\s*\d+[.)]\s*/, '').trim().toLowerCase();
       if (!key) return;
       const first = seen.get(key);
       if (first !== undefined) {
+        const sameSection = first.section === section;
         out.push({
-          pass: 'code', rule: 'heading.unique', severity: 'major', page: si + 1, block: bi,
-          summary: `Heading "${b.text}" already appears on page ${first}.`,
+          pass: 'code', rule: 'heading.unique', severity: sameSection ? 'major' : 'minor',
+          page: si + 1, block: bi,
+          summary: `Heading "${b.text}" already appears on page ${first.page}.`,
           evidence: b.text,
-          fix: 'Rename this section, or merge it with the earlier one.',
+          fix: sameSection
+            ? 'Rename this section, or merge it with the earlier one.'
+            : 'Fine if the two pages cover different topics; rename if they do not.',
         });
       } else {
-        seen.set(key, si + 1);
+        seen.set(key, { page: si + 1, section });
       }
     });
   });
