@@ -267,6 +267,9 @@ export async function balanceTail(
   const probe = path.join(outDir, '.tail-probe.png');
   for (let move = 1; move <= Math.min(TAIL_SEARCH, prev.blocks.length - 1); move++) {
     const cut = prev.blocks.length - move;
+    // Never cut between a heading and its section: the layout binds a heading to the block
+    // after it, but only on one page, so a heading left last on a page is drawn alone.
+    if (combined[cut - 1].type === 'heading') continue;
     const a = { ...prev, blocks: combined.slice(0, cut) };
     const b = { ...tail, blocks: combined.slice(cut) };
     const working: Post = { ...post, slides: [...slides.slice(0, last - 1), a, b] };

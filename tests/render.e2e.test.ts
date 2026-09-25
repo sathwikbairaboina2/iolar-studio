@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { renderSlide, renderAll, closeBrowser, TAIL_FLOOR } from '@/lib/renderer/capture';
+import { renderSlide, renderAll, balanceTail, closeBrowser, TAIL_FLOOR } from '@/lib/renderer/capture';
 import { validatePost, Post } from '@/lib/schema';
 import path from 'path';
 import { tmpdir } from 'os';
@@ -50,6 +50,37 @@ describe('a part that flows onto a starved last page', () => {
     expect(TAIL_FLOOR).toBe(80);
     for (const r of results) expect(r.overflowPx).toBe(0);
   });
+});
+
+describe('balancing a starved tail', () => {
+  it('never leaves the page before it ending on a heading', async () => {
+    // The layout binds a heading to the block after it, but only within one page. Moving
+    // just the table to the tail used to leave its heading last on the page above, alone.
+    const post = validatePost({
+      brand: 'iolar', template: 'spiral-notes', ratio: '3:4', seed: 7,
+      series: 'TAIL HEADING', date: '25/09/2026',
+      slides: [
+        { page_title: 'PREV', blocks: [
+          ...Array.from({ length: 6 }, (_, i) => ({ type: 'bullets' as const, items: [`filler ${i} with a line of real length`, 'and a second'] })),
+          { type: 'heading' as const, text: '9. The Section' },
+          { type: 'table' as const, headers: ['Symptom', 'Cause'], rows: Array.from({ length: 14 }, (_, i) => [`symptom ${i}`, `cause ${i}`]) },
+        ] },
+        { page_title: 'PREV (cont.)', cont: true, blocks: [{ type: 'bullets' as const, items: ['tail line'] }] },
+      ],
+      caption: { text: '', hashtags: [] },
+    });
+    const dir = path.join(tmpdir(), `iolar-test-tail-heading-${Date.now()}`);
+    const slides = post.slides.map((s) => ({ ...s, blocks: [...s.blocks] }));
+    const results = [];
+    for (let i = 0; i < slides.length; i++) {
+      const file = path.join(dir, `slide-${i + 1}.png`);
+      const r = await renderSlide({ ...post, slides }, i, file);
+      results.push({ slide: i + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
+    }
+    await balanceTail(post, dir, slides, results);
+    expect(slides[0].blocks.at(-1)!.type).not.toBe('heading');
+    expect(slides.reduce((n, s) => n + s.blocks.length, 0)).toBe(9);
+  }, 300_000);
 });
 
 describe('renderSlide on an overstuffed page', () => {

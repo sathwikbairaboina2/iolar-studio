@@ -9,7 +9,7 @@
  * Every stage is recorded the moment it finishes, so a crash costs one stage. Re-running
  * resumes at the first stage that is not recorded.
  *
- *   npx tsx scripts/quality-campaign.mts [--subject <slug>] [--dry-run]
+ *   npx tsx scripts/quality-campaign.mts [--subject <slug>] [--parts <n>] [--dry-run]
  */
 import { listSubjects, listChapters, listParts } from '../lib/store';
 import { repairCoverage } from '../lib/ai/repair';
@@ -19,6 +19,12 @@ import { loadState, isDone, markDone } from '../lib/verify/campaignState';
 const args = process.argv.slice(2);
 const only = args.includes('--subject') ? args[args.indexOf('--subject') + 1] : null;
 const dryRun = args.includes('--dry-run');
+/**
+ * Stop after this many parts finish both stages in this run, so a batch can be inspected
+ * before the next. A part whose stages were all recorded earlier does not count.
+ */
+const batch = args.includes('--parts') ? Number(args[args.indexOf('--parts') + 1]) : Infinity;
+let finishedThisRun = 0;
 
 /** Three parts in a row failing means the run is broken, not the content. */
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -86,6 +92,10 @@ async function run() {
             }
             await markDone(state, key, stage);
             consecutiveFailures = 0;
+            if (stage === 'review' && isDone(state, key, 'polish') && ++finishedThisRun >= batch) {
+              note(`batch of ${batch} part(s) finished — stopping`);
+              return;
+            }
           } catch (err) {
             consecutiveFailures++;
             note(`${stage} ${key} FAILED (${consecutiveFailures}): ${String(err).slice(0, 160)}`);
