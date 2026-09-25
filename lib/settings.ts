@@ -1,6 +1,12 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 
+/**
+ * Who does the thinking. Two of the three are remote and one is not, which is the
+ * distinction every stage actually cares about; `lib/ai/runner.ts` reads it.
+ */
+export type LlmProvider = 'claude' | 'local' | 'openrouter';
+
 export type Settings = {
   brand: string;
   defaultTemplate: string;
@@ -22,7 +28,7 @@ export type Settings = {
   reelFps: number;
   reelRatio: string;
   reelStyle: string;
-  agentProvider: 'local' | 'claude';
+  agentProvider: LlmProvider;
   agentUrl: string;
   agentOllamaUrl: string;
   agentModel: string;
@@ -36,18 +42,30 @@ export type Settings = {
    * off the machine and pays nobody. The critic, the writer and the coverage judge stay on
    * Claude either way; only the hunt moves.
    */
-  researchProvider: 'claude' | 'local';
+  researchProvider: LlmProvider;
   /**
    * The one switch. Every LLM call in the studio — the handbook planner, the reel
    * writer, the research hunt, the reel agent, the job card reader — goes to headless
-   * Claude when this is `claude`, and to the local model on `researchOllamaUrl` when it
-   * is `local`. Switching to `claude` unloads the local model, so the card is free;
-   * switching back loads it again on the first call.
+   * Claude when this is `claude`, to the local model on `researchOllamaUrl` when it is
+   * `local`, and to `openrouterModel` over the network when it is `openrouter`. Either
+   * remote setting unloads the local model, so the card is free; switching back to local
+   * loads it again on the first call.
+   *
+   * OpenRouter is remote like Claude but toolless like the local model: a stage that
+   * needs the web refuses there rather than answering from memory, and the reel agent,
+   * which has only a Claude and an ollama backend, refuses too.
    *
    * `researchProvider` and `agentProvider` are kept in step with it, so an older
    * settings file and the tests that write those keys still say the same thing.
    */
-  llmProvider: 'claude' | 'local';
+  llmProvider: LlmProvider;
+  /**
+   * The model OpenRouter is asked for, in its own `vendor/model` spelling, and the API it
+   * is asked through. The key is never kept here: it is read from OPENROUTER_API_KEY in
+   * the environment, so it stays out of the settings file and out of the browser.
+   */
+  openrouterModel: string;
+  openrouterUrl: string;
   researchUrl: string;
   /** The SearXNG the research stack runs. A job card searches it for a company's own site. */
   searxngUrl: string;
@@ -113,6 +131,10 @@ const DEFAULTS: Settings = {
   // nothing about a reel's topic leaves the machine unless this is turned to claude.
   researchProvider: 'local',
   llmProvider: 'local',
+  // DeepSeek's fast line: a megatoken of context at a fraction of a cent, which is what
+  // a handbook part's prompt wants. Any id from the router's catalogue goes here instead.
+  openrouterModel: 'deepseek/deepseek-v4.1-flash',
+  openrouterUrl: 'https://openrouter.ai/api/v1',
   researchUrl: 'http://127.0.0.1:25100',
   searxngUrl: 'http://127.0.0.1:25180',
   researchOllamaUrl: 'http://127.0.0.1:11434',
@@ -145,17 +167,16 @@ function file() {
  * either one means the whole studio. Whichever arrives, all three end up agreeing.
  */
 const PROVIDER_KEYS = ['llmProvider', 'researchProvider', 'agentProvider'] as const;
+const PROVIDERS = ['claude', 'local', 'openrouter'] as const;
+const isProvider = (v: unknown): v is LlmProvider => PROVIDERS.includes(v as LlmProvider);
 
 function agreeOnProvider(raw: Record<string, unknown>, previous?: Settings): Record<string, unknown> {
-  const named = (k: (typeof PROVIDER_KEYS)[number]) => raw[k] === 'claude' || raw[k] === 'local';
+  const named = (k: (typeof PROVIDER_KEYS)[number]) => isProvider(raw[k]);
   // A save that moves one of the three keys is the ask, whichever key it was; a save that
   // moves none (or a file being read) is answered by the switch itself.
   const moved = previous && PROVIDER_KEYS.find((k) => named(k) && raw[k] !== previous[k]);
-  const provider = (moved ? raw[moved] : (raw.llmProvider ?? raw.researchProvider ?? raw.agentProvider)) as
-    | 'claude'
-    | 'local'
-    | undefined;
-  if (provider !== 'claude' && provider !== 'local') return raw;
+  const provider = moved ? raw[moved] : (raw.llmProvider ?? raw.researchProvider ?? raw.agentProvider);
+  if (!isProvider(provider)) return raw;
   return { ...raw, llmProvider: provider, researchProvider: provider, agentProvider: provider };
 }
 

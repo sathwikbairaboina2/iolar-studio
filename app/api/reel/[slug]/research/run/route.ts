@@ -55,17 +55,23 @@ export async function POST(req: Request, ctx: Ctx) {
     const brief = await store.readBrief(slug);
 
     // Local by default: the whole run — planner, hunter, critic, writer, judge — is the
-    // LangGraph graph on the local model, with the same three gates. Claude stays as
-    // the stage-by-stage path below for anyone who turns the provider back.
-    if (provider(getSettings()) === 'local') {
-      const { qwenRunner } = await import('@/lib/ai/qwen');
+    // LangGraph graph, with the same three gates. The stage-by-stage path below is
+    // Claude's alone, because it dispatches subagents that search the web themselves; a
+    // toolless provider takes the graph instead and hunts through SearXNG, which is what
+    // the local model has always done. So the split is Claude or the graph, and the graph
+    // thinks wherever the switch points.
+    if (provider(getSettings()) !== 'claude') {
       const s = getSettings();
+      const run =
+        provider(s) === 'openrouter'
+          ? (await import('@/lib/ai/openrouter')).openrouterRunner()
+          : (await import('@/lib/ai/qwen')).qwenRunner();
       // Memory is the local agents' alone. knowledgeMemory off means the graph runs exactly as before.
       const recall = s.knowledgeMemory ? await import('@/lib/knowledge/recall') : undefined;
       const out = await advanceResearch(
         slug,
         {
-          run: qwenRunner(),
+          run,
           researchUrl: s.researchUrl,
           recall: recall
             ? { domains: recall.recallDomains, verdicts: recall.recallVerdicts, claims: recall.recallClaims, passages: recall.recallPassages }

@@ -100,3 +100,106 @@ describe('the provider switch', () => {
     expect(calls.some((c) => c.url.endsWith('/api/generate'))).toBe(false);
   });
 });
+
+/**
+ * OpenRouter is the third way to think: remote like Claude, toolless like the local model.
+ * These hold it to both halves of that — it answers over HTTP with a key from the
+ * environment, and it refuses the stages that genuinely need the web instead of guessing.
+ */
+describe('the provider switch, on OpenRouter', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('is one more position on the same switch, and the legacy keys move with it', async () => {
+    const { saveSettings } = await import('@/lib/settings');
+    const saved = saveSettings({ llmProvider: 'openrouter' });
+    expect(saved).toMatchObject({
+      llmProvider: 'openrouter',
+      researchProvider: 'openrouter',
+      agentProvider: 'openrouter',
+    });
+    const { provider } = await import('@/lib/ai/runner');
+    expect(provider()).toBe('openrouter');
+  });
+
+  it('asks OpenRouter for the answer, with the key from the environment', async () => {
+    vi.stubEnv('OPENROUTER_API_KEY', 'sk-or-test');
+    const calls: { url: string; headers: Record<string, string>; body: any }[] = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        body: JSON.parse(String(init?.body)),
+      });
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: '{"ok":true}' } }] }),
+      } as Response;
+    });
+
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ llmProvider: 'openrouter', openrouterModel: 'meta-llama/llama-3.3-70b-instruct' });
+    const { thinker } = await import('@/lib/ai/runner');
+    const answer = await thinker()('write me a page');
+
+    expect(answer).toBe('{"ok":true}');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0].headers.authorization ?? calls[0].headers.Authorization).toBe('Bearer sk-or-test');
+    expect(calls[0].body).toMatchObject({
+      model: 'meta-llama/llama-3.3-70b-instruct',
+      messages: [{ role: 'user', content: 'write me a page' }],
+    });
+  });
+
+  it('says plainly that the key is missing rather than failing at the HTTP layer', async () => {
+    vi.stubEnv('OPENROUTER_API_KEY', '');
+    vi.stubGlobal('fetch', async () => {
+      throw new Error('fetch should not be reached without a key');
+    });
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ llmProvider: 'openrouter' });
+    const { thinker } = await import('@/lib/ai/runner');
+    await expect(thinker()('anything')).rejects.toThrow(/OPENROUTER_API_KEY/);
+  });
+
+  it('refuses a stage that needs the web, the same way the local model does', async () => {
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ llmProvider: 'openrouter' });
+    const { thinker, NoLocalToolsError } = await import('@/lib/ai/runner');
+    await expect(thinker({ needsTools: 'the hunt' })('anything')).rejects.toBeInstanceOf(NoLocalToolsError);
+  });
+
+  it('turns the reel agent away, because neither backend is OpenRouter', async () => {
+    const { saveSettings } = await import('@/lib/settings');
+    saveSettings({ llmProvider: 'openrouter' });
+    const { getAgentBackend } = await import('@/lib/ai/agent');
+    expect(() => getAgentBackend()).toThrow(/reel agent/i);
+  });
+
+  it('takes the local model off the card, because the thinking left this machine', async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (String(url).endsWith('/api/ps')) {
+        return { ok: true, json: async () => ({ models: [{ name: 'qwen3.8:27b', size_vram: 17_399_734_598 }] }) } as Response;
+      }
+      if (String(url).endsWith('/api/llm')) return { ok: true, json: async () => ({ freed: [] }) } as Response;
+      return { ok: true, json: async () => ({}) } as Response;
+    });
+
+    const { PUT } = await import('@/app/api/settings/route');
+    const moved = await (
+      await PUT(
+        new Request('http://t/api/settings', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ llmProvider: 'openrouter' }),
+        })
+      )
+    ).json();
+
+    expect(moved.freed).toEqual(['qwen3.8:27b']);
+    // The research service only knows two words, and the one that means "stop pinning" is claude.
+    expect(calls.find((c) => c.url.endsWith('/api/llm'))?.body).toEqual({ provider: 'claude' });
+  });
+});

@@ -58,14 +58,22 @@ export default function SettingsPage() {
         <Form.Item
           name="llmProvider"
           label="Every model call in the studio"
-          extra="One switch for the whole studio: the handbook planner, the reel writer, the research hunt, the reel agent and the job card reader all go the same way. Claude runs headless and can search the web; local runs the model below on this machine — nothing leaves it, nothing is paid for, and it has no web. Moving to Claude unloads the local model, so the card is free; moving back loads it again on the first call."
+          extra="One switch for the whole studio: the handbook planner, the reel writer, the research hunt, the reel agent and the job card reader all go the same way. Claude runs headless and can search the web. Local runs the model below on this machine — nothing leaves it, nothing is paid for, and it has no web. OpenRouter is a hosted model over the network: it costs money and the topic leaves the house, but it leaves the card free, and it has no web or tools either, so the research hunt and the reel agent refuse it. Moving to either remote one unloads the local model; moving back loads it again on the first call."
         >
           <Select
             options={[
               { value: 'claude', label: 'Claude — headless, with web search' },
+              { value: 'openrouter', label: 'OpenRouter — a hosted model, no web' },
               { value: 'local', label: 'Local — the model on this machine' },
             ]}
           />
+        </Form.Item>
+        <Form.Item
+          name="openrouterModel"
+          label="OpenRouter model"
+          extra="Read only while the switch above is on OpenRouter, in the router's own vendor/model spelling. The key is not kept here: set OPENROUTER_API_KEY in the environment this app starts in, or every call fails saying so."
+        >
+          <Input />
         </Form.Item>
         <Form.Item name="researchUrl" label="Research service URL"><Input /></Form.Item>
         <Form.Item name="researchOllamaUrl" label="Ollama for the local model" extra="Every stage thinks here while the provider is local; this is also the ollama that is unloaded when it is not."><Input /></Form.Item>

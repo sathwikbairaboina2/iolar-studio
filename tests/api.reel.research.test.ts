@@ -22,6 +22,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock('@/lib/settings');
   vi.doUnmock('@/lib/reel/research/graph');
+  vi.doUnmock('@/lib/ai/openrouter');
 });
 
 const ctx = (slug: string) => ({ params: Promise.resolve({ slug }) });
@@ -259,6 +260,36 @@ describe('POST /api/reel/[slug]/research/run', () => {
 
     expect(body.status).toBe('hunted');
     expect(advance).toHaveBeenCalledTimes(1);
+    expect(hunt).not.toHaveBeenCalled();
+  });
+
+  // OpenRouter is not Claude, and the stage-by-stage path below is Claude's alone: it
+  // dispatches subagents with web search. So the graph takes the run, thinking on
+  // OpenRouter instead of on the ollama, and hunts through SearXNG as it always has.
+  it('hands the run to the graph on OpenRouter too, thinking through the router', async () => {
+    await seedBrief({ status: 'planned' });
+    const hunt = vi.fn();
+    vi.doMock('@/lib/reel/research/agents', () => ({ huntSources: hunt, critique: vi.fn() }));
+    const advance = vi.fn(async (_slug: string, _deps: { run: unknown }) => ({
+      status: 'hunted',
+      waitingOn: null,
+      done: false,
+      found: 1,
+    }));
+    vi.doMock('@/lib/reel/research/graph', () => ({ advanceResearch: advance }));
+    const routed = vi.fn(async () => '{}');
+    vi.doMock('@/lib/ai/openrouter', () => ({ openrouterRunner: () => routed }));
+    vi.doMock('@/lib/settings', async (orig) => ({
+      ...(await (orig() as Promise<Record<string, unknown>>)),
+      getSettings: () => ({ llmProvider: 'openrouter', researchUrl: 'http://127.0.0.1:25100', openrouterModel: 'x/y' }),
+    }));
+
+    const { POST } = await import('@/app/api/reel/[slug]/research/run/route');
+    const body = await (await POST(post({ plan: PLAN }), ctx('grok'))).json();
+
+    expect(body.status).toBe('hunted');
+    expect(advance).toHaveBeenCalledTimes(1);
+    expect(advance.mock.calls[0][1].run).toBe(routed);
     expect(hunt).not.toHaveBeenCalled();
   });
 
