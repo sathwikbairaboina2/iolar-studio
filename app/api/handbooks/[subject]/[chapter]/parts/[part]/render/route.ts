@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import path from 'path';
 import { promises as fs } from 'fs';
-import { loadPost, savePost } from '@/lib/store';
-import { rendersDir } from '@/lib/paths';
-import { MAX_SLIDES } from '@/lib/schema';
+import { listParts, loadPost, savePost } from '@/lib/store';
+import { partDir, rendersDir } from '@/lib/paths';
+import { MAX_SLIDES, type Post } from '@/lib/schema';
 import { renderSlide, renderAll } from '@/lib/renderer/capture';
 
 type Ctx = { params: Promise<{ subject: string; chapter: string; part: string }> };
@@ -114,6 +114,29 @@ const hasContinuation = (title: string) => / \(cont\.\)$/.test(title);
 /** The emptiest page of the part: what polish must never make worse. */
 const worstFill = (rs: Results) => Math.min(...rs.map((r) => r.fillPct));
 
+/**
+ * What a render of this part may write outside it: the follow-up parts its spill feeds. Kept
+ * so an undone densify can undo its spill too — restoring this part alone leaves the
+ * follow-up holding pages this part holds again, and the handbook teaches them twice.
+ */
+async function snapshotFollowUps(subject: string, chapter: string, part: number) {
+  const parts = await listParts(subject, chapter);
+  const followUps = new Map<number, Post>();
+  for (const n of parts) {
+    const post = await loadPost(subject, chapter, n).catch(() => null);
+    if (post?.spilledFrom === part) followUps.set(n, post);
+  }
+  return { parts, followUps };
+}
+
+async function restoreFollowUps(subject: string, chapter: string, snap: Awaited<ReturnType<typeof snapshotFollowUps>>) {
+  // A part the attempt minted holds nothing but its spill: no render or report has run on it.
+  for (const n of await listParts(subject, chapter)) {
+    if (!snap.parts.includes(n)) await fs.rm(partDir(subject, chapter, n), { recursive: true, force: true });
+  }
+  for (const [n, post] of snap.followUps) await savePost(subject, chapter, n, post);
+}
+
 /** Re-enters this route for a follow-up part with polish on; returns its polish notes prefixed by part. */
 async function polishChain(req: Request, subject: string, chapter: string, part: number): Promise<string[]> {
   const url = new URL(req.url);
@@ -165,10 +188,15 @@ export async function POST(req: Request, ctx: Ctx) {
           // than the one we set out to fill. The pixels decide — a pass that lowers the worst
           // fill on the part is undone and the pages we already had are put back.
           const { densifySlides } = await import('@/lib/ai/plan');
-          const before = { post: await loadPost(subject, chapter, part), worst: worstFill(results) };
+          const before = {
+            post: await loadPost(subject, chapter, part),
+            worst: worstFill(results),
+            spill: await snapshotFollowUps(subject, chapter, part),
+          };
           await savePost(subject, chapter, part, await densifySlides(subject, chapter, part, under));
           ({ results, split, followUp } = await renderWhole(subject, chapter, part, body.spillToFollowUp !== false));
           if (worstFill(results) < before.worst) {
+            await restoreFollowUps(subject, chapter, before.spill);
             await savePost(subject, chapter, part, before.post);
             ({ results, split, followUp } = await renderWhole(subject, chapter, part, body.spillToFollowUp !== false));
             polish.push(`densify rolled back (worst fill ${worstFill(results)}% beat the attempt)`);
