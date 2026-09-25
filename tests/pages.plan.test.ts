@@ -107,4 +107,41 @@ describe('planPagesFromBook', () => {
     expect(post.slides[0].page_title).toBe('good');
     expect(post.caption.text).toBe(book.summary);
   });
+
+  it('on the local model, unwraps a single page returned inside a whole post envelope', async () => {
+    writeFileSync(path.join(process.env.IOLAR_DATA_DIR!, 'settings.json'), JSON.stringify({ llmProvider: 'local', brand: 'iolar', defaultTemplate: 'sketchnote' }));
+    const { createSubject, createChapter } = await import('@/lib/store');
+    const { saveBook } = await import('@/lib/ai/book');
+    const { planPagesFromBook } = await import('@/lib/ai/pages');
+    await createSubject('d', { name: 'Docker' });
+    await createChapter('d', 'c', 'C');
+    await saveBook('d', 'c', { ...book, chapters: [book.chapters[1]] } as never);
+    const prompts: string[] = [];
+    const run = async (prompt: string) => {
+      prompts.push(prompt);
+      if (prompt.includes('Write the Instagram caption')) return 'not json at all';
+      return '{"brand":"iolar","slides":[{"page_title":"wrapped","blocks":[{"type":"heading","text":"ok"}]}],"caption":{"text":"x","hashtags":[]}}';
+    };
+    const post = await planPagesFromBook('d', 'c', 1, run);
+    expect(post.slides[0].page_title).toBe('wrapped');
+    expect(prompts.filter((p) => p.includes('failed validation'))).toHaveLength(0);
+  });
+
+  it('on Claude, still treats a post envelope as a validation failure and retries', async () => {
+    const { createSubject, createChapter } = await import('@/lib/store');
+    const { saveBook } = await import('@/lib/ai/book');
+    const { planPagesFromBook } = await import('@/lib/ai/pages');
+    await createSubject('d', { name: 'Docker' });
+    await createChapter('d', 'c', 'C');
+    await saveBook('d', 'c', { ...book, chapters: [book.chapters[1]] } as never);
+    const prompts: string[] = [];
+    const run = async (prompt: string) => {
+      prompts.push(prompt);
+      if (prompt.includes('Write the Instagram caption')) return 'not json at all';
+      if (prompt.includes('failed validation')) return '{"page_title":"retried","blocks":[{"type":"heading","text":"ok"}]}';
+      return '{"brand":"iolar","slides":[{"page_title":"wrapped","blocks":[{"type":"heading","text":"ok"}]}]}';
+    };
+    const post = await planPagesFromBook('d', 'c', 1, run);
+    expect(post.slides[0].page_title).toBe('retried');
+  });
 });

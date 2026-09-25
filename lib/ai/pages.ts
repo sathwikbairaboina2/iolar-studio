@@ -1,7 +1,7 @@
 import { Post, Slide, validatePost, validateSlide } from '../schema';
 import { getSettings } from '../settings';
 import { loadPost, savePost, loadChapterMeta } from '../store';
-import { thinker, Runner } from './runner';
+import { provider, thinker, Runner } from './runner';
 import { extractJson } from './revise';
 import { Book, loadBook } from './book';
 import { SCHEMA_RULES, RECIPE_GUIDANCE } from './rules';
@@ -103,16 +103,28 @@ export async function mapLimit<T>(count: number, limit: number, fn: (i: number) 
   return out;
 }
 
+/**
+ * The local model tends to follow the post-shaped SCHEMA_RULES over SLIDE_SHAPE and wraps its
+ * one page in a whole post envelope. A single wrapped slide is still one page, so take it; an
+ * envelope of several slides is a page that overflowed and must fail validation. Local only:
+ * on Claude an envelope stays a validation failure, as it always was.
+ */
+function slideOf(json: unknown): unknown {
+  if (provider() !== 'local') return json;
+  const slides = (json as { slides?: unknown })?.slides;
+  return Array.isArray(slides) && slides.length === 1 ? slides[0] : json;
+}
+
 async function askSlide(run: Runner, prompt: string): Promise<Slide> {
   const first = await run(prompt, { timeoutMs: 300_000 });
   try {
-    return validateSlide(extractJson(first));
+    return validateSlide(slideOf(extractJson(first)));
   } catch (err) {
     const retry = await run(
       `${prompt}\n\nYour previous output failed validation: ${String(err).slice(0, 500)}. Return the corrected Slide JSON only.`,
       { timeoutMs: 300_000 }
     );
-    return validateSlide(extractJson(retry));
+    return validateSlide(slideOf(extractJson(retry)));
   }
 }
 
