@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Zones, Tags & Adding/Removing Shards",
+      "page_title": "Adding/Removing Shards & Vetting a Key",
       "blocks": [
         {
           "type": "bullets",
@@ -84,28 +84,36 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "cardinality"
+                "text": "cardinality",
+                "shape": "box"
               },
               "b1": {
-                "text": "frequency"
+                "text": "frequency",
+                "shape": "box"
               },
               "b2": {
-                "text": "monotonic"
+                "text": "monotonic",
+                "shape": "box"
               },
               "b3": {
-                "text": "hot query"
+                "text": "hot query",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "millions ok"
+                "text": "millions ok",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "flat tail"
+                "text": "flat tail",
+                "shape": "box"
               },
               "c2_0": {
-                "text": "hash it"
+                "text": "hash it",
+                "shape": "box"
               },
               "c3_0": {
-                "text": "prefix present"
+                "text": "prefix present",
+                "shape": "box"
               }
             },
             "edges": [
@@ -152,8 +160,7 @@
             "  { $group: { _id: \"$customerId\",",
             "      n: { $sum: 1 } } },",
             "  { $sort: { n: -1 } }, { $limit: 10 }])"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -192,7 +199,12 @@
               "pure write spread"
             ]
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Why Good Keys Work & Zone Pinning",
+      "blocks": [
         {
           "type": "bullets",
           "items": [
@@ -200,11 +212,37 @@
             "`deviceId` prefix spreads devices, keeps a device together",
             "Hashed logs accept scatter-gather reads on purpose"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Zones Pin Ranges",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.addShardToZone(\"shard0\", \"EU\")",
+            "sh.updateZoneKeyRange(\"db.users\",",
+            "  { region: \"EU\", _id: MinKey },",
+            "  { region: \"EU\", _id: MaxKey },",
+            "  \"EU\")"
+          ],
+          "note": "range must be a shard key prefix"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Data residency==: EU customers stay on EU-hosted shards",
+            "Tiered disks: recent ranges on NVMe, archive on cheap disk",
+            "Overlapping zone ranges are **rejected**; gaps float freely"
+          ],
+          "style": "star"
         }
       ]
     },
     {
-      "page_title": "Choosing a Shard Key: A Decision Framework",
+      "page_title": "Anti-Keys, Process Errors & Safe Backups",
       "blocks": [
         {
           "type": "heading",
@@ -279,6 +317,42 @@
         },
         {
           "type": "heading",
+          "text": "Before You Commit",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Supporting index on the key prefix already exists",
+            "No array, text or float fields in the key",
+            "Hot query filters on the ==prefix==",
+            "Free disk and I/O headroom for migrations"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "heading",
+          "text": "Safe Snapshot Backup",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.stopBalancer()",
+            "sh.isBalancerRunning() // false?",
+            "// ...take filesystem snapshot",
+            "sh.startBalancer()"
+          ],
+          "note": "wait for in-flight migrations to end"
+        }
+      ]
+    },
+    {
+      "page_title": "Diagnosis & Repair: Refine vs Reshard",
+      "blocks": [
+        {
+          "type": "heading",
           "text": "Symptom To Cause"
         },
         {
@@ -314,11 +388,96 @@
             "`reshardCollection` (5.0+) rewrites under a whole new key",
             "It duplicates the data while running: plan disk headroom"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Refine In Place"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.orders.createIndex(",
+            "  { custId: 1, _id: 1 })",
+            "db.adminCommand({",
+            "  refineCollectionShardKey:",
+            "    \"app.orders\",",
+            "  key: { custId: 1, _id: 1 } })"
+          ],
+          "note": "suffix only: prefix still routes"
+        },
+        {
+          "type": "heading",
+          "text": "2. Refine Or Reshard?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "Refine",
+            "Reshard"
+          ],
+          "rows": [
+            [
+              "Version",
+              "4.4+",
+              "5.0+"
+            ],
+            [
+              "Change prefix",
+              "no",
+              "**yes**"
+            ],
+            [
+              "Data copy",
+              "none",
+              "full"
+            ],
+            [
+              "Disk cost",
+              "new index",
+              "~2× data"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Try Refine First",
+          "text": "If the prefix is still right and only chunks are too coarse, refine is cheap. Reshard only when the prefix itself is wrong."
+        },
+        {
+          "type": "heading",
+          "text": "3. Reshard Prerequisites"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Free disk for a ==full second copy== of the collection",
+            "Index for the new key can be built during the run",
+            "Low-traffic window for the commit's write pause"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "heading",
+          "text": "4. Find Jumbo Chunks"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "use config",
+            "db.chunks.find({ jumbo: true })",
+            "db.orders.getShardDistribution()"
+          ],
+          "note": "count chunks, then check real bytes"
         }
       ]
     },
     {
-      "page_title": "Common Mistakes, Diagnosis & Repair",
+      "page_title": "Resharding, Monitoring & Reading Explain",
       "blocks": [
         {
           "type": "code",
@@ -328,8 +487,7 @@
             "  reshardCollection: \"app.orders\",",
             "  key: { tenantId: 1, orderId: 1 } })",
             "// online, but commit pauses writes"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
@@ -400,6 +558,33 @@
         },
         {
           "type": "heading",
+          "text": "Read The Explain",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.orders.find({ tenantId: 7 })",
+            "  .explain(\"executionStats\")",
+            "// SINGLE_SHARD = targeted",
+            "// SHARD_MERGE = scatter-gather"
+          ],
+          "note": "count entries in shards[]"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Latency Budget",
+          "text": "App → mongos → shard(s) → back adds a network round trip. Budget it in every SLO."
+        }
+      ]
+    },
+    {
+      "page_title": "Key Quality, Scatter Signals & Orphans",
+      "blocks": [
+        {
+          "type": "heading",
           "text": "Key Quality"
         },
         {
@@ -409,6 +594,28 @@
             "And present in the queries you actually run",
             "Miss any one of the four and you pay for it daily"
           ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One entry in `shards[]` means the key did its job",
+            "Every shard listed means the ==prefix== is missing",
+            "Scatter latency tracks the **slowest** shard, not the average"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Orphans Mislead",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`count()` on a shard can include orphaned documents",
+            "Direct `mongod` reads miss data living on other shards",
+            "Always read through `mongos`, never around it"
+          ],
+          "style": "cross"
         }
       ]
     },
@@ -486,8 +693,7 @@
             "db.coll.getShardDistribution()",
             "db.currentOp({ desc: /Migration/ })",
             "use config; db.chunks.find({ jumbo: true })"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",

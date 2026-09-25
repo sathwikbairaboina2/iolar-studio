@@ -1,0 +1,290 @@
+{
+  "brand": "iolar",
+  "template": "sticky-wall",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "REDIS CLUSTER & SENTINEL — PART 3",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Resharding: Moving Slots Without Downtime",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What Resharding Is",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Transferring ownership of slots, and the keys inside them, from a source master to a target master while both serve live traffic."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "IMPORTING",
+              "MIGRATING",
+              "GETKEYSINSLOT",
+              "MIGRATE",
+              "SETSLOT NODE"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The Four Steps"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# target:",
+            "CLUSTER SETSLOT 99 IMPORTING <src-id>",
+            "# source:",
+            "CLUSTER SETSLOT 99 MIGRATING <dst-id>"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "During migration the source serves keys it still holds",
+            "For keys already moved it answers `-ASK`",
+            "Clients keep working the whole time"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "MIGRATE Is Atomic Per Batch",
+          "text": "DUMP-serialize, send, RESTORE on target, DELETE on source. The key exists on exactly one node at every instant — never both, never neither."
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "But It Blocks",
+          "text": "MIGRATE stalls both nodes for the batch duration. One 2 GB list freezes the server. Keep batch sizes small."
+        },
+        {
+          "type": "heading",
+          "text": "Driving It With redis-cli"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "redis-cli --cluster reshard h:6379",
+            "redis-cli --cluster rebalance h:6379 \\",
+            "  --cluster-use-empty-masters"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Task",
+            "Order"
+          ],
+          "rows": [
+            [
+              "add node",
+              "`add-node`, then reshard onto it"
+            ],
+            [
+              "remove node",
+              "reshard away, then `del-node`"
+            ],
+            [
+              "repair",
+              "`check`, then `fix`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A new node starts with zero slots and serves nothing",
+            "Deleting a node that still owns slots breaks the cluster",
+            "`--cluster-use-empty-masters` includes fresh nodes in a rebalance"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Stuck Slot",
+          "items": [
+            "Symptom: slot left MIGRATING/IMPORTING after a crash",
+            "`--cluster check` detects the open slot",
+            "`--cluster fix` clears the flag or completes the move"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "qa",
+          "q": "What does a reshard actually cost?",
+          "a_bullets": [
+            "O(keys in slot) network transfer",
+            "O(1) ownership metadata update",
+            "Throughput-limited by MIGRATE round trips"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rule",
+          "text": "Never reshard during a failover or with any node in a fail state. Finish one topology change before you begin the next."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "PING timeout",
+              "PFAIL",
+              "majority agrees",
+              "FAIL broadcast",
+              "replica campaigns"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Resharding: Moving Slots Without Downtime (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Cluster Bus",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Nodes gossip on client port + 10000",
+            "Binary protocol, separate from the client port",
+            "Firewall both ports or the cluster never forms"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "State",
+            "Who sets it",
+            "Scope"
+          ],
+          "rows": [
+            [
+              "PFAIL",
+              "one node",
+              "local only"
+            ],
+            [
+              "FAIL",
+              "master majority",
+              "broadcast"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "PFAIL: no PING answer within `cluster-node-timeout`",
+            "FAIL: a majority of masters independently report PFAIL",
+            "Only masters vote — replicas gossip but do not count"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Promotion Vote"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An eligible replica requests votes from the masters",
+            "A majority must grant them before promotion",
+            "Disconnected too long? Ineligible",
+            "Cutoff is `cluster-node-timeout * cluster-replica-validity-factor`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rank Ordering",
+          "text": "The replica with the most up-to-date replication offset waits the shortest delay before campaigning, so the freshest data usually wins the election."
+        },
+        {
+          "type": "heading",
+          "text": "configEpoch Settles Ties"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Monotonically increasing number per configuration",
+            "Highest epoch wins conflicting claims to the same slots",
+            "Old master returns, sees a higher epoch on its slots",
+            "It reconfigures itself as a replica of the winner"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Dials That Matter"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Too low",
+            "Too high"
+          ],
+          "rows": [
+            [
+              "`cluster-node-timeout`",
+              "spurious failover on GC",
+              "long outage"
+            ],
+            [
+              "`cluster-migration-barrier`",
+              "masters stripped bare",
+              "orphans stay orphaned"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "cluster-require-full-coverage no",
+            "# serve the covered slots when one",
+            "# shard is fully down (default: yes)"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Manual Failover",
+          "items": [
+            "`CLUSTER FAILOVER` — planned, no data loss",
+            "`FORCE` — skips the master handshake",
+            "`TAKEOVER` — skips the vote entirely, dangerous"
+          ]
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Part 3 of REDIS CLUSTER & SENTINEL. 16384. Not 65536, not a consistent-hashing ring — because the slot bitmap rides inside every gossip heartbeat, and 2 KB per packet beats 8 KB. That single design choice explains MOVED, ASK, CROSSSLOT, and why a hash tag of `{prod}` will haunt you forever. Ten pages on how Redis Cluster really shards, reshards and fails over, plus where Sentinel fits and where it does not.",
+    "hashtags": [
+      "#redis",
+      "#rediscluster",
+      "#sentinel",
+      "#distributedsystems",
+      "#backenddevelopment",
+      "#systemdesign",
+      "#devops",
+      "#sre",
+      "#databases",
+      "#scalability",
+      "#softwareengineering",
+      "#techstudynotes"
+    ]
+  },
+  "spilledFrom": 1
+}

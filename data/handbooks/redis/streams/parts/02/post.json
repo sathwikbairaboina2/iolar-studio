@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Trimming, Memory, and Capped Streams",
+      "page_title": "Trim Policies and Memory Tuning",
       "blocks": [
         {
           "type": "heading",
@@ -104,12 +104,40 @@
             "A stable schema can halve stream memory outright",
             "`MEMORY USAGE s` counts the rax AND the group PELs"
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Capped Appends with MAXLEN",
+      "blocks": [
         {
           "type": "callout",
           "style": "tip",
           "title": "NOMKSTREAM",
           "text": "`XADD ... NOMKSTREAM` returns nil instead of creating the key — the guard against a stray producer resurrecting a stream you deliberately deleted."
+        },
+        {
+          "type": "heading",
+          "text": "Capped On Append"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XADD s MAXLEN 1000 * k v  # exact",
+            "XADD s MAXLEN ~ 1000 * k v",
+            "XADD s MAXLEN ~ 1000 LIMIT 100 * k v"
+          ],
+          "note": "LIMIT only legal with ~"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Streams grow ==forever== by default — the #1 stream OOM cause",
+            "`~` stops at a macro-node boundary, keeping a few extras",
+            "`LIMIT n` caps trim work per call, bounding latency spikes",
+            "Capacity math: 1 KB × 10k/sec ≈ **36 GB** per hour untrimmed"
+          ]
         }
       ]
     },
@@ -186,8 +214,7 @@
             "XADD events:{3} * k v    # hash tag pins slot",
             "XREAD STREAMS events:{3} events:{7} 0 0",
             "# ERR CROSSSLOT Keys in request don't hash"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -198,6 +225,24 @@
             "Multi-key `XREAD` needs every key in the same slot"
           ]
         },
+        {
+          "type": "heading",
+          "text": "Scripts And Blocking"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`XADD` in MULTI/EXEC or Lua uses an explicit ID or `*`",
+            "Scripts were once barred from nondeterministic commands",
+            "Effect replication handles that now — the resolved ID ships",
+            "`BLOCK` does not block the server; it parks the client"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Cluster Pub/Sub, Decision Rules, and Pitfalls",
+      "blocks": [
         {
           "type": "heading",
           "text": "Pub/Sub In Cluster"
@@ -225,24 +270,6 @@
               }
             ]
           }
-        }
-      ]
-    },
-    {
-      "page_title": "Scripts, Blocking, and Ack-Path Pitfalls",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "Scripts And Blocking"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "`XADD` in MULTI/EXEC or Lua uses an explicit ID or `*`",
-            "Scripts were once barred from nondeterministic commands",
-            "Effect replication handles that now — the resolved ID ships",
-            "`BLOCK` does not block the server; it parks the client"
-          ]
         },
         {
           "type": "sidebox",
@@ -292,19 +319,24 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "yes"
+                "text": "yes",
+                "shape": "box"
               },
               "b1": {
-                "text": "no"
+                "text": "no",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "Pub/Sub"
+                "text": "Pub/Sub",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "Streams + group"
+                "text": "Streams + group",
+                "shape": "box"
               },
               "c1_1": {
-                "text": "explicit XACK"
+                "text": "explicit XACK",
+                "shape": "box"
               }
             },
             "edges": [
@@ -354,16 +386,6 @@
           ]
         },
         {
-          "type": "code",
-          "lang": "redis",
-          "lines": [
-            "XREADGROUP GROUP g pod-7 STREAMS s 0  # backlog",
-            "XREADGROUP GROUP g pod-7 BLOCK 2000 STREAMS s >",
-            "XACK s g <id>          # process THEN ack"
-          ],
-          "runnable": false
-        },
-        {
           "type": "heading",
           "text": "Pitfalls: Volume",
           "ink": "red"
@@ -393,11 +415,68 @@
             ]
           ]
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "Patterns, Pitfalls, and Choosing Your Model",
+      "page_title": "Consumer Boot Order and Stable Names",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "XREADGROUP GROUP g pod-7 STREAMS s 0  # backlog",
+            "XREADGROUP GROUP g pod-7 BLOCK 2000 STREAMS s >",
+            "XACK s g <id>          # process THEN ack"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Why This Boot Order"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Read `0` first: replay your ==own== unacked backlog",
+            "Then read `>` with `BLOCK` for brand-new entries",
+            "Process fully, then `XACK` — never the reverse",
+            "Handlers stay idempotent: redelivery is **expected**"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "heading",
+          "text": "Stable Consumer Names"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Name source",
+            "On restart"
+          ],
+          "rows": [
+            [
+              "pod name",
+              "reclaims own PEL"
+            ],
+            [
+              "worker index",
+              "reclaims own PEL"
+            ],
+            [
+              "UUID per boot",
+              "orphans old PEL"
+            ],
+            [
+              "typo'd name",
+              "new empty consumer"
+            ]
+          ],
+          "highlightRow": 0
+        }
+      ]
+    },
+    {
+      "page_title": "Handler Pitfalls, Outbox, and Alternatives",
       "blocks": [
         {
           "type": "bullets",
@@ -434,8 +513,7 @@
             "HSET order:42 status paid",
             "XADD events * type paid order 42",
             "EXEC     # state and event commit together"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -466,13 +544,53 @@
               }
             ]
           }
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Fan-Out Choices and Closing Checklist",
+      "blocks": [
         {
           "type": "bullets",
           "items": [
             "Streams cost memory and complexity, buy replay and groups",
             "Redis wins on sub-millisecond latency and one-command setup"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Fan-Out Choices"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setup",
+            "Delivery"
+          ],
+          "rows": [
+            [
+              "Pub/Sub channel",
+              "broadcast, live only"
+            ],
+            [
+              "N `XREAD` readers",
+              "broadcast + replay"
+            ],
+            [
+              "one consumer group",
+              "load-balanced"
+            ],
+            [
+              "one group per service",
+              "broadcast + acks"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Pub/Sub Is A Hint",
+          "text": "Pair it with a short TTL, a version counter, or a reconcile sweep — one missed invalidation must never mean a permanently stale cache."
         },
         {
           "type": "callout",

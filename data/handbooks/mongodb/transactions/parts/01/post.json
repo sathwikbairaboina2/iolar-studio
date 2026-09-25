@@ -35,8 +35,7 @@
             "await acc.updateOne(a,{$inc:{bal:-100}},opt)",
             "await acc.updateOne(b,{$inc:{bal:+100}},opt)",
             "// two docs: both land, or neither does"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -152,9 +151,89 @@
           "text": "If most operations need a transaction, the schema is relational-shaped and wants remodelling — not a bigger transaction budget."
         },
         {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Role"
+          ],
+          "rows": [
+            [
+              "lsid",
+              "session identity"
+            ],
+            [
+              "txnNumber",
+              "which txn, for retries"
+            ],
+            [
+              "txn state",
+              "in progress / committed"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Embedding vs Hand-Rolled Two-Phase Commit",
+      "blocks": [
+        {
           "type": "heading",
-          "text": "What A Session Is",
+          "text": "Embed First, Skip The Txn",
           "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "await orders.updateOne({ _id: id }, {",
+            "  $push: { items: line },",
+            "  $inc: { total: line.price }",
+            "})  // one doc: atomic, no session"
+          ],
+          "note": "one document needs no transaction"
+        },
+        {
+          "type": "heading",
+          "text": "Manual Two-Phase Commit"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "State",
+            "App does"
+          ],
+          "rows": [
+            [
+              "initial",
+              "record the transfer"
+            ],
+            [
+              "pending",
+              "apply to both docs"
+            ],
+            [
+              "applied",
+              "clear pending marks"
+            ],
+            [
+              "done",
+              "transfer finished"
+            ],
+            [
+              "canceling",
+              "undo on failure"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Why 4.0 mattered",
+          "text": "The hand-rolled pattern leaked `pending` state into every read. Native transactions moved that bookkeeping into the server."
+        },
+        {
+          "type": "heading",
+          "text": "What A Session Is"
         },
         {
           "type": "bullets",
@@ -164,6 +243,15 @@
             "It carries the transaction number and transaction state",
             "No session, no transaction — the API refuses"
           ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Reach for ==embedding== before any session",
+            "Use a transaction only when two docs must move together",
+            "Budget the extra commit round-trip when you do"
+          ],
+          "style": "checkbox"
         }
       ]
     },
@@ -178,8 +266,7 @@
             "// ClientSession, lazily bound to a pooled one",
             "await coll.insertOne(doc, { session })",
             "// omit { session } and this runs OUTSIDE"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
@@ -278,8 +365,7 @@
             "db.serverStatus().transactions",
             "// currentActive, currentInactive, totalAborted",
             "db.aggregate([{ $listLocalSessions: {} }])"
-          ],
-          "runnable": false
+          ]
         }
       ]
     },
@@ -308,8 +394,7 @@
             "  await coll.insertOne(doc, { session })",
             "  await session.commitTransaction()",
             "} catch (e) { await session.abortTransaction() }"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -323,8 +408,7 @@
             "  await orders.insertOne(o, { session })",
             "  await stock.updateOne(q, u, { session })",
             "}, { readConcern: { level: 'snapshot' } })"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -385,6 +469,21 @@
           ]
         },
         {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "{ w: 'majority', j: true, wtimeout: 5000 }",
+            "// w  = node count or replica-set tag",
+            "// j  = fsync the journal before replying",
+            "// wtimeout = ms before an error is raised"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Allowed Operations & Write Concern Levels",
+      "blocks": [
+        {
           "type": "heading",
           "text": "Allowed vs Not"
         },
@@ -411,12 +510,7 @@
               }
             ]
           }
-        }
-      ]
-    },
-    {
-      "page_title": "Writing a Transaction: The Core API (cont.)",
-      "blocks": [
+        },
         {
           "type": "sidebox",
           "title": "Two Hard Edges",
@@ -439,17 +533,6 @@
             "Nothing to do with what you can read — that is read concern",
             "Three fields only: `w`, `j`, `wtimeout`"
           ]
-        },
-        {
-          "type": "code",
-          "lang": "js",
-          "lines": [
-            "{ w: 'majority', j: true, wtimeout: 5000 }",
-            "// w  = node count or replica-set tag",
-            "// j  = fsync the journal before replying",
-            "// wtimeout = ms before an error is raised"
-          ],
-          "runnable": false
         },
         {
           "type": "heading",
@@ -513,6 +596,20 @@
           "text": "It only stops the driver waiting. The write is still in the oplog and may replicate to a majority seconds after you got the error."
         },
         {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "session.startTransaction({",
+            "  writeConcern: { w: 'majority', j: true }",
+            "})  // one durability decision for the lot"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Write Concern in Transactions, Tag Sets & wtimeout",
+      "blocks": [
+        {
           "type": "heading",
           "text": "Inside A Transaction"
         },
@@ -528,17 +625,62 @@
           "type": "code",
           "lang": "js",
           "lines": [
-            "session.startTransaction({",
-            "  writeConcern: { w: 'majority', j: true }",
-            "})  // one durability decision for the lot"
+            "await coll.insertOne(doc, {",
+            "  session,",
+            "  writeConcern: { w: 1 }  // ERROR",
+            "})"
           ],
-          "runnable": false
+          "note": "per-op write concern refused in txn"
+        },
+        {
+          "type": "heading",
+          "text": "Defining A Tag Set"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "cfg = rs.conf()",
+            "cfg.settings.getLastErrorModes =",
+            "  { multiDC: { dc: 2 } }",
+            "rs.reconfig(cfg)  // w: 'multiDC'"
+          ],
+          "note": "members need a dc tag"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each member carries a tag such as `{ dc: 'east' }`",
+            "`{ dc: 2 }` = acks from ==two distinct== `dc` values",
+            "Survives losing a whole data centre, at WAN latency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Handling wtimeout"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Error arrives as a write concern error, not a failed write",
+            "Do NOT blindly re-insert — the write may already be there",
+            "Re-read or use an idempotent upsert to reconcile"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`w: 3` on a two-node set — blocks, then errors",
+            "`w: 0` on payments — failures vanish silently",
+            "Per-op `writeConcern` inside a transaction"
+          ],
+          "style": "cross",
+          "ink": "red"
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "Write Concern: Durability You Choose",
+      "page_title": "Read Concern: The Five Levels",
       "blocks": [
         {
           "type": "sidebox",
@@ -649,15 +791,6 @@
             "session.startTransaction({",
             "  readConcern: { level: 'snapshot' }",
             "})  // same query twice = same answer"
-          ],
-          "runnable": false
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Snapshot is what makes transaction reads repeatable",
-            "One point-in-time view across every document and shard",
-            "Set at start — it cannot be changed per operation"
           ]
         },
         {
@@ -670,18 +803,95 @@
           ]
         },
         {
-          "type": "callout",
-          "style": "cloud",
-          "title": "majority is not read-your-own-write",
-          "text": "Reading with `majority` guarantees durability, not recency of your own write. You need a causally consistent session for that."
-        },
-        {
           "type": "bullets",
           "items": [
             "Aggregation pipelines honour read concern",
             "Change streams honour it too",
             "Pick per query: local for feeds, majority for money"
           ]
+        }
+      ]
+    },
+    {
+      "page_title": "Choosing a Read Concern Level",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Snapshot is what makes transaction reads repeatable",
+            "One point-in-time view across every document and shard",
+            "Set at start — it cannot be changed per operation"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "majority is not read-your-own-write",
+          "text": "Reading with `majority` guarantees durability, not recency of your own write. You need a causally consistent session for that."
+        },
+        {
+          "type": "heading",
+          "text": "A Linearizable Read"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.acc.find({ _id: 7 })",
+            "  .readConcern('linearizable')",
+            "  .maxTimeMS(2000)  // never omit"
+          ],
+          "note": "single document, primary only"
+        },
+        {
+          "type": "heading",
+          "text": "Pick A Level"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Level"
+          ],
+          "rows": [
+            [
+              "activity feed",
+              "local"
+            ],
+            [
+              "shard analytics",
+              "available"
+            ],
+            [
+              "account balance",
+              "majority"
+            ],
+            [
+              "multi-doc report",
+              "snapshot"
+            ],
+            [
+              "lock / leader check",
+              "linearizable"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per-op `readConcern` inside a txn — set it at start",
+            "`linearizable` without `maxTimeMS` — may block forever",
+            "`majority` reads while writes use `w: 1`"
+          ],
+          "style": "cross",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Majority needs the history",
+          "text": "`majority` and `snapshot` reads are served from older versions — WiredTiger keeps them until the majority point advances."
         }
       ]
     },
@@ -714,8 +924,7 @@
             "// your snapshot began:",
             "WriteConflict (code 112)",
             "// surfaces as TransientTransactionError"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "table",
@@ -771,8 +980,7 @@
             "// T1 removes Alice. T2 removes Bob.",
             "// Different docs, no conflict. Both commit.",
             "// Invariant 'one on call' is now broken."
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "sidebox",
@@ -814,7 +1022,7 @@
       ]
     },
     {
-      "page_title": "Snapshot Isolation and the Write Conflict (cont.)",
+      "page_title": "Intent Locks & Causal Consistency",
       "blocks": [
         {
           "type": "heading",
@@ -850,8 +1058,7 @@
             "  causalConsistency: true  // on by default",
             "})",
             "await coll.findOne(q, { session: s })"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -921,11 +1128,9 @@
             "const o = s.operationTime",
             "s2.advanceClusterTime(t)  // receiving side",
             "s2.advanceOperationTime(o)"
-          ],
-          "runnable": false
+          ]
         }
-      ],
-      "cont": true
+      ]
     }
   ],
   "caption": {

@@ -1,0 +1,332 @@
+{
+  "brand": "iolar",
+  "template": "sticky-wall",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "MONGODB SCHEMA DESIGN — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Anti-Patterns That Bite",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Duplication is a deliberate tool, not a mistake",
+            "Only question: does the copied field change often enough to hurt?"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Consistency Ladder",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "single-doc atomic",
+              "transaction",
+              "change stream",
+              "nightly job"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Left is correct and free; right is stalest and cheapest",
+            "Transactions: 60 s default, cache pressure from held snapshots",
+            "Retry logic for `TransientTransactionError` is mandatory"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Picking A Rung",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Single-document update: atomic, free, always first choice",
+            "Change stream: eventual, cheap, resumable after a crash",
+            "Nightly job: stalest rung, cheapest to operate",
+            "Climb only when the correctness need is real"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Transaction Checklist",
+          "items": [
+            "Retry on `TransientTransactionError`",
+            "Keep the body under 60 s",
+            "Small snapshots — the cache is shared",
+            "Ask first: could one document do it?"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Measure, Do Not Guess",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.find(q).explain('executionStats')",
+            "// nReturned, totalKeysExamined,",
+            "// totalDocsExamined, executionTimeMillis"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Reading",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "keys ≈ docs ≈ returned",
+              "index doing its job"
+            ],
+            [
+              "keys >> returned",
+              "scanning waste"
+            ],
+            [
+              "docs examined = 0",
+              "covered query, fastest"
+            ],
+            [
+              "`COLLSCAN` stage",
+              "no usable index"
+            ],
+            [
+              "time up, count flat",
+              "working set left RAM"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Worked Example: Slow Feed",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.posts.find({user_id:u}).sort({t:-1})",
+            "// before: COLLSCAN, 240k docs, 1.9 s",
+            "db.posts.createIndex({user_id:1, t:-1})",
+            "// after: 20 keys, 20 docs, 3 ms"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ESR again: equality `user_id`, then sort `t`",
+            "`nReturned` never moved — examined work collapsed",
+            "Same query text; only the plan changed"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Read The Plan Top Down",
+          "text": "`winningPlan` running `IXSCAN` then `FETCH` is healthy. A bare `COLLSCAN`, or a `SORT` stage with no index behind it, is the bill you are paying."
+        }
+      ]
+    },
+    {
+      "page_title": "Trade-offs, Validation & Summary",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Covered query = every needed field lives in the index",
+            "`$collStats` and `db.collection.stats()` for size truth",
+            "Atlas Performance Advisor flags anti-patterns before users do"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Covering A Query",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.createIndex({ status: 1, name: 1 })",
+            "db.c.find({status:'A'},{_id:0,name:1})",
+            "// totalDocsExamined: 0 = covered"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "How do I know the model is wrong?",
+          "a_bullets": [
+            "`totalDocsExamined` >> `nReturned` on a hot query",
+            "Repeated `$lookup` just to paint one screen",
+            "Average document size climbing month over month"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sizing A Collection",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.orders.stats().avgObjSize // 1.9 KB",
+            "db.orders.aggregate([{ $collStats:",
+            "  { storageStats: {} } }])",
+            "// index bytes vs RAM = thrash check"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Average doc size climbing = the model is drifting",
+            "Total index size over RAM = thrashing ahead",
+            "Record both numbers every release"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Locking The Shape",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Add `$jsonSchema` validation once the model stabilizes",
+            "Evolve with `schema_version` — no big-bang migration"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Migrate Without Downtime",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "if (doc.schema_version < 3) upgrade(doc)",
+            "// app reads old, writes new — lazily",
+            "db.c.find({schema_version:{$lt:3}}).count()"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Backfill The Tail",
+          "text": "Lazy migration never reaches cold documents. Sweep the stragglers with a batched job once that count stops falling."
+        },
+        {
+          "type": "sidebox",
+          "title": "Per-Collection Sizing",
+          "items": [
+            "Expected doc count and average doc size",
+            "Array growth ceiling",
+            "Top queries and read/write ratio",
+            "Full index list"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Workflow: list queries, map relationships and cardinality",
+            "Apply patterns, model it, review against the anti-patterns"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Copied field",
+            "Verdict"
+          ],
+          "rows": [
+            [
+              "`name`",
+              "safe, low churn"
+            ],
+            [
+              "`city`",
+              "safe, low churn"
+            ],
+            [
+              "`balance`",
+              "never copy"
+            ],
+            [
+              "`last_login`",
+              "never copy"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Move"
+          ],
+          "rows": [
+            [
+              "few, always together",
+              "embed"
+            ],
+            [
+              "many, queried alone",
+              "reference"
+            ],
+            [
+              "squillions",
+              "parent-ref + bucket + TTL"
+            ],
+            [
+              "hot derived value",
+              "compute and store"
+            ],
+            [
+              "unbounded array",
+              "bucket + TTL"
+            ],
+            [
+              "display-only field",
+              "extended reference"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Five Rules To Keep",
+          "text": "Store together what is read together. Bound every array. Index every foreign key. Precompute what is read hot. Let the query plan judge, not intuition."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of MONGODB SCHEMA DESIGN. Your MongoDB schema is not slow because Mongo is slow — it is slow because an array somewhere is still growing. 10 pages on embedding vs referencing, the one-to-few/many/squillions rules, bucketing, computed and extended-reference fields, and the anti-patterns that quietly eat your working set. Save it before the next design review.",
+    "hashtags": [
+      "#mongodb",
+      "#nosql",
+      "#schemadesign",
+      "#databasedesign",
+      "#backenddev",
+      "#systemdesign",
+      "#dataengineering",
+      "#softwareengineering",
+      "#devnotes",
+      "#codingtips",
+      "#techstudy"
+    ]
+  },
+  "spilledFrom": 1
+}

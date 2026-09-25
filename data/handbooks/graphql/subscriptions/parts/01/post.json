@@ -31,8 +31,7 @@
             "type Subscription {",
             "  messageAdded(roomId: ID!): Message!",
             "}  # args are filters, bound at subscribe"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -99,20 +98,6 @@
           ]
         },
         {
-          "type": "bullets",
-          "items": [
-            "Field name should read as a fact that happened",
-            "Resolvers stay side-effect free readers of the stream",
-            "Never trigger a mutation from a subscription resolver",
-            "Client declares interest once; server pushes deltas"
-          ]
-        }
-      ]
-    },
-    {
-      "page_title": "What a Subscription Actually Is (cont.)",
-      "blocks": [
-        {
           "type": "sidebox",
           "title": "Topic + Projection",
           "items": [
@@ -126,6 +111,20 @@
           "style": "tip",
           "title": "Not incremental delivery",
           "text": "`@defer` and `@stream` chunk ONE operation's response. A subscription is an open-ended feed of separate results."
+        }
+      ]
+    },
+    {
+      "page_title": "Transports: WebSocket, SSE, Long Poll",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Field name should read as a fact that happened",
+            "Resolvers stay side-effect free readers of the stream",
+            "Never trigger a mutation from a subscription resolver",
+            "Client declares interest once; server pushes deltas"
+          ]
         },
         {
           "type": "heading",
@@ -218,11 +217,10 @@
             "Heartbeat interval must sit under that idle timeout"
           ]
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "Transport: WebSocket vs SSE vs Long Poll",
+      "page_title": "Picking a Transport & the graphql-ws Handshake",
       "blocks": [
         {
           "type": "diagram",
@@ -312,6 +310,7 @@
                 "Pong"
               ]
             ],
+            "highlight": [],
             "caption": "graphql-transport-ws"
           }
         },
@@ -328,9 +327,13 @@
             "-> subscribe {id:'1', payload:{query}}",
             "<- next {id:'1', payload:{data}}",
             "<- complete {id:'1'}"
-          ],
-          "runnable": false
-        },
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Multiplexing, Close Codes & Load Balancers",
+      "blocks": [
         {
           "type": "bullets",
           "items": [
@@ -365,11 +368,58 @@
               "subscriber already exists"
             ]
           ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Two Streams, One Socket",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "-> subscribe {id:'1', ...rooms}",
+            "-> subscribe {id:'2', ...alerts}",
+            "<- next {id:'2', payload}",
+            "<- next {id:'1', payload}",
+            "-> complete {id:'1'}  # unsub 1"
+          ],
+          "note": "reusing a live id closes 4409"
+        },
+        {
+          "type": "sidebox",
+          "title": "Handshake rejects",
+          "items": [
+            "No `ConnectionAck` yet? `Subscribe` is a violation",
+            "Bad or missing token in init: close 4401",
+            "Init never arrives in time: close 4408",
+            "Malformed message: close 4400"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Load Balancer Settings"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Raise LB ==idle timeout== **above** the heartbeat interval",
+            "Never cut sockets on a routine config reload",
+            "Proxy tier needs the upgrade handshake allowed",
+            "graphql-ws Ping/Pong survives layers stripping control frames"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Reconnects are free?",
+          "text": "EventSource retries on its own; a WebSocket client must implement jittered exponential backoff itself."
         }
       ]
     },
     {
-      "page_title": "Wire Protocols on the Socket",
+      "page_title": "SSE Protocol & the Resolver Pair",
       "blocks": [
         {
           "type": "heading",
@@ -392,8 +442,7 @@
             "  -s graphql-transport-ws  # paste JSON by hand",
             "curl -N -H 'Accept: text/event-stream' \\",
             "  http://h/graphql   # sse is human readable"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "sidebox",
@@ -427,8 +476,7 @@
             "  pubsub.asyncIterableIterator(",
             "    `MSG_ADDED:${roomId}`),  // per-room topic",
             "resolve: (payload) => payload.message,"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -442,8 +490,7 @@
             "await pubsub.publish(`MSG_ADDED:${id}`, {",
             "  message,          // subscription only reads",
             "})"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -474,7 +521,12 @@
               }
             ]
           }
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Iterator Teardown & Resolver Gotchas",
+      "blocks": [
         {
           "type": "heading",
           "text": "Teardown Contract"
@@ -487,11 +539,50 @@
             "Skip it and a dead client holds a Redis channel forever",
             "Memory then grows monotonically until the pod dies"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Test The Teardown",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const it = await subscribe(args)",
+            "await pubsub.publish(T, {msg})",
+            "const r = await it.next()",
+            "expect(r.value.data).toBeTruthy()",
+            "await it.return()  // release!",
+            "expect(broker.subs(T)).toBe(0)"
+          ],
+          "note": "wrap next() in a timeout"
+        },
+        {
+          "type": "heading",
+          "text": "2. Resolver Gotchas",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Subscribing to the broker per request, not per connection",
+            "==N+1== in a subscription resolver runs on **every** event",
+            "One event error kills the stream in some servers",
+            "Hot topic pins CPU on JSON; throttle or batch"
+          ],
+          "style": "cross"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Publish after commit",
+          "text": "Publish before commit and subscribers refetch pre-commit state. Publish AFTER commit, ideally through a transactional outbox."
         }
       ]
     },
     {
-      "page_title": "Server-Side Resolvers and PubSub",
+      "page_title": "Context, Payloads & In-Memory PubSub Limits",
       "blocks": [
         {
           "type": "heading",
@@ -582,6 +673,37 @@
           }
         },
         {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "50k subs × 1 evt/s × 2KB",
+            "  ≈ 100 MB/s egress",
+            "bandwidth binds before CPU"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Deploys Cause Storms",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "rolling deploy",
+              "100% disconnect",
+              "all reconnect at once",
+              "thundering herd"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Redis, Kafka & the Cost of Fan-Out",
+      "blocks": [
+        {
           "type": "heading",
           "text": "Redis Options"
         },
@@ -607,6 +729,43 @@
             "Consumers keep offsets and can rewind",
             "Rebalancing makes per-user ephemeral topics impractical",
             "So subscribe broadly and filter at the gateway"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Fan-Out Is The Cost",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One publish × N subscribers = **N** executions",
+            "Each also serializes its own result",
+            "CPU grows with ==subscribers==, not with writes",
+            "Same doc, same topic? execute once, broadcast bytes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Every Socket Is State"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "fd + broker sub + parsed document per connection",
+            "Budget roughly tens of KB each",
+            "`ulimit -n` and proxy ports run out before CPU",
+            "Scale on ==connection count==, not CPU; drain first"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Fix the herd",
+          "items": [
+            "Client: jittered exponential backoff",
+            "Server: drain window staggers disconnects",
+            "Split socket gateway from the query API",
+            "No sticky sessions if every node gets every topic"
           ]
         }
       ]
@@ -670,6 +829,35 @@
           "text": "Debezium or logical replication turns table writes into events, so a forgotten `publish` call can never make subscriptions drift from the database."
         },
         {
+          "type": "heading",
+          "text": "Closing The Gap On Clients",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Open the subscription **first**, buffer events",
+            "Run the initial query, then apply the buffer",
+            "Fetch-then-subscribe silently loses the gap",
+            "Every reconnect is a possible gap: refetch base query"
+          ],
+          "style": "number"
+        }
+      ]
+    },
+    {
+      "page_title": "Replay, Dedupe & Subscription Auth",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Replay needs durability",
+          "items": [
+            "Send cursor / `Last-Event-ID` on reconnect",
+            "Server replays only from a durable log",
+            "Carry a monotonic version, drop stale writes"
+          ]
+        },
+        {
           "type": "sidebox",
           "title": "Choosing and deduping",
           "items": [
@@ -677,6 +865,17 @@
             "Missed event = lost financial state? durable log",
             "At-least-once WILL redeliver, plan for it",
             "Give every event a stable id, dedupe on the client"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "onConnect: async (ctx) => {",
+            "  const p = ctx.connectionParams || {}",
+            "  const u = await verify(p.authorization)",
+            "  return { user: u, exp: u.exp }  // context",
+            "}"
           ]
         },
         {
@@ -708,296 +907,47 @@
           ]
         },
         {
-          "type": "code",
-          "lang": "js",
-          "lines": [
-            "onConnect: async (ctx) => {",
-            "  const p = ctx.connectionParams || {}",
-            "  const u = await verify(p.authorization)",
-            "  return { user: u, exp: u.exp }  // context",
-            "}"
+          "type": "heading",
+          "text": "Expiry, Origin, Tenants"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "JWT expires mid-stream: timer closes the socket at `exp`",
+            "Allow a reauth message that swaps context in place",
+            "CORS skips handshakes: check ==Origin== server-side",
+            "Tenant id goes in the **topic**, not just a filter"
           ],
-          "runnable": false
-        }
-      ]
-    },
-    {
-      "page_title": "Auth, Authorization, Multi-Tenancy",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "Expiry And Refresh"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Throw inside `onConnect` to reject the handshake",
-            "A JWT valid at connect expires while the stream lives on",
-            "Schedule a server timer that closes the socket at `exp`",
-            "Allow a client message carrying a refreshed token",
-            "That message updates the connection context in place"
-          ]
+          "style": "check"
         },
         {
           "type": "heading",
-          "text": "Tenancy And Origin"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Bake the tenant id into the topic name itself",
-            "A filter bug leaks cross-tenant data; a wrong topic returns nothing",
-            "WebSocket handshakes are not protected by CORS",
-            "Validate the `Origin` header server-side, explicitly",
-            "With cookie auth, Origin checking is mandatory, not optional"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Limiting The Blast"
+          "text": "Rate Limit Connections"
         },
         {
           "type": "table",
           "headers": [
-            "Scope",
-            "Cap"
+            "Limit",
+            "Scope"
           ],
           "rows": [
             [
-              "per connection",
-              "subscriptions open"
+              "subscriptions",
+              "per connection"
             ],
             [
-              "per user",
-              "concurrent connections"
+              "connections",
+              "per user"
             ],
             [
-              "per subscriber",
-              "events per second"
+              "events/sec",
+              "per subscriber"
             ],
             [
-              "per document",
-              "cost times event rate"
+              "query cost",
+              "× event rate"
             ]
           ]
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Rate limiting moves from requests to connections",
-            "A depth-5 selection set executes on EVERY event",
-            "True cost is query cost multiplied by event rate"
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "Denial of wallet",
-          "text": "Thousands of cheap subscriptions to one high-volume topic turn your fan-out into your invoice. Cap subscriptions before an attacker finds the ceiling."
-        },
-        {
-          "type": "heading",
-          "text": "Fan-Out Is The Number",
-          "ink": "blue"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "One publish times N subscribers = N executions",
-            "Plus N serializations of the same shape",
-            "CPU grows with subscriber count, not with write rate"
-          ]
-        },
-        {
-          "type": "diagram",
-          "kind": "flowchart",
-          "spec": {
-            "title": "1 publish, N subs",
-            "rows": [
-              [
-                "n0"
-              ],
-              [
-                "b0",
-                "b1",
-                "b2"
-              ],
-              [
-                "c0_0",
-                "c0_1"
-              ],
-              [
-                "c1_0",
-                "c1_1",
-                "c1_2"
-              ],
-              [
-                "c2_0"
-              ]
-            ],
-            "nodes": {
-              "n0": {
-                "text": "1 publish, N subs",
-                "shape": "diamond"
-              },
-              "b0": {
-                "text": "CPU"
-              },
-              "b1": {
-                "text": "memory"
-              },
-              "b2": {
-                "text": "egress"
-              },
-              "c0_0": {
-                "text": "N executions"
-              },
-              "c0_1": {
-                "text": "N serializations"
-              },
-              "c1_0": {
-                "text": "socket fd"
-              },
-              "c1_1": {
-                "text": "broker sub"
-              },
-              "c1_2": {
-                "text": "parsed document"
-              },
-              "c2_0": {
-                "text": "N times payload"
-              }
-            },
-            "edges": [
-              {
-                "from": "n0",
-                "to": "b0"
-              },
-              {
-                "from": "n0",
-                "to": "b1"
-              },
-              {
-                "from": "n0",
-                "to": "b2"
-              },
-              {
-                "from": "b0",
-                "to": "c0_0"
-              },
-              {
-                "from": "b0",
-                "to": "c0_1"
-              },
-              {
-                "from": "b1",
-                "to": "c1_0"
-              },
-              {
-                "from": "b1",
-                "to": "c1_1"
-              },
-              {
-                "from": "b1",
-                "to": "c1_2"
-              },
-              {
-                "from": "b2",
-                "to": "c2_0"
-              }
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "page_title": "Scaling: Fan-Out, State, and Cost",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "State Per Connection"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Budget roughly tens of KB per open subscription",
-            "File descriptor limits (`ulimit -n`) bite first",
-            "Ephemeral port exhaustion on the proxy tier bites second",
-            "Application CPU is rarely the ceiling you hit"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Deploys And Balancers"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Raise LB idle timeout above your heartbeat interval",
-            "Never terminate connections on a routine config reload",
-            "Every rolling deploy disconnects 100% of subscribers",
-            "They all reconnect at once: a self-inflicted thundering herd",
-            "Cure: jittered exponential backoff plus a drain window"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Topology Choices"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Split the socket gateway from the query API",
-            "Socket load then cannot starve request latency",
-            "Sticky sessions unneeded if the broker reaches every node",
-            "Each node subscribes and pushes to the sockets it holds",
-            "Autoscale on connection count, not CPU; scale in after draining"
-          ]
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Dedupe identical documents on the same topic",
-            "10,000 clients, one execution, one serialized broadcast",
-            "Live queries push diffs instead: simpler client, heavy server",
-            "Federated subscriptions resolve in one subgraph, router proxies",
-            "You cannot fan one subscription across subgraphs"
-          ]
-        },
-        {
-          "type": "table",
-          "headers": [
-            "Metric",
-            "Tells you"
-          ],
-          "rows": [
-            [
-              "open connections",
-              "capacity headroom"
-            ],
-            [
-              "subs per connection",
-              "fan-out shape"
-            ],
-            [
-              "published vs delivered",
-              "silent drops"
-            ],
-            [
-              "delivery latency p99",
-              "real staleness"
-            ],
-            [
-              "teardown rate",
-              "leaked subscriptions"
-            ]
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "cloud",
-          "title": "Bandwidth math",
-          "text": "50k subscribers times 1 event/sec times 2KB is about 100 MB/s of egress. Bandwidth, not compute, is usually the binding constraint."
         }
       ]
     }

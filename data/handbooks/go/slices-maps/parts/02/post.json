@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Map Internals: Buckets, Growth, Swiss Tables",
+      "page_title": "Map Internals: Swiss Tables & Randomized Range",
       "blocks": [
         {
           "type": "heading",
@@ -40,8 +40,7 @@
             "clear(m)      // entries gone, buckets stay",
             "m = make(map[K]V) // the real reclaim",
             "// old table is now garbage-collectable"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -96,8 +95,7 @@
             "for _, k := range keys {",
             "    fmt.Println(k, m[k]) // stable output",
             "}"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -137,7 +135,12 @@
               "may never terminate"
             ]
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Bucket Layout, Overflow & Incremental Growth",
+      "blocks": [
         {
           "type": "code",
           "lang": "go",
@@ -145,13 +148,61 @@
             "for k, v := range m {",
             "    if stale(v) { delete(m, k) } // safe idiom",
             "}"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Before 1.24: The Bucket Table",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An array of buckets, each holding up to **8** key/value pairs",
+            "The low-order hash bits select the bucket",
+            "High 8 bits cached as ==tophash== for fast in-bucket rejection",
+            "Keys and values sit in separate arrays — no padding between them"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Overflow And Load Factor"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "trigger",
+            "what happens"
           ],
-          "runnable": false
+          "rows": [
+            [
+              "9th key in a bucket",
+              "overflow bucket chained on"
+            ],
+            [
+              "long chains",
+              "lookups drift toward O(n)"
+            ],
+            [
+              "load factor **6.5**",
+              "buckets double, rehash"
+            ],
+            [
+              "mostly tombstones",
+              "same-size growth compacts"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Growth is incremental",
+          "text": "Each write evacuates a bucket or two, so no single op stalls on a full rehash — but during evacuation reads must check `oldbuckets` too."
         }
       ]
     },
     {
-      "page_title": "Map Iteration Order & Deleting During Range",
+      "page_title": "Concurrent Map Access & Slice vs Map Costs",
       "blocks": [
         {
           "type": "bullets",
@@ -207,19 +258,24 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "reads only"
+                "text": "reads only",
+                "shape": "box"
               },
               "b1": {
-                "text": "any writer"
+                "text": "any writer",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "no sync needed"
+                "text": "no sync needed",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "`sync.RWMutex`"
+                "text": "`sync.RWMutex`",
+                "shape": "box"
               },
               "c1_1": {
-                "text": "`sync.Map`"
+                "text": "`sync.Map`",
+                "shape": "box"
               }
             },
             "edges": [
@@ -320,7 +376,12 @@
               "old + new during evacuation"
             ]
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Operation Costs, Key Rules & Comma-Ok",
+      "blocks": [
         {
           "type": "heading",
           "text": "Operation By Operation",
@@ -367,11 +428,70 @@
             "Fastest dedupe: `map[T]struct{}` plus an output slice for order",
             "Slices give stable order for free; maps need an explicit sort"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Keys Must Be Comparable",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "key type",
+            "verdict"
+          ],
+          "rows": [
+            [
+              "`string`, `int`, pointer",
+              "fine"
+            ],
+            [
+              "struct / array of those",
+              "fine — composite keys"
+            ],
+            [
+              "slice, map, func",
+              "**compile error**"
+            ],
+            [
+              "interface",
+              "compiles, may panic"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "NaN poisons a map",
+          "text": "`NaN != NaN`, so every insert of a NaN float key makes a brand-new entry you can never look up or delete."
+        },
+        {
+          "type": "heading",
+          "text": "Absent Or Zero?",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "v := m[\"nope\"]   // 0, never an error",
+            "v, ok := m[k]    // ok tells you which",
+            "delete(m, k)     // no-op if absent"
+          ],
+          "note": "comma-ok when absence means something"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`delete` on a `nil` map is safe too — only writes panic",
+            "`len(m)` is O(1); there is no `cap()` for maps",
+            "`make(map[K]V, hint)` presizes and skips repeated rehashing"
+          ]
         }
       ]
     },
     {
-      "page_title": "Slice vs Map: Choosing and Trading Off",
+      "page_title": "Dedupe, Ordered Maps & append Traps",
       "blocks": [
         {
           "type": "code",
@@ -383,8 +503,7 @@
             "    seen[v] = struct{}{}",
             "    out = append(out, v) // order kept",
             "}"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -450,6 +569,19 @@
         },
         {
           "type": "heading",
+          "text": "Presize, Then Compare"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`make(map[K]V, n)` when n is known — no repeated growth or rehash",
+            "`out := make([]T, 0, len(in))` before any map/filter loop",
+            "Neither type is comparable: `maps.Equal` and `slices.Equal` (Go 1.21+)",
+            "Only `s == nil` / `m == nil` compile; `==` between two of them does not"
+          ]
+        },
+        {
+          "type": "heading",
           "text": "The append Family",
           "ink": "red"
         },
@@ -468,9 +600,13 @@
             "p := &s[i]",
             "s = append(s, x) // may reallocate",
             "*p = 7           // writes to the dead array"
-          ],
-          "runnable": false
-        },
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Buffers That Escape & Pinned Arrays",
+      "blocks": [
         {
           "type": "heading",
           "text": "Buffers That Escape",
@@ -532,8 +668,7 @@
             "m[k].field = x // compile error",
             "// don't reach for reflection —",
             "// store map[K]*V and mutate through it"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -562,6 +697,7 @@
                 "-> [ a | b | c | _ ]"
               ]
             ],
+            "highlight": [],
             "caption": "a slice is a WINDOW onto an array"
           }
         },

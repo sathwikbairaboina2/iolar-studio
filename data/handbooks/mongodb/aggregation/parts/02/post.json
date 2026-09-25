@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Sorting, Paging, Index Use",
+      "page_title": "Sorting, Paging & Index Direction",
       "blocks": [
         {
           "type": "callout",
@@ -51,8 +51,7 @@
             "[{$match:{_id:{$gt:lastSeenId}}},",
             " {$sort:{_id:1}},",
             " {$limit:20}]   // constant cost per page"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -119,7 +118,12 @@
               "$sort+$limit"
             ]
           }
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Golden Stage Order & In-Memory Sorts",
+      "blocks": [
         {
           "type": "bullets",
           "items": [
@@ -129,11 +133,37 @@
             "`$unwind` as late as legal — every later stage sees the multiplied stream",
             "Every deviation from this order should be deliberate"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Where The Sort Runs",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "First stage, or right after an indexed `$match`: ==index-served==, free",
+            "After `$group`, `$unwind` or computed `$project`: **in memory**",
+            "In-memory sort is blocking and capped at 100 MB",
+            "`$sortByCount` is `$group` + `$sort` — always blocking"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "[{$match:{status:'paid'}},",
+            " {$group:{_id:'$custId',",
+            "   total:{$sum:'$amount'}}},",
+            " {$sort:{total:-1}},",
+            " {$limit:5}]  // top-5 heap"
+          ],
+          "note": "sort here is in memory, keep limit"
         }
       ]
     },
     {
-      "page_title": "Order, Optimizer and explain()",
+      "page_title": "Optimizer Rewrites and explain()",
       "blocks": [
         {
           "type": "heading",
@@ -187,8 +217,7 @@
             "db.c.aggregate(p, { explain: true })",
             "db.c.explain('executionStats')",
             "  .aggregate(p)"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "table",
@@ -283,12 +312,47 @@
           ]
         },
         {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Empty $match",
+          "text": "`{ $match: {} }` is legal and a no-op, but it can block the planner from merging stages — delete it."
+        }
+      ]
+    },
+    {
+      "page_title": "Splitting the $match Predicate",
+      "blocks": [
+        {
           "type": "bullets",
           "items": [
             "Filter raw stored fields early, derived fields late",
             "Every doc unwound then discarded is pure waste",
             "A wide `$project` of all fields costs BSON serialization for nothing"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Split The Predicate",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Equality== predicates on stored fields go in stage 1",
+            "`$expr` and derived-field tests go in a **later** `$match`",
+            "10M docs down to 5k before `$group`: ~1000× cheaper"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "[{$match:{status:'paid'}},",
+            " {$group:{_id:'$custId',",
+            "   total:{$sum:'$amount'}}},",
+            " {$match:{total:{$gte:100}}}]"
+          ],
+          "note": "last $match is SQL's HAVING"
         }
       ]
     },
@@ -317,8 +381,7 @@
             "// or normalize the key type:",
             "{ $match: { $expr: { $eq: [",
             "  '$_id', { $toObjectId: '$$cid' } ] } } }"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -342,8 +405,7 @@
             "  { $map: { input: '$items', as: 'i',",
             "    in: { $multiply:",
             "      ['$$i.qty','$$i.price'] } } } } } }"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -383,7 +445,7 @@
       ]
     },
     {
-      "page_title": "Stage Table and Shipping Checks",
+      "page_title": "Stage Card and Memory Limits",
       "blocks": [
         {
           "type": "heading",
@@ -465,6 +527,94 @@
         },
         {
           "type": "heading",
+          "text": "Streaming vs Blocking",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "streaming",
+                "lines": [
+                  "$match $project $addFields",
+                  "$unwind $limit $skip",
+                  "emit doc by doc"
+                ],
+                "ink": "green"
+              },
+              {
+                "title": "blocking",
+                "lines": [
+                  "$group $sort $bucket",
+                  "$facet $setWindowFields",
+                  "consume all input first"
+                ],
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Only ==blocking== stages hit the 100 MB cap",
+            "`$unwind` is cheap itself but **multiplies** the next blocking stage",
+            "Shrink docs with `$project` before any blocking stage"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Numbers To Memorize",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "16 MB per document, in and out",
+            "100 MB per blocking stage",
+            "`allowDiskUse: true` to spill, at a real speed cost"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Worked Pipeline, SQL Map & Ship Checklist",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The whole handbook",
+          "text": "Everything an index can do for you happens in the stages before the first stage that changes the shape or the count of the documents."
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            " {$lookup:{from:'products',",
+            "   localField:'items.sku',",
+            "   foreignField:'sku', as:'p'}},",
+            " {$unwind:{path:'$p',",
+            "   preserveNullAndEmptyArrays:",
+            "     true}},"
+          ],
+          "note": "keeps items with no product"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            " {$group:{_id:'$p.category',",
+            "   revenue:{$sum:{$multiply:",
+            "     ['$items.qty',",
+            "      '$items.price']}}}},",
+            " {$sort:{revenue:-1}},",
+            " {$limit:10}]  // top-10 heap"
+          ]
+        },
+        {
+          "type": "heading",
           "text": "SQL Mapping",
           "ink": "green"
         },
@@ -502,23 +652,14 @@
           ]
         },
         {
-          "type": "heading",
-          "text": "Numbers To Memorize",
-          "ink": "red"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "16 MB per document, in and out",
-            "100 MB per blocking stage",
-            "`allowDiskUse: true` to spill, at a real speed cost"
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "[{$match:{status:'paid',",
+            "   date:{$gte:start}}},",
+            " {$project:{custId:1, items:1}},",
+            " {$unwind:'$items'},"
           ]
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "The whole handbook",
-          "text": "Everything an index can do for you happens in the stages before the first stage that changes the shape or the count of the documents."
         },
         {
           "type": "heading",
@@ -536,15 +677,40 @@
           ]
         },
         {
-          "type": "code",
-          "lang": "js",
-          "lines": [
-            "[{$match:{status:'paid',",
-            "   date:{$gte:start}}},",
-            " {$project:{custId:1, items:1}},",
-            " {$unwind:'$items'},"
+          "type": "heading",
+          "text": "Specialty Stages",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Stage",
+            "Use"
           ],
-          "runnable": false
+          "rows": [
+            [
+              "$graphLookup",
+              "recursive self-join"
+            ],
+            [
+              "$unionWith",
+              "UNION ALL"
+            ],
+            [
+              "$bucketAuto",
+              "auto histogram"
+            ],
+            [
+              "$densify / $fill",
+              "close series gaps"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Cursor, not array",
+          "text": "`aggregate()` returns a ==cursor==; nothing executes until you iterate it. The 16 MB cap is per document, not per result set."
         },
         {
           "type": "sidebox",

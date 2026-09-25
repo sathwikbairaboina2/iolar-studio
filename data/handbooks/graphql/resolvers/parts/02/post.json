@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "N+1, DataLoader, Performance",
+      "page_title": "Caching, Errors & Null Propagation",
       "blocks": [
         {
           "type": "heading",
@@ -136,9 +136,13 @@
             "type Query {",
             "  user(id: ID!): UserResult!",
             "}"
-          ],
-          "runnable": false
-        },
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Error Masking & The batchFn Contract",
+      "blocks": [
         {
           "type": "heading",
           "text": "What Reaches The Client"
@@ -161,11 +165,100 @@
             "There was none, so it reached the root",
             "Read `errors[0].path` to find the culprit"
           ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "formatError: (err) => ({",
+            "  message: err.message,",
+            "  extensions: {",
+            "    code: err.extensions?.code,",
+            "  },",
+            "})  // no stack, no SQL"
+          ],
+          "note": "keep the code, drop internals"
+        },
+        {
+          "type": "heading",
+          "text": "The batchFn Contract"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keys `[1,2,3]` in → values in the ==same order==, **same** length",
+            "Misses come back as `null` or an `Error`",
+            "Memoized per instance: 10 loads of one key, 1 query",
+            "Batching window is one ==microtask tick== per level"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "new DataLoader(async ids => {",
+            "  const rows = await byIds(ids)",
+            "  const m = new Map(rows.map(",
+            "    r => [r.id, r]))",
+            "  return ids.map(k =>",
+            "    m.get(k) ?? null)",
+            "})"
+          ],
+          "note": "same order, same length as keys"
+        },
+        {
+          "type": "heading",
+          "text": "Three Ways To Fetch"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Approach",
+            "Queries",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "DataLoader",
+              "1 per level",
+              "small change"
+            ],
+            [
+              "eager JOIN",
+              "1 total",
+              "over-fetches"
+            ],
+            [
+              "per-field fetch",
+              "1 + N",
+              "**slowest**"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "heading",
+          "text": "Guard Before Execution"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Depth limits== stop pathological nesting early",
+            "Cost directives price a query before it runs",
+            "`info.fieldNodes` builds a projection of requested columns",
+            "JOIN only what the selection actually asks for"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "50 Posts, 2 Queries",
+          "text": "Without batching, 50 `Post.author` calls cost 1 + 50 round trips. With a loader: **2**."
         }
       ]
     },
     {
-      "page_title": "Errors, Nullability, Return Shapes",
+      "page_title": "Abstract Types, Subscriptions, Directives",
       "blocks": [
         {
           "type": "sidebox",
@@ -203,8 +296,7 @@
             "const Node = {",
             "  __resolveType: row => row.__typename,",
             "}  // cheapest: put it on the row"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
@@ -234,8 +326,7 @@
             "  subscribe: () => pubsub.iterator('MSG'),",
             "  resolve: p => p.messageAdded,  // else null",
             "}"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -289,7 +380,7 @@
       ]
     },
     {
-      "page_title": "Interfaces, Unions, Subscriptions",
+      "page_title": "Federation, Recap & Common Slips",
       "blocks": [
         {
           "type": "sidebox",
@@ -299,6 +390,18 @@
             "`@external`/`@requires`/`@provides` decide what a subgraph supplies",
             "The chain now spans subgraphs, not just types"
           ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "User: {",
+            "  __resolveReference:",
+            "    (ref, _, { db }) =>",
+            "      db.users.byId(ref.id),",
+            "}"
+          ],
+          "note": "ref holds key fields only"
         },
         {
           "type": "callout",
@@ -318,6 +421,19 @@
             "`Query` roots parallel, root `Mutation` serial, nested parallel",
             "Field collection happens before any of it",
             "No resolver: read `parent[fieldName]`, call it if it is a function"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Chain, Short"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A field's return value is ==every child's `parent`==",
+            "Lists fan out: 20 users → 20 `User.name` calls",
+            "`null` short-circuits — children **never** run",
+            "Thin parents break children that expect hydration"
           ]
         },
         {
@@ -354,6 +470,28 @@
           ]
         },
         {
+          "type": "heading",
+          "text": "Wrong Slot, Silent Bug"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// wrong: args lands in parent",
+            "user: (args, ctx) => ...",
+            "// right",
+            "user: (_, { id }, { db }) =>",
+            "  db.users.byId(id)"
+          ],
+          "note": "arguments are positional, always four"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "`created_at` vs `createdAt`",
+          "text": "The default resolver reads the exact field name. Alias in SQL or write a one-line resolver."
+        },
+        {
           "type": "bullets",
           "items": [
             "Business logic in resolvers instead of a service layer",
@@ -368,7 +506,7 @@
       ]
     },
     {
-      "page_title": "Traps, Trade-Offs, One Page",
+      "page_title": "Trade-Offs, Checklist & Testing",
       "blocks": [
         {
           "type": "table",
@@ -424,8 +562,7 @@
             "// first line of any suspect resolver",
             "console.log(info.path, info.fieldName)",
             "console.log(typeof parent, parent?.id)"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -433,6 +570,41 @@
             "`path` says which branch, `typeof parent` says why",
             "It answers 'why is this null' faster than anything else"
           ]
+        },
+        {
+          "type": "qa",
+          "q": "Why did `User.email` come back null?",
+          "a_bullets": [
+            "No resolver, so the default read `parent.email`",
+            "Row had `email_address` — name mismatch",
+            "Or another path handed in a ==thin parent=="
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Test Without A Server"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const ctx = { db: fakeDb,",
+            "  user: { id: 1 } }",
+            "const v = await resolvers",
+            "  .User.posts({ id: 7 },",
+            "    { first: 2 }, ctx)",
+            "expect(v).toHaveLength(2)"
+          ],
+          "note": "a resolver is just a function"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Build a fake `context`, call the function directly",
+            "Pass a plain object as `parent`",
+            "No HTTP, no schema, no network needed"
+          ],
+          "style": "checkbox"
         },
         {
           "type": "diagram",

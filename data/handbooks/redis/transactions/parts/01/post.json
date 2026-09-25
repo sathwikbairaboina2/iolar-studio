@@ -87,25 +87,32 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "latency"
+                "text": "latency",
+                "shape": "box"
               },
               "b1": {
-                "text": "grouping"
+                "text": "grouping",
+                "shape": "box"
               },
               "b2": {
-                "text": "read-modify-write"
+                "text": "read-modify-write",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "pipeline"
+                "text": "pipeline",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "MULTI/EXEC"
+                "text": "MULTI/EXEC",
+                "shape": "box"
               },
               "c2_0": {
-                "text": "WATCH"
+                "text": "WATCH",
+                "shape": "box"
               },
               "c2_1": {
-                "text": "Lua"
+                "text": "Lua",
+                "shape": "box"
               }
             },
             "edges": [
@@ -167,8 +174,7 @@
             "redis-cli --latency      # measures RTT",
             "redis-benchmark -P 16    # pipelined rate",
             "redis-cli info commandstats"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "sidebox",
@@ -187,16 +193,6 @@
         },
         {
           "type": "code",
-          "lang": "bash",
-          "lines": [
-            "WATCH k                  # INCR without INCR",
-            "v = GET k",
-            "MULTI; SET k v+1; EXEC   # nil -> retry"
-          ],
-          "runnable": false
-        },
-        {
-          "type": "code",
           "lang": "lua",
           "lines": [
             "local c = redis.call('incr', KEYS[1])",
@@ -204,8 +200,75 @@
             "  redis.call('expire', KEYS[1], ARGV[1])",
             "end",
             "return c  -- rate limiter, one RTT"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Choosing the Right Tool",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "WATCH k                  # INCR without INCR",
+            "v = GET k",
+            "MULTI; SET k v+1; EXEC   # nil -> retry"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Which Tool, When"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Atomic",
+            "Branch",
+            "RTT"
           ],
-          "runnable": false
+          "rows": [
+            [
+              "Pipeline",
+              "no",
+              "no",
+              "1"
+            ],
+            [
+              "MULTI/EXEC",
+              "yes",
+              "no",
+              "1"
+            ],
+            [
+              "WATCH+MULTI",
+              "yes",
+              "client-side",
+              "2+ retries"
+            ],
+            [
+              "Lua / EVAL",
+              "yes",
+              "server-side",
+              "1"
+            ]
+          ],
+          "highlightRow": 3
+        },
+        {
+          "type": "heading",
+          "text": "Prefer One Command"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No reads → pipeline; fixed writes → MULTI; branch → ==Lua==",
+            "`SET k v NX EX 30` replaces the SETNX+EXPIRE pair",
+            "Also native: `LMOVE`, `ZADD GT`, `GETSET`, `INCR`",
+            "Reach order: **native** > Lua > MULTI > WATCH"
+          ],
+          "style": "check"
         }
       ]
     },
@@ -246,8 +309,7 @@
             "p = r.pipeline(transaction=False)",
             "p.set('a', 1); p.incr('b')",
             "res = p.execute()  # [True, 1] in order"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -343,8 +405,7 @@
             "SET a 1      # +QUEUED",
             "INCR c       # +QUEUED",
             "EXEC         # 1) +OK  2) (integer) 4"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -368,6 +429,10 @@
               "INCR c",
               "EXEC"
             ],
+            "indices": true,
+            "pointers": [],
+            "highlight": [],
+            "dim": [],
             "caption": "per-connection queue"
           }
         },
@@ -478,8 +543,7 @@
             "MULTI; SET k v; LPUSH k x; INCR n; EXEC",
             "# 1) OK  2) WRONGTYPE...  3) (integer) 1",
             "# k and n are both modified. No undo."
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
@@ -570,6 +634,18 @@
           }
         },
         {
+          "type": "bullets",
+          "items": [
+            "`UNWATCH` clears all watches on the connection",
+            "`EXEC` and `DISCARD` clear them implicitly too"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "WATCH in Practice: Pitfalls & Testing",
+      "blocks": [
+        {
           "type": "callout",
           "style": "cloud",
           "title": "Ordering Rule",
@@ -589,16 +665,93 @@
           ]
         },
         {
+          "type": "heading",
+          "text": "1. Reading The EXEC Reply"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "EXEC reply",
+            "Meaning",
+            "Action"
+          ],
+          "rows": [
+            [
+              "array",
+              "all ran",
+              "check each slot"
+            ],
+            [
+              "nil",
+              "watch tripped",
+              "retry"
+            ],
+            [
+              "EXECABORT",
+              "queue error",
+              "0 ran, fix bug"
+            ]
+          ],
+          "highlightRow": 1
+        },
+        {
+          "type": "heading",
+          "text": "2. WATCH Loop In redis-py"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "p.watch('k')        # before read",
+            "v = int(p.get('k'))",
+            "p.multi()",
+            "p.set('k', v + 1)",
+            "p.execute()  # nil -> WatchError"
+          ],
+          "note": "catch WatchError, retry with backoff"
+        },
+        {
+          "type": "sidebox",
+          "title": "Watch Pitfalls",
+          "items": [
+            "A TTL expiring the key returns nil",
+            "Pooled socket swap silently drops WATCH",
+            "Pin one connection for the whole loop"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Transaction Mistakes"
+        },
+        {
           "type": "bullets",
           "items": [
-            "`UNWATCH` clears all watches on the connection",
-            "`EXEC` and `DISCARD` clear them implicitly too"
-          ]
+            "Assuming MULTI **rolls back** on a runtime error",
+            "Ignoring EXEC's nil — a lost race becomes a lost update",
+            "Reading inside MULTI and expecting a value, not `+QUEUED`",
+            "Cross-slot keys in Cluster — use hash tags `{user:1}:name`"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "4. Testing Checklist"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Assert on every element of the EXEC array",
+            "Simulate a concurrent writer to hit the ==WATCH-nil== path",
+            "Inject a WRONGTYPE command to see partial apply"
+          ],
+          "style": "checkbox"
         }
       ]
     },
     {
-      "page_title": "WATCH and Optimistic Locking",
+      "page_title": "WATCH Limits, EVAL & the Script Cache",
       "blocks": [
         {
           "type": "heading",
@@ -611,8 +764,7 @@
             "WATCH z                  # atomic ZPOP",
             "el = ZRANGE z 0 0",
             "MULTI; ZREM z el; EXEC   # nil -> retry"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -673,8 +825,7 @@
             "if redis.call('get',KEYS[1])==ARGV[1]",
             "then return redis.call('del',KEYS[1])",
             "else return 0 end"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -707,6 +858,20 @@
           "title": "Cache Is Ephemeral",
           "text": "Lost on restart, on `SCRIPT FLUSH`, and on failover to a fresh replica. Always keep the fallback."
         },
+        {
+          "type": "sidebox",
+          "title": "Gotcha",
+          "items": [
+            "Lua tables become arrays",
+            "They STOP at the first nil element",
+            "A sparse table silently truncates"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Lua Type Conversion & Safe Locks",
+      "blocks": [
         {
           "type": "heading",
           "text": "Type Conversion"
@@ -742,18 +907,56 @@
           ]
         },
         {
-          "type": "sidebox",
-          "title": "Gotcha",
+          "type": "callout",
+          "style": "tip",
+          "title": "Keep The Decimals",
+          "text": "Return `tostring(3.7)` — the client gets the string \"3.7\" instead of a truncated 3."
+        },
+        {
+          "type": "heading",
+          "text": "1. NOSCRIPT Fallback"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "try:",
+            "  r.evalsha(sha, 1, 'k')",
+            "except NoScriptError:",
+            "  r.eval(src, 1, 'k')  # reloads"
+          ],
+          "note": "cache dies on restart or failover"
+        },
+        {
+          "type": "heading",
+          "text": "2. Safe Lock Pattern"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SET lock tok NX EX 30  # one cmd",
+            "# ... critical section ...",
+            "EVALSHA $release 1 lock tok"
+          ],
+          "note": "release only if token still matches"
+        },
+        {
+          "type": "bullets",
           "items": [
-            "Lua tables become arrays",
-            "They STOP at the first nil element",
-            "A sparse table silently truncates"
-          ]
+            "Hardcoded key names in Lua — Cluster fails with `CROSSSLOT`",
+            "`KEYS *` inside a script: O(N) while **everyone** waits",
+            "SETNX then EXPIRE as two commands — a crash leaks the lock",
+            "Bare `DEL` on release can free someone else's lock"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
         }
       ]
     },
     {
-      "page_title": "Lua Scripting: EVAL and the Script Cache",
+      "page_title": "Script Atomicity, BUSY & Redis 7 Functions",
       "blocks": [
         {
           "type": "callout",
@@ -821,6 +1024,91 @@
         },
         {
           "type": "heading",
+          "text": "1. Spotting Slow Scripts"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SLOWLOG GET 10     # slow EVALs",
+            "INFO commandstats  # EVAL cost",
+            "LATENCY DOCTOR     # stall report"
+          ],
+          "note": "benchmark script duration before shipping"
+        },
+        {
+          "type": "heading",
+          "text": "2. Lua vs WATCH"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Factor",
+            "Lua",
+            "WATCH"
+          ],
+          "rows": [
+            [
+              "Hot key",
+              "one pass",
+              "livelock"
+            ],
+            [
+              "RTTs",
+              "1",
+              "2+ × retries"
+            ],
+            [
+              "External data",
+              "no",
+              "yes"
+            ],
+            [
+              "Debugging",
+              "harder",
+              "easier"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Lua: correctness-critical, check and write can't separate",
+            "WATCH: heavy compute or data Redis doesn't have",
+            "Lua cost: cache management, blocks the server"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "heading",
+          "text": "3. Redis 7 Functions"
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "#!lua name=lib",
+            "redis.register_function('hi',",
+            "  function(keys, args)",
+            "    return 1",
+            "  end)"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`FUNCTION LOAD` once — ==persisted== in RDB/AOF",
+            "Replicated to replicas, survives restart and failover",
+            "Call with `FCALL hi 1 key` instead of EVALSHA"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Determinism, Sandbox & Durability",
+      "blocks": [
+        {
+          "type": "heading",
           "text": "Determinism, Then And Now"
         },
         {
@@ -873,8 +1161,7 @@
             "#!lua name=mylib        -- Functions",
             "#!lua flags=no-writes   -- read-only",
             "local x = 1  -- global `x = 1` errors"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -883,378 +1170,34 @@
             "`no-writes` also runs during write-blocked states (replica, OOM)",
             "Global writes are blocked by the sandbox — always use `local`"
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "Script Atomicity, Blocking & Determinism",
-      "blocks": [
+        },
         {
-          "type": "sidebox",
-          "title": "Debug Toolkit",
+          "type": "heading",
+          "text": "Sandbox Toolkit"
+        },
+        {
+          "type": "bullets",
           "items": [
             "Libraries: `cjson`, `cmsgpack`, `bit`, `struct`",
-            "`redis.sha1hex`, `redis.breakpoint`",
-            "`redis.log(redis.LOG_WARNING, msg)`",
-            "Sealed: no network, no `os.execute`, no `require`"
+            "`redis.sha1hex`, `redis.breakpoint` for debugging",
+            "`redis.log(redis.LOG_WARNING, msg)` writes the server log",
+            "No network, no `os.execute`, no `require` — **sealed**"
           ]
         },
         {
           "type": "heading",
-          "text": "The Comparison Table",
-          "ink": "accent"
+          "text": "Atomic ≠ Durable"
         },
         {
           "type": "table",
           "headers": [
-            "Tool",
-            "Atomic",
-            "Cond.",
-            "RTT"
-          ],
-          "rows": [
-            [
-              "Pipeline",
-              "no",
-              "no",
-              "1"
-            ],
-            [
-              "MULTI/EXEC",
-              "yes",
-              "no",
-              "1"
-            ],
-            [
-              "WATCH+MULTI",
-              "yes",
-              "client",
-              "2+ retries"
-            ],
-            [
-              "Lua / EVAL",
-              "yes",
-              "server",
-              "1"
-            ]
-          ]
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Pipeline: not isolated, no blocking. Use for bulk throughput",
-            "MULTI/EXEC: isolated, blocks during EXEC. Fixed batch of writes",
-            "WATCH+MULTI: low-contention read-modify-write only",
-            "Lua: blocks for the script's duration. Hot-key read-modify-write"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Decision Rule"
-        },
-        {
-          "type": "diagram",
-          "kind": "flowchart",
-          "spec": {
-            "title": "what do you need?",
-            "rows": [
-              [
-                "n0"
-              ],
-              [
-                "b0",
-                "b1",
-                "b2"
-              ],
-              [
-                "c0_0"
-              ],
-              [
-                "c1_0"
-              ],
-              [
-                "c2_0"
-              ]
-            ],
-            "nodes": {
-              "n0": {
-                "text": "what do you need?",
-                "shape": "diamond"
-              },
-              "b0": {
-                "text": "no reads"
-              },
-              "b1": {
-                "text": "fixed writes"
-              },
-              "b2": {
-                "text": "branch on value"
-              },
-              "c0_0": {
-                "text": "pipeline"
-              },
-              "c1_0": {
-                "text": "MULTI"
-              },
-              "c2_0": {
-                "text": "Lua"
-              }
-            },
-            "edges": [
-              {
-                "from": "n0",
-                "to": "b0"
-              },
-              {
-                "from": "n0",
-                "to": "b1"
-              },
-              {
-                "from": "n0",
-                "to": "b2"
-              },
-              {
-                "from": "b0",
-                "to": "c0_0"
-              },
-              {
-                "from": "b1",
-                "to": "c1_0"
-              },
-              {
-                "from": "b2",
-                "to": "c2_0"
-              }
-            ]
-          }
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "Reach For Native First",
-          "text": "`INCR`, `SETNX`, `GETSET`, `SET k v NX EX 30`, `LMOVE`, `ZADD GT` — one command beats any construct."
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "`SET key val NX EX ttl` replaces the old `SETNX`+`EXPIRE` pair",
-            "That pair had a crash-between-commands bug; the single form has none"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Lua vs WATCH"
-        },
-        {
-          "type": "diagram",
-          "kind": "cards",
-          "spec": {
-            "cards": [
-              {
-                "title": "Lua wins when",
-                "lines": [
-                  "key is hot / contended",
-                  "correctness critical",
-                  "check + write inseparable"
-                ]
-              },
-              {
-                "title": "WATCH wins when",
-                "lines": [
-                  "computation is expensive",
-                  "needs an external API",
-                  "heavy math client-side"
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Lua under contention: no retries, no wasted RTTs, no livelock",
-            "One pass, always succeeds — the server does the branching"
-          ]
-        }
-      ]
-    },
-    {
-      "page_title": "Choosing the Right Tool",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "What Each Costs"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Lua: harder to debug and test, cache management, blocks server",
-            "WATCH: retry loops, contention sensitivity, connection affinity",
-            "Pipeline: O(N) commands in 1 RTT, zero guarantees"
-          ]
-        },
-        {
-          "type": "table",
-          "headers": [
-            "Approach",
-            "Complexity"
-          ],
-          "rows": [
-            [
-              "Pipeline",
-              "N cmds, 1 RTT"
-            ],
-            [
-              "WATCH loop",
-              "O(N x retries) RTT"
-            ],
-            [
-              "Lua",
-              "1 RTT + O(work)"
-            ]
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "tip",
-          "title": "Modern Home",
-          "text": "Redis 7 Functions are where anything you'd ship as a long-lived EVALSHA belongs."
-        },
-        {
-          "type": "heading",
-          "text": "Transaction Misreads",
-          "ink": "accent"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Assuming MULTI rolls back on a runtime error — partial effects persist",
-            "Ignoring the nil from EXEC after WATCH: a lost race, silently",
-            "Reading inside MULTI and expecting a value — you get `+QUEUED`",
-            "Using a connection pool with WATCH: WATCH and EXEC on different sockets"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Cluster Mistakes"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Hardcoding key names in Lua instead of KEYS — `CROSSSLOT` in Cluster",
-            "All keys in one MULTI or script must hash to a single slot",
-            "Fix: hash tags — `{user:1}:name` and `{user:1}:age` share a slot"
-          ]
-        },
-        {
-          "type": "code",
-          "lang": "bash",
-          "lines": [
-            "MSET user:1:a 1 user:1:b 2   # CROSSSLOT",
-            "MSET {user:1}:a 1 {user:1}:b 2  # one slot"
-          ],
-          "runnable": false
-        },
-        {
-          "type": "heading",
-          "text": "Script Mistakes"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "A long script stalls the whole server; `SCRIPT KILL` is useless post-write",
-            "`KEYS *` inside a script: O(N) over the keyspace, everything blocked",
-            "Relying on float truncation — returning 3.7 hands the client 3",
-            "Returning a Lua table with a nil hole loses every element after it"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Lock Mistakes"
-        },
-        {
-          "type": "diagram",
-          "kind": "cards",
-          "spec": {
-            "cards": [
-              {
-                "title": "Broken",
-                "lines": [
-                  "SETNX then EXPIRE",
-                  "crash = leaked lock",
-                  "DEL to release"
-                ]
-              },
-              {
-                "title": "Correct",
-                "lines": [
-                  "SET k tok NX EX 30",
-                  "Lua compare-and-del",
-                  "owner token checked"
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "A crash between `SETNX` and `EXPIRE` leaks the lock forever",
-            "A bare `DEL` release can delete someone else's lock"
-          ]
-        }
-      ]
-    },
-    {
-      "page_title": "Common Mistakes",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "Durability Assumptions"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "EXEC is atomic in memory, not fsynced unless `appendfsync always`",
-            "Replication is async — a failover can lose an acknowledged EXEC",
-            "Pipelining a million commands in one flush OOMs the output buffer",
-            "Watching a key a TTL will expire, then blaming Redis for the nil"
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "cloud",
-          "title": "Mistake Pattern",
-          "text": "Every item here is Redis doing exactly what it documents, and code assuming otherwise."
-        },
-        {
-          "type": "heading",
-          "text": "What Atomic Means Here",
-          "ink": "accent"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "No interleaving of other clients' commands, single-threaded serial run",
-            "NOT: rollback on error",
-            "NOT: snapshot isolation across separate transactions",
-            "NOT: any cross-key durability barrier"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Durability Is Orthogonal"
-        },
-        {
-          "type": "table",
-          "headers": [
-            "Mode",
+            "Persistence",
             "Loss window"
           ],
           "rows": [
             [
               "RDB snapshot",
-              "recent writes"
+              "since last save"
             ],
             [
               "AOF everysec",
@@ -1262,100 +1205,15 @@
             ],
             [
               "appendfsync always",
-              "none, but slow"
+              "none, slow"
             ]
-          ]
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "A successful EXEC only means: ran in memory, on the primary",
-            "Replication is async by default — failover can drop an acked EXEC",
-            "`WAIT numreplicas timeout` improves the odds, is not consensus",
-            "Cluster gives no cross-slot atomicity — plan hash tags up front"
           ]
         },
         {
           "type": "callout",
           "style": "cloud",
           "title": "Final Warning",
-          "text": "Atomic is not durable, and single-node atomic is not distributed atomic."
-        },
-        {
-          "type": "heading",
-          "text": "Where Code Lives"
-        },
-        {
-          "type": "diagram",
-          "kind": "cards",
-          "spec": {
-            "cards": [
-              {
-                "title": "EVAL scripts",
-                "lines": [
-                  "ephemeral cache",
-                  "lost on restart",
-                  "re-send on NOSCRIPT"
-                ]
-              },
-              {
-                "title": "Functions (7+)",
-                "lines": [
-                  "persist in RDB/AOF",
-                  "replicated",
-                  "named libraries"
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "type": "heading",
-          "text": "Cheat Sheet"
-        },
-        {
-          "type": "code",
-          "lang": "bash",
-          "lines": [
-            "MULTI EXEC DISCARD WATCH UNWATCH",
-            "EVAL EVALSHA SCRIPT LOAD/FLUSH/KILL",
-            "FUNCTION LOAD  FCALL  WAIT n ms"
-          ],
-          "runnable": false
-        },
-        {
-          "type": "sidebox",
-          "title": "Testing Checklist",
-          "items": [
-            "Assert every element of the EXEC array",
-            "Simulate a concurrent writer for the nil path",
-            "Benchmark each script's duration"
-          ]
-        },
-        {
-          "type": "sidebox",
-          "title": "Observability",
-          "items": [
-            "`SLOWLOG` catches slow scripts",
-            "`INFO commandstats` breaks down EVAL cost",
-            "`LATENCY DOCTOR` flags fork and script stalls"
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "Default Reach Order",
-          "text": "native command > Lua/Function > MULTI/EXEC > WATCH loop > pipeline (throughput only)."
-        },
-        {
-          "type": "qa",
-          "q": "One line for the whole handbook?",
-          "a_bullets": [
-            "Pipeline for speed",
-            "MULTI for grouping",
-            "WATCH for optimism",
-            "Lua for certainty"
-          ]
+          "text": "EXEC only ran in memory on the primary; replication is async. `WAIT` improves odds, not consensus — atomic is not durable."
         }
       ]
     }

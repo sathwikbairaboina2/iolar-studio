@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Access Paths & Why Indexes Exist",
+      "page_title": "Access Paths, Cost Model & EXPLAIN",
       "blocks": [
         {
           "type": "heading",
@@ -84,8 +84,7 @@
             "cpu_tuple_cost       = 0.01",
             "cpu_index_tuple_cost = 0.005",
             "cpu_operator_cost    = 0.0025"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -118,8 +117,7 @@
             "SELECT id FROM orders",
             "WHERE status = 'pending';",
             "-- rows=12 (actual rows=41000) : bad stats"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -135,7 +133,12 @@
           "style": "takeaway",
           "title": "Index Cond, Not Filter",
           "text": "`Index Cond` is evaluated inside the index; `Filter` runs after the heap fetch. Moving a predicate from Filter to Index Cond is the whole game."
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "B-tree Internals: Shape, Splits & Sibling Links",
+      "blocks": [
         {
           "type": "code",
           "lang": "sql",
@@ -144,14 +147,8 @@
             "SELECT indexrelid::regclass FROM pg_index",
             "WHERE indisvalid = false;",
             "DROP INDEX CONCURRENTLY idx;  -- then retry"
-          ],
-          "runnable": false
-        }
-      ]
-    },
-    {
-      "page_title": "Access Paths & Why Indexes Exist (cont.)",
-      "blocks": [
+          ]
+        },
         {
           "type": "callout",
           "style": "tip",
@@ -203,28 +200,36 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "meta page"
+                "text": "meta page",
+                "shape": "box"
               },
               "b1": {
-                "text": "root + internal"
+                "text": "root + internal",
+                "shape": "box"
               },
               "b2": {
-                "text": "leaf pages"
+                "text": "leaf pages",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "points at root"
+                "text": "points at root",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "separator keys"
+                "text": "separator keys",
+                "shape": "box"
               },
               "c1_1": {
-                "text": "downlinks"
+                "text": "downlinks",
+                "shape": "box"
               },
               "c2_0": {
-                "text": "(key, TID)"
+                "text": "(key, TID)",
+                "shape": "box"
               },
               "c2_1": {
-                "text": "sorted order"
+                "text": "sorted order",
+                "shape": "box"
               }
             },
             "edges": [
@@ -345,7 +350,12 @@
             "Entries exist for dead tuples too",
             "Only `VACUUM` removes them"
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "B-tree Operators, Ordered Scans & pageinspect",
+      "blocks": [
         {
           "type": "heading",
           "text": "Operators Served"
@@ -359,20 +369,121 @@
             "WHERE a IS NULL          -- yes, indexed",
             "WHERE s LIKE 'pre%'      -- C collation",
             "-- or a text_pattern_ops index"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
           "style": "tip",
           "title": "2704 Bytes Max",
           "text": "Entries cap at ~1/3 of a page; long text raises `index row size exceeds maximum`. Hash the value or index an expression instead."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`LIKE '%foo'` leading wildcard: btree cannot help",
+            "`WHERE date(ts) = ...` hides the key behind a function",
+            "Comparing an int column to a text param skips the index"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Ordered Output For Free"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON orders (ts);",
+            "SELECT id FROM orders",
+            "ORDER BY ts DESC LIMIT 10;",
+            "-- backward index scan, no Sort"
+          ],
+          "note": "LIMIT stops after ten leaf entries"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Backward scans== walk the leaf left-links",
+            "Top-N queries stop early, no full sort",
+            "Plan shows `Index Scan Backward`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Peek Inside: pageinspect"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE EXTENSION pageinspect;",
+            "SELECT level, root",
+            "FROM bt_metap('idx');",
+            "SELECT live_items, dead_items",
+            "FROM bt_page_stats('idx', 1);"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Leaves are level 0, so `level = 2` means **3** levels",
+            "`dead_items` = entries waiting for `VACUUM`",
+            "`btpo_prev` / `btpo_next` are the sibling links"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Measure Deduplication"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t (status)",
+            "WITH (deduplicate_items = off);",
+            "SELECT pg_size_pretty(",
+            "  pg_relation_size('idx'));",
+            "-- compare with the default: on"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Knob",
+            "Default"
+          ],
+          "rows": [
+            [
+              "page size",
+              "8 KB"
+            ],
+            [
+              "`fillfactor`",
+              "90"
+            ],
+            [
+              "`deduplicate_items`",
+              "on (PG 13+)"
+            ],
+            [
+              "max entry",
+              "~2704 B"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Height Barely Grows",
+          "text": "With fanout in the hundreds, going from 1M to 1B rows adds only about one level."
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "B-tree in Practice: Multicolumn, Order, Sorting",
+      "page_title": "Multicolumn B-trees: Prefix, Sort Order & Keysets",
       "blocks": [
         {
           "type": "heading",
@@ -396,8 +507,7 @@
             "WHERE a=1 AND b=2        -- served",
             "WHERE a=1 AND b=2 AND c=3 -- served",
             "WHERE b=2                -- NOT served"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -455,8 +565,7 @@
             "-- ORDER BY a DESC, b ASC : no Sort node",
             "-- default: ASC is NULLS LAST",
             "-- default: DESC is NULLS FIRST"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -478,8 +587,7 @@
             "ORDER BY created_at DESC, id DESC",
             "LIMIT 20;  -- index (created_at, id)",
             "-- OFFSET 100000 walks 100k rows first"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -488,6 +596,32 @@
             "The expanded `OR` rewrite usually does not"
           ]
         },
+        {
+          "type": "sidebox",
+          "title": "Housekeeping",
+          "items": [
+            "Index `(a)` is redundant beside `(a, b)`",
+            "Drop the narrow one unless small and hot",
+            "`CREATE UNIQUE INDEX` enforces uniqueness",
+            "NULLs are distinct; `NULLS NOT DISTINCT` (PG 15+) forbids repeats"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON users",
+            "  (name text_pattern_ops);",
+            "WHERE name LIKE 'abc%'  -- served",
+            "ORDER BY name  -- NOT served"
+          ],
+          "note": "pattern ops compare byte by byte"
+        }
+      ]
+    },
+    {
+      "page_title": "Text Pattern Ops & Collation Upgrades",
+      "blocks": [
         {
           "type": "heading",
           "text": "Text And Collation"
@@ -503,19 +637,31 @@
           ]
         },
         {
-          "type": "sidebox",
-          "title": "Housekeeping",
-          "items": [
-            "Index `(a)` is redundant beside `(a, b)`",
-            "Drop the narrow one unless small and hot",
-            "`CREATE UNIQUE INDEX` enforces uniqueness",
-            "NULLs are distinct; `NULLS NOT DISTINCT` (PG 15+) forbids repeats"
-          ]
+          "type": "callout",
+          "style": "tip",
+          "title": "Keep Both If Needed",
+          "text": "A `text_pattern_ops` index cannot serve locale `<`, `>` or `ORDER BY`. Keep a regular index too when you need sorting."
+        },
+        {
+          "type": "heading",
+          "text": "After An OS Upgrade"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- glibc / ICU version changed",
+            "REINDEX INDEX CONCURRENTLY idx;",
+            "ALTER DATABASE app",
+            "  REFRESH COLLATION VERSION;",
+            "-- PG 15+"
+          ],
+          "note": "refresh only AFTER reindexing"
         }
       ]
     },
     {
-      "page_title": "Hash Indexes",
+      "page_title": "Hash Indexes: Equality-Only Lookups",
       "blocks": [
         {
           "type": "heading",
@@ -529,8 +675,7 @@
             "CREATE INDEX ON pages USING hash (url);",
             "WHERE url = $1   -- the only served op",
             "-- no <, >, LIKE, ORDER BY, UNIQUE"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -575,25 +720,32 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "meta page"
+                "text": "meta page",
+                "shape": "box"
               },
               "b1": {
-                "text": "buckets"
+                "text": "buckets",
+                "shape": "box"
               },
               "b2": {
-                "text": "bitmap pages"
+                "text": "bitmap pages",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "bucket count"
+                "text": "bucket count",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "primary page"
+                "text": "primary page",
+                "shape": "box"
               },
               "c1_1": {
-                "text": "overflow chain"
+                "text": "overflow chain",
+                "shape": "box"
               },
               "c2_0": {
-                "text": "free overflow pages"
+                "text": "free overflow pages",
+                "shape": "box"
               }
             },
             "edges": [
@@ -717,9 +869,13 @@
             "CREATE INDEX ON t (md5(long_col));",
             "SELECT * FROM t",
             "WHERE md5(long_col) = md5($1);"
-          ],
-          "runnable": false
-        },
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "GIN Basics: jsonb Containment & Trigram Search",
+      "blocks": [
         {
           "type": "sidebox",
           "title": "Same Trick, Cheaper Hash",
@@ -743,11 +899,93 @@
             "Answers 'which rows contain this element'",
             "Exact inverse of btree's 'which rows equal this value'"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Btree vs GIN Questions"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "btree",
+            "GIN"
+          ],
+          "rows": [
+            [
+              "`a = 5`",
+              "yes",
+              "no"
+            ],
+            [
+              "`tags @> {pg}`",
+              "no",
+              "yes"
+            ],
+            [
+              "`ORDER BY a`",
+              "yes",
+              "no"
+            ],
+            [
+              "`a > 5`",
+              "yes",
+              "no"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "jsonb Containment"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON events USING gin",
+            "  (payload jsonb_path_ops);",
+            "WHERE payload @>",
+            "  '{\"type\": \"click\"}';"
+          ],
+          "note": "path_ops serves @> only"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default `jsonb_ops` also serves key-exists `?`",
+            "`jsonb_path_ops` hashes whole paths, so it is ==smaller==",
+            "`payload->>'type' = 'click'` is **not** served by either"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Substring Search"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE EXTENSION pg_trgm;",
+            "CREATE INDEX ON users USING gin",
+            "  (name gin_trgm_ops);",
+            "WHERE name ILIKE '%ann%';"
+          ],
+          "note": "patterns under 3 chars barely filter"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Arrays searched by element or overlap",
+            "`jsonb` documents filtered by containment",
+            "Full-text `tsvector` with `@@`",
+            "`LIKE '%x%'` where btree gives up"
+          ],
+          "style": "check"
         }
       ]
     },
     {
-      "page_title": "GIN: Inverted Index for Composite Values",
+      "page_title": "GIN Internals: Full-Text, Opclasses & Write Cost",
       "blocks": [
         {
           "type": "diagram",
@@ -779,22 +1017,28 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "btree over keys"
+                "text": "btree over keys",
+                "shape": "box"
               },
               "b1": {
-                "text": "posting list"
+                "text": "posting list",
+                "shape": "box"
               },
               "b2": {
-                "text": "posting tree"
+                "text": "posting tree",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "distinct elements"
+                "text": "distinct elements",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "few TIDs, inline"
+                "text": "few TIDs, inline",
+                "shape": "box"
               },
               "c2_0": {
-                "text": "many TIDs, own btree"
+                "text": "many TIDs, own btree",
+                "shape": "box"
               }
             },
             "edges": [
@@ -838,8 +1082,7 @@
             "SELECT id FROM docs",
             "WHERE to_tsvector('english', body)",
             "      @@ plainto_tsquery('vacuum');"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -901,8 +1144,7 @@
             "-- 4MB is the default; lower to flush often",
             "SET gin_fuzzy_search_limit = 5000;",
             "-- caps rows from very common terms"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
@@ -927,6 +1169,28 @@
           ]
         },
         {
+          "type": "sidebox",
+          "title": "Methods The Type Supplies",
+          "items": [
+            "`consistent` and `union`",
+            "`penalty` and `picksplit`",
+            "`same`"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`@>` range contains a point or a range",
+            "`&&` two ranges ==overlap==",
+            "`<<` / `>>` strictly left or right of"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "GiST: A Lossy Search-Tree Framework",
+      "blocks": [
+        {
           "type": "heading",
           "text": "A Tree Framework",
           "ink": "accent"
@@ -941,18 +1205,54 @@
           ]
         },
         {
-          "type": "sidebox",
-          "title": "Methods The Type Supplies",
-          "items": [
-            "`consistent` and `union`",
-            "`penalty` and `picksplit`",
-            "`same`"
-          ]
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "btree node",
+                "lines": [
+                  "disjoint key ranges",
+                  "exactly one path down",
+                  "exact keys"
+                ]
+              },
+              {
+                "title": "GiST node",
+                "lines": [
+                  "overlapping summaries",
+                  "many paths possible",
+                  "lossy bounding keys"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "How Inserts Pick A Path",
+          "text": "`union` builds a parent's summary; `penalty` picks the child that grows least; `picksplit` divides a full page."
+        },
+        {
+          "type": "heading",
+          "text": "Range Types"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON booking",
+            "  USING gist (during);",
+            "WHERE during && tstzrange(",
+            "  '2026-09-01', '2026-09-02');"
+          ],
+          "note": "&& = overlaps, any shared instant"
         }
       ]
     },
     {
-      "page_title": "GiST and SP-GiST: Extensible Trees",
+      "page_title": "GiST in Practice & SP-GiST Partitioning",
       "blocks": [
         {
           "type": "bullets",
@@ -1004,8 +1304,7 @@
             "ALTER TABLE booking ADD EXCLUDE USING gist",
             "  (room WITH =, during WITH &&);",
             "-- no double-booking; btree cannot do this"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -1027,8 +1326,7 @@
             "ORDER BY loc <-> point '(0,0)'",
             "LIMIT 10;  -- ordered GiST scan",
             "-- no full sort of the table"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -1050,6 +1348,27 @@
             "Quadtrees, k-d trees and radix tries",
             "Excels at point data and `inet` addresses",
             "Also text prefix search, where partitions never overlap"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON hosts USING",
+            "  spgist (ip);  -- inet_ops",
+            "WHERE ip << '10.0.0.0/8';",
+            "CREATE INDEX ON t USING",
+            "  spgist (name);",
+            "WHERE name ^@ 'abc'; -- prefix"
+          ],
+          "note": "^@ is the starts-with operator"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`<<` = ==contained within== a subnet",
+            "Radix trie shares prefixes, so text keys stay compact",
+            "Partitions never overlap, so one path down"
           ]
         },
         {
@@ -1080,135 +1399,25 @@
               "-"
             ]
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "BRIN: Block Range Indexes",
-      "blocks": [
+        },
         {
           "type": "heading",
-          "text": "Summary Per Block Range",
-          "ink": "accent"
+          "text": "Which Tree?"
         },
         {
           "type": "bullets",
           "items": [
-            "BRIN = Block Range INdex",
-            "Stores min/max per range of heap blocks, not per row",
-            "`pages_per_range` defaults to 128, so one tuple covers 1 MB",
-            "Index size is tiny, often thousands of times under btree"
-          ]
-        },
-        {
-          "type": "diagram",
-          "kind": "matrix",
-          "spec": {
-            "rows": [
-              [
-                "r0 1-999",
-                "r1 1000-1999"
-              ],
-              [
-                "r2 2000-2999",
-                "r3 3000-3999"
-              ]
-            ],
-            "caption": "brin summaries"
-          }
-        },
-        {
-          "type": "heading",
-          "text": "How A Scan Runs"
-        },
-        {
-          "type": "diagram",
-          "kind": "flow",
-          "spec": {
-            "nodes": [
-              "read summaries",
-              "discard ranges",
-              "scan survivors",
-              "recheck tuples",
-              "bitmap heap scan"
-            ]
-          }
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Lossy by design: never proves a row matches",
-            "Only proves a block range might match",
-            "So it is always a bitmap heap scan, never a plain index scan"
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Only With Correlation"
-        },
-        {
-          "type": "code",
-          "lang": "sql",
-          "lines": [
-            "SELECT attname, correlation FROM pg_stats",
-            "WHERE tablename = 'events';",
-            "-- want > 0.9 or < -0.9",
-            "CREATE INDEX ON events USING brin (ts);"
+            "Ranges, geometry, KNN, exclusion: **GiST**",
+            "Points, IPs, text prefixes: **SP-GiST**",
+            "Read-heavy text or `jsonb`: **GIN**"
           ],
-          "runnable": false
+          "style": "check"
         },
         {
-          "type": "bullets",
-          "items": [
-            "Canonical fit: append-only time-series with a `created_at`",
-            "Or a log table with a monotonically increasing id",
-            "Anti-pattern: a `uuid` or hashed key, randomly distributed",
-            "There every range matches, degenerating into a seq scan plus overhead"
-          ]
-        },
-        {
-          "type": "table",
-          "headers": [
-            "",
-            "BRIN",
-            "btree"
-          ],
-          "rows": [
-            [
-              "Size",
-              "~1000x smaller",
-              "big"
-            ],
-            [
-              "Maintenance",
-              "cheap",
-              "costly"
-            ],
-            [
-              "Precision",
-              "lossy",
-              "exact"
-            ],
-            [
-              "Scattered lookup",
-              "useless",
-              "good"
-            ]
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "Tuning"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Lower `pages_per_range` = more precision, bigger index",
-            "Raise it for very large, very well-correlated tables",
-            "New ranges are summarized on `VACUUM`",
-            "Or force it with `brin_summarize_new_values('idx')`",
-            "`autosummarize = on` handles it automatically"
-          ]
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Overlap Decides",
+          "text": "Data that can overlap needs GiST; data that splits cleanly into disjoint regions suits SP-GiST."
         }
       ]
     }

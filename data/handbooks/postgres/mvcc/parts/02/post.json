@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Autovacuum: Tuning the Cleanup Loop",
+      "page_title": "Autovacuum Tuning & Cost Throttling",
       "blocks": [
         {
           "type": "table",
@@ -46,8 +46,7 @@
             "  autovacuum_vacuum_scale_factor = 0.01,",
             "  autovacuum_vacuum_threshold = 10000);",
             "-- table overrides beat any global tuning"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -118,8 +117,7 @@
             "WHERE query LIKE 'autovacuum%';",
             "-- and in postgresql.conf:",
             "log_autovacuum_min_duration = 0  -- log every run"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "sidebox",
@@ -143,17 +141,60 @@
             "~2 billion values behind you look past",
             "~2 billion ahead look future"
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Xid Wraparound & Special Xids",
+      "blocks": [
         {
           "type": "callout",
           "style": "cloud",
           "title": "The Failure",
           "text": "If the counter laps a tuple's xmin, that row looks like it is from the future and VANISHES. That is wraparound data loss."
+        },
+        {
+          "type": "heading",
+          "text": "Special Fixed Xids"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Xid",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "0",
+              "Invalid"
+            ],
+            [
+              "1",
+              "Bootstrap"
+            ],
+            [
+              "2",
+              "==Frozen=="
+            ],
+            [
+              "3+",
+              "real transactions"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Xids are assigned lazily — read-only txns use **virtual** ids",
+            "`SAVEPOINT` and EXCEPTION blocks burn their own subxids",
+            "A PL/pgSQL loop with EXCEPTION can burn ids fast",
+            "`pg_current_xact_id()` forces an xid and returns it"
+          ]
         }
       ]
     },
     {
-      "page_title": "Wraparound and Freezing",
+      "page_title": "Freezing, Freeze Ages & Monitoring",
       "blocks": [
         {
           "type": "heading",
@@ -218,8 +259,7 @@
             "FROM pg_database ORDER BY 2 DESC;",
             "SELECT relname, age(relfrozenxid) FROM pg_class",
             "WHERE relkind='r' ORDER BY 2 DESC LIMIT 20;"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -233,6 +273,36 @@
             "Own wraparound risk — monitor it too"
           ]
         },
+        {
+          "type": "sidebox",
+          "title": "Emergency Gears",
+          "items": [
+            "PG14 failsafe: past `vacuum_failsafe_age` drop cost delays",
+            "It also skips index cleanup to finish freezing fast",
+            "PG17 TID store and PG18 async I/O cut the scan's wall clock"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pid, state, xact_start,",
+            "       now() - xact_start AS age",
+            "FROM pg_stat_activity WHERE state <> 'idle'",
+            "ORDER BY xact_start;  -- oldest culprit first"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "No Free Row Count",
+          "text": "No engine-level count exists, because no single row count is true for all snapshots at once."
+        }
+      ]
+    },
+    {
+      "page_title": "Horizon Holders & Operational Mistakes",
+      "blocks": [
         {
           "type": "heading",
           "text": "What Blocks Freezing"
@@ -268,25 +338,32 @@
                 "shape": "diamond"
               },
               "b0": {
-                "text": "long txn"
+                "text": "long txn",
+                "shape": "box"
               },
               "b1": {
-                "text": "replication"
+                "text": "replication",
+                "shape": "box"
               },
               "b2": {
-                "text": "2PC"
+                "text": "2PC",
+                "shape": "box"
               },
               "c0_0": {
-                "text": "idle in transaction"
+                "text": "idle in transaction",
+                "shape": "box"
               },
               "c1_0": {
-                "text": "abandoned slot"
+                "text": "abandoned slot",
+                "shape": "box"
               },
               "c1_1": {
-                "text": "hot_standby_feedback"
+                "text": "hot_standby_feedback",
+                "shape": "box"
               },
               "c2_0": {
-                "text": "unresolved prepared txn"
+                "text": "unresolved prepared txn",
+                "shape": "box"
               }
             },
             "edges": [
@@ -320,20 +397,6 @@
               }
             ]
           }
-        }
-      ]
-    },
-    {
-      "page_title": "Wraparound and Freezing (cont.)",
-      "blocks": [
-        {
-          "type": "sidebox",
-          "title": "Emergency Gears",
-          "items": [
-            "PG14 failsafe: past `vacuum_failsafe_age` drop cost delays",
-            "It also skips index cleanup to finish freezing fast",
-            "PG17 TID store and PG18 async I/O cut the scan's wall clock"
-          ]
         },
         {
           "type": "heading",
@@ -351,17 +414,6 @@
           ]
         },
         {
-          "type": "code",
-          "lang": "sql",
-          "lines": [
-            "SELECT pid, state, xact_start,",
-            "       now() - xact_start AS age",
-            "FROM pg_stat_activity WHERE state <> 'idle'",
-            "ORDER BY xact_start;  -- oldest culprit first"
-          ],
-          "runnable": false
-        },
-        {
           "type": "heading",
           "text": "Operational Mistakes"
         },
@@ -373,12 +425,6 @@
             "7. Batch DELETE of millions, no follow-up VACUUM: file stays at peak",
             "8. `SELECT count(*)` is slow — MVCC checks visibility per row"
           ]
-        },
-        {
-          "type": "callout",
-          "style": "cloud",
-          "title": "No Free Row Count",
-          "text": "No engine-level count exists, because no single row count is true for all snapshots at once."
         },
         {
           "type": "heading",
@@ -418,6 +464,20 @@
           ]
         },
         {
+          "type": "sidebox",
+          "title": "Memory Matters",
+          "items": [
+            "`maintenance_work_mem` sizes the dead-TID array",
+            "Too small = repeated index passes",
+            "PG17 TID store cuts memory and rescans"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Visibility Map & Two-Pass VACUUM",
+      "blocks": [
+        {
           "type": "heading",
           "text": "Vacuum Is A Feature"
         },
@@ -428,12 +488,65 @@
             "Vacuum is a performance feature, not just cleanup",
             "Tune it like you tune indexes"
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Visibility Map Bits"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Bit",
+            "Means",
+            "Enables"
+          ],
+          "rows": [
+            [
+              "all-visible",
+              "no dead tuples",
+              "==index-only scans=="
+            ],
+            [
+              "all-frozen",
+              "nothing to freeze",
+              "aggressive scan skips page"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two-Pass VACUUM"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Scan heap, collect dead TIDs",
+            "Remove those TIDs from **every** index",
+            "Return to heap, free the line pointers",
+            "Update the free space map and visibility map"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "EXPLAIN (ANALYZE)",
+            "SELECT id FROM t WHERE id < 100;",
+            "-- Heap Fetches: 0 = fresh vm"
+          ],
+          "note": "high heap fetches means vacuum lags"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Append-Only Tables",
+          "text": "They never get dead tuples, so only the PG13+ insert threshold keeps their ==visibility map== fresh."
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "Mistakes, Trade-offs, Whole Picture",
+      "page_title": "The Whole Chain: Queue Tables & HOT Health",
       "blocks": [
         {
           "type": "heading",
@@ -486,9 +599,84 @@
             "       last_autovacuum",
             "FROM pg_stat_user_tables",
             "ORDER BY n_dead_tup DESC;"
-          ],
-          "runnable": false
+          ]
         },
+        {
+          "type": "heading",
+          "text": "Check HOT Health"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT relname, n_tup_upd,",
+            "       n_tup_hot_upd",
+            "FROM pg_stat_user_tables",
+            "ORDER BY n_tup_upd DESC;"
+          ],
+          "note": "ratio near 0 = HOT is dead"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Indexing `last_seen_at` kills HOT for the whole table",
+            "`fillfactor` 100 on an update-heavy table",
+            "Updates that keep changing an indexed column"
+          ],
+          "style": "cross"
+        },
+        {
+          "type": "heading",
+          "text": "Write Amplification"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Update",
+            "Heap",
+            "Index writes"
+          ],
+          "rows": [
+            [
+              "HOT",
+              "1",
+              "**0**"
+            ],
+            [
+              "non-HOT, 6 idx",
+              "1",
+              "6"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every UPDATE rewrites the ==whole row==",
+            "Unchanged TOAST values reuse the same pointer",
+            "PG16+: BRIN-covered column changes stay HOT"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Fillfactor Trade-off",
+          "items": [
+            "80-90 leaves room for on-page versions",
+            "Costs more pages for the same live rows",
+            "Sequential scans read more"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Fix Pattern",
+          "text": "Move the churning column into a narrow side table with no indexes on it."
+        }
+      ]
+    },
+    {
+      "page_title": "Diagnosis, Repair & Snapshot Levels",
+      "blocks": [
         {
           "type": "heading",
           "text": "Find The Horizon Holder"
@@ -563,6 +751,56 @@
             "Plain VACUUM only makes space reusable in the file",
             "It truncates only fully empty trailing pages",
             "`pg_stat_progress_vacuum` shows a run that is stuck"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Snapshots Per Level"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Snapshot",
+            "On conflict"
+          ],
+          "rows": [
+            [
+              "READ COMMITTED",
+              "per statement",
+              "EPQ re-check"
+            ],
+            [
+              "REPEATABLE READ",
+              "per txn",
+              "serialize error"
+            ],
+            [
+              "SERIALIZABLE",
+              "per txn + SSI",
+              "`40001`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The ==oldest snapshot== pins every newer dead tuple",
+            "A long REPEATABLE READ report holds cleanup back",
+            "The app must **retry** on `40001`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "See The Horizon Now"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pg_snapshot_xmin(",
+            "  pg_current_snapshot());",
+            "-- oldest xid still pinned"
           ]
         },
         {

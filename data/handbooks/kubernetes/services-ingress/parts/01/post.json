@@ -31,8 +31,7 @@
             "kubectl rollout restart deploy/api",
             "kubectl get pod -o wide   # 10.244.2.9",
             "# client cached the old IP = 100% down"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -70,8 +69,7 @@
             "  ports:",
             "  - port: 80            # svc listens here",
             "    targetPort: 8080    # container port"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -82,12 +80,7 @@
             "Name every port once a Service has more than one",
             "protocol TCP, UDP or SCTP — one Service can mix them"
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "Why Services Exist & Service Anatomy (cont.)",
-      "blocks": [
+        },
         {
           "type": "code",
           "lang": "bash",
@@ -95,22 +88,6 @@
             "kubectl get endpointslices -o wide \\",
             "  -l kubernetes.io/service-name=my-svc",
             "kubectl describe svc my-svc  # ports+count"
-          ],
-          "runnable": false
-        },
-        {
-          "type": "heading",
-          "text": "4. EndpointSlices",
-          "ink": "black"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Endpoints controller watches matching Pods, writes their IPs",
-            "EndpointSlice v1 replaced the single Endpoints object",
-            "Sharded at 100 endpoints per slice by default",
-            "Old model rewrote all 5000 endpoints on every Pod change",
-            "Only Ready Pods land in the ready list; rest carry ready: false"
           ]
         },
         {
@@ -125,14 +102,42 @@
             "kubectl get endpointslices \\",
             "  -l kubernetes.io/service-name=my-svc",
             "# nothing listed? not a network bug"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
           "style": "takeaway",
           "title": "Empty Endpoints",
           "text": "Almost always a selector/label mismatch or a failing readiness probe. Check labels before you touch the datapath."
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl run tmp --rm -it \\",
+            "  --image=curlimages/curl -- curl \\",
+            "  http://my-svc.default.svc.cluster.local"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "EndpointSlices, ClusterIP & the kube-proxy Datapath",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. EndpointSlices",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Endpoints controller watches matching Pods, writes their IPs",
+            "EndpointSlice v1 replaced the single Endpoints object",
+            "Sharded at 100 endpoints per slice by default",
+            "Old model rewrote all 5000 endpoints on every Pod change",
+            "Only Ready Pods land in the ready list; rest carry ready: false"
+          ]
         },
         {
           "type": "heading",
@@ -162,22 +167,6 @@
             "clusterIP: None makes it headless — DNS returns Pod IPs",
             "NodePort and LoadBalancer are supersets that also allocate one"
           ]
-        }
-      ],
-      "cont": true
-    },
-    {
-      "page_title": "Why Services Exist & Service Anatomy (cont.)",
-      "blocks": [
-        {
-          "type": "code",
-          "lang": "bash",
-          "lines": [
-            "kubectl run tmp --rm -it \\",
-            "  --image=curlimages/curl -- curl \\",
-            "  http://my-svc.default.svc.cluster.local"
-          ],
-          "runnable": false
         },
         {
           "type": "heading",
@@ -239,16 +228,6 @@
           ]
         },
         {
-          "type": "bullets",
-          "items": [
-            "iptables latency is measurable above roughly 5k Services",
-            "IPVS schedulers: rr, lc, dh, sh, sed, nq via --ipvs-scheduler",
-            "IPVS binds VIPs to dummy iface kube-ipvs0, so ip addr shows them",
-            "nftables mode is the successor to iptables, same model",
-            "Cilium kube-proxy-replacement DNATs at the socket, pre-packet"
-          ]
-        },
-        {
           "type": "heading",
           "text": "5. Datapath Debug",
           "ink": "black"
@@ -260,20 +239,75 @@
             "iptables-save -t nat | grep my-svc",
             "ipvsadm -Ln            # IPVS entries",
             "nft list table ip kube-proxy"
-          ],
-          "runnable": false
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Choosing & Debugging kube-proxy Modes",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "iptables latency is measurable above roughly 5k Services",
+            "IPVS schedulers: rr, lc, dh, sh, sed, nq via --ipvs-scheduler",
+            "IPVS binds VIPs to dummy iface kube-ipvs0, so ip addr shows them",
+            "nftables mode is the successor to iptables, same model",
+            "Cilium kube-proxy-replacement DNATs at the socket, pre-packet"
+          ]
         },
         {
           "type": "callout",
           "style": "tip",
           "title": "conntrack Exhaustion",
           "text": "`nf_conntrack: table full, dropping packet` in dmesg under high churn. Raise nf_conntrack_max before blaming the app."
+        },
+        {
+          "type": "heading",
+          "text": "6. Spot The Active Mode",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl -n kube-system \\",
+            "  get cm kube-proxy -o yaml \\",
+            "  | grep mode",
+            "ip addr show kube-ipvs0  # IPVS only",
+            "conntrack -S   # drop/insert_failed"
+          ],
+          "note": "empty mode means iptables default"
+        },
+        {
+          "type": "heading",
+          "text": "7. Picking A Mode",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Small cluster, few hundred Services: ==iptables== is fine",
+            "Thousands of Services: move to **IPVS** or nftables",
+            "Need least-connection scheduling: IPVS with `--ipvs-scheduler=lc`",
+            "Running Cilium replacement: no kube-proxy rules to debug at all"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "sidebox",
+          "title": "Mode Gotchas",
+          "items": [
+            "ClusterIP in `ip addr` only in IPVS mode — not a bug",
+            "Rule changes never move established flows; conntrack wins",
+            "eBPF mode: iptables-save shows nothing for Services"
+          ],
+          "ink": "red"
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "ClusterIP & Inside kube-proxy",
+      "page_title": "NodePort, Traffic Policy & LoadBalancer",
       "blocks": [
         {
           "type": "heading",
@@ -370,8 +404,7 @@
             "  loadBalancerClass: svc.k8s.aws/nlb",
             "  loadBalancerSourceRanges: [10.0.0.0/8]",
             "  allocateLoadBalancerNodePorts: false"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -390,7 +423,7 @@
       ]
     },
     {
-      "page_title": "NodePort & LoadBalancer",
+      "page_title": "Headless Services & CoreDNS Layout",
       "blocks": [
         {
           "type": "bullets",
@@ -428,8 +461,7 @@
             "web-0.nginx.default.svc.cluster.local",
             "# <pod>-<ord>.<svc>.<ns>.svc.cluster.local",
             "# same name after every reschedule"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -465,7 +497,7 @@
       ]
     },
     {
-      "page_title": "Headless Services & Cluster DNS",
+      "page_title": "DNS Tuning, ExternalName & Selectorless Services",
       "blocks": [
         {
           "type": "heading",
@@ -479,8 +511,7 @@
             "nameserver 10.96.0.10",
             "search prod.svc.cluster.local cluster.local",
             "options ndots:5  # <5 dots: search first"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -528,8 +559,7 @@
             "kubectl exec pod -- cat /etc/resolv.conf",
             "nslookup my-svc.default.svc.cluster.local",
             "kubectl logs -n kube-system deploy/coredns"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -543,8 +573,7 @@
             "spec:",
             "  type: ExternalName",
             "  externalName: db.example.com  # CNAME"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -582,7 +611,7 @@
       ]
     },
     {
-      "page_title": "ExternalName, Policies & Topology",
+      "page_title": "Traffic Policies, Topology & Readiness",
       "blocks": [
         {
           "type": "table",
@@ -636,8 +665,7 @@
             "  sessionAffinity: ClientIP",
             "  sessionAffinityConfig:",
             "    clientIP: {timeoutSeconds: 10800}  # 3h"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -699,7 +727,7 @@
       ]
     },
     {
-      "page_title": "Readiness, Drain & Why L4 Ends",
+      "page_title": "Graceful Shutdown, Where L4 Ends & Ingress Controllers",
       "blocks": [
         {
           "type": "bullets",
@@ -723,8 +751,7 @@
             "    exec: {command: [sleep, \"15\"]}",
             "# pod spec:",
             "terminationGracePeriodSeconds: 45"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -792,13 +819,12 @@
             "  http:",
             "    paths:",
             "    - path: /v1          # + pathType"
-          ],
-          "runnable": false
+          ]
         }
       ]
     },
     {
-      "page_title": "Ingress Rules & TLS",
+      "page_title": "Ingress Paths, Rewrites & TLS Secrets",
       "blocks": [
         {
           "type": "bullets",
@@ -860,8 +886,16 @@
             "# no rewrite: /api/users stays whole",
             "rewrite-target: /$2   # nginx annotation",
             "path: /api(/|$)(.*)   # capture groups"
-          ],
-          "runnable": false
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default: backend receives the **full** `/api/users` path",
+            "`$2` is the second capture: everything after `/api/`",
+            "`(/|$)` lets both `/api` and `/api/` match",
+            "Needs pathType ==ImplementationSpecific== for the regex"
+          ]
         },
         {
           "type": "heading",
@@ -876,8 +910,7 @@
             "- hosts: [api.example.com]",
             "  secretName: api-tls  # kubernetes.io/tls",
             "# keys: tls.crt (full chain), tls.key"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -888,6 +921,43 @@
             "Secret must sit in the Ingress namespace; no cross-namespace refs",
             "SNI carries the hostname in ClientHello, so many certs share one IP"
           ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl create secret tls api-tls \\",
+            "  --cert=fullchain.pem \\",
+            "  --key=privkey.pem -n prod",
+            "openssl s_client -servername \\",
+            "  api.example.com \\",
+            "  -connect api.example.com:443"
+          ],
+          "note": "--cert must be the full chain"
+        }
+      ]
+    },
+    {
+      "page_title": "TLS Termination, cert-manager & Annotation Soup",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Cert Errors Decoded",
+          "items": [
+            "ERR_CERT_COMMON_NAME_INVALID: host missing from the SANs",
+            "'default fake certificate': secretName wrong, missing or misplaced"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Missing `pathType` — the object fails validation",
+            "Expecting Prefix `/foo` to match `/foobar`",
+            "No rewrite-target, so the backend 404s on `/api/...`",
+            "TLS Secret in another namespace — fake cert served"
+          ],
+          "style": "cross"
         },
         {
           "type": "heading",
@@ -918,20 +988,17 @@
               "host + path"
             ]
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "Ingress Rules & TLS (cont.)",
-      "blocks": [
+        },
         {
-          "type": "sidebox",
-          "title": "Cert Errors Decoded",
-          "items": [
-            "ERR_CERT_COMMON_NAME_INVALID: host missing from the SANs",
-            "'default fake certificate': secretName wrong, missing or misplaced"
-          ],
-          "ink": "red"
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "# prefix: nginx.ingress.kubernetes.io/",
+            "proxy-body-size: 50m",
+            "proxy-read-timeout: \"120\"",
+            "backend-protocol: GRPC  # or HTTPS",
+            "canary: \"true\"          # + canary-weight"
+          ]
         },
         {
           "type": "bullets",
@@ -955,39 +1022,8 @@
             "Not portable: moving nginx to Traefik rewrites every one",
             "Values are strings, silently ignored when misspelled"
           ]
-        },
-        {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "# prefix: nginx.ingress.kubernetes.io/",
-            "proxy-body-size: 50m",
-            "proxy-read-timeout: \"120\"",
-            "backend-protocol: GRPC  # or HTTPS",
-            "canary: \"true\"          # + canary-weight"
-          ],
-          "runnable": false
-        },
-        {
-          "type": "heading",
-          "text": "2. Gateway API",
-          "ink": "green"
-        },
-        {
-          "type": "diagram",
-          "kind": "flow",
-          "spec": {
-            "nodes": [
-              "GatewayClass",
-              "Gateway",
-              "HTTPRoute",
-              "Service",
-              "Pods"
-            ]
-          }
         }
-      ],
-      "cont": true
+      ]
     }
   ],
   "caption": {

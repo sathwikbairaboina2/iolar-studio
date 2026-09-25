@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Approximated LRU: 24 Bits and a Sample Pool",
+      "page_title": "Approximated LRU: The 24-Bit Clock and Sample Pool",
       "blocks": [
         {
           "type": "heading",
@@ -33,6 +33,10 @@
               "truncated",
               "24 bits"
             ],
+            "indices": true,
+            "pointers": [],
+            "highlight": [],
+            "dim": [],
             "caption": "`robj` 24-bit `lru` field"
           }
         },
@@ -108,6 +112,28 @@
           "text": "`CONFIG SET maxmemory-samples 10`. Measure hit ratio before and after — do not raise it past that on faith."
         },
         {
+          "type": "bullets",
+          "items": [
+            "==Idle time== = LRU clock now minus the key's stored clock.",
+            "Resolution is one second — sub-second recency is invisible.",
+            "High idle time marks the next likely **victim**."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Track `evicted_keys` rate beside the ==hit ratio==.",
+            "Rising evictions + falling hits = cache too **small**.",
+            "Tune samples only after sizing `maxmemory` correctly."
+          ],
+          "style": "check"
+        }
+      ]
+    },
+    {
+      "page_title": "Inspecting and Measuring LRU Sampling",
+      "blocks": [
+        {
           "type": "heading",
           "text": "Inspecting and Its Limits"
         },
@@ -118,13 +144,66 @@
             "OBJECT IDLETIME user:42   # seconds since access",
             "# meaningful only under an LRU policy",
             "# DEBUG paths do not count as an access here"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "True vs Approximated"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "True LRU",
+            "Redis"
           ],
-          "runnable": false
+          "rows": [
+            [
+              "per-key cost",
+              "2 pointers",
+              "24 bits"
+            ],
+            [
+              "per access",
+              "list move",
+              "clock write"
+            ],
+            [
+              "victim",
+              "exact oldest",
+              "best of pool"
+            ],
+            [
+              "scan-safe",
+              "no",
+              "no"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Measuring the Knob"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "INFO stats   # keyspace_hits/misses",
+            "CONFIG SET maxmemory-samples 10",
+            "# hit = hits / (hits + misses)"
+          ],
+          "note": "compare over equal traffic windows"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Sampling cost is eviction-only",
+          "text": "Extra samples are paid when a victim is chosen, never on reads — so the knob barely touches normal latency."
         }
       ]
     },
     {
-      "page_title": "Approximated LRU: 24 Bits and a Sample Pool (cont.)",
+      "page_title": "LRU's Scan Blind Spot and the LFU Morris Counter",
       "blocks": [
         {
           "type": "bullets",
@@ -169,6 +248,10 @@
               "log",
               "8 bits"
             ],
+            "indices": true,
+            "pointers": [],
+            "highlight": [],
+            "dim": [],
             "caption": "same 24 bits, reinterpreted"
           }
         },
@@ -193,8 +276,7 @@
             "# fast at first, then slower and slower",
             "# saturates at 255",
             "# ~1M accesses at log factor 10"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -204,6 +286,27 @@
             "Otherwise every new key would be the instant next victim."
           ]
         },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Lazy decay is free",
+          "text": "No background pass walks the keyspace to age counters, so an idle instance spends nothing on LFU bookkeeping."
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "counter = 20, idle 3 min",
+            "decay-time 1 -> 3 periods",
+            "20 - 3 = 17  # then log-incr"
+          ],
+          "note": "decay first, increment second"
+        }
+      ]
+    },
+    {
+      "page_title": "LFU Decay: Lazy Aging and the Minute Clock",
+      "blocks": [
         {
           "type": "heading",
           "text": "Decay Keeps It Honest"
@@ -218,15 +321,60 @@
           ]
         },
         {
+          "type": "heading",
+          "text": "What One Access Does"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "read minutes",
+              "decay by idle periods",
+              "maybe increment",
+              "store counter + now"
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`lfu-decay-time`",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "0",
+              "decay on every scan"
+            ],
+            [
+              "1 (default)",
+              "-1 per idle minute"
+            ],
+            [
+              "10",
+              "sticky hot set"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The 16-bit ==minute clock== wraps every ~45 days.",
+            "Wraparound is handled like the LRU clock, modulo the range.",
+            "Counter never drops below 0; a cold key becomes the **victim**."
+          ]
+        },
+        {
           "type": "callout",
-          "style": "tip",
-          "title": "Lazy decay is free",
-          "text": "No background pass walks the keyspace to age counters, so an idle instance spends nothing on LFU bookkeeping."
+          "style": "takeaway",
+          "title": "Two dials, two jobs",
+          "text": "`lfu-log-factor` shapes how fast counters climb; `lfu-decay-time` shapes how fast they forget."
         }
       ]
     },
     {
-      "page_title": "Approximated LFU: Morris Counters and Decay",
+      "page_title": "LFU Tuning, Persistence, and Keyspace Notifications",
       "blocks": [
         {
           "type": "heading",
@@ -264,8 +412,7 @@
             "OBJECT FREQ page:home   # raw counter, LFU only",
             "OBJECT IDLETIME page:home  # (error) under LFU",
             "# use FREQ to check the hot set reads as hot"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
@@ -345,9 +492,22 @@
             "CONFIG SET notify-keyspace-events Ex",
             "SUBSCRIBE __keyevent@0__:expired",
             "# fires on reclamation, not on the deadline"
-          ],
-          "runnable": false
+          ]
         },
+        {
+          "type": "sidebox",
+          "title": "Safer than expiry events",
+          "items": [
+            "`ZADD jobs <deadline> id` per job.",
+            "Poll `ZRANGEBYSCORE jobs -inf <now>`.",
+            "`ZREM` the id, then run it — you own the timing."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Expiry Event Limits and Related Keys in a Cluster",
+      "blocks": [
         {
           "type": "bullets",
           "items": [
@@ -356,6 +516,21 @@
             "Never build a job scheduler on it alone.",
             "Cluster: keys expire per shard, so related keys never expire together."
           ]
+        },
+        {
+          "type": "heading",
+          "text": "Related Keys in a Cluster"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SET {u:42}:sess v EX 900",
+            "SET {u:42}:cart v EX 900",
+            "# same slot, still separate expiry",
+            "DEL {u:42}:sess {u:42}:cart"
+          ],
+          "note": "hash tag, then delete explicitly"
         }
       ]
     },
@@ -391,8 +566,7 @@
             "SET sess:1 v2 KEEPTTL   # right",
             "SET sess:1 v2           # wrong: immortal now",
             "EXPIRE sess:1 60 GT     # right: extend only"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",

@@ -7,7 +7,157 @@
   "date": "06/09/2026",
   "slides": [
     {
-      "page_title": "StatefulSets, Replication Choice and Failure Seams",
+      "page_title": "StatefulSets: A Disk per Pod",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Snapshot CRDs + snapshot-controller are __add-ons__, absent on a bare cluster",
+            "Trusting `spec.capacity` and declaring the resize done",
+            "Expecting a shrink to work — it silently never reconciles",
+            "Deleting the namespace and assuming the ==billed snapshots== died with it"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "1. Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`volumeClaimTemplates` = a PVC **factory**, one claim per ordinal",
+            "Deployment replicas mount the {red:same} claim — writes collide",
+            "StatefulSet replicas mount {green:disjoint} claims — no collision",
+            "Stable network identity **plus** stable storage identity",
+            "That pair is what makes ==databases and quorum systems== work"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. Mechanism: Naming",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "<template>-<statefulset>-<ordinal>",
+            "data-postgres-0   # replica 0",
+            "data-postgres-1   # replica 1",
+            "data-postgres-2   # replica 2"
+          ],
+          "note": "deterministic, so reattach is exact"
+        },
+        {
+          "type": "diagram",
+          "kind": "chain",
+          "spec": {
+            "title": "Pod to Disk",
+            "steps": [
+              {
+                "text": "StatefulSet postgres",
+                "note": "replicas: 3",
+                "ink": "blue"
+              },
+              {
+                "text": "Pod postgres-1",
+                "note": "stable DNS name",
+                "ink": "green"
+              },
+              {
+                "text": "PVC data-postgres-1",
+                "note": "never renamed",
+                "ink": "purple"
+              },
+              {
+                "text": "PV / CSI volume",
+                "note": "same disk on reschedule",
+                "ink": "orange"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Example: 3 x 100Gi",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "volumeClaimTemplates:",
+            "- metadata: {name: data}",
+            "  spec:",
+            "    accessModes: [ReadWriteOnce]",
+            "    storageClassName: fast-ssd",
+            "    resources:",
+            "      requests: {storage: 100Gi}"
+          ],
+          "note": "3 replicas = 3 x 100Gi billed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`WaitForFirstConsumer` provisions each volume {green:where its pod lands}",
+            "3 replicas spread over 3 AZs = 3 disks in 3 AZs",
+            "Immediate binding instead risks a **zone mismatch** and Pending"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "4. Retention Policy",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Value",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "whenScaled",
+              "Retain",
+              "scale down keeps disks"
+            ],
+            [
+              "whenScaled",
+              "Delete",
+              "scale down wipes them"
+            ],
+            [
+              "whenDeleted",
+              "Retain",
+              "default, data survives"
+            ],
+            [
+              "whenDeleted",
+              "Delete",
+              "PVCs go with the set"
+            ]
+          ],
+          "highlightRow": 2,
+          "frame": "dashed"
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "Grow, Copy and Restore Volumes"
+    },
+    {
+      "page_title": "Replication Layers, Restore Drills and Failure Seams",
       "blocks": [
         {
           "type": "callout",
@@ -261,6 +411,62 @@
           "type": "code",
           "lang": "yaml",
           "lines": [
+            "# storageClassName unset:",
+            "#   -> default class",
+            "storageClassName: \"\"",
+            "# empty string: no dynamic",
+            "#   provisioning, static only"
+          ],
+          "note": "unset and \"\" are NOT the same"
+        },
+        {
+          "type": "heading",
+          "text": "6. Stuck Terminating PVC",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`pvc-protection` finalizer holds the PVC while a __pod__ mounts it",
+            "`describe pvc` lists the consumer under ==Used By==",
+            "Delete or scale down the consumer — the PVC then finishes"
+          ],
+          "style": "cross",
+          "ink": "red"
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "volumeClaimTemplates, stable identity, retention"
+    },
+    {
+      "page_title": "Clearing Finalizers, Reclaim Defaults and Storage Quotas",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl describe pvc pgdata",
+            "# Used By: web-7d9f-x2k",
+            "kubectl delete pod web-7d9f-x2k",
+            "# finalizer clears, PVC gone"
+          ],
+          "note": "never patch the finalizer away"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Delete is the default",
+          "text": "Dynamic PVs inherit {red:Delete}: removing the PVC **destroys** the disk. Put `reclaimPolicy: Retain` on classes holding data you cannot rebuild."
+        },
+        {
+          "type": "heading",
+          "text": "7. Storage Quota",
+          "ink": "pink"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
             "kind: ResourceQuota",
             "spec:",
             "  hard:",
@@ -271,23 +477,52 @@
           "note": "per-class cap stops silent SSD sprawl"
         },
         {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "# storageClassName unset:",
-            "#   -> default class",
-            "storageClassName: \"\"",
-            "# empty string: no dynamic",
-            "#   provisioning, static only"
+          "type": "table",
+          "headers": [
+            "Quota key",
+            "Caps"
           ],
-          "note": "unset and \"\" are NOT the same"
+          "rows": [
+            [
+              "`requests.storage`",
+              "sum of PVC requests"
+            ],
+            [
+              "`persistentvolumeclaims`",
+              "PVC count"
+            ],
+            [
+              "`<class>...requests.storage`",
+              "one class's total"
+            ],
+            [
+              "`<class>...persistentvolumeclaims`",
+              "PVCs per class"
+            ],
+            [
+              "`requests.ephemeral-storage`",
+              "node scratch disk"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sweep ==Released== PVs monthly — they bill until deleted",
+            "Delete snapshots nobody has restored from in a quarter",
+            "Right-size gp3 `iops` and throughput to real usage",
+            "Quota every namespace, tightest on the __fast__ class"
+          ],
+          "style": "checkbox",
+          "ink": "green"
         }
       ],
       "hero": "kubernetes",
       "subtitle": "volumeClaimTemplates, stable identity, retention"
     },
     {
-      "page_title": "Object Map, Access Modes and Core Commands",
+      "page_title": "Object Map, Access Modes and Volume Expansion",
       "blocks": [
         {
           "type": "heading",
@@ -401,40 +636,6 @@
           "frame": "solid"
         },
         {
-          "type": "heading",
-          "text": "4. Commands",
-          "ink": "blue"
-        },
-        {
-          "type": "code",
-          "lang": "bash",
-          "lines": [
-            "kubectl get pvc,pv,sc",
-            "kubectl describe pvc <name>",
-            "kubectl get volumeattachment",
-            "kubectl get csidrivers",
-            "kubectl get volumesnapshot"
-          ],
-          "note": "describe pvc first, always"
-        },
-        {
-          "type": "heading",
-          "text": "5. Grow, Snapshot, Clone",
-          "ink": "blue"
-        },
-        {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "spec:",
-            "  resources:",
-            "    requests: {storage: 50Gi}",
-            "# confirm: status.capacity",
-            "# shrink: never supported"
-          ],
-          "note": "class needs allowVolumeExpansion"
-        },
-        {
           "type": "code",
           "lang": "yaml",
           "lines": [
@@ -455,6 +656,127 @@
           ],
           "style": "checkbox",
           "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "5. Grow, Snapshot, Clone",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "spec:",
+            "  resources:",
+            "    requests: {storage: 50Gi}",
+            "# confirm: status.capacity",
+            "# shrink: never supported"
+          ],
+          "note": "class needs allowVolumeExpansion"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Edit `requests.storage` on the PVC",
+            "Controller grows the backing disk (**ControllerExpand**)",
+            "Kubelet grows the filesystem (**NodeExpand**)",
+            "Done only when `status.capacity` shows the new size"
+          ],
+          "style": "number",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl edit pvc pgdata",
+            "# storage: 20Gi -> 50Gi",
+            "kubectl get pvc pgdata -w",
+            "# CAPACITY flips 20Gi -> 50Gi"
+          ],
+          "note": "FileSystemResizePending = node step still pending"
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "Debugging storage, fsGroup and the bill"
+    },
+    {
+      "page_title": "Snapshot Objects and Restore Pitfalls",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Snapshot object",
+            "Mirrors"
+          ],
+          "rows": [
+            [
+              "VolumeSnapshot",
+              "PVC (namespaced)"
+            ],
+            [
+              "VolumeSnapshotContent",
+              "PV (cluster)"
+            ],
+            [
+              "VolumeSnapshotClass",
+              "StorageClass"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Restoring into a PVC **smaller** than the snapshot",
+            "Cloning across namespaces — the source must be local",
+            "Treating a crash-consistent snapshot as a ==DB backup=="
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "kubernetes",
+      "subtitle": "Debugging storage, fsGroup and the bill"
+    },
+    {
+      "page_title": "Core Commands, PVC Clones and Growing Early",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Commands",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kubectl get pvc,pv,sc",
+            "kubectl describe pvc <name>",
+            "kubectl get volumeattachment",
+            "kubectl get csidrivers",
+            "kubectl get volumesnapshot"
+          ],
+          "note": "describe pvc first, always"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "kind: PersistentVolumeClaim",
+            "spec:",
+            "  dataSource:      # clone",
+            "    kind: PersistentVolumeClaim",
+            "    name: pgdata"
+          ],
+          "note": "same class and namespace only"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Grow early",
+          "text": "Expansion is ==online== on most CSI drivers, but shrinking never is. Start small, grow on alert — never over-provision \"just in case\"."
         }
       ],
       "hero": "kubernetes",

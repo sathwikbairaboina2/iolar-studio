@@ -7,7 +7,7 @@
   "date": "07/09/2026",
   "slides": [
     {
-      "page_title": "Failover & High Availability",
+      "page_title": "Failover Without Split Brain",
       "blocks": [
         {
           "type": "heading",
@@ -62,8 +62,7 @@
             "  --source-server='host=newleader'",
             "# needs wal_log_hints=on or data checksums",
             "# and a clean shutdown of the target node"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -122,7 +121,7 @@
       ]
     },
     {
-      "page_title": "Trade-offs, Tuning & Comparisons",
+      "page_title": "WAL Tuning & Replication Costs",
       "blocks": [
         {
           "type": "bullets",
@@ -206,7 +205,7 @@
       ]
     },
     {
-      "page_title": "Trade-offs, Tuning & Comparisons (cont.)",
+      "page_title": "Common Mistakes & Checklist Queries",
       "blocks": [
         {
           "type": "sidebox",
@@ -280,8 +279,7 @@
             "  pg_wal_lsn_diff(pg_current_wal_lsn(),",
             "                  replay_lsn) AS bytes",
             "FROM pg_stat_replication;"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -295,8 +293,7 @@
             "  pg_size_pretty(pg_wal_lsn_diff(",
             "    pg_current_wal_lsn(), restart_lsn))",
             "FROM pg_replication_slots;"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -309,9 +306,35 @@
             "SELECT pg_size_pretty(sum(size))",
             "FROM pg_ls_waldir();",
             "-- alert long before the volume fills"
-          ],
-          "runnable": false
+          ]
         },
+        {
+          "type": "table",
+          "headers": [
+            "pg_wal volume",
+            "Action"
+          ],
+          "rows": [
+            [
+              "60% used",
+              "warn, check slots"
+            ],
+            [
+              "80% used",
+              "page on-call"
+            ],
+            [
+              "90% used",
+              "drop dead slots"
+            ]
+          ],
+          "highlightRow": 2
+        }
+      ]
+    },
+    {
+      "page_title": "Why pg_wal Keeps Growing",
+      "blocks": [
         {
           "type": "bullets",
           "items": [
@@ -319,12 +342,33 @@
             "Alert on a threshold, never on 100% full.",
             "`pg_wal` growth is the signal that precedes the PANIC."
           ]
+        },
+        {
+          "type": "heading",
+          "text": "1. Why pg_wal Keeps Growing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An inactive ==replication slot== pinning `restart_lsn`.",
+            "A failing `archive_command`: unarchived segments never recycle.",
+            "Checkpoints falling behind: `max_wal_size` is only a **soft** target.",
+            "A large `wal_keep_size` held for every replica."
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Tip: quiet clusters and RPO",
+          "text": "Set `archive_timeout` so a low-traffic primary switches segments; otherwise up to 16 MB of WAL sits unarchived."
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "Common Mistakes & Field Checklist",
+      "page_title": "Health Alerts & Symptom Triage",
       "blocks": [
         {
           "type": "sidebox",
@@ -347,8 +391,7 @@
             "SELECT checkpoints_timed, checkpoints_req",
             "FROM pg_stat_checkpointer;  -- PG17+",
             "-- pg_stat_bgwriter on older versions"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -356,6 +399,41 @@
             "A high requested ratio means `max_wal_size` is too small.",
             "Raising `checkpoint_timeout` cuts full-page-write volume.",
             "`checkpoint_completion_target` spreads the flush, not the work."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Archiver Health"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT archived_count,",
+            "  failed_count, last_failed_wal,",
+            "  last_failed_time",
+            "FROM pg_stat_archiver;"
+          ],
+          "note": "rising failed_count = pg_wal filling"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`archive_command` must return **nonzero** on failure so Postgres retries.",
+            "Never overwrite: `test ! -f dst && cp src dst` is the minimum.",
+            "`last_failed_wal` names the exact segment that is stuck."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Replica Lag Alerts"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Alert on ==bytes== behind and on `replay_lag` seconds.",
+            "Idle primary: bytes stay flat while seconds look stale.",
+            "Check `pg_stat_wal_receiver` on the replica when rows vanish."
           ]
         },
         {
@@ -397,6 +475,19 @@
           ]
         },
         {
+          "type": "bullets",
+          "items": [
+            "An active slot cannot be dropped: stop the consumer first.",
+            "Space returns only after the next checkpoint recycles segments.",
+            "Set `max_slot_wal_keep_size` so the next one caps itself."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Slot Triage & Failover Runbook",
+      "blocks": [
+        {
           "type": "qa",
           "q": "Disk at 98%, pg_wal enormous, primary about to die?",
           "a_bullets": [
@@ -404,12 +495,7 @@
             "Drop it if that consumer is truly gone; space frees at checkpoint.",
             "Then check `pg_stat_archiver.failed_count` for a broken archive."
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "Common Mistakes & Field Checklist (cont.)",
-      "blocks": [
+        },
         {
           "type": "heading",
           "text": "Worked Example: Slot Triage"
@@ -423,16 +509,39 @@
             "-- old_replica2",
             "SELECT pg_drop_replication_slot('old_replica2');",
             "CHECKPOINT;"
-          ],
-          "runnable": false
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Failover Runbook"
         },
         {
           "type": "bullets",
           "items": [
-            "An active slot cannot be dropped: stop the consumer first.",
-            "Space returns only after the next checkpoint recycles segments.",
-            "Set `max_slot_wal_keep_size` so the next one caps itself."
-          ]
+            "Compare `pg_last_wal_replay_lsn()` against the primary.",
+            "**Fence** the old primary: it must not accept writes.",
+            "Promote with `pg_promote()`, not a trigger file.",
+            "Re-point other standbys' `primary_conninfo` at the leader.",
+            "`pg_rewind` the old primary before it rejoins."
+          ],
+          "style": "number"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- on the chosen standby",
+            "SELECT pg_is_in_recovery();  -- t",
+            "SELECT pg_last_wal_replay_lsn();",
+            "SELECT pg_promote();"
+          ],
+          "note": "bumps the timeline, writes .history"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Switchover vs failover",
+          "text": "Switchover: stop writes, wait for full catch-up, promote — lossless. Failover is unplanned and may lose async commits."
         },
         {
           "type": "callout",
@@ -446,8 +555,7 @@
           "title": "The whole handbook in one line",
           "text": "WAL is the ledger: fsync it before the page, stream it to somebody else, and never let a forgotten slot or a broken archive fill the disk."
         }
-      ],
-      "cont": true
+      ]
     }
   ],
   "caption": {

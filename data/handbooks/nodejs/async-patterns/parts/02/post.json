@@ -7,7 +7,7 @@
   "date": "29/08/2026",
   "slides": [
     {
-      "page_title": "Crash Semantics, Cancellation, Context",
+      "page_title": "Crash Semantics, Cancellation & Timeouts",
       "blocks": [
         {
           "type": "bullets",
@@ -38,8 +38,7 @@
             "const c = new AbortController();",
             "const r = fetch(url, { signal: c.signal });",
             "c.abort();   // fires 'abort', sets signal.aborted"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "table",
@@ -84,8 +83,7 @@
             "const t = AbortSignal.timeout(5000);  // self-fires",
             "const s = AbortSignal.any([req.signal, t]);",
             "await fs.readFile(p, { signal: s });"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "heading",
@@ -99,8 +97,7 @@
             "const t = setTimeout(() => ctl.abort(), 5000);",
             "try { await work({ signal: ctl.signal }); }",
             "finally { clearTimeout(t); }  // or it hangs"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -112,6 +109,61 @@
           ]
         },
         {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "try { await loadUser(id); }",
+            "catch (e) {",
+            "  throw new Error('load user', { cause: e });",
+            "}"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Wrap, don't replace: `{ cause: err }` keeps the original.",
+            "`--async-stack-traces` keeps frames across `await`.",
+            "Raw `.then` chains lose frames more easily."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Crash Semantics, Cancellation & Timeouts (cont.)",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const out = Readable.from(ids)",
+            "  .map(fetchOne,",
+            "    { concurrency: 5 }); // 18+",
+            "for await (const u of out) save(u);"
+          ],
+          "note": "bounded fan-out, backpressure included"
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Stream Consumption & Backpressure",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "for await (const c of stream) {",
+            "  await write(c); // backpressure",
+            "}"
+          ],
+          "note": "idiomatic stream consumption"
+        }
+      ]
+    },
+    {
+      "page_title": "Shutdown, Context & Debugging Probes",
+      "blocks": [
+        {
           "type": "heading",
           "text": "5. Shutdown & Error Context",
           "ink": "green"
@@ -122,22 +174,20 @@
             "SIGTERM: stop accepting, abort in-flight, drain, exit.",
             "Give the drain a hard deadline — then exit anyway."
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "Crash Semantics, Cancellation, Context (cont.)",
-      "blocks": [
+        },
         {
           "type": "code",
           "lang": "js",
           "lines": [
-            "try { await loadUser(id); }",
-            "catch (e) {",
-            "  throw new Error('load user', { cause: e });",
-            "}"
+            "process.on('SIGTERM', async () => {",
+            "  server.close();  // stop accepting",
+            "  ctl.abort();     // cancel in-flight",
+            "  await drain(AbortSignal",
+            "    .timeout(10_000));",
+            "  process.exit(0);",
+            "});"
           ],
-          "runnable": false
+          "note": "one shared controller for all work"
         },
         {
           "type": "heading",
@@ -152,8 +202,7 @@
             "als.run({ reqId }, () => handle(req));",
             "// anywhere downstream:",
             "als.getStore().reqId;   // survives await"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -176,8 +225,7 @@
             "const h = monitorEventLoopDelay();  // perf_hooks",
             "h.enable();",
             "report('loop_p99', h.percentile(99));"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -198,12 +246,32 @@
           "type": "code",
           "lang": "js",
           "lines": [
+            "em.on('data', onData); // many",
+            "em.on('error', (err) =>",
+            "  log.error(err));",
+            "// no 'error' listener → throws"
+          ],
+          "note": "unhandled 'error' crashes the process"
+        }
+      ]
+    },
+    {
+      "page_title": "Testing Async Code & Fake Timers",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
             "await expect(fn()).rejects.toThrow(MyErr);",
             "jest.advanceTimersByTime(5000);",
             "// fake timers must advance or promises never settle"
-          ],
-          "runnable": false
-        },
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Choosing The Async Primitive",
+      "blocks": [
         {
           "type": "heading",
           "text": "3. Pick The Primitive",
@@ -243,12 +311,51 @@
               "more API surface"
             ]
           ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Callbacks still win for ==repeated events== — promises settle once.",
+            "Promises are **eager**: the executor runs on construction.",
+            "async/await invites the accidental-serial loop.",
+            "Streams: the right pick for large or unbounded data."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Offload CPU",
+            "Memory",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "worker_threads",
+              "shared",
+              "cheap"
+            ],
+            [
+              "child_process",
+              "isolated",
+              "expensive"
+            ],
+            [
+              "cluster",
+              "per process",
+              "one per core"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Eager, uncancellable",
+          "text": "Want laziness? Pass a ==thunk== `() => work()`. Want cancel? Pass a `signal`. The promise itself offers neither."
         }
-      ],
-      "cont": true
+      ]
     },
     {
-      "page_title": "Debugging Async & Choosing The Tool",
+      "page_title": "Cost Model, Interop & Await Mistakes",
       "blocks": [
         {
           "type": "bullets",
@@ -299,6 +406,16 @@
           ]
         },
         {
+          "type": "sidebox",
+          "title": "Latency math: 100 × 50ms",
+          "items": [
+            "serial → ==5s==",
+            "fully parallel → ~50ms",
+            "limit 10 → ~500ms"
+          ],
+          "ink": "blue"
+        },
+        {
           "type": "heading",
           "text": "5. Interop & Migration",
           "ink": "green"
@@ -310,8 +427,7 @@
             "const read = util.promisify(fs.readFile);",
             "const cbRead = util.callbackify(read);",
             "const [msg] = await events.once(em, 'ready');"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "bullets",
@@ -351,6 +467,38 @@
           ]
         },
         {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// serial, in order",
+            "for (const x of xs) await f(x);",
+            "// parallel",
+            "await Promise.all(xs.map(f));"
+          ],
+          "note": "never forEach(async …)"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "void doWork().catch((err) =>",
+            "  log.error(err)); // explicit"
+          ],
+          "note": "safe, lint-friendly fire-and-forget"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Promise.all` preserves INPUT order, not completion order.",
+            "Swallowed errors become silent data corruption."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Promise Mistakes & Fixes",
+      "blocks": [
+        {
           "type": "heading",
           "text": "2. Promise Mistakes",
           "ink": "red"
@@ -379,18 +527,11 @@
               "it cancels nothing"
             ]
           ]
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "`Promise.all` preserves INPUT order, not completion order.",
-            "Swallowed errors become silent data corruption."
-          ]
         }
       ]
     },
     {
-      "page_title": "Mistakes, Fixes, Cheat Sheet",
+      "page_title": "Scale Mistakes & Cheat Sheet",
       "blocks": [
         {
           "type": "heading",
@@ -497,8 +638,7 @@
             "  'no-misused-promises': 2, 'require-await': 1,",
             "  'no-await-in-loop': 1   // warning, not error",
             "}"
-          ],
-          "runnable": false
+          ]
         },
         {
           "type": "callout",
