@@ -1,6 +1,6 @@
 import type { Post } from '../schema';
 import type { Finding } from '../verify/gates';
-import { thinker } from './runner';
+import { provider, thinker } from './runner';
 
 /**
  * Moving content between or within pages, without rewriting any of it.
@@ -35,7 +35,13 @@ export function applyMoves(post: Post, moves: Move[]): Post {
     }
     dst.blocks.splice(m.to.index, 0, block);
   }
-  if (out.slides.some((s) => !s.blocks.length)) throw new Error('the moves would leave a page empty');
+  // On the local model only (Claude keeps the original check): count a page as emptied only
+  // if the moves emptied it. A cover page carries its content outside `blocks` and is
+  // legitimately blockless from the start.
+  const local = provider() === 'local';
+  if (out.slides.some((s, i) => !s.blocks.length && (!local || post.slides[i].blocks.length))) {
+    throw new Error('the moves would leave a page empty');
+  }
   return out;
 }
 
@@ -89,12 +95,16 @@ export async function proposeMoves(post: Post, f: Finding): Promise<{ moves: Mov
   let error: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await thinker()(prompt(post, f, error), { timeoutMs: 300_000 });
+    let moves: unknown;
     try {
-      const moves = extractArray(out) as Move[];
+      moves = extractArray(out);
       if (!Array.isArray(moves)) throw new Error('the plan is not an array');
-      return { moves, post: applyMoves(post, moves) };
+      return { moves: moves as Move[], post: applyMoves(post, moves as Move[]) };
     } catch (err) {
       error = String(err).slice(0, 300);
+      // On the local model only, the rejected plan goes back with the error: told only "a page
+      // would be empty", the retry cannot see which of its own moves did it.
+      if (provider() === 'local') error += ` — rejected plan: ${JSON.stringify(moves ?? out.slice(0, 300)).slice(0, 600)}`;
     }
   }
   throw new Error(`no usable move plan: ${error}`);

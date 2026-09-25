@@ -40,6 +40,23 @@ describe('applyMoves', () => {
     expect(out.slides[1].blocks.map((b) => b.type)).toEqual(['heading', 'table']);
   });
 
+  it('on the local model, ignores a cover page, which never has blocks, when checking for emptied pages', async () => {
+    writeFileSync(path.join(process.env.IOLAR_DATA_DIR!, 'settings.json'), JSON.stringify({ llmProvider: 'local' }));
+    const { applyMoves } = await import('@/lib/ai/moves');
+    const p = post();
+    p.slides.unshift({ page_title: 'Cover', kind: 'cover', blocks: [] } as never);
+    const out = applyMoves(p, [{ from: { page: 2, block: 0 }, to: { page: 2, index: 2 }, expect: 'Alias bombing' }]);
+    expect(out.slides[1].blocks[2]).toMatchObject({ type: 'callout' });
+    expect(() => applyMoves(p, [{ from: { page: 3, block: 0 }, to: { page: 2, index: 0 }, expect: 'Symptom' }])).toThrow(/empty/);
+  });
+
+  it('on Claude, keeps the original check, so a blockless cover still counts as empty', async () => {
+    const { applyMoves } = await import('@/lib/ai/moves');
+    const p = post();
+    p.slides.unshift({ page_title: 'Cover', kind: 'cover', blocks: [] } as never);
+    expect(() => applyMoves(p, [{ from: { page: 2, block: 0 }, to: { page: 2, index: 2 }, expect: 'Alias bombing' }])).toThrow(/empty/);
+  });
+
   it('refuses a move whose block is not the one the plan described', async () => {
     const { applyMoves } = await import('@/lib/ai/moves');
     expect(() => applyMoves(post(), [{ from: { page: 1, block: 1 }, to: { page: 2, index: 0 }, expect: 'Alias bombing' }]))
