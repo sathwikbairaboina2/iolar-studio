@@ -141,3 +141,37 @@ describe('set 2/3 diagram kinds', () => {
     expect(h).toContain('ic-aws');
   });
 });
+
+describe('layerFlowchart', () => {
+  const node = (text: string) => ({ text, shape: 'box' as const });
+  const decision = {
+    rows: [['n0'], ['b0', 'b1', 'b2'], ['c0'], ['c1'], ['c2']],
+    nodes: { n0: node('failure?'), b0: node('expected'), b1: node('impossible'), b2: node('in a goroutine'), c0: node('return error'), c1: node('panic'), c2: node('own recover') },
+    edges: [{ from: 'n0', to: 'b0' }, { from: 'n0', to: 'b1' }, { from: 'n0', to: 'b2' }, { from: 'b0', to: 'c0' }, { from: 'b1', to: 'c1' }, { from: 'b2', to: 'c2' }],
+  };
+
+  it('puts each outcome under its own branch, so no line crosses a node', async () => {
+    const { layerFlowchart } = await import('@/lib/renderer/diagrams');
+    expect(layerFlowchart(decision)).toEqual([['n0'], ['b0', 'b1', 'b2'], ['c0', 'c1', 'c2']]);
+  });
+
+  it('orders a row by where its parents sit', async () => {
+    const { layerFlowchart } = await import('@/lib/renderer/diagrams');
+    const crossed = { ...decision, rows: [['n0'], ['b0', 'b1', 'b2'], ['c2'], ['c0'], ['c1']] };
+    expect(layerFlowchart(crossed)).toEqual([['n0'], ['b0', 'b1', 'b2'], ['c0', 'c1', 'c2']]);
+  });
+
+  it('leaves a layout with sideways or backward lines exactly as written', async () => {
+    const { layerFlowchart } = await import('@/lib/renderer/diagrams');
+    const loop = { ...decision, edges: [...decision.edges, { from: 'c1', to: 'n0' }] };
+    expect(layerFlowchart(loop)).toEqual(decision.rows);
+    const sideways = { ...decision, edges: [...decision.edges, { from: 'b0', to: 'b1' }] };
+    expect(layerFlowchart(sideways)).toEqual(decision.rows);
+  });
+
+  it('leaves a layout whose lines already step one row at a time', async () => {
+    const { layerFlowchart } = await import('@/lib/renderer/diagrams');
+    const chain = { rows: [['a'], ['b'], ['c']], nodes: { a: node('a'), b: node('b'), c: node('c') }, edges: [{ from: 'a', to: 'b' }, { from: 'b', to: 'c' }] };
+    expect(layerFlowchart(chain)).toEqual(chain.rows);
+  });
+});

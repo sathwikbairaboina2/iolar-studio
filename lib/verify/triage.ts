@@ -35,8 +35,12 @@ export type Disposition = 'auto' | 'approve' | 'skip';
 const COSMETIC = new Set(['visual', 'brand']);
 const EDITORIAL = new Set(['facts', 'pedagogy']);
 
+/** Gate findings whose fix is a deterministic move (lib/ai/moves), so no rewrite to approve. */
+const MECHANICAL = new Set(['heading.stranded']);
+
 export function disposition(f: Finding): Disposition {
   if (f.severity === 'minor') return 'skip';
+  if (MECHANICAL.has(f.rule)) return 'auto';
   if (COSMETIC.has(f.pass)) return 'auto';
   if (EDITORIAL.has(f.pass)) return 'approve';
   return 'skip';

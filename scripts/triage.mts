@@ -12,8 +12,10 @@ import { listSubjects, listChapters, listParts, loadPost, savePost } from '../li
 import { loadReview } from '../lib/verify/review';
 import { disposition, triageOrder, requestFor, findingKey } from '../lib/verify/triage';
 import { revisePost } from '../lib/ai/revise';
+import { applyMoves, isPositional, proposeMoves, strandedHeadingMove } from '../lib/ai/moves';
 import { diffPosts } from '../lib/ai/diff';
 import type { Finding } from '../lib/verify/gates';
+import type { Post } from '../lib/schema';
 
 const args = process.argv.slice(2);
 const only = args.includes('--subject') ? args[args.indexOf('--subject') + 1] : null;
@@ -44,6 +46,24 @@ async function collect(): Promise<Item[]> {
 }
 
 /**
+ * The edit a finding calls for. A stranded heading is moved by rule; a finding about order is
+ * fixed with a checked move plan, which cannot drop content the way a page rewrite can; the
+ * rest are rewritten by revisePost. Null means the finding no longer applies.
+ */
+async function fixFor(post: Post, f: Finding): Promise<Post | null> {
+  if (f.rule === 'heading.stranded') {
+    const move = strandedHeadingMove(post, f);
+    return move ? applyMoves(post, [move]) : null;
+  }
+  if (isPositional(f)) {
+    const { moves, post: moved } = await proposeMoves(post, f);
+    if (moves.length) return moved;
+    // An empty plan: the model judged it could not be fixed by moving, so it is rewritten.
+  }
+  return revisePost(post, requestFor(f), 'slide', Math.max(f.page - 1, 0));
+}
+
+/**
  * Runs the revision and shows what it would change. Saves ONLY when `write` is set.
  *
  * Approving a finding is not the same as approving the prose a model wrote to fix it, and
@@ -52,7 +72,8 @@ async function collect(): Promise<Item[]> {
  */
 async function applyOne(item: Item, write: boolean) {
   const before = await loadPost(item.subject, item.chapter, item.part);
-  const after = await revisePost(before, requestFor(item.finding), 'slide', Math.max(item.finding.page - 1, 0));
+  const after = await fixFor(before, item.finding);
+  if (!after) { console.log(`\n${item.key}: already fixed — nothing to do`); return; }
   const diff = diffPosts(before, after);
 
   console.log(`\n${item.key}: ${diff.length} slide(s) would change`);

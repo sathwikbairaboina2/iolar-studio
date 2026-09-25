@@ -32,10 +32,17 @@ export async function fixHeadings(subject: string, chapter: string, part: number
   // A page that got its own title is its own chapter now, so the continuation flag has to go:
   // renderAll merges every slide still flagged `cont` back into the page before it, which would
   // re-split it and put "(cont.)" straight back — the rename could never survive one reflow.
-  // Blocks still flow across chapter boundaries, so the pages rebalance either way.
   proposal.slides = proposal.slides.map((s, i) => {
     const stillContinuation = / \(cont\.\)$/.test(s.page_title);
     return stillContinuation ? { ...s, cont: post.slides[i].cont } : { ...s, cont: undefined };
+  });
+  // Blocks never flow across a chapter boundary, so dropping the flag freezes this page break
+  // for good. A heading the flow left at the foot of the page before belongs to the section
+  // that opens this one; it crosses now, while the two pages are still known to be one.
+  proposal.slides.forEach((s, i) => {
+    if (i === 0 || !post.slides[i].cont || s.cont) return;
+    const prev = proposal.slides[i - 1].blocks;
+    if (prev.length > 1 && prev[prev.length - 1].type === 'heading') s.blocks = [prev.pop()!, ...s.blocks];
   });
   return proposal;
 }

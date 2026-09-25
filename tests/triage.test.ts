@@ -24,6 +24,10 @@ describe('disposition', () => {
     expect(disposition(f({ pass: 'coverage', severity: 'blocker' }))).toBe('skip');
   });
 
+  it('auto-applies a stranded heading, whose fix is a checked move with no model involved', () => {
+    expect(disposition(f({ pass: 'code', rule: 'heading.stranded', severity: 'major' }))).toBe('auto');
+  });
+
   it('does not send a deterministic minor brand gate finding to the AI', () => {
     // runGates emits pass 'brand' at minor severity for things like a settings mismatch.
     // Rewriting those through revisePost would spend a model call on a one-field edit.

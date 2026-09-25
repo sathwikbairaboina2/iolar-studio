@@ -65,6 +65,34 @@ describe('fixHeadings', () => {
     expect(mergeContinuations(out.slides).length).toBe(2);
   });
 
+  it('moves a heading stranded at the foot of the page before onto the page it now names', async () => {
+    const stranded = (): Post => validatePost({
+      ...base(),
+      slides: [
+        { page_title: 'Lists', blocks: [{ type: 'bullets', items: ['a'] }, { type: 'heading', text: 'Symptom → Cause' }] },
+        { page_title: 'Lists (cont.)', cont: true, blocks: [{ type: 'table', headers: ['S', 'C'], rows: [['x', 'y']] }] },
+      ],
+    });
+    const proposal = stranded();
+    proposal.slides[1].page_title = 'Symptoms and Causes';
+    vi.doMock('@/lib/ai/claude', () => ({
+      runClaude: vi.fn().mockResolvedValue(JSON.stringify(proposal)),
+      ClaudeUnavailableError: class extends Error {},
+    }));
+
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'head5');
+    await savePost('python', 'head5', 1, stranded());
+    const { fixHeadings } = await import('@/lib/ai/headings');
+    const out = await fixHeadings('python', 'head5', 1);
+
+    // Once the flag goes, the two pages never reflow together again, so the heading must
+    // cross now or it stays alone above blank space for good.
+    expect(out.slides[0].blocks.map((b) => b.type)).toEqual(['bullets']);
+    expect(out.slides[1].blocks.map((b) => b.type)).toEqual(['heading', 'table']);
+  });
+
   it('keeps the flag on a page it left as a continuation', async () => {
     const proposal = base();
     vi.doMock('@/lib/ai/claude', () => ({

@@ -168,3 +168,24 @@ export function checkHeadings(slides: Slide[]): Finding[] {
   });
   return out;
 }
+
+/**
+ * A heading drawn as the last block of a page sits alone above blank space while its
+ * section opens the next one. The layout keeps a heading with its block only within a page,
+ * so the break has to be fixed in the content: move the heading down.
+ */
+export function checkStrandedHeadings(slides: Slide[]): Finding[] {
+  const out: Finding[] = [];
+  slides.slice(0, -1).forEach((slide, si) => {
+    const bi = slide.blocks.length - 1;
+    const last = slide.blocks[bi];
+    if (last?.type !== 'heading') return;
+    out.push({
+      pass: 'code', rule: 'heading.stranded', severity: 'major', page: si + 1, block: bi,
+      summary: `Page ${si + 1} ends on the heading "${last.text}"; its section starts on page ${si + 2}.`,
+      evidence: last.text,
+      fix: `Move the heading to the top of page ${si + 2}, above the block it introduces.`,
+    });
+  });
+  return out;
+}

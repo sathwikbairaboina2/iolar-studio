@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkCodeBlock, checkTables, checkHeadings } from '@/lib/verify/gates';
+import { checkCodeBlock, checkTables, checkHeadings, checkStrandedHeadings } from '@/lib/verify/gates';
 import type { Block, Slide } from '@/lib/schema';
 
 const code = (lines: string[], runnable?: boolean): Block =>
@@ -92,5 +92,25 @@ describe('checkHeadings', () => {
     const found = checkHeadings(slides).filter((f) => f.rule === 'heading.unique');
     expect(found).toHaveLength(1);
     expect(found[0].severity).toBe('minor');
+  });
+});
+
+describe('checkStrandedHeadings', () => {
+  it('flags a page that ends on a heading while another page follows', () => {
+    const slides = [
+      { page_title: 'p1', blocks: [{ type: 'bullets', items: ['a'] }, { type: 'heading', text: 'Symptom → Cause' }] },
+      { page_title: 'p2', blocks: [{ type: 'table', headers: ['S', 'C'], rows: [['x', 'y']] }, { type: 'heading', text: 'Last word' }] },
+    ] as Slide[];
+    const found = checkStrandedHeadings(slides);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ rule: 'heading.stranded', severity: 'major', page: 1, block: 1 });
+  });
+
+  it('accepts headings followed by their section', () => {
+    const slides = [
+      { page_title: 'p1', blocks: [{ type: 'heading', text: 'A' }, { type: 'bullets', items: ['a'] }] },
+      { page_title: 'p2', blocks: [{ type: 'heading', text: 'B' }, { type: 'bullets', items: ['b'] }] },
+    ] as Slide[];
+    expect(checkStrandedHeadings(slides)).toEqual([]);
   });
 });

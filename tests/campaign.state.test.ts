@@ -26,6 +26,21 @@ describe('campaign state', () => {
     expect(isDone(again, 'python/decorators/2', 'polish')).toBe(false);
   });
 
+  it('treats a review older than the polish as not done', async () => {
+    const { isDone } = await import('@/lib/verify/campaignState');
+    const s = { done: {
+      'a/b/1:review': '2026-09-20T10:00:00.000Z', 'a/b/1:polish': '2026-09-25T02:00:00.000Z',
+      'a/b/2:polish': '2026-09-20T10:00:00.000Z', 'a/b/2:review': '2026-09-20T10:05:00.000Z',
+      'a/b/3:review': '2026-09-20T10:00:00.000Z',
+    } };
+    // Re-polished after its review: the review describes pages that no longer exist.
+    expect(isDone(s, 'a/b/1', 'review')).toBe(false);
+    expect(isDone(s, 'a/b/1', 'polish')).toBe(true);
+    expect(isDone(s, 'a/b/2', 'review')).toBe(true);
+    // Reviewed and never polished: nothing has changed since, so the review still stands.
+    expect(isDone(s, 'a/b/3', 'review')).toBe(true);
+  });
+
   it('survives a corrupt state file rather than losing the run', async () => {
     const { stateFile, loadState, isDone } = await import('@/lib/verify/campaignState');
     const { promises: fs } = await import('fs');

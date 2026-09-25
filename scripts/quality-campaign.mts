@@ -34,6 +34,15 @@ function note(msg: string) {
   console.log(`[campaign] ${msg}`);
 }
 
+// A run that dies must say how. Runs have stopped mid-batch with nothing in the log, and the
+// state file alone cannot tell a crash from a kill from a clean stop.
+process.on('exit', (code) => note(`process exiting with code ${code}`));
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as const) {
+  process.on(sig, () => { note(`killed by ${sig}`); process.exit(130); });
+}
+process.on('uncaughtException', (err) => { note(`CRASHED: ${err.stack ?? err}`); process.exit(1); });
+process.on('unhandledRejection', (err) => { note(`CRASHED (unhandled rejection): ${err instanceof Error ? err.stack : err}`); process.exit(1); });
+
 /**
  * Calls the render route handler in-process. `polishFollowUps: false` because the route
  * chains follow-ups over `fetch`, which needs a live server — and this loop visits every

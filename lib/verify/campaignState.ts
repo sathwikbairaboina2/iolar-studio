@@ -24,8 +24,16 @@ export async function loadState(): Promise<CampaignState> {
 
 const slot = (key: string, stage: Stage) => `${key}:${stage}`;
 
+/**
+ * A review only counts while it is newer than the part's polish: a re-polish rewrites the
+ * pages, and a review of the old pages would otherwise mark the new ones as checked.
+ */
 export function isDone(state: CampaignState, key: string, stage: Stage): boolean {
-  return Boolean(state.done[slot(key, stage)]);
+  const at = state.done[slot(key, stage)];
+  if (!at) return false;
+  if (stage !== 'review') return true;
+  const polished = state.done[slot(key, 'polish')];
+  return !polished || polished <= at;
 }
 
 /** Records the stage and writes immediately: a crash must cost one stage, not the run. */

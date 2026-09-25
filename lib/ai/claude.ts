@@ -108,6 +108,15 @@ export function runClaude(
       resolve(stdout);
     });
 
+    // A CLI that dies before reading its prompt breaks the pipe. Unhandled, that EPIPE is an
+    // uncaught error event that takes the whole caller down — a campaign hours into its run.
+    child.stdin.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      reject(new Error(`claude stdin failed: ${err.message}${stderr ? ` — ${stderr.slice(0, 400)}` : ''}`));
+    });
     child.stdin.write(prompt);
     child.stdin.end();
   });

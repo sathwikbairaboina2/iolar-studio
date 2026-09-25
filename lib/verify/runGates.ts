@@ -5,7 +5,7 @@ import { getSettings } from '../settings';
 import { rendersDir } from '../paths';
 import { loadBook } from '../ai/book';
 import { uncoveredPoints } from '../ai/fit';
-import { checkCodeBlock, checkTables, checkHeadings, type Finding } from './gates';
+import { checkCodeBlock, checkTables, checkHeadings, checkStrandedHeadings, type Finding } from './gates';
 import { runPythonWithPrelude, buildPrelude, expectedOutput, outputMatches } from './sandbox';
 
 /** Dropping one of these is a safety problem, not a trim. */
@@ -13,7 +13,7 @@ const CAVEAT = /security|leak|spoof|inject|auth|escape|sanitiz|overflow|race|dea
 
 export async function runGates(subject: string, chapter: string, part: number): Promise<Finding[]> {
   const post = await loadPost(subject, chapter, part);
-  const findings: Finding[] = [...checkHeadings(post.slides)];
+  const findings: Finding[] = [...checkHeadings(post.slides), ...checkStrandedHeadings(post.slides)];
 
   // Structural checks on every block.
   post.slides.forEach((slide, si) => {

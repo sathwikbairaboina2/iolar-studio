@@ -42,8 +42,61 @@ function array(spec: Extract<D, { kind: 'array' }>['spec']): string {
   return `<div class="b-diagram dg-array" style="--ar-cols:${n}"><div class="ar-grid">${idx}${cells}${ptrs}</div>${caption}</div>`;
 }
 
+type Layered = { rows: string[][]; edges: { from: string; to: string }[] };
+
+/**
+ * The rows a flowchart is drawn in.
+ *
+ * The edge overlay drops each line straight down through whatever rows lie between its ends,
+ * so a line that skips a row runs through the labels of the nodes in it. Authors write
+ * decision trees that way — every outcome on a row of its own under the branches — and the
+ * "panic" line then strikes through "return error". When every line points downward, each
+ * node is re-layered one row below its lowest parent and a row is ordered by where its
+ * parents sit, which puts every outcome under its own branch. A chart with a sideways or
+ * backward line is a deliberate layout and is drawn exactly as written, and so is any chart
+ * the re-layering would not improve.
+ */
+export function layerFlowchart(spec: Layered): string[][] {
+  const rowOf = new Map<string, number>();
+  spec.rows.forEach((ids, r) => ids.forEach((id) => rowOf.set(id, r)));
+  const down = spec.edges.filter((e) => rowOf.has(e.from) && rowOf.has(e.to));
+  if (down.some((e) => rowOf.get(e.to)! <= rowOf.get(e.from)!)) return spec.rows;
+  const skips = (rows: string[][]) => {
+    const at = new Map<string, number>();
+    rows.forEach((ids, r) => ids.forEach((id) => at.set(id, r)));
+    return down.reduce((n, e) => n + at.get(e.to)! - at.get(e.from)! - 1, 0);
+  };
+  if (!skips(spec.rows)) return spec.rows;
+
+  const parents = new Map<string, string[]>();
+  for (const e of down) parents.set(e.to, [...(parents.get(e.to) ?? []), e.from]);
+  // Authored rows are already a topological order: every line points down.
+  const depth = new Map<string, number>();
+  for (const ids of spec.rows) for (const id of ids) {
+    const ps = parents.get(id);
+    depth.set(id, ps?.length ? Math.max(...ps.map((p) => depth.get(p)!)) + 1 : rowOf.get(id)!);
+  }
+
+  const order = spec.rows.flat();
+  const authoredPos = new Map<string, number>();
+  spec.rows.forEach((ids) => ids.forEach((id, i) => authoredPos.set(id, (i + 0.5) / ids.length)));
+  const pos = new Map<string, number>();
+  const rows: string[][] = [];
+  for (const d of [...new Set(depth.values())].sort((a, b) => a - b)) {
+    const key = (id: string) => {
+      const ps = parents.get(id);
+      return ps?.length ? ps.reduce((s, p) => s + pos.get(p)!, 0) / ps.length : authoredPos.get(id)!;
+    };
+    const row = order.filter((id) => depth.get(id) === d)
+      .sort((a, b) => key(a) - key(b) || order.indexOf(a) - order.indexOf(b));
+    row.forEach((id, i) => pos.set(id, (i + 0.5) / row.length));
+    rows.push(row);
+  }
+  return skips(rows) < skips(spec.rows) ? rows : spec.rows;
+}
+
 function flowchart(spec: Extract<D, { kind: 'flowchart' }>['spec']): string {
-  const rows = spec.rows
+  const rows = layerFlowchart(spec)
     .map((ids) => {
       const nodes = ids
         .map((id) => {
