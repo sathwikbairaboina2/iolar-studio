@@ -142,10 +142,18 @@
           "type": "code",
           "lang": "bash",
           "lines": [
-            "ip link | grep veth   # vethb2f1@if11 (host)",
-            "docker exec c ip link # eth0@if12",
-            "# if-numbers cross-reference the two ends"
-          ]
+            "docker run --rm -it \\",
+            "  --network container:api \\",
+            "  nicolaka/netshoot",
+            "# dig, tcpdump, curl, ss in its ns"
+          ],
+          "note": "for scratch and distroless images"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Disk Pressure",
+          "text": "`docker system df -v` breaks out images, containers and volumes — dangling volumes are the usual silent disk eater."
         },
         {
           "type": "code",
@@ -155,7 +163,42 @@
             "nsenter -t $P -n ip addr",
             "# works on images with no shell tools"
           ]
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Namespaces, Layers & The Disposable Container (cont.)",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec c ls -lan /data",
+            "# drwxr-xr-x 2 1000 1000 ...  numeric!",
+            "# Permission denied = UID mismatch"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Long-Form Bind Syntax: source, target, read_only",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "- type: bind",
+            "  source: ./src",
+            "  target: /app",
+            "  read_only: true       # long form wins"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Shared Namespaces & Refused vs Timed Out",
+      "blocks": [
         {
           "type": "code",
           "lang": "bash",
@@ -166,23 +209,112 @@
           ]
         },
         {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "- type: bind",
-            "  source: ./src",
-            "  target: /app",
-            "  read_only: true       # long form wins"
+          "type": "heading",
+          "text": "5. Refused vs Timed Out",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "What it means"
+          ],
+          "rows": [
+            [
+              "Refused from host",
+              "app bound to 127.0.0.1"
+            ],
+            [
+              "Refused peer to peer",
+              "different network, or host port"
+            ],
+            [
+              "Timeout",
+              "firewall, routing or MTU"
+            ],
+            [
+              "Works by IP only",
+              "DNS, not connectivity"
+            ]
           ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Reproduce small: two `alpine` on one user-defined network.",
+            "`nc -l -p 8080` in one, `nc other 8080` in the other.",
+            "Proves the path with your app out of the way."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Inspecting The Wiring: veth Ends, Ports & Mounts",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "ip link | grep veth   # vethb2f1@if11 (host)",
+            "docker exec c ip link # eth0@if12",
+            "# if-numbers cross-reference the two ends"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Inspect Before Guessing",
+          "ink": "blue"
         },
         {
           "type": "code",
           "lang": "bash",
           "lines": [
-            "docker exec c ls -lan /data",
-            "# drwxr-xr-x 2 1000 1000 ...  numeric!",
-            "# Permission denied = UID mismatch"
+            "F='{{json .NetworkSettings}}'",
+            "docker inspect -f \"$F\" c",
+            "docker inspect -f '{{json .Mounts}}' c",
+            "docker port c          # published",
+            "ss -ltnp | grep 8080   # host side"
           ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`.NetworkSettings` and `.Mounts` = what was wired, not what you meant.",
+            "Refused from the host: app listening on 127.0.0.1, not **0.0.0.0**.",
+            "Refused between containers: wrong network, or the host-side port.",
+            "'My changes don't show': stale volume, shadowed path, wrong COPY."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "Command"
+          ],
+          "rows": [
+            [
+              "Ports mapped?",
+              "docker port c"
+            ],
+            [
+              "Which networks?",
+              "docker network inspect"
+            ],
+            [
+              "Mount ownership?",
+              "docker exec c ls -lan"
+            ],
+            [
+              "Listening host-side?",
+              "ss -ltnp"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Bind 0.0.0.0",
+          "text": "A process listening on 127.0.0.1 inside a container is reachable only by that container — loopback belongs to the namespace."
         }
       ]
     },
@@ -832,6 +964,20 @@
           ]
         },
         {
+          "type": "code",
+          "lang": "docker",
+          "lines": [
+            "RUN adduser -u 1000 -D app",
+            "COPY --chown=app:app . /srv",
+            "USER app"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Volume Drivers & Compose Volume Keys",
+      "blocks": [
+        {
           "type": "heading",
           "text": "5. Drivers And Labels"
         },
@@ -846,13 +992,60 @@
           ]
         },
         {
-          "type": "code",
-          "lang": "docker",
-          "lines": [
-            "RUN adduser -u 1000 -D app",
-            "COPY --chown=app:app . /srv",
-            "USER app"
+          "type": "bullets",
+          "items": [
+            "`local` is the default; plugins add NFS, CIFS/SMB, cloud disks.",
+            "Each `--opt` pair is passed straight to the driver's mount call.",
+            "Label at create time, then filter: `-f label=project=app`.",
+            "Only the local driver gives you a browsable `Mountpoint`."
           ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Compose Volume Keys",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "volumes:",
+            "  appdata:            # <proj>_appdata",
+            "  shared:",
+            "    external: true    # already exists"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Named volumes get the project name as a prefix.",
+            "`external: true` = don't create it, and never delete it.",
+            "`compose down` keeps volumes; `down -v` destroys them.",
+            "`--remove-orphans` drops services deleted from the file."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "7. The node_modules Trick",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "services:",
+            "  app:",
+            "    volumes:",
+            "      - ./app:/app        # bind",
+            "      - /app/node_modules # anon"
+          ],
+          "note": "host dir must not shadow installed modules"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "depends_on Waits For Start",
+          "text": "Not for readiness — pair it with a `healthcheck` and `condition: service_healthy`, or the app dials a database that is not listening yet."
         }
       ]
     },
@@ -966,272 +1159,6 @@
             "-v ./data:/data:z   # SELinux shared",
             "# without it: Permission denied on RHEL"
           ]
-        }
-      ]
-    },
-    {
-      "page_title": "Least Privilege & The Compose Network",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "4. Least Privilege",
-          "ink": "green"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Run non-root: `USER` in the Dockerfile, not a run-time patch.",
-            "`--read-only` rootfs plus a tmpfs for the writable paths.",
-            "`--cap-drop=ALL`, then add back only what actually breaks.",
-            "Secrets in tmpfs or a manager — env vars leak via `docker inspect`."
-          ],
-          "style": "checkbox"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Desktop bind mounts pass a translation layer, reporting 0777.",
-            "So permission bugs first surface on the Linux deploy.",
-            "Test ownership on Linux before you trust it."
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "5. Compose Networking",
-          "ink": "green"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "One default bridge per project; every service joins it.",
-            "Services resolve each other by service name. No `links` needed.",
-            "Extra networks: top-level `networks:` plus a per-service list."
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "1. Ports And Volumes Keys",
-          "ink": "blue"
-        },
-        {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "ports:",
-            "  - \"8080:80\"      # quote it, always",
-            "expose:",
-            "  - \"80\"           # documents only"
-          ]
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Unquoted `5432:5432`-style values get parsed oddly by YAML.",
-            "Top-level `volumes:` declares the named volumes.",
-            "`external: true` means it exists — don't create or delete it."
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "2. Same Slot, Two Meanings",
-          "ink": "red"
-        },
-        {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "volumes:",
-            "  - ./src:/app          # bind mount",
-            "  - appdata:/var/lib/data  # named volume"
-          ]
-        }
-      ]
-    },
-    {
-      "page_title": "Healthchecks, Tier Splits & Teardown",
-      "blocks": [
-        {
-          "type": "heading",
-          "text": "3. Waiting Properly"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "`depends_on` waits for start, never for readiness.",
-            "Pair it with a `healthcheck` and `condition: service_healthy`.",
-            "Otherwise the app dials a database that isn't listening yet."
-          ]
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Attach each service with its own `networks:` list.",
-            "The proxy joins both; the database joins only `back`.",
-            "Long syntax (`type:`, `source:`, `target:`) for real mounts."
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "4. Frontend / Backend Split",
-          "ink": "green"
-        },
-        {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "networks:",
-            "  front:",
-            "  back:",
-            "    internal: true  # no way out",
-            "services:",
-            "  db: {networks: [back]}"
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "tip",
-          "title": "One Door In",
-          "text": "Only the reverse proxy gets `ports:`. The data tier lives on an `internal` network with nothing published."
-        },
-        {
-          "type": "heading",
-          "text": "5. Two Patterns Worth Stealing",
-          "ink": "green"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "Base file mounts nothing; override adds source bind + hot reload.",
-            "Production runs the base file alone.",
-            "`network_mode: host` kills Compose networking and voids `ports:`."
-          ]
-        },
-        {
-          "type": "code",
-          "lang": "yaml",
-          "lines": [
-            "volumes:",
-            "  - ./app:/app",
-            "  - /app/node_modules   # anon vol shields it"
-          ]
-        },
-        {
-          "type": "table",
-          "headers": [
-            "Command",
-            "Removes"
-          ],
-          "rows": [
-            [
-              "down",
-              "containers + network"
-            ],
-            [
-              "down -v",
-              "also named volumes"
-            ],
-            [
-              "down --remove-orphans",
-              "deleted services"
-            ]
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "6. Debug Step One"
-        },
-        {
-          "type": "code",
-          "lang": "bash",
-          "lines": [
-            "docker inspect c   # read .NetworkSettings",
-            "#                  # and .Mounts",
-            "docker port c      # published, for real",
-            "ss -ltnp           # host is listening?"
-          ]
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "Meant vs Wired",
-          "text": "`inspect` shows what actually got wired. Your compose file only shows what you meant to wire."
-        },
-        {
-          "type": "heading",
-          "text": "1. Refused Versus Timeout",
-          "ink": "red"
-        }
-      ]
-    },
-    {
-      "page_title": "Triage: Refused, Timeout & Stale Mounts",
-      "blocks": [
-        {
-          "type": "table",
-          "headers": [
-            "Symptom",
-            "Likely cause"
-          ],
-          "rows": [
-            [
-              "Refused from host",
-              "app bound to 127.0.0.1"
-            ],
-            [
-              "Refused between containers",
-              "different networks"
-            ],
-            [
-              "Refused, right net",
-              "used host port, not real one"
-            ],
-            [
-              "Timeout",
-              "firewall, routing, MTU"
-            ]
-          ]
-        },
-        {
-          "type": "heading",
-          "text": "2. Netshoot In The Namespace",
-          "ink": "blue"
-        },
-        {
-          "type": "code",
-          "lang": "bash",
-          "lines": [
-            "docker run --rm -it \\",
-            "  --network container:web \\",
-            "  nicolaka/netshoot",
-            "# dig, ss, tcpdump in its netns"
-          ],
-          "note": "for scratch and distroless images"
-        },
-        {
-          "type": "callout",
-          "style": "tip",
-          "title": "Debug Order",
-          "text": "`inspect` → listening on 0.0.0.0? → same network? → firewall or MTU → `netshoot` inside the target's namespace."
-        },
-        {
-          "type": "callout",
-          "style": "takeaway",
-          "title": "The Whole Model",
-          "text": "The image is the code, the network is the wiring, the volume is the state. Keep the three apart and containers stay disposable."
-        },
-        {
-          "type": "heading",
-          "text": "3. Stale Files, Full Disks"
-        },
-        {
-          "type": "bullets",
-          "items": [
-            "The path is shadowed by another mount on top of it.",
-            "The volume was seeded once and is now stale.",
-            "The build COPYed the file to a different directory.",
-            "`docker system df -v`: dangling volumes eat the disk."
-          ],
-          "style": "cross"
         }
       ]
     }

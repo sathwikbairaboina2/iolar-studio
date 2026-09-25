@@ -228,12 +228,73 @@
           ]
         },
         {
+          "type": "callout",
+          "style": "cloud",
+          "title": "goleak flags library noise",
+          "text": "The `http.Transport` reaper and some SDK goroutines outlive every test. Whitelist them with `goleak.IgnoreTopFunction`, never by deleting the check."
+        }
+      ]
+    },
+    {
+      "page_title": "goleak Guards and Reading Dump States",
+      "blocks": [
+        {
           "type": "bullets",
           "items": [
             "`uber-go/goleak` fails the test if goroutines outlive it.",
             "Per test with `VerifyNone`, or once via `TestMain`.",
             "Cheap guard: spawn component, cancel ctx, wait, assert baseline `NumGoroutine()`.",
             "`go test -race` catches races that ride along with leaky lifecycles."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Regression Guard",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "base := runtime.NumGoroutine()",
+            "srv := start(ctx)",
+            "cancel(); srv.Wait()",
+            "if runtime.NumGoroutine() > base {",
+            "  t.Fatal(\"goroutines leaked\")}"
+          ],
+          "note": "poll with a deadline, not one check"
+        },
+        {
+          "type": "heading",
+          "text": "Reading The Dump"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "State line",
+            "Means"
+          ],
+          "rows": [
+            [
+              "`chan receive`",
+              "parked on `<-ch`"
+            ],
+            [
+              "`chan send`",
+              "buffer full, no reader"
+            ],
+            [
+              "`select`",
+              "no case ever ready"
+            ],
+            [
+              "`semacquire`",
+              "mutex or `WaitGroup`"
+            ],
+            [
+              "`IO wait`",
+              "netpoller, usually fine"
+            ]
           ]
         }
       ]
@@ -377,7 +438,12 @@
           "style": "cloud",
           "title": "Not a real-time scheduler",
           "text": "10 ms slices and a 61-tick global check mean no latency guarantee. Hard-latency work needs `LockOSThread` plus OS-level priority."
-        },
+        }
+      ]
+    },
+    {
+      "page_title": "Semaphores, Fan-Out, and Pipeline Stages",
+      "blocks": [
         {
           "type": "heading",
           "text": "Bounding The Spawn"
@@ -391,6 +457,77 @@
             "defer func(){ <-sem }()    // release",
             "// or: g.SetLimit(8)"
           ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Acquire blocks once **8** are in flight — the spike waits instead.",
+            "`defer func(){ <-sem }()` releases even on a panic.",
+            "Nothing is preallocated: the bound is the ==buffer==, not a pool.",
+            "Size N from the downstream limit: DB pool, API quota, cores."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fan-Out / Fan-In"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var wg sync.WaitGroup",
+            "for _, c := range in {",
+            "  wg.Add(1)",
+            "  go drain(c, out, &wg)",
+            "}",
+            "go func(){wg.Wait();close(out)}()"
+          ],
+          "note": "closer runs in its own goroutine"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Split work to many goroutines, merge onto one output channel.",
+            "Only the merger closes `out` — after `Wait` says everyone left.",
+            "`wg.Add` before the `go`, never inside it.",
+            "Closing early panics an in-flight sender."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pipeline Stages"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A stage takes an input channel and returns an output channel.",
+            "It closes its own output when its input drains.",
+            "Closure flows downstream and terminates the whole chain.",
+            "To stop mid-stream, cancel the ==context== — never close from below."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rate Limiting",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "lim := rate.NewLimiter(50, 10)",
+            "// 50/sec, burst 10",
+            "if err:=lim.Wait(ctx); err!=nil {",
+            "  return err",
+            "}"
+          ],
+          "note": "Wait returns on ctx cancel"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Every ticker gets a Stop",
+          "text": "`defer ticker.Stop()` on every `time.Ticker` — otherwise it keeps firing into a channel nobody drains, waking the runtime for nothing."
         }
       ]
     },
