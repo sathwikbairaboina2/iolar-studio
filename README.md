@@ -1,171 +1,82 @@
-# instastudio
+# 🎬 Iolar Studio
 
-Local studio for Instagram content. Two categories are built:
+> A local studio for Instagram content: handwritten-notes carousels, reels, job cuts and concept explainers.
 
-- **handbooks** — structured JSON rendered into handwritten-notes carousels, with an AI revise
-  chat and optional ComfyUI polish
-- **reel** — scripted vertical video assembled from a voiceover and generated shots
+**Everything runs on one Windows machine. Claude and local models plan and write, deterministic renderers draw, and files on disk stay the source of truth.**
 
-Three more (stories, quote cards, memes) are scaffolded for later build cycles.
+<!-- readme-header -->
+![Next.js](https://img.shields.io/badge/-Next.js-555) ![TypeScript](https://img.shields.io/badge/-TypeScript-555) ![Ant Design](https://img.shields.io/badge/-Ant_Design-555) ![Playwright](https://img.shields.io/badge/-Playwright-555) ![ffmpeg](https://img.shields.io/badge/-ffmpeg-555) ![Neo4j](https://img.shields.io/badge/-Neo4j-555) ![Qdrant](https://img.shields.io/badge/-Qdrant-555) ![LangGraph](https://img.shields.io/badge/-LangGraph-555)
 
-Specs: `docs/superpowers/specs/` — notes carousels, handbooks hierarchy, reels engine
-Plans: `docs/superpowers/plans/`
+## What it does
+
+- **Handbooks.** Content is organised Subject, Chapter, Part. A topic or reference images become structured `post.json`, rendered by Playwright through a template (spiral-notes, blackboard, sketchnote, sticky-wall and others under `templates/`) into carousel PNGs plus a caption. Layout packs blocks into columns and spills overflow onto the next part; text is never shrunk to fit. AI edits go through diff-and-approve. Optional ComfyUI polish.
+- **Reels.** `data/reel/<slug>/reel.json` is filled by re-runnable stages: plan, voice (Piper, with SAPI fallback), whisper word timings, shots (ComfyUI image-to-video or Ken Burns stills), assemble, export with ffmpeg. Word timings are the timing authority. A studio view edits the timeline, and the design shares one stylesheet, one motion module and one timeline resolver between the browser preview and the ffmpeg export. No pixel-parity test is committed.
+- **Pattern reels.** A reel with a pattern (`tools`) is rendered by `main-reels-templates-plugin` on 26200 from one JSON document.
+- **Explainers.** Scripted single-diagram concept animations, rendered through the same templates service (`lib/explainer/`, `/explainers`).
+- **Jobs.** Pulls the job pool from `research-plugin`, prepares weekly or daily cuts, submits them to `jobs-reel-plugin` and keeps a ledger (`lib/jobs/`, `/jobs`).
+- **Research and knowledge layer.** Claude-driven research with human gates, plus a Neo4j graph (one space per category) and Qdrant agent memory. Both stores are derived from `data/` and rebuildable.
+- **Plugins page.** Health of every service the studio depends on, with start buttons for those that can be started from here.
+- **Local edit agent.** A FastAPI and LangGraph service (`agent/`, port 3121) that proposes reel edits using Ollama.
+- Stories, quote cards and memes are scaffolded routes only.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  UI[Studio: Next.js :3120] --> L[lib: handbooks, reel, explainer, jobs, knowledge]
+  L --> D[(data/ on disk + SQLite index)]
+  L --> PW[Playwright / ffmpeg renderers]
+  L -->|claude CLI| CL[Claude]
+  L --> AG[Edit agent :3121] --> OL[Ollama]
+  L --> TS[Templates service :26200]
+  L --> LS[Lipsync :8300] --> CU[ComfyUI]
+  L --> WP[webpage-mp4 :8080]
+  L --> RS[research-plugin :25100]
+  L --> JR[jobs-reel-plugin :26100]
+  L --> N4[(Neo4j)] & QD[(Qdrant)]
+```
 
 ## Quickstart
+
+Needs Node 20+, Windows paths in defaults, and the `claude` CLI on PATH for research, planning and AI revise. Everything else degrades: no ComfyUI leaves shots `awaiting-manual`, no whisper stops the reel after audio, no `claude` makes the revise chat return 503.
 
 ```bash
 npm install
 npx playwright install chromium
-npm run dev          # http://localhost:3100 (port 3000 is the local media server)
-npm test             # full suite (includes real-Chromium render tests)
+npm run dev          # http://localhost:3120
+npm test             # vitest, includes real-Chromium render tests
 ```
 
-Requirements:
-- Node 20+, Windows paths assumed in defaults
-- `claude` CLI on PATH (AI revise chat; app works without it, chat returns 503)
-- ComfyUI Desktop on `127.0.0.1:8188` (polish + doodle assets; app works without it)
+`docs/STATE.md` records that on the author's machine `npm run dev` fails because an Application Control policy blocks the SWC binary, and `npx next dev --webpack -p 3120` is used instead.
 
-## Pipeline
+Optional pieces: `npm run setup:whisper`, `npm run setup:voice` (Piper), `docker compose -f docker/compose.yml up -d` (Neo4j on 3124/3125, Qdrant on 3126/3127, volumes on `D:`), `docker compose -f agent/compose.yml up -d --build` (edit agent), `npm run reindex:knowledge` to rebuild the stores from `data/`. Tests, lint and build were not run while writing this README.
 
-```
-topic  OR  reference image URLs
-  -> PLAN     Claude writes data/paperbook/<slug>/post.json
-              (New post modal: "AI from topic" | "AI from reference images" | blank;
-               reference mode downloads the images to <slug>/refs/, reads them with
-               vision, and writes FRESH original slides on the same topic/arc)
-  -> RENDER   post.json + templates/<name> -> renders/slide-NN.png   (deterministic, seeded)
-  -> POLISH   optional ComfyUI img2img (denoise ~0.12), jobs visible in Desktop app
-  -> PACKAGE  export/01.png..NN.png + caption.txt
-```
+## Configuration
 
-Pages are laid out as a packed two-column grid (three for `sticky-wall`): each block is
-measured in the browser at full and column width, wide tables and diagrams span the page,
-short blocks pair off, and headings bind to the block below them. Anything that does not fit
-reflows onto a continuation page — the new slide array is written back to `post.json` and an
-AI pass rewrites the titles.
+Service URLs are read from the environment: `COMFY_URL`, `OLLAMA_URL`, `LIPSYNC_URL`, `WEBPAGE_MP4_URL`, `RESEARCH_URL`, `JOBS_REEL_URL`, `REELS_TEMPLATES_URL`, `PLUGIN_ROOT`, `IOLAR_DATA_DIR`. Brand, defaults and the ComfyUI checkpoint live in `data/settings.json`. Voice and hero-shot providers default to local engines; Higgsfield is used only when a setting names it.
 
-Hard rules: text is never shrunk to fit; AI edits always go through diff-approve; renders are
-pixel-deterministic per seed. The **10-slide** limit is advisory — the UI warns past it.
+## Rendering notes
 
-## Template authoring
+- A handbook template is `templates/<name>/` with `template.html` (markers `<!--HEAD-->`, `<!--CONTENT-->`, `<!--PAGEVARS-->`) and `manifest.json`.
+- `tests/golden.test.ts` re-renders `tests/fixtures/golden-post.json` with every template and compares against `tests/golden/*.png` (skipped if that folder is absent). After intentional visual changes run `node scripts/approve-goldens.mjs`, inspect the PNGs, then commit.
+- A creator style is `styles/<name>/` (`style.json`, `caption.css`, optional `hook.html`). `POST /api/reel/styles/clone` drafts one from a reference reel by measuring cuts and the caption band; treat the result as a draft.
 
-A template is a directory under `templates/<name>/`:
-
-- `template.html` — full page with three markers: `<!--HEAD-->` (shared css links injected), `<!--CONTENT-->` (block HTML), `<!--PAGEVARS-->` (`window.PAGE = {brand,date,series,page_title,pageNum,pageCount,seed,width,height}`). Must load `../_shared/rough.min.js` + `../_shared/jitter.js` and call `applyJitter(PAGE.seed + PAGE.pageNum)`.
-- `manifest.json` — `{ name, displayName, inks: {blue,red,green,black,accent}, supports: [...], contentSelector }`.
-
-Style the block classes `.b-heading .b-paragraph .b-bullets .b-sidebox .b-table .b-code .b-diagram .b-callout .b-qa`. Elements with `data-jitter` get per-character wobble; `data-rough="<color>"` gets a hand-drawn rough.js frame (hide with `svg{display:none}` if the template has native frames). Use `vh/vw` units — pages render at 2× and downscale.
-
-Gotcha: never use `display:table` on jittered text (whitespace collapses); use `display:block;width:fit-content`.
-
-## Golden render tests
-
-`npm test` re-renders `tests/fixtures/golden-post.json` with every template and byte-compares against `tests/golden/*.png`. After intentional visual changes:
-
-```bash
-node scripts/approve-goldens.mjs   # regenerate
-# inspect tests/golden/*.png, then commit them
-```
-
-## Data layout
+## Project layout
 
 ```
-data/handbooks/<subject>/subject.json                     # name, emoji, description
-data/handbooks/<subject>/<chapter>/chapter.json           # title
-data/handbooks/<subject>/<chapter>/book.json              # the syllabus, owned by the chapter
-data/handbooks/<subject>/<chapter>/references.json        # reference URLs, owned by the chapter
-data/handbooks/<subject>/<chapter>/refs/ref-NN.jpg        # downloaded reference pages
-data/handbooks/<subject>/<chapter>/parts/<NN>/post.json   # one carousel, <=10 pages
-data/handbooks/<subject>/<chapter>/parts/<NN>/renders/    # slide-NN.png + render-report.json
-data/handbooks/<subject>/<chapter>/parts/<NN>/export/     # final package
-data/settings.json                                        # brand, defaults, comfy url/checkpoint
-assets/doodles/                                           # ComfyUI-generated sketch assets
+app/        Next.js routes (handbooks, reels, explainers, jobs, graph, plugins, settings, api)
+lib/        handbooks and renderer, reel engine, explainer, jobs, knowledge, plugins, verify
+templates/  handbook page templates      scenes/  scene HTML for reels
+agent/      reel edit agent (FastAPI + LangGraph)
+docker/     Neo4j and Qdrant compose
+scripts/    setup, reindex, migrate, golden approval
+docs/       STATE.md, implementation.json, handbooks/, superpowers/ specs and plans
 ```
 
-Content is organised **Subject → Chapter → Part**. A chapter owns one book and one reference
-list; its parts are the successive carousels that publish that book. When a part renders past
-the 10-image limit the surplus becomes the next part of the same chapter — content is never
-trimmed to fit. `npx tsx scripts/migrate.mts` moves a legacy `data/paperbook/` tree into this
-layout, and `npx tsx scripts/reindex.mts` rebuilds the SQLite index and knowledge graph.
+## Decisions
 
-## Reels
+Specs and plans are in `docs/superpowers/specs/` and `docs/superpowers/plans/` (handbooks, reels engine, reel patterns, jobs bridge, knowledge graph, explainers, content verification). `docs/STATE.md` is the handoff log, last updated for the 31 August to 3 September work, so it predates the explainers category.
 
-`data/reel/<slug>/reel.json` is the single source of truth for a reel; six re-runnable stages
-fill it in.
+## Status
 
-```
-topic / pasted script / reference reel
-  -> PLAN      Claude writes beats (hook/body/close) + a shot brief per beat, in a creator's voice
-  -> VOICE     local TTS -> vo.mp3, then whisper word timestamps -> vo.words.json
-  -> SHOTS     per beat: ComfyUI image-to-video, or a still with a Ken Burns move,
-               and your own dropped files override either
-  -> ASSEMBLE  word timings + creator style -> clips, karaoke captions, hook overlay (seeded)
-  -> STUDIO    watch and edit it in the browser while shots are still generating
-  -> EXPORT    ffmpeg -> export/reel.mp4 + caption.txt
-```
-
-The **word timings are the timing authority**: captions and cuts both hang off them, so the
-edit lands on the voiceover rather than near it. The recogniser supplies only those timings —
-caption text comes from the script, because the voiceover was synthesised from it and a
-transcript is just a lossy round trip (whisper hears "Rock Bot" for "Grok Bot").
-
-**Nothing leaves this machine unless you say so.** `voiceProvider` defaults to the local
-engine and `heroProvider` to the local ComfyUI; Higgsfield is used only when a setting names
-it.
-
-### Preview and export cannot drift
-
-The studio plays the timeline in the DOM (instant scrub, no encode) while ffmpeg renders the
-same timeline. They stay identical by construction, not by discipline:
-
-- one stylesheet — `patterns/<name>/caption.css`, linked by the preview and loaded by the
-  export's Playwright pass
-- one motion module — `lib/reel/motion.ts` emits both the CSS transform and the ffmpeg
-  `zoompan` expression from the same spec
-- one timeline resolver — `lib/reel/timeline.ts` answers "what is on screen at t" for both
-- one pixel test — `tests/reel.parity.test.ts` exports a reel and asserts the caption lands on
-  the same pixels the preview paints
-
-### Editing is a pass over finished work
-
-The studio is autonomous first: everything you see was assembled without you. Edits are
-deliberately few — trim, split, reorder, delete, four motion presets, caption text and nudge.
-Anything you touch is marked `locked: true` and survives re-assembly untouched while the rest
-reflows around it.
-
-### Pattern reels
-
-A reel created with a pattern (`tools` today) skips beats and shots: the approved research
-script is split into the pattern's sections by Claude, voiced from the script lines, the
-hook gets a presenter clip (lipsync, or one you upload), and the reel is rendered by
-`main-reels-templates-plugin` on 26200 from one JSON document. Section copy is edited on
-the Pattern tab against the service's own limits; timing is measured from the aligned
-voice, never stored; the service's preview page is embedded before you commit to a render.
-See `docs/superpowers/specs/2026-09-03-reel-patterns-design.md`.
-
-### Creator styles
-
-A pattern is `patterns/<name>/`: `pattern.json` (caption geometry, pacing, hook, shot mix) plus
-`caption.css` (the real styling; the JSON only feeds CSS custom properties) and an optional
-`hook.html`.
-
-`POST /api/reel/patterns/clone { mediaUrl }` drafts one from a reference reel: it measures cut
-rhythm with `ffmpeg scdet`, finds the caption band by shape (short, centred, not full-width, so
-a white screenshot behind the text is not mistaken for it), and counts how often that band
-changes to get the beat rate. It writes `patterns/<name>-draft/` with a report separating what
-was measured from what was guessed. Always a draft — read it before you trust it.
-
-### Requirements
-
-| need | note |
-|---|---|
-| ffmpeg + ffprobe | on PATH; the export and every measurement go through them |
-| Playwright chromium | shared with handbooks |
-| whisper | `npm run setup:whisper` (openai-whisper: PyAV, which faster-whisper needs, is blocked by Windows Application Control on this machine). CPU by default; the setup script prints the CUDA install line |
-| voice | `npm run setup:voice` — Piper, a small offline neural voice. Windows' own SAPI voice is the automatic fallback. ComfyUI has no local speech model here: every TTS node it exposes is a paid cloud API |
-| ComfyUI | image-to-video via the bundled MiniMax H3 template, `lib/comfy/workflows/i2v.template.json`. Measured on a 4090: about 13 minutes for a 4-second shot, so a whole reel of generated shots is an overnight job — stills with a Ken Burns move carry the rest, which is how the reference reel is built too |
-| Higgsfield | opt-in only, reached through the `claude` CLI's MCP tools |
-
-Every one of these degrades rather than crashes: no ComfyUI leaves shots `awaiting-manual` for
-you to drop in, no whisper stops VOICE after the audio is saved, no Higgsfield disables TTS and
-hero shots while your own files still work.
+Private, single-user, work in progress. No CI workflow. Local `AGENTS.md` and `CLAUDE.md` carry the Next.js agent-rules block.
