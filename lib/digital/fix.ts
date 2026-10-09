@@ -25,7 +25,9 @@ export async function reviewAndFix(
   chapter: string,
   opts: { rounds?: number; onStep?: (step: string) => void; onReviewStep?: (step: string) => void } = {},
 ): Promise<EditionReview> {
-  const rounds = opts.rounds ?? 2;
+  // DIGITAL_FIX_ROUNDS=0 publishes faster for test runs: one review, no rewrites.
+  const env = Number(process.env.DIGITAL_FIX_ROUNDS);
+  const rounds = opts.rounds ?? (Number.isInteger(env) && env >= 0 ? env : 2);
   const regenerated = new Set<number>();
   opts.onStep?.('review');
   let review = await reviewEdition(subject, chapter, { onStep: opts.onReviewStep });
