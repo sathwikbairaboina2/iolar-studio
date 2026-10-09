@@ -142,6 +142,16 @@ export function outputMatches(actual: string, expected: string): boolean {
   return pieces.every((p) => p.trim() && haystack.includes(norm(p)));
 }
 
+/** Line endings as \n, no trailing whitespace on a line, no trailing blank lines. */
+function canonicalOutput(s: string): string {
+  return s.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').replace(/\n+$/, '');
+}
+
+/** Exact comparison for a shown output block: it has to be what the program prints. */
+export function outputEquals(actual: string, expected: string): boolean {
+  return canonicalOutput(actual) === canonicalOutput(expected);
+}
+
 /**
  * Replays the Python blocks that came before this one so a fragment can see the names its
  * page already defined. The source is base64'd rather than interpolated: handbook snippets

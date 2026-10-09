@@ -1,7 +1,7 @@
 import type { Book } from '@/lib/ai/book';
 import { stripInline } from '@/lib/renderer/inline';
 import { iconSvg } from '@/lib/renderer/icons';
-import { buildPrelude, outputMatches, runPythonWithPrelude } from '@/lib/verify/sandbox';
+import { buildPrelude, outputEquals, runPythonWithPrelude } from '@/lib/verify/sandbox';
 import type { Finding } from '@/lib/verify/gates';
 import { PY_STDLIB } from './stdlib';
 import { validateEdition, type Edition } from './edition';
@@ -129,7 +129,7 @@ export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
       // Only an example that fails alone is tried again with the earlier ones as its prelude.
       const text = code.join('\n');
       const expected = hasOutput ? lines(next!).join('\n') : null;
-      const good = (r: Awaited<ReturnType<typeof runPythonWithPrelude>>) => r.ok && !r.timedOut && (expected === null || outputMatches(r.stdout, expected));
+      const good = (r: Awaited<ReturnType<typeof runPythonWithPrelude>>) => r.ok && !r.timedOut && (expected === null || outputEquals(r.stdout, expected));
       let res = await runPythonWithPrelude('', text);
       if (/python not available/.test(res.stderr)) pythonMissing = true;
       else {
@@ -147,7 +147,7 @@ export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
           out.push(hasOutput
             ? finding('rules.code', 'blocker', page, 'A worked example fails when run, so the output shown cannot be right.', why, 'Fix the code so it runs and prints the output shown.')
             : finding('rules.code-runs', 'major', page, 'A code example fails when run.', why, 'Fix the code, or mark it as a fragment by showing only the call site.'));
-        } else if (expected !== null && !outputMatches(res.stdout, expected)) {
+        } else if (expected !== null && !outputEquals(res.stdout, expected)) {
           out.push(finding('rules.code', 'blocker', page, 'A worked example prints something other than the output shown.', `expected: ${firstLines(expected)} / actual: ${firstLines(res.stdout)}`, 'Make the output block hold exactly what the code prints.'));
         }
       }

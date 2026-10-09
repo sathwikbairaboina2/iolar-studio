@@ -174,6 +174,19 @@ describe('editionGates', () => {
     expect((await editionGates(ok.edition, ok.book)).filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
   });
 
+  it('compares an output block exactly, ignoring line endings, trailing spaces and trailing blank lines', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const codeFindings = async (printed: string, shown: string[]) => {
+      run.mockResolvedValue(ok(printed));
+      const m = mini([py('print(1)'), output(...shown)]);
+      return (await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.code');
+    };
+    expect(await codeFindings('a\r\nb  \r\n\r\n', ['a', 'b'])).toEqual([]);
+    expect(await codeFindings('a\nb\nc\n', ['a', 'b'])).toHaveLength(1);
+    expect(await codeFindings('a\nb\n', ['b'])).toHaveLength(1);
+    expect(await codeFindings('[1, 2]\n', ['[1,2]'])).toHaveLength(1);
+  });
+
   it('finds a dotted name through its member', async () => {
     const { editionGates } = await import('@/lib/digital/gates');
     const m = mini([para('Advance it with send(None) until it stops.')], ['Use `coro.send(None)` to advance it']);
