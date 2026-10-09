@@ -4,7 +4,7 @@ import { subjectDir } from '@/lib/paths';
 import { loadChapterMeta, loadSubject } from '@/lib/store';
 import { loadBook } from '@/lib/ai/book';
 import { editionHash, inputsHash, loadEdition } from '@/lib/digital/edition';
-import { generateEdition } from '@/lib/digital/generate';
+import { generateEdition, regenerateWithNotes } from '@/lib/digital/generate';
 import { reviewAndFix } from '@/lib/digital/fix';
 import { currentReview } from '@/lib/digital/review';
 import type { Finding } from '@/lib/verify/gates';
@@ -57,7 +57,7 @@ const isUnavailable = (err: unknown) => (err as { name?: string } | null)?.name 
 const hasUnavailable = (findings: Finding[]) => findings.some((f) => f.rule.endsWith('.unavailable'));
 
 /** Starts a review-and-publish run in the background; throws 'busy' while one is live for the subject. */
-export async function startPublish(subject: string, chapters: string[]): Promise<PublishJob> {
+export async function startPublish(subject: string, chapters: string[], opts: { notes?: Record<string, string> } = {}): Promise<PublishJob> {
   const existing = await readJob(subject);
   const liveFile = !!existing?.live && Date.now() - Date.parse(existing.startedAt) < STALE_MS;
   if (running.has(subject) || liveFile) throw new Error('busy');
@@ -73,7 +73,7 @@ export async function startPublish(subject: string, chapters: string[]): Promise
     ];
     const job: PublishJob = { subject, live: true, startedAt: new Date().toISOString(), stage: 'reviews', steps };
     await writeJob(job);
-    void run(job, chapters)
+    void run(job, chapters, opts.notes ?? {})
       .catch(async (err) => {
         job.message = `The run stopped: ${err instanceof Error ? err.message : String(err)}`;
       })
@@ -91,7 +91,7 @@ export async function startPublish(subject: string, chapters: string[]): Promise
   }
 }
 
-async function run(job: PublishJob, chapters: string[]) {
+async function run(job: PublishJob, chapters: string[], notes: Record<string, string>) {
   const { subject } = job;
   // Marks may be fired from callbacks that do not wait, so the writes go one at a time, in the order they were asked.
   let chain: Promise<unknown> = Promise.resolve();
@@ -104,7 +104,7 @@ async function run(job: PublishJob, chapters: string[]) {
   };
   const setMessage = (m: string) => { job.message = job.message ?? m; };
 
-  for (const chapter of chapters) await reviewChapter(subject, chapter, mark, setMessage);
+  for (const chapter of chapters) await reviewChapter(subject, chapter, mark, setMessage, notes[chapter]);
 
   job.stage = 'order';
   await mark('', 'order', 'running');
@@ -130,13 +130,15 @@ async function reviewChapter(
   chapter: string,
   mark: (chapter: string, pass: string, state: JobStep['state']) => Promise<void>,
   setMessage: (m: string) => void,
+  notes?: string,
 ) {
   const markAll = async (passes: readonly string[], state: JobStep['state']) => { for (const p of passes) await mark(chapter, p, state); };
   const hash = await inputsHash(subject, chapter).catch(() => null);
   const state = await updateState(subject, (s) => s.chapters[chapter]);
   let edition = await loadEdition(subject, chapter);
   const editionIsCurrent = !!hash && !!edition && edition.inputsHash === hash;
-  const reusable = editionIsCurrent && state?.hash === hash && !!state.verdict && state.editionHash === editionHash(edition!) && !hasUnavailable(state.findings ?? []);
+  // Notes from a person always write the edition again.
+  const reusable = !notes && editionIsCurrent && state?.hash === hash && !!state.verdict && state.editionHash === editionHash(edition!) && !hasUnavailable(state.findings ?? []);
   if (reusable) {
     await markAll(CHAPTER_STEPS, 'skipped');
     await updateState(subject, (s) => autoApprove(s, chapter));
@@ -147,12 +149,12 @@ async function reviewChapter(
   let verdict: ChapterState['verdict'] = 'unsure';
   let reviewedEdition: string | undefined;
   try {
-    if (editionIsCurrent) {
+    if (editionIsCurrent && !notes) {
       await mark(chapter, 'generate', 'skipped');
     } else {
       // A failure here leaves any older edition untouched on disk, but it no longer matches the inputs, so it cannot go live.
       await mark(chapter, 'generate', 'running');
-      edition = await generateEdition(subject, chapter);
+      edition = notes ? await regenerateWithNotes(subject, chapter, notes) : await generateEdition(subject, chapter);
       await mark(chapter, 'generate', 'done');
     }
 

@@ -67,4 +67,42 @@ describe('publish api', () => {
     expect((await route.POST(req('POST', { action: 'run', chapters: ['Bad Slug'] }), ctx)).status).toBe(400);
     expect((await route.POST(req('POST', { action: 'dance' }), ctx)).status).toBe(400);
   });
+
+  it('regenerate: 404 for an unknown chapter, 400 without notes, 409 while a run is live', async () => {
+    const route = await import('@/app/api/handbooks/[subject]/publish/route');
+    expect((await route.POST(req('POST', { action: 'regenerate', chapter: 'ghost', notes: 'x' }), ctx)).status).toBe(404);
+    expect((await route.POST(req('POST', { action: 'regenerate', chapter: 'loop', notes: '  ' }), ctx)).status).toBe(400);
+    put('handbooks/py/publish-job.json', { subject: 'py', live: true, startedAt: new Date().toISOString(), stage: 'reviews', steps: [] });
+    expect((await route.POST(req('POST', { action: 'regenerate', chapter: 'loop', notes: 'more examples' }), ctx)).status).toBe(409);
+  });
+
+  it('regenerate starts a run for that chapter with the notes', async () => {
+    const startPublish = vi.fn().mockResolvedValue({ subject: 'py', live: true, steps: [] });
+    vi.doMock('@/lib/publish/job', async (orig) => ({ ...(await orig<object>()), startPublish }));
+    const route = await import('@/app/api/handbooks/[subject]/publish/route');
+    const res = await route.POST(req('POST', { action: 'regenerate', chapter: 'loop', notes: ' more examples ' }), ctx);
+    expect(res.status).toBe(200);
+    expect(startPublish).toHaveBeenCalledWith('py', ['loop'], { notes: { loop: 'more examples' } });
+    vi.doUnmock('@/lib/publish/job');
+  });
+
+  it('lists the section title of every edition page and marks a swapped edition stale', async () => {
+    const { chapterHash } = await import('@/lib/publish/hash');
+    const { editionHash } = await import('@/lib/digital/edition');
+    const sections = [
+      { title: 'Intro', role: 'intro', pages: [{ title: 'a', blocks: [{ type: 'paragraph', text: 'x' }] }] },
+      { title: 'Main', role: 'outline', outlineIndex: 0, pages: [{ title: 'b', blocks: [{ type: 'paragraph', text: 'y' }] }, { title: 'c', blocks: [{ type: 'paragraph', text: 'z' }] }] },
+    ];
+    put('handbooks/py/loop/digital/edition.json', { schema: 1, subject: 'py', chapter: 'loop', inputsHash: 'h', generatedAt: 'now', sections });
+    put('handbooks/py/publish.json', { alwaysAsk: false, chapters: { loop: { selected: true, verdict: 'pass', approvedBy: 'ai', hash: await chapterHash('py', 'loop'), editionHash: editionHash({ sections } as never) } } });
+    const route = await import('@/app/api/handbooks/[subject]/publish/route');
+    const got = await (await route.GET(req('GET'), ctx)).json();
+    expect(got.editions.loop).toEqual(['Intro', 'Main', 'Main']);
+    expect(got.stale).toEqual([]);
+    expect(got.live).toEqual(['loop']);
+    put('handbooks/py/loop/digital/edition.json', { schema: 1, subject: 'py', chapter: 'loop', inputsHash: 'h', generatedAt: 'now', sections: [sections[0]] });
+    const after = await (await route.GET(req('GET'), ctx)).json();
+    expect(after.stale).toEqual(['loop']);
+    expect(after.live).toEqual([]);
+  });
 });

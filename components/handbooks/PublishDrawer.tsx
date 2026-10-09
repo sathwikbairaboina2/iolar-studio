@@ -1,12 +1,14 @@
 'use client';
 import { useState } from 'react';
-import { Button, Drawer, Progress, Steps, Tag } from 'antd';
+import { Button, Drawer, Input, Progress, Steps, Tag } from 'antd';
 import Link from 'next/link';
 import { message } from '@/lib/ui/message';
 import type { Finding } from '@/lib/verify/gates';
 import type { PublishData } from './usePublish';
 
-const PASSES = ['rules', 'facts', 'visual', 'pedagogy', 'brand', 'digital'];
+/** The steps shown per chapter, in the order the job runs them. */
+const STEPS = ['generate', 'rules', 'facts', 'pedagogy', 'readability', 'fix'];
+const REVIEW_PASSES = new Set(['rules', 'facts', 'pedagogy', 'readability']);
 
 type PassState = 'ok' | 'minor' | 'bad' | 'run' | '';
 const PASS_STYLE: Record<PassState, { bg: string; fg: string; mark: string }> = {
@@ -17,10 +19,12 @@ const PASS_STYLE: Record<PassState, { bg: string; fg: string; mark: string }> = 
   bad: { bg: '#fff1f0', fg: '#cf1322', mark: '✕' },
 };
 
-function passState(pass: string, findings: Finding[], reviewing: boolean, digitalRunning: boolean, hasVerdict: boolean): PassState {
-  if (pass === 'digital' ? digitalRunning : reviewing) return 'run';
+/** A review pass takes its colour from its findings; generate and fix only say whether they ran. */
+function stepState(name: string, jobState: string | undefined, findings: Finding[], hasVerdict: boolean): PassState {
+  if (jobState === 'running') return 'run';
+  if (!REVIEW_PASSES.has(name)) return jobState === 'done' ? 'ok' : '';
   if (!hasVerdict) return '';
-  const mine = findings.filter((f) => f.pass === pass);
+  const mine = findings.filter((f) => f.pass === name);
   if (mine.some((f) => f.severity === 'blocker' || f.severity === 'major')) return 'bad';
   return mine.length ? 'minor' : 'ok';
 }
@@ -42,10 +46,12 @@ function ChapterCard({ subject, slug, title, data, act, onDone }: {
 }) {
   const c = data.state.chapters[slug];
   const job = data.job;
-  const step = (pass: string) => job?.steps.find((s) => s.chapter === slug && s.pass === pass);
-  const reviewing = !!job?.live && step('reviews')?.state === 'running';
-  const digitalRunning = !!job?.live && step('digital')?.state === 'running';
-  const reused = !job?.live && step('reviews')?.state === 'skipped';
+  const step = (pass: string) => job?.steps.find((s) => s.chapter === slug && s.pass === pass)?.state;
+  const reviewing = !!job?.live && STEPS.some((p) => step(p) === 'running');
+  const reused = !job?.live && STEPS.every((p) => step(p) === 'skipped');
+  const sections = data.editions?.[slug] ?? [];
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notes, setNotes] = useState('');
   const findings = [...(c?.findings ?? [])].sort((a, b) => SEV[a.severity] - SEV[b.severity]);
   const shown = findings.filter((f) => f.severity !== 'minor' || findings.length <= 2).slice(0, 3);
   const waiting = c?.verdict === 'unsure' && !c.approvedBy && !c.rejected;
@@ -54,7 +60,7 @@ function ChapterCard({ subject, slug, title, data, act, onDone }: {
   };
 
   let tag = <Tag>queued</Tag>;
-  if (reviewing || digitalRunning) tag = <Tag color="processing">reviewing</Tag>;
+  if (reviewing) tag = <Tag color="processing">reviewing</Tag>;
   else if (c?.rejected) tag = <Tag color="default">rejected</Tag>;
   else if (c?.verdict === 'fail') tag = <Tag color="error">failed</Tag>;
   else if (waiting) tag = <Tag color="warning">needs you</Tag>;
@@ -67,14 +73,14 @@ function ChapterCard({ subject, slug, title, data, act, onDone }: {
         {title}<span style={{ flex: 1 }} />{tag}
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-        {PASSES.map((p) => <Pill key={p} name={p} state={passState(p, c?.findings ?? [], reviewing, digitalRunning, !!c?.verdict)} />)}
+        {STEPS.map((p) => <Pill key={p} name={p} state={stepState(p, step(p), c?.findings ?? [], !!c?.verdict)} />)}
       </div>
       {shown.map((f, i) => (
         <div key={i} style={{ marginTop: 8, fontSize: 13, borderRadius: 8, padding: '8px 10px', background: f.severity === 'minor' ? '#fffbe6' : f.severity === 'major' ? '#fff7e6' : '#fff1f0' }}>
-          <b style={{ textTransform: 'capitalize' }}>{f.severity} · {f.pass}:</b> {f.summary}
+          <b style={{ textTransform: 'capitalize' }}>{f.severity} · {f.pass}{f.page > 0 ? ` · page ${f.page}${sections[f.page - 1] ? ` (${sections[f.page - 1]})` : ''}` : ''}:</b> {f.summary}
         </div>
       ))}
-      {!reviewing && !digitalRunning && c?.verdict && (
+      {!reviewing && c?.verdict && (
         <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
           {(waiting || (c.verdict === 'pass' && !c.approvedBy && !c.rejected)) && <Button size="small" type="primary" onClick={() => run({ action: 'approve', chapter: slug })}>Approve</Button>}
           {(waiting || c.verdict === 'fail') && (
@@ -83,6 +89,23 @@ function ChapterCard({ subject, slug, title, data, act, onDone }: {
             </Link>
           )}
           {waiting && <Button size="small" onClick={() => run({ action: 'reject', chapter: slug })}>Reject</Button>}
+          {sections.length > 0 && <Link href={`/handbooks/${subject}/${slug}/edition`}><Button size="small">Open the edition</Button></Link>}
+          {!job?.live && <Button size="small" onClick={() => setNotesOpen((v) => !v)}>Regenerate with notes</Button>}
+        </div>
+      )}
+      {notesOpen && !reviewing && (
+        <div style={{ marginTop: 8 }}>
+          <Input.TextArea
+            aria-label={`notes for ${title}`}
+            rows={3}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="What should change? Name a section to rewrite only that one; otherwise every section is rewritten."
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6 }}>
+            <Button size="small" onClick={() => setNotesOpen(false)}>Cancel</Button>
+            <Button size="small" type="primary" disabled={!notes.trim()} onClick={async () => { await run({ action: 'regenerate', chapter: slug, notes: notes.trim() }); setNotes(''); setNotesOpen(false); }}>Regenerate</Button>
+          </div>
         </div>
       )}
     </div>

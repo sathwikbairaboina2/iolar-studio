@@ -4,6 +4,7 @@ import { chapterDir, isSlug } from '@/lib/paths';
 import { loadSubject } from '@/lib/store';
 import { exportSubject } from '@/lib/publish/export';
 import { chapterHash } from '@/lib/publish/hash';
+import { editionHash, loadEdition } from '@/lib/digital/edition';
 import { readJob, startPublish } from '@/lib/publish/job';
 import { checkOrder } from '@/lib/publish/order';
 import { liveChapters, queue, readState, updateState } from '@/lib/publish/state';
@@ -16,8 +17,14 @@ async function snapshot(subject: string) {
   const state = await readState(subject);
   // A chapter edited after its review is not live until it is reviewed again.
   const stale: string[] = [];
+  // Section title of every page, in page order, so a finding's page number can name its section.
+  const editions: Record<string, string[]> = {};
   for (const [slug, c] of Object.entries(state.chapters)) {
-    if (c.hash && (await chapterHash(subject, slug).catch(() => null)) !== c.hash) stale.push(slug);
+    const edition = await loadEdition(subject, slug);
+    if (edition) editions[slug] = edition.sections.flatMap((s) => s.pages.map(() => s.title));
+    const changed = !!c.hash && (await chapterHash(subject, slug).catch(() => null)) !== c.hash;
+    const swapped = !!c.editionHash && (!edition || editionHash(edition) !== c.editionHash);
+    if (changed || swapped) stale.push(slug);
   }
   return {
     state,
@@ -25,6 +32,7 @@ async function snapshot(subject: string) {
     queue: queue(state),
     live: liveChapters(state).filter((s) => !stale.includes(s)),
     stale,
+    editions,
   };
 }
 
@@ -68,6 +76,20 @@ export async function POST(req: Request, ctx: Ctx) {
         if (!chapters.every(exists)) return bad('unknown chapter', 404);
         try {
           return NextResponse.json({ job: await startPublish(subject, [...new Set(chapters)]) });
+        } catch (err) {
+          if (err instanceof Error && err.message === 'busy') return bad('a publish run is already live for this subject', 409);
+          throw err;
+        }
+      }
+      case 'regenerate': {
+        const chapter = body.chapter;
+        if (typeof chapter !== 'string' || !isSlug(chapter)) return bad('chapter must be a slug');
+        if (!exists(chapter)) return bad('unknown chapter', 404);
+        const notes = typeof body.notes === 'string' ? body.notes.trim() : '';
+        if (!notes) return bad('notes must say what to change');
+        if (notes.length > 4000) return bad('notes are too long');
+        try {
+          return NextResponse.json({ job: await startPublish(subject, [chapter], { notes: { [chapter]: notes } }) });
         } catch (err) {
           if (err instanceof Error && err.message === 'busy') return bad('a publish run is already live for this subject', 409);
           throw err;

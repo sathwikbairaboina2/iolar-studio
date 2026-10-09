@@ -9,6 +9,8 @@ export type PublishData = {
   queue: { chapters: string[]; order: boolean };
   live: string[];
   stale: string[];
+  /** Per chapter, the section title of each edition page in order. */
+  editions: Record<string, string[]>;
 };
 
 /** The publish snapshot for a subject, refreshed every 1.5 s only while a run is live. */

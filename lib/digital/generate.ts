@@ -3,7 +3,7 @@ import { runClaude } from '@/lib/ai/claude';
 import { extractJson } from '@/lib/ai/revise';
 import { listParts, loadChapterMeta, loadPost } from '@/lib/store';
 import type { Post } from '@/lib/schema';
-import { inputsHash, saveEdition, validateEdition, type Edition, type EditionPage, type EditionSection } from './edition';
+import { inputsHash, loadEdition, saveEdition, validateEdition, type Edition, type EditionPage, type EditionSection } from './edition';
 import { carouselText, sectionPrompt } from './prompt';
 
 export type SectionRequest = { role: 'intro' | 'outline' | 'quiz'; outlineIndex?: number; notes?: string[] };
@@ -55,6 +55,27 @@ export async function generateSection(subject: string, chapter: string, req: Sec
   return writeSection(subject, chapter, await context(subject, chapter), req);
 }
 
+/** Runs the jobs three at a time, keeps their order, and stops starting new ones after the first failure. */
+async function inPool<T, R>(items: T[], job: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  let failure: unknown;
+  const worker = async () => {
+    while (!failure) {
+      const i = next++;
+      if (i >= items.length) return;
+      try {
+        out[i] = await job(items[i]);
+      } catch (err) {
+        failure ??= err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PARALLEL, items.length) }, worker));
+  if (failure) throw failure;
+  return out;
+}
+
 /** Intro, one section per book.json section, then quiz and summary. Nothing is saved unless every section is valid. */
 export async function generateEdition(subject: string, chapter: string, opts: { notes?: Record<number, string[]> } = {}): Promise<Edition> {
   const hash = await inputsHash(subject, chapter);
@@ -64,24 +85,32 @@ export async function generateEdition(subject: string, chapter: string, opts: { 
     ...ctx.book.chapters.map((_, i): SectionRequest => ({ role: 'outline', outlineIndex: i, notes: opts.notes?.[i] })),
     { role: 'quiz' },
   ];
-  const sections: EditionSection[] = new Array(requests.length);
-  let next = 0;
-  let failure: unknown;
-  const worker = async () => {
-    while (!failure) {
-      const i = next++;
-      if (i >= requests.length) return;
-      try {
-        sections[i] = await writeSection(subject, chapter, ctx, requests[i]);
-      } catch (err) {
-        failure ??= err;
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(PARALLEL, requests.length) }, worker));
-  if (failure) throw failure;
+  const sections = await inPool(requests, (r) => writeSection(subject, chapter, ctx, r));
 
   const edition: Edition = { schema: 1, subject, chapter, inputsHash: hash, generatedAt: new Date().toISOString(), sections };
   await saveEdition(edition);
   return edition;
+}
+
+/**
+ * Writes the sections the notes name (by title) again with the notes, or every outline section when none is
+ * named. Without an edition yet, writes a whole one with the notes on every outline section.
+ */
+export async function regenerateWithNotes(subject: string, chapter: string, notes: string): Promise<Edition> {
+  const ctx = await context(subject, chapter);
+  const edition = await loadEdition(subject, chapter);
+  const outline = edition?.sections.filter((s) => s.role === 'outline').length ?? 0;
+  if (!edition || outline !== ctx.book.chapters.length) {
+    return generateEdition(subject, chapter, { notes: Object.fromEntries(ctx.book.chapters.map((_, i) => [i, [notes]])) });
+  }
+  const low = notes.toLowerCase();
+  const named = edition.sections.flatMap((s, i) => (low.includes(s.title.toLowerCase()) ? [i] : []));
+  const targets = named.length ? named : edition.sections.flatMap((s, i) => (s.role === 'outline' ? [i] : []));
+  const hash = await inputsHash(subject, chapter);
+  const written = await inPool(targets, (i) => writeSection(subject, chapter, ctx, { role: edition.sections[i].role, outlineIndex: edition.sections[i].outlineIndex, notes: [notes] }));
+  const sections = [...edition.sections];
+  targets.forEach((si, k) => { sections[si] = written[k]; });
+  const next: Edition = { ...edition, inputsHash: hash, generatedAt: new Date().toISOString(), sections };
+  await saveEdition(next);
+  return next;
 }

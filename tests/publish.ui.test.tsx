@@ -16,7 +16,7 @@ const publish = {
     alwaysAsk: false,
     chapters: {
       loop: { selected: true, verdict: 'pass', approvedBy: 'ai', hash: 'h' },
-      tasks: { selected: true, verdict: 'unsure', hash: 'h', findings: [{ pass: 'pedagogy', rule: 'pedagogy.ai', severity: 'major', page: 1, summary: 'Part 2 repeats the setup.', evidence: '', fix: '' }] },
+      tasks: { selected: true, verdict: 'unsure', hash: 'h', findings: [{ pass: 'pedagogy', rule: 'pedagogy.ai', severity: 'major', page: 2, summary: 'Part 2 repeats the setup.', evidence: '', fix: '' }] },
       db: { selected: true, verdict: 'fail', hash: 'h' },
     },
     exportedAt: new Date().toISOString(),
@@ -25,6 +25,7 @@ const publish = {
   queue: { chapters: ['tasks'], order: false },
   live: ['loop'],
   stale: [],
+  editions: { tasks: ['Intro', 'Coroutines', 'Coroutines'] },
 };
 
 let posts: unknown[];
@@ -88,5 +89,25 @@ describe('publish UI', () => {
     await mount();
     await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Always ask me' })); });
     await waitFor(() => expect(posts).toContainEqual({ url: '/api/handbooks/py/publish', body: { action: 'alwaysAsk', value: true } }));
+  });
+
+  it('shows the six steps per chapter and findings with page and section title', async () => {
+    await mount();
+    await act(async () => { fireEvent.click(screen.getByText(/Review queue/)); });
+    await waitFor(() => expect(screen.getByText(/Part 2 repeats the setup/)).toBeTruthy());
+    for (const name of ['generate', 'rules', 'facts', 'pedagogy', 'readability', 'fix']) expect(screen.getByTestId(`pass-${name}`)).toBeTruthy();
+    expect(screen.getByTestId('pass-pedagogy').getAttribute('data-state')).toBe('bad');
+    expect(screen.getByText(/page 2 [(]Coroutines[)]/)).toBeTruthy();
+  });
+
+  it('links to the edition and posts regenerate notes', async () => {
+    await mount();
+    await act(async () => { fireEvent.click(screen.getByText(/Review queue/)); });
+    await waitFor(() => expect(screen.getByText('Open the edition')).toBeTruthy());
+    expect(screen.getByText('Open the edition').closest('a')?.getAttribute('href')).toBe('/handbooks/py/tasks/edition');
+    await act(async () => { fireEvent.click(screen.getByText('Regenerate with notes')); });
+    fireEvent.change(screen.getByLabelText('notes for Tasks'), { target: { value: 'Coroutines needs a second example' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Regenerate' })); });
+    await waitFor(() => expect(posts).toContainEqual({ url: '/api/handbooks/py/publish', body: { action: 'regenerate', chapter: 'tasks', notes: 'Coroutines needs a second example' } }));
   });
 });

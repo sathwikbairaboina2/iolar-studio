@@ -96,4 +96,26 @@ describe('generateEdition', () => {
     expect(run.mock.calls[0][0]).toContain('Fix these problems from the review');
     expect(run.mock.calls[0][0]).toContain('fix the first example');
   });
+
+  it('regenerateWithNotes rewrites only the sections the notes name, or every outline section', async () => {
+    const run = mockClaude((p) => section(titleOf(p)));
+    const { generateEdition, regenerateWithNotes } = await import('@/lib/digital/generate');
+    await generateEdition('py', 'loop');
+    run.mockClear();
+    await regenerateWithNotes('py', 'loop', 'Beta needs a second example');
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0][0]).toContain('section "Beta"');
+    expect(run.mock.calls[0][0]).toContain('Beta needs a second example');
+    run.mockClear();
+    await regenerateWithNotes('py', 'loop', 'make it friendlier');
+    expect(run.mock.calls.map((c) => titleOf(c[0] as string)).sort()).toEqual(['Alpha', 'Beta']);
+  });
+
+  it('regenerateWithNotes writes a whole edition when none exists', async () => {
+    const run = mockClaude((p) => section(titleOf(p)));
+    const { regenerateWithNotes } = await import('@/lib/digital/generate');
+    const e = await regenerateWithNotes('py', 'loop', 'be brief');
+    expect(e.sections).toHaveLength(4);
+    expect(run.mock.calls.map((c) => c[0] as string).filter((p) => p.includes('be brief'))).toHaveLength(2);
+  });
 });
