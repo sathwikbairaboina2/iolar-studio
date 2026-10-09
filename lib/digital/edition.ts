@@ -9,6 +9,16 @@ export type EditionPage = { title: string; blocks: unknown[] };
 export type EditionSection = { title: string; role: 'intro' | 'outline' | 'quiz'; outlineIndex?: number; pages: EditionPage[] };
 export type Edition = { schema: 1; subject: string; chapter: string; inputsHash: string; generatedAt: string; sections: EditionSection[] };
 
+/** Limits a generated edition has to stay inside; the gates run every example, so size is time. */
+export const MAX_PAGES_PER_SECTION = 6;
+export const MAX_CODE_BLOCKS_PER_SECTION = 12;
+export const MAX_CODE_BLOCKS_PER_EDITION = 160;
+export const MAX_EDITION_BYTES = 1_500_000;
+
+/** Code blocks that are examples; an output block only shows what the example before it prints. */
+const exampleCount = (s: EditionSection) =>
+  s.pages.reduce((n, p) => n + p.blocks.filter((b) => (b as { type?: string; lang?: string })?.type === 'code' && (b as { lang?: string }).lang !== 'output').length, 0);
+
 export function editionFile(s: string, c: string) {
   return path.join(digitalDir(s, c), 'edition.json');
 }
@@ -35,6 +45,15 @@ export function validateEdition(e: Edition, title: string): { ok: true } | { ok:
     if (!s.pages.length) errors.push(`section "${s.title}" has no pages`);
     s.pages.forEach((p) => { if (!p.blocks.length) errors.push(`page "${p.title}" in "${s.title}" has no blocks`); });
   });
+  e.sections.forEach((s) => {
+    if (s.pages.length > MAX_PAGES_PER_SECTION) errors.push(`section "${s.title}" has ${s.pages.length} pages; the most allowed is ${MAX_PAGES_PER_SECTION}`);
+    const code = exampleCount(s);
+    if (code > MAX_CODE_BLOCKS_PER_SECTION) errors.push(`section "${s.title}" has ${code} code blocks; the most allowed is ${MAX_CODE_BLOCKS_PER_SECTION}`);
+  });
+  const total = e.sections.reduce((n, s) => n + exampleCount(s), 0);
+  if (total > MAX_CODE_BLOCKS_PER_EDITION) errors.push(`the edition has ${total} code blocks; the most allowed is ${MAX_CODE_BLOCKS_PER_EDITION}`);
+  const bytes = Buffer.byteLength(JSON.stringify(e.sections));
+  if (bytes > MAX_EDITION_BYTES) errors.push(`the edition is ${bytes} bytes; the most allowed is ${MAX_EDITION_BYTES}`);
   if (errors.length) return { ok: false, errors };
   const checked = parseHandbook({
     schema: 1, slug: e.subject, name: e.subject, description: '', updatedAt: e.generatedAt, order: [e.chapter],

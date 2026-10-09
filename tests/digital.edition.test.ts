@@ -84,4 +84,33 @@ describe('edition', () => {
     e.sections[0].title = 'Other';
     expect(editionHash(e)).not.toBe(h);
   });
+
+  it('rejects an edition over the page, code block and size caps', async () => {
+    const { validateEdition, MAX_PAGES_PER_SECTION, MAX_CODE_BLOCKS_PER_SECTION, MAX_CODE_BLOCKS_PER_EDITION, MAX_EDITION_BYTES } = await import('@/lib/digital/edition');
+    expect([MAX_PAGES_PER_SECTION, MAX_CODE_BLOCKS_PER_SECTION, MAX_CODE_BLOCKS_PER_EDITION, MAX_EDITION_BYTES]).toEqual([6, 12, 160, 1_500_000]);
+    const para = { type: 'paragraph', text: 'x' };
+    const code = { type: 'code', lang: 'python', lines: ['print(1)'] };
+    const out = { type: 'code', lang: 'output', lines: ['1'] };
+    const withSection = (pages: { title: string; blocks: unknown[] }[]) => {
+      const e = edition() as unknown as { sections: { pages: unknown[] }[] };
+      e.sections[1].pages = pages;
+      return e as unknown as ReturnType<typeof edition>;
+    };
+    const page = (blocks: unknown[]) => ({ title: 'p', blocks });
+    expect(validateEdition(withSection(Array.from({ length: 6 }, () => page([para]))), 'Loop').ok).toBe(true);
+    const tooMany = validateEdition(withSection(Array.from({ length: 7 }, () => page([para]))), 'Loop');
+    expect(tooMany.ok === false && tooMany.errors.join(' ')).toMatch(/7 pages.*6/);
+    // an output block is shown beside its example and does not count as one
+    expect(validateEdition(withSection([page(Array.from({ length: 12 }, () => code).concat(out))]), 'Loop').ok).toBe(true);
+    const tooMuchCode = validateEdition(withSection([page(Array.from({ length: 13 }, () => code))]), 'Loop');
+    expect(tooMuchCode.ok === false && tooMuchCode.errors.join(' ')).toMatch(/13 code blocks.*12/);
+    const big = edition();
+    big.sections[0].pages[0].blocks = [{ type: 'paragraph', text: 'y'.repeat(1_500_001) }];
+    const tooBig = validateEdition(big, 'Loop');
+    expect(tooBig.ok === false && tooBig.errors.join(' ')).toMatch(/1500000/);
+    const many = edition();
+    many.sections = [many.sections[0], ...Array.from({ length: 14 }, (_, i) => ({ title: `S${i}`, role: 'outline' as const, outlineIndex: i, pages: [{ title: 'p', blocks: Array.from({ length: 12 }, () => code) }] })), many.sections[2]];
+    const tooManyCode = validateEdition(many, 'Loop');
+    expect(tooManyCode.ok === false && tooManyCode.errors.join(' ')).toMatch(/168 code blocks.*160/);
+  });
 });

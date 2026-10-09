@@ -97,6 +97,20 @@ describe('generateEdition', () => {
     expect(run.mock.calls[0][0]).toContain('fix the first example');
   });
 
+  it('retries a section over the page cap once with the cap stated, then fails', async () => {
+    const seven = (p: string) => JSON.stringify({ title: titleOf(p), pages: Array.from({ length: 7 }, (_, i) => ({ title: `p${i}`, blocks: [{ type: 'paragraph', text: 'x' }] })) });
+    const run = mockClaude((p, n) => (n === 0 ? seven(p) : section(titleOf(p))));
+    const { generateSection } = await import('@/lib/digital/generate');
+    const s = await generateSection('py', 'loop', { role: 'intro' });
+    expect(s.pages).toHaveLength(1);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1][0]).toMatch(/7 pages.*most allowed is 6/);
+    vi.resetModules();
+    mockClaude((p) => seven(p));
+    const again = await import('@/lib/digital/generate');
+    await expect(again.generateSection('py', 'loop', { role: 'intro' })).rejects.toThrow(/most allowed is 6/);
+  });
+
   it('regenerateWithNotes rewrites only the sections the notes name, or every outline section', async () => {
     const run = mockClaude((p) => section(titleOf(p)));
     const { generateEdition, regenerateWithNotes } = await import('@/lib/digital/generate');

@@ -187,6 +187,22 @@ describe('editionGates', () => {
     expect(await codeFindings('[1, 2]\n', ['[1,2]'])).toHaveLength(1);
   });
 
+  it('stops running examples when the time budget is spent and says so with a major finding', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    run.mockResolvedValue(ok('1\n'));
+    const m = mini([py('print(1)'), output('1'), py('print(2)'), output('2')]);
+    const findings = await editionGates(m.edition, m.book, { budgetMs: 0 });
+    expect(run).not.toHaveBeenCalled();
+    const budget = findings.filter((x) => x.rule === 'rules.budget');
+    expect(budget).toHaveLength(1);
+    expect(budget[0].severity).toBe('major');
+    const { chapterVerdict } = await import('@/lib/publish/verdict');
+    expect(chapterVerdict([findings], [])).toBe('unsure');
+    run.mockClear();
+    expect((await editionGates(m.edition, m.book)).some((x) => x.rule === 'rules.budget')).toBe(false);
+    expect(run).toHaveBeenCalled();
+  });
+
   it('finds a dotted name through its member', async () => {
     const { editionGates } = await import('@/lib/digital/gates');
     const m = mini([para('Advance it with send(None) until it stops.')], ['Use `coro.send(None)` to advance it']);

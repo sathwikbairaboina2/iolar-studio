@@ -37,7 +37,7 @@ export const EDITION_RULES = [
   'Write common mistakes as callouts with style sticky.',
   'No single-asterisk italics, no markdown headings or links.',
   "Write for reading on a page: no 'swipe', 'next slide' or page numbers. Explain an idea in prose before showing code for it; do not turn the section into bullet dumps.",
-  'Every page has a title and at least one block. Use one to four pages per section.',
+  'Every page has a title and at least one block. Use one to four pages per section (never more than 6), and at most 12 code blocks in the whole section.',
   'Answer shape, as ONE JSON object and nothing else (no prose, no markdown fences): {"title": string, "pages": [{"title": string, "blocks": [...]}]}',
 ].join('\n\n');
 

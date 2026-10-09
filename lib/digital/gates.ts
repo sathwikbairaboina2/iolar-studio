@@ -96,8 +96,14 @@ export function missingThirdParty(stderr: string): boolean {
   return !!m && !PY_STDLIB.has(m[1].split('.')[0]);
 }
 
-export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
+/** All the examples together may take this long to run; after that the rest are skipped and the verdict cannot be a pass. */
+export const GATES_BUDGET_MS = 10 * 60_000;
+
+export async function editionGates(e: Edition, book: Book, opts: { budgetMs?: number } = {}): Promise<Finding[]> {
   const out: Finding[] = [];
+  const started = Date.now();
+  const budget = opts.budgetMs ?? GATES_BUDGET_MS;
+  let overBudget = false;
   const pages = flatten(e);
 
   const v = validateEdition(e, e.chapter);
@@ -124,7 +130,11 @@ export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
     const code = lines(block);
     const next = sequence[i + 1]?.block;
     const hasOutput = !!next && next.type === 'code' && next.lang === 'output';
-    if (!pythonMissing) {
+    if (!pythonMissing && !overBudget && Date.now() - started >= budget) {
+      overBudget = true;
+      out.push(finding('rules.budget', 'major', page, 'The examples took too long to run, so the rest were not checked.', `time budget ${Math.round(budget / 1000)}s`, 'Run the review again, or shorten the examples.'));
+    }
+    if (!pythonMissing && !overBudget) {
       // Standalone first: most examples are whole programs, and replaying every earlier example makes slow ones slower.
       // Only an example that fails alone is tried again with the earlier ones as its prelude.
       const text = code.join('\n');
