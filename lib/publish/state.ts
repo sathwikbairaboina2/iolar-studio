@@ -63,3 +63,17 @@ export function queue(s: PublishState): { chapters: string[]; order: boolean } {
     order: !!s.order && !s.order.approvedBy,
   };
 }
+
+const chains = new Map<string, Promise<unknown>>();
+
+/** Read, change and write the state one caller at a time, so a job and a click never overwrite each other. */
+export function updateState<T = void>(subject: string, fn: (s: PublishState) => T | Promise<T>): Promise<T> {
+  const run = (chains.get(subject) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const s = await readState(subject);
+    const out = await fn(s);
+    await writeState(subject, s);
+    return out;
+  });
+  chains.set(subject, run);
+  return run;
+}
