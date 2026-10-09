@@ -1,0 +1,531 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES JSONB — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "SQL/JSON Path Queries",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`@?` = does this path return at least one item",
+            "`@@` = evaluate a path that IS a predicate, return its boolean",
+            "Mixing the two up is the classic beginner error",
+            "Functions mirror them: `jsonb_path_exists`, `jsonb_path_match`",
+            "Plus `jsonb_path_query`, `_query_first`, `_query_array`"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "jsonb_path_query(data,",
+            "  '$.items[*] ? (@.sku == $s)',",
+            "  '{\"s\":\"A1\"}')  -- vars, not string glue",
+            "-- 4th arg silent => hide strict errors"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "PG 17 Adds",
+          "items": [
+            "`JSON_EXISTS`, `JSON_VALUE`, `JSON_QUERY`",
+            "`JSON_TABLE(... COLUMNS(...))`",
+            "Turns a document into a relation in one clause"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Indexing Caveat",
+          "text": "GIN accelerates `@?`/`@@` only for shapes it can reduce to containment: plain key accessors with `==`. Ranges, regex, and `.**` fall back to a full scan of the candidate set."
+        },
+        {
+          "type": "heading",
+          "text": "How GIN Works",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "GIN is an inverted index: extracted key to the rows containing it",
+            "Exactly the structure for 'which documents contain this bit'"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "jsonb_ops (default)",
+              "items": [
+                "Every key AND every value",
+                "Keys indexed as own strings",
+                "Does `@> ? ?| ?& @? @@`",
+                "Bigger index"
+              ]
+            },
+            "right": {
+              "title": "jsonb_path_ops",
+              "items": [
+                "One hash per path-to-value",
+                "Nothing for keys alone",
+                "Does `@> @? @@` only",
+                "Smaller, faster containment"
+              ]
+            }
+          }
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t USING gin (data);",
+            "CREATE INDEX ON t USING gin (",
+            "  data jsonb_path_ops);",
+            "-- data ? 'k' cannot use path_ops"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Why path_ops Wins",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One hash entry replaces several key/value entries",
+            "A key present in every row has a posting list of every row",
+            "So `@> '{\"status\":\"open\"}'` scans two huge lists and intersects",
+            "`jsonb_path_ops` probes one selective hash instead",
+            "Need key-existence queries? `jsonb_ops` is the only choice"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Lossy And Recheck",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "GIN stores no reconstructable value — every match rechecks the heap tuple",
+            "Expect `Bitmap Index Scan` + `Bitmap Heap Scan` with `Recheck Cond`",
+            "Never an index-only scan",
+            "`jsonb_path_ops` hash collisions give false positives; recheck filters them"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Index Less",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t USING gin ((data->'tags'));",
+            "SELECT * FROM t",
+            "WHERE data -> 'tags' @> '[\"sql\"]';",
+            "-- expression must match the index verbatim"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "GIN Indexing: ops vs path_ops",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Indexing one subtree gives a fraction of the size",
+            "`data->'tags' @> ...` will not use an index built on `data`",
+            "Partial GIN keeps a hot subset tiny"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t",
+            "  USING gin (data jsonb_path_ops)",
+            "  WHERE tenant_id = 42;",
+            "-- or WHERE data ? 'archived_at'"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Write Cost",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "GIN inserts are expensive",
+            "`fastupdate = on` (default) buffers them in a pending list",
+            "VACUUM or `gin_pending_list_limit` flushes it",
+            "A query may scan the pending list — latency spikes"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Workload",
+            "fastupdate"
+          ],
+          "rows": [
+            [
+              "Read-latency-sensitive",
+              "`off`"
+            ],
+            [
+              "Write-heavy ingestion",
+              "`on`"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Bulk Load",
+          "items": [
+            "Drop the GIN index, `COPY`, rebuild",
+            "Far cheaper than row-by-row maintenance",
+            "Raise `maintenance_work_mem` for the rebuild",
+            "`btree_gin`: `gin (tenant_id, data jsonb_path_ops)`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Btree On Expressions",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "GIN cannot help range, sort, or unique constraints",
+            "For those, index the extracted scalar with btree"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t ((data ->> 'email'));",
+            "CREATE INDEX ON t (((data->>'age')::int));",
+            "WHERE (data->>'age')::int > 30  -- must match",
+            "CREATE UNIQUE INDEX ON t ((data->>'email'));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The cast goes inside the index AND inside the query",
+            "The cast must be IMMUTABLE — `::timestamptz` from text is not",
+            "Store UTC and cast to `timestamp`, or use a stable helper",
+            "Uniqueness inside a document: one of the few real constraints jsonb carries"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Generated Columns",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "ALTER TABLE t ADD COLUMN email text",
+            "  GENERATED ALWAYS AS (data ->> 'email')",
+            "  STORED;   -- PG 12+, then index it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Usually better than an expression index",
+            "Add NOT NULL, add a CHECK, reference it from views",
+            "Keep the document as the source of truth",
+            "Promote hot keys as the query patterns reveal themselves"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Expression Indexes, TOAST, Planner",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The TOAST Tax",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A row wider than ~2 KB pushes jsonb out of line and compresses it",
+            "Reading one key detoasts and decompresses the WHOLE document",
+            "There is no partial read of a jsonb field",
+            "`SELECT data->>'id'` on a 200 KB document does 200 KB of work per row"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "SET STORAGE EXTERNAL",
+          "text": "`ALTER TABLE ... ALTER COLUMN data SET STORAGE EXTERNAL` skips compression: bigger on disk, cheaper CPU per read. Measure before adopting. Narrow, hot fields belong in columns, not deep in a fat document."
+        },
+        {
+          "type": "heading",
+          "text": "Planner Blindness",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Postgres collects no per-key statistics for jsonb",
+            "`@>` selectivity is a fixed guess, roughly 0.1%, however common the value",
+            "Wrong estimates feed wrong join orders and nested loops over millions",
+            "`EXPLAIN ANALYZE` and compare estimated vs actual rows"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Why It Actually Got Faster",
+          "text": "A generated column gets real statistics — histograms, MCVs, `n_distinct`. That, not the index, is often the real reason. Prefer btree on a generated column whenever the key is always present."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Access",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "GIN containment",
+              "list intersections + recheck"
+            ],
+            [
+              "Btree, generated col",
+              "O(log n), no recheck"
+            ],
+            [
+              "Fat doc, one key",
+              "full detoast per row"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Storage Overhead",
+          "items": [
+            "Every row repeats every key name",
+            "A million rows pay for `\"description\"` a million times",
+            "A column stores the name once, in the catalog"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE EXTENSION pg_trgm;",
+            "CREATE INDEX ON t USING gin (",
+            "  (data ->> 'title') gin_trgm_ops);",
+            "-- makes LIKE '%foo%' indexable"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Pick A Column When",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The field is filtered, joined, sorted, or aggregated on",
+            "You get statistics, btree indexes, and plans that do not guess",
+            "You need integrity: NOT NULL, CHECK, UNIQUE, especially FOREIGN KEY",
+            "A jsonb field can never reference another table",
+            "The field updates often and the document is large"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Why Large Hurts",
+          "text": "Every jsonb update rewrites the whole row and re-TOASTs the whole value. Frequent small writes into a fat document are the classic mistake."
+        }
+      ]
+    },
+    {
+      "page_title": "Expression Indexes, TOAST, Planner (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Pick jsonb When",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Attributes are sparse, unbounded, or caller-defined",
+            "Webhook payloads, per-tenant custom fields, flags, event properties",
+            "The access pattern is whole-document read/write",
+            "The shape versions faster than you can ship migrations"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "jsonb as an EAV replacement is a genuine win",
+            "One indexed column beats an attribute table with a self-join per attribute"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Hybrid Answer",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "table row",
+            "branches": [
+              {
+                "label": "columns",
+                "children": [
+                  "stable core",
+                  "hot keys promoted"
+                ]
+              },
+              {
+                "label": "jsonb",
+                "children": [
+                  "variable tail",
+                  "caller-defined"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stable core as columns, variable tail as jsonb",
+            "Promote hot jsonb keys to generated columns over time",
+            "Postgres allows 1600 columns; a document counts as one"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Mistakes To Avoid",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "`data->>'k' = 'v'`",
+              "`data @> '{\"k\":\"v\"}'`"
+            ],
+            [
+              "`->>` compared numerically",
+              "cast; `'10' < '9'` is true"
+            ],
+            [
+              "`@> '{\"tags\":\"sql\"}'`",
+              "`@> '{\"tags\":[\"sql\"]}'`"
+            ],
+            [
+              "missing key = JSON null",
+              "`?` or `jsonb_typeof`"
+            ]
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "When a Column Beats a Document",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "NULL arg to `jsonb_set`",
+              "`coalesce` / `jsonb_set_lax`"
+            ],
+            [
+              "expecting key order kept",
+              "use `json` or `text`"
+            ],
+            [
+              "JSON by concatenation",
+              "`jsonb_build_object`"
+            ],
+            [
+              "one giant doc per row",
+              "full detoast every read"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The scalar-in-array exception does not reach nested levels",
+            "Duplicate keys never survive a jsonb round trip",
+            "Concatenated JSON is a JSON-injection hole, not a style choice",
+            "Only the first form of each pair can use a GIN index"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Whole Handbook",
+          "ink": "black"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "One Line",
+          "text": "jsonb is a parsed, ordered, indexable structure; `@>` plus GIN is the fast path; jsonpath is the expressive path; expression and generated columns supply the constraints and statistics jsonb lacks — and the moment a key becomes load-bearing, promote it to a column."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of POSTGRES JSONB. Most Postgres jsonb bugs are not bugs — they are two operators that look identical and behave nothing alike. `data->>'k' = 'v'` cannot touch a GIN index; `data @> '{\"k\":\"v\"}'` can. Ten pages on storage, containment, jsonpath, GIN opclasses, TOAST, and the exact moment a key stops belonging in the document.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#jsonb",
+      "#sql",
+      "#database",
+      "#backend",
+      "#dataengineering",
+      "#devnotes",
+      "#codingtips",
+      "#softwareengineering",
+      "#programming",
+      "#studygram"
+    ]
+  }
+}

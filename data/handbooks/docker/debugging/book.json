@@ -1,0 +1,176 @@
+{
+  "title": "Debugging Running Containers: A Dense-Notes Field Guide",
+  "summary": "A study-notes handbook on debugging live containers: exec and logs, healthchecks, resource limits, cgroup internals, and namespace inspection — mechanics, commands, trade-offs, and classic mistakes.",
+  "chapters": [
+    {
+      "title": "Ch 1 — The Debugging Mindset for Containers",
+      "points": [
+        "Container = process wrapped in namespaces + cgroups; debugging is really debugging a process with an isolated view",
+        "Ephemeral by design: containers die and restart with fresh filesystems — persist state via volumes before deep debugging",
+        "Debug surface layers: process (exec), stdout/stderr (logs), liveness (healthchecks), resources (cgroups), isolation (namespaces)",
+        "Rule: never 'fix' a running container by hand; reproduce, fix the image/config, redeploy",
+        "Container != VM: no full init system, no systemd usually, shared kernel with host",
+        "PID 1 in a container is your app (or entrypoint) — no reapster for zombies unless tini/init is used",
+        "Is the container running but broken, restarting, or crashing? docker ps STATUS column tells you which path to take",
+        "docker ps -a to see exited containers; docker start/attach to re-enter a stopped one",
+        "Exit codes are diagnostics: 137 = SIGKILL (OOM often), 143 = SIGTERM, 126/127 = command/exec problems",
+        "Immutable-image philosophy: a 'fixed' running container is a drift bomb; changes vanish on restart",
+        "Ask first: is it the container, the orchestrator, or the host? Check docker inspect vs kubectl describe vs dmesg",
+        "Debug toolkit map: docker logs → docker exec → docker inspect → docker stats → nsenter/proc"
+      ]
+    },
+    {
+      "title": "Ch 2 — docker exec: Into the Live Process",
+      "points": [
+        "docker exec runs a NEW process inside the container's existing namespaces — it does not 'enter' the main process",
+        "Syntax: docker exec -it <ctr> sh — prefer sh over bash; slim images often lack bash",
+        "-i keeps STDIN open, -t allocates a TTY; without -t output loses colors/prompt but works in scripts",
+        "exec vs attach: attach attaches to PID 1's stdio (and a Ctrl-C can kill your app); exec spawns a side process — safer",
+        "Use exec --user to test permission problems: docker exec -it --user 1000:1000 <ctr> sh",
+        "Env is inherited from container config; exec -e VAR=x to probe env-dependent bugs",
+        "If the image has no shell (distroless): docker debug (podman), ephemeral debug containers (kubectl debug), or cp a static busybox in",
+        "Exit code of exec = exit code of the command run — scriptable health probes: docker exec <ctr> test -f /tmp/ready",
+        "Non-interactive one-liners for probing: docker exec <ctr> ps aux, cat /etc/resolv.conf, env",
+        "Gotcha: exec won't start if the container is restarting/crash-looping — debug via logs or run an identical container on the same volume instead",
+        "exec'd processes appear in docker top and host ps — remember when auditing",
+        "Write permission tests: docker exec <ctr> touch /data/probe && docker exec <ctr> rm /data/probe"
+      ]
+    },
+    {
+      "title": "Ch 3 — Logs: stdout, stderr, and the Logging Driver",
+      "points": [
+        "Docker captures container stdout+stderr as JSON lines (default json-file driver) stored under /var/lib/docker/containers/<id>/<id>-json.log",
+        "docker logs -f <ctr> = tail -f; --tail 100 for recent; --since/--until for time windows",
+        "Add timestamps with -t; this exposes lag between log time and real event time",
+        "Logs only capture what the app writes to fd 1/2 — files written inside the container are NOT in docker logs (common trap with nginx/app writing to /var/log)",
+        "Redirect in-process (symlink access.log → /dev/stdout) or run tail -F in the container to forward file logs to stdout",
+        "docker logs fails with 'unrecognized log driver' when using journald/fluentd/syslog drivers — use the driver's own tooling",
+        "Log rotation: default json-file driver has NO size limit — set --log-opt max-size/max-file or disk fills silently",
+        "json-file shows partial lines: long lines are split with 'partial': true markers",
+        "Multi-line logs (stack traces) pollute JSON lines — handle in the collector (fluentd multiline parser), not at the source",
+        "Orchestration: kubectl logs <pod> -c <container>; -p for previous crashed container's logs — gold for crash loops",
+        "Correlating logs: log the container ID/hostname and request ID at startup to join app logs with infra logs",
+        "Trade-off: logging to stdout = simple and centralized, but loses per-file structure; pick per component, not per platform"
+      ]
+    },
+    {
+      "title": "Ch 4 — Healthchecks: Knowing Broken vs Alive",
+      "points": [
+        "HEALTHCHECK in Dockerfile or --health-* flags define a probe; states: starting → healthy / unhealthy",
+        "HEALTHCHECK CMD curl -f http://localhost:8080/health || exit 1 — nonzero exit = failed check",
+        "Tuning: --interval 30s, --timeout 5s, --start-period 40s, --retries 3 — start-period prevents boot-time false kills",
+        "docker inspect --format='{{json .State.Health}}' <ctr> shows status, failing streak, and last probe output+exit code — the key debug output",
+        "docker events --filter event=health_status streams unhealthy transitions live",
+        "Healthcheck ≠ liveness kill in plain Docker: Docker marks it unhealthy but does nothing; orchestrators restart/route based on it",
+        "Kubernetes splits it: livenessProbe (restart), readinessProbe (traffic), startupProbe (boot grace) — one probe is rarely enough",
+        "Cheap probes without curl in minimal images: exec an app subcommand, test a unix socket with [ -S ], or wget --spider",
+        "Probe cost: a health endpoint hitting the DB on every check turns probes into load generators — cache or shallow-check",
+        "Gotcha: exec-form probes with shell || exit 1 semantics vs CMD-SHELL form; shell form needed for pipes/||",
+        "Readiness should gate traffic, liveness only detect unrecoverable states — a failing dependency belongs in readiness, not liveness (else restart storm)",
+        "Anti-pattern: checking the process exists (pgrep) — a wedged process is 'alive'; probe behavior, not existence"
+      ]
+    },
+    {
+      "title": "Ch 5 — Resource Limits: CPU and Memory Flags",
+      "points": [
+        "--memory (hard cap): exceeding it → OOM kill (exit 137); --memory-swap caps RAM+swap (memory-swap = memory means no swap)",
+        "--cpus=1.5 (CFS quota, modern) vs --cpu-shares (relative weight, only enforced under contention)",
+        "--cpuset-cpus pins to specific cores — useful for NUMA/latency-sensitive workloads",
+        "CPU limits don't kill; they throttle → symptoms are latency spikes and timeouts, not crashes — very different debug signature than memory",
+        "docker stats: live CPU%, MEM usage vs limit, net/block IO per container — first tool for 'is it resource pressure?'",
+        "docker stats shows the swap illusion: MEM USE includes cache; compare against limit, not host RAM",
+        "Throttle detection: /sys/fs/cgroup cpu.stat inside the container — nr_throttled and throttled_time are the smoking gun",
+        "Memory fields: memory.usage_in_bytes vs memory.max; events (v2) or memory.failcnt (v1) count limit hits",
+        "JVM and similar runtimes need explicit heap settings — old 'read host RAM' heuristics mis-size the container",
+        "Limit trade-off: no limits = noisy neighbor; tight limits = OOM kills and throttling — size from measured peaks (docker stats / metrics), plus ~20% headroom",
+        "Gotcha: --memory without --memory-swap still allows swap = 2× apparent limit; surprising slowness comes from swap-in",
+        "In Kubernetes: requests (scheduling) vs limits (enforcement) — CPU-only requests, or Guaranteed QoS when limits = requests"
+      ]
+    },
+    {
+      "title": "Ch 6 — cgroups Internals: How Limits Are Enforced",
+      "points": [
+        "cgroups (control groups) are a kernel feature that accounts and limits CPU, memory, IO, pids per group of processes",
+        "Two versions: cgroup v1 (one hierarchy per controller, /sys/fs/cgroup/<ctl>) vs v2 (unified tree, /sys/fs/cgroup/<ctr>.scope) — check with stat -fc %T /sys/fs/cgroup (cgroup2fs = v2)",
+        "CPU enforcement = CFS bandwidth: cpu.max = 'quota period' (v2), e.g. '150000 100000' = 1.5 CPUs; cfs_quota_us/cfs_period_us in v1",
+        "cpu.stat: nr_periods, nr_throttled, throttled_usec — throttled close to periods means your limit is the bottleneck",
+        "Memory: memory.max (hard), memory.high (soft throttle via reclaim before OOM), memory.current (usage)",
+        "OOM path: hitting memory.max → kernel OOM killer picks largest RSS in the group → SIGKILL, exit 137; find it in dmesg or memory.events oom_kill counter",
+        "Page cache counts toward memory.current — a container streaming big files can OOM on cache, not heap; kernel reclaims it but can spike past high",
+        "pids.max controller caps fork bombs: 'fork: Cannot allocate memory' when pids exhausted, not RAM",
+        "Find a container's cgroup: /proc/<pid>/cgroup on the host, or docker inspect .Id → /sys/fs/cgroup/.../docker-<id>.scope",
+        "Hierarchy inheritance: limits set on a parent (e.g. pod slice) constrain all children — k8s pod-level limits live above container scopes",
+        "Debug trick: cat the cgroup files from inside the container (they're its view) — no host access needed for cpu.stat/memory.max",
+        "v1↔v2 gotcha: tutorials' v1 paths fail on modern distros; know both names (cfs_quota_us ↔ cpu.max, memory.limit_in_bytes ↔ memory.max)"
+      ]
+    },
+    {
+      "title": "Ch 7 — Namespaces: What the Container Sees",
+      "points": [
+        "Namespaces virtualize kernel views; a container = usual Linux process with a stack of namespaces",
+        "Core set: PID, NET, MNT, UTS (hostname), IPC, USER, CGROUP, (TIME newer) — each isolates one dimension",
+        "PID namespace: container sees its own process numbering starting at 1; host sees real PIDs — that's why host ps shows more",
+        "NET namespace: private interfaces, routes, iptables, ports; docker0 bridge + veth pair connect container to host",
+        "MNT namespace: private mount table — /proc inside shows container mounts; bind mounts appear in both views",
+        "USER namespace: maps container UIDs to host UIDs (root in container = unprivileged on host, with userns-remap/rootless)",
+        "Inspect from inside: ls /proc/*/ns/, readlink /proc/self/ns/<ns> gives per-namespace inode — equal inode = same namespace",
+        "Inspect from host: lsns -t pid,net lists namespaces and their processes; pid's /proc/<pid>/ns links are your entry",
+        "Real PIDs from host: docker top <ctr> maps container PIDs to host PIDs — needed for strace/perf from host",
+        "Debug via proc even without a shell in the image: from host, /proc/<hostpid>/root/ is the container filesystem, /proc/<hostpid>/cmdline its command",
+        "Sharing namespaces: docker run --pid=host / --network=host breaks isolation for debugging (or reuse another container's: --network=container:<x>)",
+        "Gotcha: two containers on the same network (k8s pod) share NET but not PID namespaces — localhost works, ps doesn't"
+      ]
+    },
+    {
+      "title": "Ch 8 — nsenter, /proc, and Host-Side Deep Inspection",
+      "points": [
+        "nsenter -t <hostpid> -n -p -m sh enters a process's namespaces from the host — works when exec can't (no shell image, agent-based tooling)",
+        "Flag map: -p PID ns, -n net, -m mount, -i IPC, -u UTS, -U user; omit flags you don't need",
+        "Get host PID first: docker inspect --format '{{.State.Pid}}' <ctr>, or crictl inspect in k8s",
+        "Host PID namespace view: ps aux | grep <ctr-id-prefix> — host PID 12345 = container PID N",
+        "strace a container process from host: nsenter -t <pid> -p strace -p <inner_pid> — or strace directly on host PID, syscall table is shared",
+        "net tools in net ns: nsenter -t <pid> -n ss -tlnp, ip addr — check listening ports/DNS routes without exec",
+        "Check open files/fds: ls -l /proc/<pid>/fd and fd/... → detects leaked sockets, deleted-but-open logs (disk not freed)",
+        "/proc/<pid>/status: NSpid line shows the PID translation chain across namespace layers",
+        "k8s equivalent: kubectl debug node/<node> -it --image=busybox, then nsenter -t 1 -... or crictl ps/plogs for crash-looping pods",
+        "Warning: entering mnt+pid ns of a live container and mutating things = debugging via production surgery; prefer read-only inspection",
+        "crash-loop trick: docker run --rm -it --entrypoint sh --volumes-from <crashed> <image> to explore its volumes with a shell",
+        "tcpdump in the net ns from host captures container traffic without installing anything in the image"
+      ]
+    },
+    {
+      "title": "Ch 9 — docker inspect and the Metadata Goldmine",
+      "points": [
+        "docker inspect <ctr> dumps full config+state JSON — the ground truth of what actually runs, not what you think runs",
+        "Compare intent vs reality: diff .Config.Cmd/.Entrypoint/.Env against the Dockerfile/compose file — drift is a top bug source",
+        "State block: Status, Pid, ExitCode, OOMKilled (bool!), StartedAt, RestartCount, Health — OOMKilled=true instantly explains exit 137",
+        "NetworkSettings: IPAddress, Ports (mapped host:container), Networks — resolves 'why can't I connect' half the time",
+        "Mounts array: source → destination, mode (rw/ro) — wrong mount path/mode explains permission and missing-file bugs",
+        "Format queries: docker inspect -f '{{.State.Health.Status}}' / '{{range .Mounts}}{{.Source}} {{end}}' — scriptable, no jq needed (but jq is fine too)",
+        "RestartPolicy + RestartCount: On-failure loops hide flaky crashes; inspect restart history before logs get rotated away",
+        "Image vs container: docker image inspect for labels, layers, history — docker history <img> shows layer-by-layer commands and sizes",
+        "docker inspect also works on images/volumes/networks — same tool, different objects",
+        "docker events --since 1h: full lifecycle audit (start, die, oom, health_status, kill with signal) — reconstruct the timeline of a crash",
+        "docker port <ctr> and docker diff <ctr> (filesystem changes vs image) — docker diff exposes hand-fixes/drift inside the running container",
+        "Machine-readable everything: pair inspect JSON with docker stats --no-stream in scripts for a point-in-time debug snapshot"
+      ]
+    },
+    {
+      "title": "Ch 10 — Field Guide: Symptoms → Tools → Fixes (Summary)",
+      "points": [
+        "Crash loop → docker logs -p (k8s) or logs of previous container + .State.ExitCode/OOMKilled from inspect; fix image/config, not the running instance",
+        "Exit 137 + OOMKilled=true → raise memory limit or fix leak; verify via memory.current vs memory.max and oom events in dmesg",
+        "Slow but alive → check cpu.stat nr_throttled/throttled_usec; CPU limits throttle, memory limits kill — different symptoms, same cgroup system",
+        "App up but unreachable → inspect NetworkSettings/Ports, nsenter -t <pid> -n ss -tlnp: is it listening on 0.0.0.0 or only 127.0.0.1?",
+        "Logs empty → app writes to files not stdout; symlink to /dev/stdout or run with a tail sidecar",
+        "Exec says 'container not running' during crash loop → recreate with changed entrypoint (sleep infinity) or debug from host via nsenter",
+        "'Healthy' but broken → probe checks existence not behavior; rewrite healthcheck to exercise a real code path",
+        "Works locally, dies in prod → compare docker inspect .Config/.Env and cgroup limits between environments; drift lives in config",
+        "Disk filling → json-file log driver without max-size rotation; or deleted-but-open files in /proc/<pid>/fd",
+        "Zombie processes accumulating → PID 1 isn't reaping; add tini/--init",
+        "Method recap: status → logs → inspect → exec/stats → cgroups → namespaces; outside-in, read-only before surgery",
+        "Golden rules: treat containers as cattle, capture evidence (inspect/events/logs) before touching, and always fix at the image/config layer"
+      ]
+    }
+  ]
+}

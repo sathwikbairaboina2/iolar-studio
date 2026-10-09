@@ -1,0 +1,199 @@
+{
+  "title": "HTTPS & TLS: The Handshake Handbook",
+  "summary": "A dense field guide to how HTTPS actually works — TLS 1.2 and 1.3 handshakes step by step, certificate chains and validation, SNI, session resumption, and the metadata encryption leaves exposed. Covers internals, real-world usage, trade-offs, and the misconfigurations that bite in production.",
+  "chapters": [
+    {
+      "title": "What HTTPS Actually Is",
+      "points": [
+        "HTTPS = HTTP over TLS; no change to HTTP semantics, only the transport is wrapped",
+        "TLS sits between TCP (L4) and the application layer — application writes plaintext, TLS encrypts records",
+        "Default port 443 for HTTPS vs 80 for plaintext HTTP; port choice is convention, TLS is not port-bound",
+        "SSL is the dead ancestor: SSL 2.0 (1995), SSL 3.0 (1996), both broken and disabled; 'SSL' persists only as a colloquial name and in library names (OpenSSL)",
+        "TLS version timeline: 1.0 (1999), 1.1 (2006), 1.2 (2008, RFC 5246), 1.3 (2018, RFC 8446). TLS 1.0/1.1 deprecated by RFC 8996 in 2021",
+        "Three guarantees TLS provides: confidentiality (eavesdropper can't read), integrity (tamperer can't modify undetected), authentication (server proves identity)",
+        "Authentication is usually one-way: server proves who it is, client stays anonymous unless mTLS is configured",
+        "TLS gives no guarantee about the server's honesty — a valid cert on phishing-site.com is still valid; it proves domain control, not trustworthiness",
+        "Record layer: after handshake, data is chopped into records (max 16 KB plaintext each), each independently encrypted and MAC'd/AEAD-sealed",
+        "Handshake protocol vs record protocol: handshake negotiates keys, record protocol carries bulk data using those keys",
+        "Hybrid crypto: asymmetric (slow, RSA/ECDHE) used only to agree on keys; symmetric (fast, AES/ChaCha20) used for all bulk data",
+        "Cost model: handshake is the expensive part (1–2 round trips + asymmetric math); steady-state encryption is near-free with AES-NI hardware instructions",
+        "`https://` in the browser bar means 'encrypted and the cert validated', not 'safe site'",
+        "Mixed content: an HTTPS page loading an HTTP script gives an attacker full control of the page — browsers block active mixed content outright"
+      ]
+    },
+    {
+      "title": "The TLS 1.2 Handshake, Step by Step",
+      "points": [
+        "Precondition: TCP 3-way handshake (SYN, SYN-ACK, ACK) already completed — TLS starts on an established stream",
+        "Step 1 ClientHello: client sends max TLS version, 32-byte client random, session ID, list of cipher suites in preference order, and extensions (SNI, ALPN, supported curves, signature algorithms)",
+        "Step 2 ServerHello: server picks ONE cipher suite and version from the client's list, sends its own 32-byte server random and session ID",
+        "Step 3 Certificate: server sends its leaf certificate plus intermediate CA certs (chain order matters, root is normally omitted)",
+        "Step 4 ServerKeyExchange: for ECDHE suites the server sends its ephemeral public key, signed with the cert's private key — this signature is what proves the server holds the key",
+        "Step 5 ServerHelloDone: signals server is finished with its half",
+        "Step 6 ClientKeyExchange: client sends its ephemeral public key; both sides now compute the same ECDHE shared secret",
+        "Step 7 Key derivation: pre-master secret + client random + server random run through the PRF to yield the master secret, then session keys (separate encryption and MAC keys per direction)",
+        "Step 8 ChangeCipherSpec + Finished: each side flips to encrypted mode and sends a Finished message containing a hash of the entire handshake transcript",
+        "The Finished message is the anti-downgrade check: if an attacker edited any earlier plaintext handshake message, the transcript hashes diverge and the handshake aborts",
+        "Cost: 2 full round trips (2-RTT) before the first byte of application data — plus 1 RTT for TCP = 3 RTT to first byte",
+        "Cipher suite string decoded: `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` = ECDHE key exchange, RSA authentication, AES-128-GCM bulk cipher, SHA-256 for the PRF/handshake hash",
+        "Static RSA key exchange (client encrypts the pre-master secret to the server's RSA public key) has no forward secrecy and is removed in TLS 1.3",
+        "Gotcha: everything through ServerHelloDone is plaintext — the certificate and SNI are visible on the wire in TLS 1.2"
+      ]
+    },
+    {
+      "title": "TLS 1.3: What Changed and Why",
+      "points": [
+        "1-RTT handshake by default: client guesses the server's key-share group in ClientHello, so keys can be derived one round trip earlier",
+        "ClientHello now carries `key_share` (an ephemeral public key) speculatively; if the server wants a different group it sends HelloRetryRequest, costing an extra RTT",
+        "EncryptedExtensions: everything after ServerHello — including the certificate chain — is encrypted, so the server's cert is no longer visible to passive observers",
+        "Cipher suites shrank to 5, and only name the AEAD + hash (`TLS_AES_128_GCM_SHA256`) — key exchange and authentication are negotiated separately in extensions",
+        "Removed for good: RSA key transport, static DH, CBC-mode ciphers, RC4, 3DES, MD5/SHA-1 signatures, compression, renegotiation, and custom DHE groups",
+        "Forward secrecy is mandatory — every TLS 1.3 handshake uses ephemeral (EC)DHE, no exceptions",
+        "AEAD-only: all cipher suites are authenticated encryption (AES-GCM, AES-CCM, ChaCha20-Poly1305); no more encrypt-then-MAC vs MAC-then-encrypt footguns",
+        "HKDF replaces the TLS 1.2 PRF; a key schedule derives distinct secrets per handshake stage (early, handshake, application) so a leak at one stage doesn't unlock others",
+        "0-RTT (early data): client resumes and sends application data in its very first flight — zero round trips to first byte",
+        "0-RTT's price: early data is replayable, because the server has no fresh randomness in it yet. Only send idempotent requests (GET, not POST)",
+        "Middlebox compatibility mode: TLS 1.3 sends a dummy ChangeCipherSpec and fakes the TLS 1.2 version field so broken middleboxes don't drop the connection",
+        "Downgrade protection: server puts a magic sentinel in the last 8 bytes of ServerRandom when negotiating a lower version, which the client checks",
+        "Comparison row — RTT: TLS 1.2 = 2, TLS 1.3 = 1, TLS 1.3 resumption + 0-RTT = 0",
+        "Comparison row — cert visibility: TLS 1.2 plaintext, TLS 1.3 encrypted",
+        "Migration reality: TLS 1.3 was designed to be deployable over the existing internet, which is why the wire format still cosplays as TLS 1.2"
+      ]
+    },
+    {
+      "title": "Certificates: Structure and Contents",
+      "points": [
+        "X.509 v3 is the certificate format; a cert is a signed statement binding a public key to an identity",
+        "Core fields: version, serial number, signature algorithm, issuer DN, validity window (notBefore/notAfter), subject DN, subject public key info, extensions",
+        "The CA signs a hash of the TBSCertificate (to-be-signed) blob — modifying any field breaks the signature",
+        "Subject Alternative Name (SAN) is the field that actually names the hostnames. Browsers have ignored Common Name (CN) for hostname matching since ~2017",
+        "SAN types: dNSName (most common), iPAddress, and rarely email/URI",
+        "Wildcard certs match exactly one label: `*.example.com` covers `api.example.com` but NOT `example.com` itself nor `a.b.example.com`",
+        "Key Usage vs Extended Key Usage: KeyUsage says digitalSignature/keyEncipherment; EKU says serverAuth (1.3.6.1.5.5.7.3.1) or clientAuth — a cert without serverAuth is rejected for HTTPS",
+        "Basic Constraints: `CA:TRUE` plus a pathLenConstraint marks a CA cert; a leaf must be `CA:FALSE` or an attacker could mint certs from it",
+        "Encodings: DER is binary; PEM is base64 DER wrapped in `-----BEGIN CERTIFICATE-----`. `.crt`/`.cer`/`.pem` can be either; `.p12`/`.pfx` bundles cert + private key",
+        "Validation types: DV (proves domain control, minutes, free), OV (org vetted), EV (extended vetting). Browsers removed the EV green bar — EV now buys essentially no UI benefit",
+        "Certificate lifetimes keep shrinking: 825 days → 398 days (2020) → 47 days (industry ballot, phasing in through 2029). Manual renewal is no longer viable; automate with ACME",
+        "SCTs (Signed Certificate Timestamps) embedded in the cert prove it was logged to Certificate Transparency; Chrome rejects public certs without them",
+        "Inspect with: `openssl x509 -in cert.pem -noout -text` and check the live chain with `openssl s_client -connect host:443 -servername host`",
+        "Self-signed cert = issuer equals subject, signed with its own key. Fine for internal tooling with an explicitly trusted root, never for the public web"
+      ]
+    },
+    {
+      "title": "Chains, Roots, and Trust Stores",
+      "points": [
+        "Chain shape: leaf (your server) → one or more intermediate CAs → root CA. Trust flows down, verification walks up",
+        "Roots are self-signed and live offline in an HSM; intermediates do the day-to-day signing so a compromise doesn't burn the root",
+        "The root is NOT sent on the wire — it must already be in the client's trust store. Sending it wastes bytes",
+        "Path building: the client picks the leaf, finds an issuer whose Subject matches the leaf's Issuer, verifies the signature, repeats until it hits a trusted root",
+        "At each hop the client checks: signature validity, notBefore/notAfter window, basicConstraints CA:TRUE, pathLen not exceeded, and revocation status",
+        "Trust stores are per-platform, not universal: Mozilla NSS (Firefox), Microsoft, Apple, Android, and each has its own inclusion policy and update cadence",
+        "The weakest-link problem: any CA in any trust store can issue for any domain. ~150 roots means ~150 organizations can mint a cert for your site",
+        "Certificate Transparency (CT) is the mitigation: every publicly trusted cert must be published to append-only logs, so mis-issuance is detectable after the fact",
+        "Monitor your own domains with crt.sh or a CT-monitoring service — that's how you find a cert someone else got for your name",
+        "Cross-signing: a new root gets signed by an established root so old devices still chain successfully. One cert, two valid paths",
+        "The Let's Encrypt DST Root X3 expiry (Sept 2021) broke old Android and OpenSSL 1.0.2 clients — classic example of a chain that validates on new clients and fails on old ones",
+        "#1 production misconfiguration: forgetting to serve the intermediate. Browsers often paper over it via AIA fetching / cached intermediates; curl, Java, and Go clients hard-fail",
+        "Revocation is the broken part: CRLs are huge, OCSP is a privacy leak and fails open (a soft-fail check an attacker can just block)",
+        "OCSP stapling fixes the privacy and latency problem — the server fetches its own signed OCSP response and staples it into the handshake. `Must-Staple` in the cert makes it non-optional",
+        "Short lifetimes are winning over revocation: a 47-day cert is its own expiry mechanism"
+      ]
+    },
+    {
+      "title": "Hostname Verification and What Clients Must Check",
+      "points": [
+        "Two distinct steps clients conflate: (1) is the chain cryptographically valid and trusted, (2) does the cert actually belong to the host I dialed",
+        "Skipping step 2 is the classic silent vuln — a valid cert for attacker.com passes chain validation on a connection to bank.com",
+        "Match the SAN dNSName entries against the hostname from the URL, not against the IP or the redirect target",
+        "Wildcard matching rules: leftmost label only, no partial-label wildcards (`ap*.example.com` is not accepted), never matches across a dot",
+        "IP-address connections need an iPAddress SAN; a dNSName entry does not cover an IP literal",
+        "Trailing-dot and IDN/punycode edge cases: `example.com.` and Unicode homograph names are frequent bypass sources",
+        "Danger patterns to grep for: `verify=False` (Python requests), `InsecureSkipVerify: true` (Go), `-k`/`--insecure` (curl), `rejectUnauthorized: false` (Node), a TrustManager whose `checkServerTrusted` body is empty (Java)",
+        "Each of those disables authentication entirely — the connection is still encrypted, but to whoever answered, which is exactly the attacker's position",
+        "The right fix for a self-signed internal CA is to ADD the CA to the trust store, not to turn verification off",
+        "Certificate pinning: hard-code an expected leaf or intermediate key hash. Stops a rogue-CA attack, but bricks your app if you rotate keys without shipping a backup pin",
+        "HPKP (HTTP public key pinning) was the web version and is dead — too easy to permanently brick a domain. Mobile apps still pin, carefully, with backup pins and a kill switch",
+        "HSTS (`Strict-Transport-Security`) tells browsers to refuse plaintext to this host for `max-age` seconds — closes the initial http:// redirect window an attacker can hijack",
+        "HSTS preload list ships in the browser binary, protecting even the very first visit; getting removed takes months, so `preload` is close to a one-way door",
+        "mTLS flips it around: the server sends a CertificateRequest and the client presents its own cert. Standard for service-to-service and zero-trust internal networks"
+      ]
+    },
+    {
+      "title": "SNI: One IP, Many Sites",
+      "points": [
+        "The chicken-and-egg problem: the server must send a certificate before it knows which site the client wants, because the HTTP `Host:` header comes after the handshake",
+        "SNI (Server Name Indication, RFC 6066) solves it: the client puts the target hostname in a ClientHello extension so the server can pick the right cert",
+        "Pre-SNI the workaround was one IP address per HTTPS site — a real constraint that shaped early hosting prices",
+        "SNI is what makes shared hosting, CDNs, and cloud load balancers possible: thousands of certs behind a single IP",
+        "SNI is sent in PLAINTEXT even in TLS 1.3 — it's in ClientHello, before any keys exist",
+        "Consequence: your ISP, your employer's proxy, and any on-path observer sees exactly which hostname you visit, even though the page content is encrypted",
+        "SNI-based blocking is deployed at national and corporate scale precisely because it's cheap: read one field, drop the packet",
+        "ECH (Encrypted Client Hello) encrypts the real ClientHello — including SNI — under a public key published in the domain's HTTPS DNS record, sending a decoy 'outer' SNI in the clear",
+        "ECH only helps if many domains share the same outer name and key (an anonymity set); a lone ECH-enabled origin is still identifiable",
+        "ECH's dependency chain: you need encrypted DNS (DoH/DoT) too, or the DNS lookup leaks the hostname before TLS even starts",
+        "Domain fronting was the old hack — a benign SNI with a different `Host:` header inside. Major CDNs killed it by requiring the two to match",
+        "SNI mismatch gotcha: send the wrong or no SNI and you get the server's default cert, producing a confusing hostname-mismatch error. `openssl s_client -servername` exists for exactly this",
+        "Debug it: `curl -v --resolve example.com:443:1.2.3.4 https://example.com/` pins the IP while keeping SNI and Host correct",
+        "Server config: nginx `server_name` selects the virtual host by SNI; the first `server` block for a listen address is the fallback when SNI doesn't match anything"
+      ]
+    },
+    {
+      "title": "Session Resumption and Handshake Performance",
+      "points": [
+        "Motivation: a full handshake costs round trips and asymmetric crypto. Resumption reuses an earlier session's secret to skip both",
+        "Session IDs (old way): server stores session state in a cache keyed by a 32-byte ID, client echoes it in ClientHello. Stateful — doesn't scale across a server fleet without a shared cache",
+        "Session tickets (RFC 5077): server encrypts the session state into an opaque blob and hands it to the client to store. Stateless server, scales horizontally",
+        "The ticket key is the crown jewel: it encrypts every ticket. Leak it and an attacker decrypts every session that used it, retroactively destroying forward secrecy",
+        "So: rotate ticket keys frequently (hours, not months), and keep them in memory. Many defaults never rotate — that's the trap",
+        "In TLS 1.3 resumption is PSK-based: the server sends `NewSessionTicket` after the handshake, which the client uses as a pre-shared key next time",
+        "Resumption is 1-RTT in TLS 1.3; adding `early_data` makes it 0-RTT",
+        "0-RTT replay: an attacker can capture and re-send early data because the server contributed no freshness. Servers must restrict early data to idempotent requests or maintain an anti-replay window",
+        "Add `psk_key_exchange_modes` with (EC)DHE to resumption to restore forward secrecy — pure PSK resumption has none",
+        "TLS False Start (TLS 1.2 era) let the client send data right after its Finished, shaving an RTT — largely superseded by TLS 1.3's 1-RTT",
+        "The other big lever is connection reuse: HTTP keep-alive and HTTP/2 multiplexing mean one handshake amortizes across hundreds of requests",
+        "OCSP stapling also saves an RTT and a DNS lookup that the client would otherwise spend contacting the CA",
+        "Measure it: `curl -w '%{time_appconnect} %{time_connect}\\n' -o /dev/null -s https://example.com` — the delta is your TLS handshake cost",
+        "Session resumption is also a tracking vector: a ticket is a unique identifier a server can correlate across visits, which is why browsers scope and expire them per-site"
+      ]
+    },
+    {
+      "title": "What Encryption Does NOT Hide",
+      "points": [
+        "Leaked in the clear: destination IP address and port — routing requires it, always visible",
+        "Leaked: the DNS query for the hostname, unless you use DoH or DoT",
+        "Leaked: SNI in ClientHello, unless ECH is deployed on both ends",
+        "Leaked in TLS 1.2 (not 1.3): the entire server certificate, which names the site outright",
+        "Leaked: ALPN, revealing whether you speak HTTP/1.1, HTTP/2, or HTTP/3",
+        "Leaked: packet sizes, timing, and direction. Traffic analysis on this alone identifies which page of a site you loaded, which video you streamed, and which app you're using",
+        "Leaked: total bytes transferred and connection duration — enough to fingerprint distinctive workloads",
+        "Leaked: JA3/JA4 client fingerprints derived from the ordering of cipher suites and extensions in ClientHello — identifies your TLS stack, and often the specific app or bot",
+        "Encrypted: URL path and query string, HTTP headers, cookies, request and response bodies. These are inside the tunnel",
+        "But 'encrypted in transit' ≠ 'secret': URLs with tokens in the query string land in server logs, browser history, `Referer` headers, and analytics pipelines",
+        "TLS protects the wire only. The server decrypts everything — TLS says nothing about what happens to your data afterward",
+        "Corporate TLS interception: an enterprise installs its own root CA on managed devices, and the proxy decrypts and re-encrypts everything. Fully visible traffic, and the padlock still shows",
+        "Free wifi captive portals do the same trick when they can get you to install a profile — the padlock is not evidence of privacy on a managed device",
+        "The metadata summary: TLS hides WHAT you said, not WHO you talked to, WHEN, HOW MUCH, or HOW OFTEN"
+      ]
+    },
+    {
+      "title": "Failures, Fixes, and the Field Checklist",
+      "points": [
+        "Historic attacks and their lessons: BEAST (2011, CBC IV reuse), CRIME/BREACH (compression + secrets = oracle), Heartbleed (2014, OpenSSL memory disclosure leaking private keys), POODLE (2014, SSL 3.0 padding), FREAK/Logjam (2015, export-grade downgrade), ROBOT (2017, RSA padding oracle again)",
+        "Common thread: nearly every one exploited a legacy feature or a downgrade path. TLS 1.3 deleted those features rather than patching them",
+        "Error triage — `certificate has expired`: check `notAfter`, check server clock skew; a wrong client clock produces identical symptoms",
+        "Error triage — `unable to get local issuer certificate`: the intermediate isn't being served, or the client's CA bundle is stale. Fix the chain, don't disable verification",
+        "Error triage — `hostname mismatch`: the SAN doesn't cover this name; often actually a wrong-SNI or wrong-vhost problem",
+        "Error triage — `handshake failure` with no detail: usually no overlapping cipher suite or TLS version between client and server",
+        "Error triage — `self signed certificate in certificate chain`: a corporate MITM proxy is on the path; add its root to your trust store deliberately",
+        "Config checklist: TLS 1.2 + 1.3 only, ECDHE-only key exchange, AEAD ciphers only, disable renegotiation and compression, enable OCSP stapling",
+        "Serve the full chain (leaf + intermediates, no root), and prefer ECDSA certs with an RSA fallback for old clients",
+        "Set HSTS with a real `max-age` (≥1 year), `includeSubDomains`, and `preload` only once you're certain every subdomain is HTTPS",
+        "Automate issuance with ACME (certbot, lego, caddy, cert-manager) — with 47-day certs, manual renewal is guaranteed downtime",
+        "Alert on expiry at 14 days, not 1 day, and monitor CT logs for certs you didn't request",
+        "Tools: `openssl s_client -connect host:443 -servername host` for the raw handshake, `testssl.sh` for a full local audit, SSL Labs for a graded external report, Wireshark to watch a handshake byte by byte",
+        "Rotate session ticket keys, keep private keys off disk backups, and treat a leaked private key as a full-site compromise requiring revocation plus reissuance",
+        "The one-paragraph summary: TLS wraps TCP to give confidentiality, integrity, and server authentication; certificates chain a hostname to a trusted root; SNI tells the server which cert to send and leaks the hostname doing it; resumption trades a little forward secrecy for a lot of latency; and the tunnel hides content while broadcasting metadata"
+      ]
+    }
+  ]
+}

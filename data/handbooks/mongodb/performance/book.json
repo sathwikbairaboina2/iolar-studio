@@ -1,0 +1,183 @@
+{
+  "title": "MongoDB Performance: Handwritten Deep-Dive",
+  "summary": "A 10-page study-notes carousel covering MongoDB query optimization from explain plans and the profiler to working set sizing and covered queries.",
+  "chapters": [
+    {
+      "title": "1. Why Queries Get Slow",
+      "points": [
+        "Performance triage order: check the query → the index → the document shape → the hardware",
+        "COLLSCAN = every document scanned; cost grows linearly with collection size (O(n))",
+        "IXSCAN = index scan; MongoDB walks a B-tree to candidate documents (O(log n) + matches)",
+        "documentsExamined vs nReturned: ratio far from 1:1 means wasted work",
+        "keysExamined ≈ index entries touched; large keysExamined with few returns = non-selective index",
+        "Fetch stage: going from index to document on disk is the expensive step — minimize it",
+        "Common mistake: a query with an index can still be slow if the filter matches most of the collection",
+        "Slow query categories: unindexed, poorly selective, unsorted results, blocking sorts",
+        "In-memory sort: SORT stage spills to disk at 100 MB limit — sort on an indexed field instead",
+        "Workload types matter: OLTP reads want selective indexes; analytics scans accept COLLSCAN",
+        "Rule of thumb: ESR rule — Equality, Sort, Range when composing compound indexes",
+        "Measure before optimizing: slow ≠ slow for the reason you assume"
+      ]
+    },
+    {
+      "title": "2. Indexes Refresher: What the Optimizer Sees",
+      "points": [
+        "B-tree index: each entry holds indexed key(s) + RecordId pointer to the document",
+        "Compound indexes are sorted lexicographically: {a:1, b:1} sorts by a, then b within equal a",
+        "Prefix rule: {a,b,c} index serves queries on a, ab, abc — but not on b or c alone",
+        "Sort support: query on {a: x} with sort {b:1, c:1} uses {a,b,c} without in-memory sort",
+        "Direction matters only for multi-field sorts: {a:1, b:-1} index supports sort {a:1,b:-1} or exact reverse",
+        "Multikey indexes: one array value per index entry; compound multikey allows at most ONE array field",
+        "Index selectivity: gender index (2 values) is weak; email index is strong",
+        "Partial indexes: index only documents matching a filter — smaller, faster, but the query must include the filter",
+        "Sparse vs partial: partial is more flexible; prefer it in modern MongoDB",
+        "TTL indexes delete documents after an expiry — a maintenance win, not a performance tool per se",
+        "Text, geospatial, hashed indexes exist for special access patterns — don't mix into compound arbitrarily",
+        "Index cost: every write updates every index — extra indexes slow inserts/updates",
+        "Gotcha: $where, $nin, $ne, and negations generally can't use an index efficiently"
+      ]
+    },
+    {
+      "title": "3. Explain Plans: Reading the Receipt",
+      "points": [
+        "Three verbosity modes: queryPlanner (plan only), executionStats (runs it), allPlansExecution (compares candidates)",
+        "db.coll.find({...}).explain('executionStats') is the default for diagnosis",
+        "Winning plan vs rejected plans: the optimizer picks by estimated work per plan",
+        "Key stages: COLLSCAN, IXSCAN, FETCH, SORT (in-memory), PROJECTION, LIMIT, SHARD_MERGE",
+        "totalKeysExamined + totalDocsExamined + nReturned = the triple to minimize",
+        "executionTimeMillis: compare before/after changes, run explain on realistic data volumes",
+        "executionStages tree shows the order: LIMIT sits above FETCH above IXSCAN — read child-first",
+        "Red flag: IXSCAN in plan but docsExamined >> nReturned means index isn't selective or filter happens post-fetch",
+        "'indexBounds' shows exact key ranges scanned — wide bounds = broad scan",
+        "Plan cache: winning plans are cached per query shape; planCacheClear can reset for testing",
+        "Explain doesn't execute writes (use on the find part) and on secondaries uses its own data snapshot",
+        "Gotcha: explain uses sampled/estimated stats — validate on production-shaped data, not empty collections"
+      ]
+    },
+    {
+      "title": "4. Crafting Compound Indexes with ESR",
+      "points": [
+        "ESR: Equality fields first, Sort fields next, Range fields last",
+        "Example: query {status:'A', qty:{$gt:10}} sort {lastModified:-1} → index {status:1, lastModified:-1, qty:1}",
+        "Why sort before range: a range field breaks sort ordering for subsequent fields",
+        "Equality on multiple fields: order them most selective / most-queried first",
+        "Test: explain should show no SORT stage and tight indexBounds on the range field",
+        "Non-prefix queries on {a,b,c}: index can skip via bounded scan (Index Bounds) but less efficiently",
+        "Covered query requirements preview: all filter, sort, AND projection fields in the index",
+        "One index per query pattern is a target, not a law — look for overlap and consolidation",
+        "Index intersection: MongoDB can combine two indexes, but it's fragile — prefer a purpose-built compound index",
+        "Wildcard indexes ($**) index all scalar fields — good for polymorphic schemas, not a substitute for design",
+        "Hidden indexes (4.4+): drop an index from the planner without deleting — safe removal testing",
+        "Build indexes in the background by default now; still watch disk I/O and oplog on big collections",
+        "Anti-pattern: one index per field 'just in case' — write amplification with no read benefit"
+      ]
+    },
+    {
+      "title": "5. Covered Queries: Skip the Fetch",
+      "points": [
+        "Covered query = all needed fields (filter, sort, projection) come from the index alone",
+        "Signature in explain: totalDocsExamined: 0, stage PROJECTION_COVERED, no FETCH",
+        "Why it's fast: no document lookup, no disk fetch — pure B-tree traversal",
+        "Syntax: projection must explicitly include only indexed fields and exclude _id (or index _id)",
+        "Example: index {user_id:1, status:1}; find({user_id:u},{status:1,_id:0}) → covered",
+        "_id is returned by default and breaks coverage unless excluded or part of the index",
+        "Multikey (array) fields cannot be covered — indexing into arrays always needs a fetch",
+        "Covered queries on sharded collections: also need the shard key in the projection path",
+        "Use case: hot dashboards, count-by-status, existence checks — read the index like a small table",
+        "Trade-off: wider indexes cover more queries but cost more RAM and write time",
+        "Verify coverage per version — new fields in the query silently un-cover it",
+        "Pair with readConcern/secondary reads carefully: coverage is per-node index state",
+        "Checklist: filter fields ⊆ index, projection explicit, no arrays, _id handled"
+      ]
+    },
+    {
+      "title": "6. The Profiler and Slow Query Hunting",
+      "points": [
+        "Database profiler levels: 0 = off, 1 = slow ops only (slowms threshold), 2 = all ops",
+        "db.setProfilingLevel(1, { slowms: 100 }) — level 2 is diagnostic-only, never on hot production long-term",
+        "Profile data lands in the capped system.profile collection (default ~1MB — often too small)",
+        "Query it like any collection: db.system.profile.find({op:'query', millis:{$gt:100}}).sort({ts:-1})",
+        "Key fields: ns, op, millis, docsExamined, keysExamined, planSummary, query shape",
+        "planSummary shows 'IXSCAN { ... }' or 'COLLSCAN' at a glance — first thing to read",
+        "$currentOp / db.currentOp(true): catch operations running RIGHT NOW, incl. locks and waits",
+        "mongostat + mongotop: server-side view of ops/sec, and time per collection (read/write wait)",
+        "Free Monitoring / Atlas Performance Advisor: automatic index suggestions from real workload",
+        "Profiler measures the server view — client-side latency also includes network and driver overhead",
+        "Gotcha: profiler adds overhead and writes to disk; a capped small system.profile silently evicts evidence",
+        "Workflow: profile → find worst millis × frequency → explain → fix index → re-measure",
+        "logLevel / slow query logs (mongod log) mirror profiler events without enabling level 2"
+      ]
+    },
+    {
+      "title": "7. WiredTiger, Cache, and the Working Set",
+      "points": [
+        "WiredTiger default cache: ~50% of (RAM − 1GB), tunable via cacheSizeGB",
+        "Do NOT set cacheSizeGB near total RAM — the OS file cache and mongod both need room",
+        "Working set = indexes + actively-used documents touched in a time window",
+        "Golden target: working set fits in RAM; disk hits per read are the main latency source",
+        "Two caches in play: WiredTiger cache (data/indexes) + OS page cache (disk file reads)",
+        "Index-only reads: keys live in the index B-tree — a small hot index can be fully cached even if documents aren't",
+        "Symptoms of working set overflow: rising iowait, latency spikes, low cache hit ratio, reads stuck in disk",
+        "Measure: db.serverStatus().wiredTiger.cache — 'bytes currently in the cache' vs max, evictions",
+        "document padding: updates that grow docs may move them on disk — keep growth predictable, avoid unbounded arrays",
+        "Compression: block compression (snappy/zstd/zlib) trades CPU for disk/IO size — usually worth it",
+        "Eviction storms: heavy dirty data + checkpoint pressure stalls writes — watch 'eviction' serverStatus metrics",
+        "Sharding as a working-set fix: split a hot collection across nodes to shrink per-node working set",
+        "Anti-pattern: giant documents (16MB cap) thrash the cache — paginate large arrays or split collections"
+      ]
+    },
+    {
+      "title": "8. Read/Write Patterns, Concurrency, Trade-offs",
+      "points": [
+        "WiredTiger document-level concurrency: writers on different docs don't block — contention is per-document",
+        "Hot document problem: counters/single status docs serialize all writers — shard the increment or use different docs",
+        "Read concern levels: majority adds latency guarantees; local reads faster but may see rollbacks",
+        "Write concern trade-off: w:1 fast, w:'majority' slower but durable — per-operation choice",
+        "Read preference: secondaries offload reads but risk stale data — fine for analytics, risky for read-your-writes",
+        "Index trade-off triangle: faster reads ⇄ slower writes + more RAM + more disk",
+        "Each extra index ≈ extra B-tree update per write — batch inserts feel this hardest",
+        "Projections reduce network + decode cost; combined with covered queries they cut server work too",
+        "Pagination: skip/limit is O(skip) — prefer range pagination on a sorted indexed field (last seen _id)",
+        "Bulk writes + unordered bulkWrite: massive throughput win over per-doc inserts",
+        "Aggregation pipeline: early $match/$limit with index support beats post-stage filtering",
+        "allowDiskUse: lets big sorts/groups spill to disk instead of erroring — slower but completes",
+        "Nothing beats reducing data: schema design (embedding vs referencing) is the first performance lever"
+      ]
+    },
+    {
+      "title": "9. Common Mistakes & Debug Playbook",
+      "points": [
+        "Mistake: regex with leading wildcard (/^.*abc/) can't use the index — anchor it (/^abc/) or use text index",
+        "Mistake: querying a field whose type varies (string vs number) — index has separate trees per type",
+        "Mistake: $in with 10,000 values — plan becomes a huge multi-key bounds scan; batch instead",
+        "Mistake: indexing low-cardinality fields alone (boolean) — nearly useless without compound partner",
+        "Mistake: ignoring sort memory limits — in-memory SORT > 100MB errors; index the sort keys",
+        "Mistake: optimizing without explain evidence — guessing fixes rarely match the actual bottleneck",
+        "Mistake: duplicate/overlapping indexes ({a:1} kept alongside {a:1,b:1}) — pay write cost twice",
+        "Mistake: unbounded array growth in one document — hits 16MB and thrashes cache",
+        "Mistake: case-sensitive mismatch — use collation on index AND query for case-insensitive index use",
+        "Debug playbook step 1: identify slow ops (profiler/logs/Atlas) → 2: explain('executionStats')",
+        "Playbook step 3: apply ESR, build/adjust index → 4: verify docsExamined≈nReturned, no SORT/FETCH",
+        "Playbook step 5: re-measure under realistic load; watch cache + write latency for regressions",
+        "Playbook step 6: clean up — hide old indexes, confirm no plan regression in production"
+      ]
+    },
+    {
+      "title": "10. Closing Summary & Cheat Sheet",
+      "points": [
+        "The 4 pillars: right indexes (ESR), verified plans (explain), observability (profiler), enough RAM (working set)",
+        "Healthy explain signature: IXSCAN + tight bounds, docsExamined ≈ nReturned, no SORT, 0 docs for covered",
+        "One-line rule: every query should touch only the data it returns",
+        "ESR cheat card: Equality → Sort → Range in compound index field order",
+        "Profiler cheat card: level 1 + slowms, read system.profile, planSummary first",
+        "Memory cheat card: working set < cache; watch wiredTiger.cache bytes + evictions",
+        "Covered query checklist: filter+sort+projection ⊆ index, exclude _id, no arrays",
+        "Quick wins ranked: add missing index → fix projection → cover the query → reduce document bloat → shard",
+        "Anti-pattern hall of shame: leading-wildcard regex, skip() pagination, index-per-field, level-2 profiler in prod",
+        "Complexity recap: COLLSCAN O(n), index lookup O(log n), covered query no-fetch, sort on index O(1) extra",
+        "Performance is a loop, not a fix: measure → change → measure → repeat under real workload",
+        "Go deeper: MongoDB docs on explain output, Query Optimizer, and WiredTiger storage engine internals"
+      ]
+    }
+  ]
+}

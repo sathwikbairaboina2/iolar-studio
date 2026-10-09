@@ -1,0 +1,566 @@
+{
+  "brand": "iolar",
+  "template": "terminal-dark",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA CONNECT & SCHEMAS — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Compatibility & Evolution",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What You May Change"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Allowed change"
+          ],
+          "rows": [
+            [
+              "`BACKWARD`",
+              "delete a field"
+            ],
+            [
+              "`BACKWARD`",
+              "add a field WITH a default"
+            ],
+            [
+              "`FORWARD`",
+              "add a field"
+            ],
+            [
+              "`FORWARD`",
+              "delete a field that HAS a default"
+            ],
+            [
+              "`FULL`",
+              "add/remove optional-with-default only"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Never allowed (any non-NONE mode)",
+          "items": [
+            "Renaming a field without an alias",
+            "`string` → `int` and other incompatible retypes",
+            "Removing an enum symbol under forward compat"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Safe Moves"
+        },
+        {
+          "type": "code",
+          "lang": "json",
+          "lines": [
+            "{\"name\":\"email\",\"aliases\":[\"mail\"],",
+            " \"type\":[\"null\",\"string\"],",
+            " \"default\":null}   # the optional idiom",
+            "// bare \"string\" with no default: unremovable"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Aliases are the only safe rename — the reader maps old name to new",
+            "Avro promotes `int → long → float → double`, and `string ⇄ bytes`",
+            "Narrowing is never safe, in either direction",
+            "New enum symbol breaks forward compat unless the enum has a `default` (Avro 1.9+)"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pick By Lifetime"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Match mode to retention",
+          "text": "Compacted or infinite-retention topics keep ancient data alive, so they need `*_TRANSITIVE`. Short-retention event streams are fine on plain `BACKWARD`."
+        },
+        {
+          "type": "heading",
+          "text": "What An SMT Is",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per-record, in-process, between connector and converter",
+            "No external system, no state, no joins",
+            "Configured, not coded — it lives in the connector JSON"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Order Matters"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Source order",
+              "items": [
+                "connector",
+                "SMT chain",
+                "converter",
+                "Kafka"
+              ]
+            },
+            "right": {
+              "title": "Sink order",
+              "items": [
+                "Kafka",
+                "converter",
+                "SMT chain",
+                "connector"
+              ]
+            }
+          }
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "transforms=unwrap,route",
+            "transforms.unwrap.type=io.deb...ExtractNewRecordState",
+            "transforms.unwrap.delete.handling.mode=rewrite",
+            "transforms.route.type=org...RegexRouter",
+            "transforms.route.replacement=app_$1  # named steps"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "SMTs & Predicates",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Working Set"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "SMT",
+            "Does"
+          ],
+          "rows": [
+            [
+              "`InsertField`",
+              "add static/topic/offset/ts"
+            ],
+            [
+              "`ExtractField$Key`",
+              "field becomes the whole key"
+            ],
+            [
+              "`ValueToKey`",
+              "copy value fields into key"
+            ],
+            [
+              "`ReplaceField`",
+              "include, exclude, rename"
+            ],
+            [
+              "`MaskField`",
+              "redact PII in place"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Cast` retypes a field; `TimestampConverter` moves string ⇄ epoch ⇄ Date",
+            "`RegexRouter` rewrites the topic via `regex` + `replacement` — the prefix stripper",
+            "`Flatten` collapses nested Structs to `parent.child` so JDBC can write them",
+            "`ValueToKey` + `ExtractField$Key` is the standard way to key a CDC stream by PK"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Predicates"
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "predicates=isDead",
+            "predicates.isDead.type=...RecordIsTombstone",
+            "transforms.x.predicate=isDead",
+            "transforms.x.negate=true   # skip tombstones"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Built-ins: `TopicNameMatches`, `HasHeaderKey`, `RecordIsTombstone`",
+            "`negate=true` inverts any of them",
+            "A predicate gates one SMT, not the whole chain"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Limits"
+        },
+        {
+          "type": "sidebox",
+          "title": "Hard no",
+          "items": [
+            "No aggregation, no cross-record joins",
+            "No external lookups",
+            "No splitting one record into many"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "SMTs rewrite the schema too",
+          "text": "The transformed schema is the one registered, so adding an SMT can trip a compatibility check. Each SMT also costs a per-record allocation — past ~5 steps, move the work to Kafka Streams."
+        },
+        {
+          "type": "heading",
+          "text": "Config Mistakes",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Internal topics at RF=1 — one broker loss erases configs and offsets",
+            "`schemas.enable=true` at volume: 3-5× storage and network, zero governance",
+            "`tasks.max=20` on a single-table JDBC or single-binlog Debezium — still 1 task",
+            "`auto.register.schemas=true` in prod lets a rogue deploy poison a subject"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Runtime Mistakes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Real cause"
+          ],
+          "rows": [
+            [
+              "`Unknown magic byte!`",
+              "converter mismatch"
+            ],
+            [
+              "JSON parse error",
+              "same, other direction"
+            ],
+            [
+              "Full re-snapshot",
+              "renamed connector / prefix"
+            ],
+            [
+              "Consumer can't decode",
+              "hard-deleted schema version"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Failure Modes & Ops",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Mismatched converters surface as byte errors, never as schema errors",
+            "Changing `topic.prefix` or `database.server.name` re-snapshots too",
+            "No DLQ + `errors.tolerance=none` = one bad record halts everything at 3am",
+            "DLQ configured but unmonitored = data quietly vanishing for weeks"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Diagnosis"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-consumer-groups --describe \\",
+            "  --group connect-s3-sink \\",
+            "  --bootstrap-server b:9092",
+            "# the status API does NOT show lag"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Alarm on these",
+          "items": [
+            "`connector-task-metrics.status`",
+            "`sink-record-lag-max`",
+            "`source-record-poll-rate`",
+            "`deadletterqueue-produce-requests`, rebalance rate"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Recovery Order"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "GET status",
+              "read task trace",
+              "fix config or record",
+              "restart?includeTasks=true",
+              "watch lag"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Offset Surgery"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "PUT /connectors/x/stop      # must be STOPPED",
+            "GET /connectors/x/offsets   # inspect",
+            "PATCH /connectors/x/offsets # rewind",
+            "DELETE /connectors/x/offsets # wipe"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "This replaces the old hand-editing of the offsets topic",
+            "Size workers by heap and network, not CPU",
+            "Object-storage sinks need heap ≈ `flush.size` × record size",
+            "Secrets via `config.providers` (`FileConfigProvider`, Vault) — never plaintext in the config topic"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Connect is not exactly-once",
+          "text": "Unless source EOS is explicitly enabled and the sink upserts idempotently, assume duplicates and design the target to absorb them."
+        },
+        {
+          "type": "heading",
+          "text": "Decision Table",
+          "ink": "accent"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Decision",
+            "Pick",
+            "When"
+          ],
+          "rows": [
+            [
+              "Format",
+              "Avro",
+              "JVM-heavy, compact, evolvable"
+            ],
+            [
+              "Format",
+              "Protobuf",
+              "polyglot codegen, gRPC"
+            ],
+            [
+              "Format",
+              "JSON Schema",
+              "humans read the topic"
+            ],
+            [
+              "Format",
+              "plain JSON",
+              "low volume, legacy interop"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Decision",
+            "Pick",
+            "When"
+          ],
+          "rows": [
+            [
+              "Ingest",
+              "log CDC",
+              "deletes, low latency, no DB load"
+            ],
+            [
+              "Ingest",
+              "JDBC",
+              "no replication rights, append-only"
+            ],
+            [
+              "Compat",
+              "`BACKWARD`",
+              "short-lived event streams"
+            ],
+            [
+              "Compat",
+              "`FULL_TRANSITIVE`",
+              "compacted state, data lake"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Design Decisions & Recap",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Decision",
+            "Pick",
+            "When"
+          ],
+          "rows": [
+            [
+              "Subject",
+              "`TopicNameStrategy`",
+              "one type per topic"
+            ],
+            [
+              "Subject",
+              "`TopicRecordName`",
+              "ordered event union"
+            ],
+            [
+              "Transform",
+              "SMT",
+              "field-level shaping"
+            ],
+            [
+              "Transform",
+              "Streams / Flink",
+              "joins, aggregation, fan-out"
+            ],
+            [
+              "Deploy",
+              "distributed ≥3",
+              "everything but edge/dev"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Three Trade-Offs"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Throughput vs latency: bigger batches, longer `flush.interval` — slower end-to-end, wider replay windows",
+            "Availability vs correctness: `errors.tolerance=all` stays up but loses rows into the DLQ; `none` makes you notice",
+            "Governance vs velocity: CI registration slows teams less than the outage it prevents"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Schemas Cost"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "~5 bytes per record for the magic byte and ID",
+            "One cached HTTP lookup per new schema ID",
+            "Negligible beside embedded-schema JSON"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Breaking Change Recipe"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "1 create orders.v2",
+            "2 dual-write from the source",
+            "3 migrate consumers, verify lag + counts",
+            "4 retire v1  # never mutate past the mode"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Before You Deploy"
+        },
+        {
+          "type": "sidebox",
+          "title": "Checklist",
+          "items": [
+            "Converters agreed topic-wide; compatibility set per subject",
+            "`tasks.max` matched to real parallelism",
+            "DLQ topic created AND monitored",
+            "Internal topics RF=3; secrets via config providers"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "source",
+              "connector + SMTs",
+              "converter",
+              "registry ID + bytes",
+              "Kafka",
+              "converter + SMTs",
+              "sink"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Three rules to leave with",
+          "text": "The converter is a topic-wide contract. Compatibility mode must match data lifetime. Every offset is keyed by connector name — so names are permanent."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Next: read the Debezium docs for your database",
+            "Run `kafka-avro-console-consumer` on a real topic",
+            "Script compatibility checks into CI"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of KAFKA CONNECT & SCHEMAS. Most broken pipelines aren't broken by Kafka — they're broken by a converter mismatch, an RF=1 internal topic, or a connector someone renamed. This handbook walks the whole path: source and sink connectors, the bytes boundary, Schema Registry, and the compatibility rules that decide who upgrades first. 10 pages, every config that actually matters.",
+    "hashtags": [
+      "#kafka",
+      "#kafkaconnect",
+      "#schemaregistry",
+      "#avro",
+      "#debezium",
+      "#cdc",
+      "#dataengineering",
+      "#streaming",
+      "#backendengineering",
+      "#apachekafka",
+      "#systemdesign",
+      "#devnotes"
+    ]
+  }
+}

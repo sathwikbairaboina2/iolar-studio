@@ -1,0 +1,199 @@
+{
+  "title": "Terraform Variables, Locals & Outputs: The Input/Output Handbook",
+  "summary": "A deep field guide to Terraform's input plumbing — variable declarations, the full type system, validation and lifecycle conditions, tfvars precedence rules, sensitive-value propagation, locals, and outputs. Covers mechanics, trade-offs, and the gotchas that bite in real modules.",
+  "chapters": [
+    {
+      "title": "Variables: Anatomy & Purpose",
+      "points": [
+        "Input variables are a module's function parameters: they parameterize a config without editing it",
+        "Declaration syntax: `variable \"region\" { type = string, default = \"us-east-1\", description = \"...\" }`",
+        "Variable names must be unique per module; reserved names disallowed: `count`, `for_each`, `source`, `version`, `providers`, `depends_on`, `lifecycle`, `locals`",
+        "Reference syntax is `var.<name>` — never `variable.name`; interpolation `\"${var.name}\"` is legacy, use bare `var.name`",
+        "Meta-arguments a variable block accepts: `type`, `default`, `description`, `validation`, `sensitive`, `nullable`, `ephemeral`",
+        "No `default` = required variable; Terraform prompts interactively at plan/apply unless a value is supplied",
+        "`nullable = false` rejects an explicit `null` and forces the default to be used instead; default is `nullable = true`",
+        "Passing `null` to a variable that has a default means \"use the default\" — a common source of surprise",
+        "Variables are evaluated before any resource; they cannot reference resources, data sources, or other variables",
+        "`description` shows in `terraform plan` prompts and is harvested by terraform-docs for README generation",
+        "Root-module variables come from the CLI/environment; child-module variables come from the `module` block arguments",
+        "Example child call: `module \"vpc\" { source = \"./vpc\"  cidr = var.cidr }` — arg names must match declared variable names exactly",
+        "Unused declared variables are legal but noise; undeclared values passed to a module are a hard error",
+        "`ephemeral = true` (1.10+) marks a value usable during operations but never written to state or plan files"
+      ]
+    },
+    {
+      "title": "The Type System: Primitives to Structural",
+      "points": [
+        "Three primitive types: `string`, `number`, `bool` — Terraform has one numeric type, no int/float split",
+        "Collection types hold many values of ONE type: `list(T)`, `set(T)`, `map(T)`",
+        "Structural types hold many values of DIFFERENT types: `object({...})`, `tuple([...])`",
+        "`object({ name = string, port = number })` — keys fixed, each with its own type",
+        "`tuple([string, number, bool])` — positional, fixed length, per-position types",
+        "`any` is a placeholder: Terraform infers a concrete type at call time, it is not a wildcard that skips checking",
+        "`optional(string)` inside an object marks a key that may be omitted; it becomes `null` when absent",
+        "`optional(string, \"http\")` supplies a default for the omitted key — much cleaner than `coalesce` downstream",
+        "Type conversion is automatic where unambiguous: `\"5\"` to number 5, `true` to `\"true\"`, list to set (dedupes and loses order)",
+        "Sets are unordered and deduplicated; converting `[\"a\",\"a\",\"b\"]` to `set(string)` yields 2 elements",
+        "`map(string)` keys are always strings; a map literal with a non-string key is coerced",
+        "Omitting `type` entirely means `any` — accepts anything and defers all errors to usage sites",
+        "Type mismatch is caught at plan time with `Invalid value for input variable`, before any API call",
+        "Complex default example: `default = { engine = \"postgres\", version = \"15\" }` typed as `map(string)`",
+        "Trade-off: strict `object(...)` types give early errors and self-documenting modules; `any` gives flexibility and terrible error messages"
+      ]
+    },
+    {
+      "title": "Validation Blocks & Custom Rules",
+      "points": [
+        "A `validation` block runs a boolean `condition` and shows `error_message` when it is false",
+        "Example: `validation { condition = length(var.name) <= 32  error_message = \"name too long\" }`",
+        "Inside `condition` you may only reference the variable itself (`var.this_one`) — no other variables or resources",
+        "Multiple `validation` blocks per variable are allowed; all are evaluated and every failure is reported",
+        "Regex check: `condition = can(regex(\"^ami-[0-9a-f]{8,}$\", var.ami_id))`",
+        "`can(...)` swallows an evaluation error and returns bool — the idiomatic way to test convertibility",
+        "`try(a, b, c)` returns the first expression that evaluates without error; used for shape-tolerant lookups",
+        "Set membership: `condition = contains([\"dev\",\"stage\",\"prod\"], var.env)`",
+        "Numeric range: `condition = var.port > 0 && var.port < 65536`",
+        "Cross-element check with `alltrue([for s in var.subnets : can(cidrnetmask(s))])`",
+        "`error_message` must be a full sentence ending with a period (older versions enforced this strictly)",
+        "Validation runs at plan time, before providers are consulted — fails fast and free",
+        "`precondition` / `postcondition` in a `lifecycle` block validate resource-level assumptions and CAN reference other objects",
+        "`check` blocks (1.5+) assert non-blocking conditions and emit warnings instead of failing the apply",
+        "Trade-off: validation catches typos early but pushes policy into modules; OPA/Sentinel keeps policy central"
+      ]
+    },
+    {
+      "title": "Assigning Values & Precedence",
+      "points": [
+        "Six sources, in ascending priority: defaults, `TF_VAR_*` env vars, `terraform.tfvars`, `terraform.tfvars.json`, `*.auto.tfvars` (alphabetical), then `-var-file` and `-var` in command-line order",
+        "Later source wins for the same variable name — highest precedence is the last `-var` / `-var-file` on the command line",
+        "`terraform.tfvars` and any `*.auto.tfvars` load automatically; other files need an explicit `-var-file=prod.tfvars`",
+        "Environment form: `TF_VAR_region=us-west-2 terraform plan` — name is case-sensitive after the prefix",
+        "Complex values via env var need HCL syntax in a string: `TF_VAR_tags='{team=\"core\"}'`",
+        "tfvars files use plain `name = value` assignments — no `variable` keyword, no expressions referencing `var.`",
+        "tfvars files are NOT HCL configuration: no functions, no resources, no interpolation of other variables",
+        "`-var 'list=[\"a\",\"b\"]'` works for complex types but quoting rules differ between bash and PowerShell",
+        "Terraform Cloud/HCP workspace variables map onto the `-var` level and override tfvars files",
+        "`.auto.tfvars` files load in lexical filename order, so `01-base.auto.tfvars` loses to `02-override.auto.tfvars`",
+        "Convention: commit `terraform.tfvars.example`, gitignore `*.tfvars` holding secrets",
+        "Variable definitions files apply only to the ROOT module; child modules get values only through their `module` block",
+        "Missing required variable in non-interactive CI fails with `No value for required variable` — pass `-input=false` to make that explicit",
+        "Debug precedence confusion by running `terraform console` and evaluating `var.name` under the same flags"
+      ]
+    },
+    {
+      "title": "Sensitive Values & Secret Hygiene",
+      "points": [
+        "`sensitive = true` on a variable redacts it from plan/apply output as `(sensitive value)`",
+        "Sensitivity is contagious: any expression derived from a sensitive value becomes sensitive too",
+        "Sensitive values are still stored in PLAINTEXT in state — redaction is a display feature, not encryption",
+        "An output built from a sensitive input must itself declare `sensitive = true` or Terraform errors out",
+        "`nonsensitive(expr)` strips the marking — an explicit, auditable escape hatch, never a default move",
+        "Sensitive values cannot be used in `count`, `for_each`, or resource identifiers because the plan would leak them",
+        "Provider arguments marked sensitive in the schema redact automatically even without your annotation",
+        "`ephemeral = true` variables (1.10+) never touch state or plan files at all — stronger than `sensitive`",
+        "Write-only arguments on resources (1.11+) accept an ephemeral value that is never persisted",
+        "Real secret sources: Vault provider, cloud secret managers, CI-injected `TF_VAR_*` — not tfvars in the repo",
+        "State backends must be encrypted at rest and access-controlled; S3 + SSE + strict IAM is the baseline",
+        "`terraform output -json` prints sensitive values UNREDACTED — a common accidental CI log leak",
+        "Debug logs (`TF_LOG=trace`) can contain secret request bodies; never attach them to public issues",
+        "Rotating a leaked value means rotating at the source, not just editing the tfvars file"
+      ]
+    },
+    {
+      "title": "Locals: Named Expressions",
+      "points": [
+        "`locals { name = expr }` defines named intermediate values — a module's private constants",
+        "Reference with `local.name` (singular) even though the block is `locals` (plural)",
+        "Locals CAN reference variables, resources, data sources, and other locals — variables cannot",
+        "Multiple `locals` blocks per module are allowed and merge into one namespace",
+        "Locals cannot be set from outside; they are not part of the module interface",
+        "Locals are lazily evaluated and form a DAG — circular references are a plan-time error",
+        "Classic use: naming convention, `local.prefix = \"${var.project}-${var.env}\"`",
+        "Classic use: merged tags, `local.tags = merge(var.tags, { ManagedBy = \"terraform\" })`",
+        "Conditional shaping: `local.size = var.env == \"prod\" ? \"m5.large\" : \"t3.micro\"`",
+        "Building maps for `for_each`: `local.subnets = { for i, c in var.cidrs : \"net-${i}\" => c }`",
+        "Locals accept no `type`, `description`, or `validation` — type is inferred, documentation lives in comments",
+        "Overusing locals hides logic behind indirection; a local used once is often worth inlining",
+        "Locals have no runtime cost — they are resolved during graph evaluation, not stored in state",
+        "Rule of thumb: variable for what callers choose, local for what you compute from those choices"
+      ]
+    },
+    {
+      "title": "Outputs: The Return Values",
+      "points": [
+        "`output \"vpc_id\" { value = aws_vpc.main.id }` exposes a value from a module",
+        "Root outputs print after apply and are readable via `terraform output` / `terraform output -json`",
+        "Child-module outputs are the ONLY way a parent reads inside that module: `module.vpc.vpc_id`",
+        "Output arguments: `value`, `description`, `sensitive`, `depends_on`, `ephemeral`, `precondition`",
+        "Outputs are persisted in state, which is how `terraform_remote_state` cross-stack reads work",
+        "`depends_on` in an output forces ordering when the dependency is not visible in the expression",
+        "A `precondition` in an output block asserts a guarantee before the value is published",
+        "Outputs are evaluated after apply; referencing an unknown value during plan shows `(known after apply)`",
+        "Removing an output is a breaking change for any consumer reading it via remote state",
+        "Cross-stack read: `data \"terraform_remote_state\" \"net\" { ... }` then `data.terraform_remote_state.net.outputs.vpc_id`",
+        "Prefer explicit narrow outputs over dumping whole resource objects — the whole object leaks fields and churns",
+        "`terraform output -raw name` gives an unquoted string for shell piping",
+        "Outputs cannot be referenced inside the same module that defines them; use a local instead",
+        "Module authoring rule: variables in, outputs out — those two blocks are the module's public API"
+      ]
+    },
+    {
+      "title": "Variables vs Locals vs Outputs vs Data",
+      "points": [
+        "Variable = input from caller; settable externally; cannot reference anything else",
+        "Local = internal computed value; not settable externally; can reference everything in the module",
+        "Output = value published to caller or CLI; stored in state; evaluated after apply",
+        "Data source = value fetched from a provider at plan time; read-only external lookup",
+        "Validation support: variables have `validation`, outputs have `precondition`, locals have none",
+        "Sensitivity: variables and outputs take `sensitive = true`; locals inherit sensitivity but cannot declare it",
+        "State footprint: variables no (except when embedded in resources), locals no, outputs yes, data sources yes",
+        "Typing: variables are explicitly typed, locals and outputs are inferred",
+        "Reference prefixes at a glance: `var.`, `local.`, `module.<name>.<output>`, `data.<type>.<name>`",
+        "Choose a data source over a variable when the value already exists in the provider and would otherwise be copy-pasted",
+        "Choose a variable over a data source when the value is a deliberate choice, not a discovered fact",
+        "Choose a local over repeating an expression three times; choose repetition over a local read once",
+        "Terraform has no global scope — every module gets values only through its own variables",
+        "Anti-pattern: a variable whose value is always computed from another variable; that is a local"
+      ]
+    },
+    {
+      "title": "Common Mistakes & Gotchas",
+      "points": [
+        "Writing `variable.foo` instead of `var.foo` — the block keyword is not the reference prefix",
+        "Expecting `default` to apply when `null` was passed explicitly; it does, and that surprises people expecting `null`",
+        "Assuming tfvars supports expressions — `region = var.other` in a tfvars file is invalid",
+        "Forgetting that `*.auto.tfvars` loads silently, so a stray file in the directory changes the plan",
+        "Losing order by typing a variable `set(string)` when order matters — use `list(string)`",
+        "Type `any` on a module input, producing a plan error deep inside the module with no line pointing at the caller",
+        "Sensitive input feeding a non-sensitive output: `Output refers to sensitive values` blocks the plan",
+        "Committing `terraform.tfvars` with credentials, then rotating nothing after removing it",
+        "Using a sensitive or unknown value in `for_each`, which fails with `Invalid for_each argument`",
+        "Nesting `optional()` outside an object type — `optional` is only valid on object attributes",
+        "Number precision: very large integers can drift because Terraform numbers are arbitrary-precision decimals rendered through JSON",
+        "`TF_VAR_` names are case-sensitive; `TF_VAR_Region` does not set `var.region`",
+        "Variable defaults that reference the environment (like an AWS account id) — defaults must be constants",
+        "Deleting a module output while another workspace still reads it via remote state, breaking that plan silently until next run",
+        "Relying on interactive prompts in CI instead of `-input=false`, causing a hung pipeline"
+      ]
+    },
+    {
+      "title": "Recap: The Input/Output Cheat Sheet",
+      "points": [
+        "Variables parameterize; locals compute; outputs publish — that triad is the whole module interface",
+        "Declaration skeleton to memorize: `variable \"x\" { type, default, description, sensitive, nullable, validation }`",
+        "Type ladder: primitives, then `list`/`set`/`map` for homogeneous data, then `object`/`tuple` for shaped data",
+        "Prefer a precise `object({...})` with `optional(k, default)` over `any` for every public module input",
+        "Precedence order to recite: defaults, `TF_VAR_*`, `terraform.tfvars`, `.tfvars.json`, `*.auto.tfvars` alphabetically, `-var-file`/`-var` last",
+        "Validate early with `validation` + `can(regex(...))`; validate against reality with `precondition`/`postcondition`",
+        "`sensitive` hides from output; `ephemeral` keeps out of state; neither encrypts the backend for you",
+        "Encrypt state, lock it, and restrict access — that is the real secret boundary",
+        "`local.` for computed naming, tags, and `for_each` maps; keep resource blocks readable",
+        "Outputs are the module's return values and a stable contract — name and version them carefully",
+        "`terraform console` is the fastest way to inspect what `var.x` and `local.y` actually resolved to",
+        "Ship modules with typed variables, descriptions, validations, and narrow outputs; that is what makes them reusable",
+        "Trade-off summary: strict typing and validation cost authoring time but move failures from apply-time to plan-time",
+        "The final rule: variables are what callers decide, locals are what you derive, outputs are what you promise"
+      ]
+    }
+  ]
+}

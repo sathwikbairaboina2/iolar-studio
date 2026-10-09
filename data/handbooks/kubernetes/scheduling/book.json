@@ -1,0 +1,162 @@
+{
+  "title": "Kubernetes Scheduling: The Dense Notes Handbook",
+  "summary": "A study-notes carousel covering how the kube-scheduler places pods: node affinity, taints and tolerations, resource requests and limits, pod priority and preemption, and topology spread constraints.",
+  "chapters": [
+    {
+      "title": "1. Scheduling Fundamentals: How the Scheduler Thinks",
+      "points": [
+        "kube-scheduler watches for pods with spec.nodeName empty — only unscheduled pods are its input queue (the scheduler does not run DaemonSet-hostile logic; DaemonSet pods bypass affinity defaults)",
+        "Two-phase model: FILTERING (feasible nodes only) then SCORING (rank feasible nodes, pick highest; tie broken randomly)",
+        "Filter predicates include PodFitsResources, NodeUnschedulable, taint/toleration checks, affinity rules, and volume topology constraints",
+        "Scoring plugins score on least-requested resources, image locality, node affinity prefer weight, pod topology spread, and taint toleration preference",
+        "If no node passes filtering, the pod stays Pending — the scheduler retries indefinitely; check with kubectl describe pod → Events: '0/N nodes are available'",
+        "kubectl get events --field-selector reason=FailedScheduling shows the exact failing plugin and reason per node",
+        "The scheduler binds a pod by writing spec.nodeName via the Bind API — kubelet then takes over on the node",
+        "Extenders and scheduler profiles let you enable/disable plugins or add custom scoring weights per scheduler name",
+        "Pods can bypass the scheduler entirely by setting spec.nodeName manually (static pod / manual binding pattern)"
+      ]
+    },
+    {
+      "title": "2. Resource Requests & Limits: The Scheduling Currency",
+      "points": [
+        "requests = what scheduling uses (node allocatable must fit sum of pod requests); limits = runtime cap enforced by cgroups",
+        "CPU is compressible: over-limit pods get throttled (CFS quota); memory is incompressible: over-limit → OOMKill",
+        "Containers with requests but no limits can burst beyond request — good for CPU, risky for memory",
+        "QoS classes derived automatically: Guaranteed (requests == limits for every container), Burstable (any request set), BestEffort (nothing set)",
+        "kubelet eviction order under node pressure: BestEffort first, then Burstable exceeding requests; Guaranteed is last",
+        "Node allocatable = capacity − kube-reserved − system-reserved − eviction-hard; scheduling checks allocatable, not raw capacity",
+        "CPU request '500m' = half a core; memory units: Mi (power of 2) vs M (power of 10) — easy typo trap",
+        "Limits are NOT summed for scheduling — you can overcommit limits across pods; this is the source of node-level resource contention",
+        "Horcesterad hint: pods without requests are BestEffort and get scheduled anywhere with slack — they are first evicted and lowest priority for scoring",
+        "Default requests/limits come from LimitRanges in the namespace; ResourceQuotas cap totals per namespace",
+        "kubectl describe node shows Requests vs Limits vs Allocatable — your main tool for spotting overcommitment",
+        "Pod-level resources (spec.resources at pod level) are a newer feature for aggregate pod requests"
+      ]
+    },
+    {
+      "title": "3. Node Affinity: Hard and Soft Placement Rules",
+      "points": [
+        "nodeAffinity lives in pod.spec.affinity.nodeAffinity; matches node labels via nodeSelectorTerms",
+        "requiredDuringSchedulingIgnoredDuringExecution = hard filter: no matching label → pod stays Pending forever",
+        "preferredDuringSchedulingIgnoredDuringExecution = soft: weight 1–100 added to score, pod still schedules without a match",
+        "'IgnoredDuringExecution' means running pods are NOT evicted if labels change — only future scheduling is affected",
+        "Operators: In, NotIn, Exists, DoesNotExist, Gt, Lt (numeric comparison for sizes/generations)",
+        "Built-in labels: kubernetes.io/hostname, topology.kubernetes.io/zone, topology.kubernetes.io/region, node.kubernetes.io/instance-type",
+        "Example: required matchExpressions [{key: topology.kubernetes.io/zone, operator: In, values: [us-east-1a]}] pins pods to one AZ",
+        "Preferred affinity entries stack: multiple weighted terms sum their scores — max useful weight is per-term, not global",
+        "Node labels are set by cloud providers or manually: kubectl label nodes n1 disk=ssd --overwrite",
+        "nodeSelector is the legacy simplified form — still valid, but affinity is the superset",
+        "Common mistake: assuming affinity pods move when you relabel a node — they don't; you must delete/reschedule them",
+        "required affinity + node autoscaler = deadlock risk: autoscaler won't add nodes that can't satisfy the rule from the start"
+      ]
+    },
+    {
+      "title": "4. Taints & Tolerations: Repelling Pods from Nodes",
+      "points": [
+        "Taints are node properties (key=value:effect); tolerations are pod properties that permit scheduling onto tainted nodes",
+        "Effects: NoSchedule (block new pods), PreferNoSchedule (soft), NoExecute (evict running pods without matching toleration)",
+        "Direction is inverted vs affinity: taints push pods AWAY from nodes; affinity pulls pods TOWARD nodes",
+        "Toleration operators: Equal (key+value must match) and Exists (key only, matches any value; empty key+Exists tolerates all taints)",
+        "NoExecute tolerations support tolerationSeconds — auto-evict the pod after N seconds if the taint persists",
+        "Built-in node.kubernetes.io/not-ready and unreachable taints (NoExecute, 300s toleration) gate pods during node failures",
+        "Cloud providers taint specialized nodes automatically, e.g. node.kubernetes.io/instance-type or Windows taints nvidia.com/gpu patterns on dedicated pools",
+        "Commands: kubectl taint nodes n1 key=value:NoSchedule; remove with a trailing minus",
+        "Dedicated-node pattern: taint GPU nodes + tolerate only on GPU pods — keeps CPU workloads off expensive hardware",
+        "Taints are checked during filtering; a single untolerated NoSchedule taint makes the node infeasible regardless of affinity",
+        "Mistake: NoExecute taint on a node evicts ALL running pods lacking tolerations — spot pods often use this to drain",
+        "Taint-based eviction + PodDisruptionBudgets interact: PDBs can block or delay taint evictions (respecting them where possible)"
+      ]
+    },
+    {
+      "title": "5. Affinity vs Taints: Choosing Your Placement Tool",
+      "points": [
+        "Mental model: affinity = pod's wish list about nodes; taints/tolerations = node's veto list about pods",
+        "Use affinity to CONCENTRATE a workload on the right nodes; use taints to EXCLUDE a node from most workloads",
+        "Anti-pattern: relying only on affinity for dedicated nodes — other pods will still land there; pair with a taint for real isolation",
+        "nodeSelector < nodeAffinity < taints in enforcement strength: taints affect eviction (NoExecute), affinity never evicts",
+        "Combination pattern: taint GPU nodes + required affinity to GPU nodes on the GPU pods → exclusive, guaranteed placement",
+        "PreferNoSchedule vs preferred affinity: both are soft; PreferNoSchedule lowers score, preferred affinity raises it",
+        "Bin-packing rule: taints shrink feasible node sets first (filter phase), affinity preferences adjust scores later (scoring phase)",
+        "Cordon/drain comparison: kubectl cordon adds a node.kubernetes.io/unschedulable taint — same mechanism, different knob",
+        "Mistake: tolerating a taint with Exists but wrong effect — effect must match (or be omitted to match all effects)",
+        "Troubleshooting order: check taints (kubectl describe node → Taints) before debugging affinity selectors"
+      ]
+    },
+    {
+      "title": "6. Pod Priority & Preemption",
+      "points": [
+        "Enable via PriorityClasses (scheduling.k8s.io/v1); each pod gets priority from spec.priorityClassName",
+        "Two built-in classes: system-cluster-critical and system-node-critical (highest) for kube-system components",
+        "Preemption: when a high-priority pod is Pending, the scheduler may evict lower-priority pods to make room — victims get graceful termination",
+        "Preemption only evicts pods with LOWER priority; equal priority never preempts regardless of age",
+        "Scheduler considers the whole node: it evicts the smallest set of low-priority pods whose requests free enough capacity",
+        "preemptionPolicy: Never makes a pod priority-aware (for ordering/scoring) but unable to preempt others",
+        "PodDisruptionBudget does NOT block preemption — preemption bypasses PDBs (may ignore them if no better option exists)",
+        "Priority affects more than preemption: tie-breaking in scoring, and kubelet eviction ordering under memory pressure",
+        "Victim selection skips pods owned by higher-priority controllers and prefers BestEffort/over-limit Burstable pods",
+        "Mistake: giving everything a high priority — relative ordering is what matters; priorities are only meaningful in comparison",
+        "preemptionPolicy + tolerationSeconds + PDBs combine for controlled spot-node drain behavior"
+      ]
+    },
+    {
+      "title": "7. Topology Spread Constraints",
+      "points": [
+        "Purpose: spread pods of a matching label selector evenly across failure-domain topology (zones, hosts, regions)",
+        "Anatomy: maxSkew, topologyKey, whenUnsatisfiable (DoNotSchedule | ScheduleAnyway), labelSelector",
+        "maxSkew = max allowed difference in pod count between the most and least populated domain",
+        "DoNotSchedule = hard constraint (filter phase); ScheduleAnyway = soft (adds scoring penalty)",
+        "Example: maxSkew 1, topologyKey topology.kubernetes.io/zone spreads a Deployment evenly across 3 AZs",
+        "minDomains (1.24+): reserve a minimum domain count so a missing/empty zone still influences scheduling math",
+        "nodeAffinityPolicy and nodeTaintsPolicy (1.26+) control which nodes count toward skew — Honor respects your affinity/taints",
+        "matchLabelKeys (1.27+) prevents new and old ReplicaSet pods from being counted together during rolling updates",
+        "Interaction: if fewer nodes exist than domains, hard constraints can leave pods Pending — the classic stuck-spread gotcha",
+        "Default spreading via SelectorSpread/Zone plugins only approximates this; explicit topologySpreadConstraints are precise",
+        "Mistake: forgetting labelSelector — the constraint matches nothing and silently does nothing"
+      ]
+    },
+    {
+      "title": "8. Pod Anti-Affinity vs Topology Spread",
+      "points": [
+        "Anti-affinity (podAntiAffinity) says 'not on the same node/zone as pods matching X'; spread says 'balance counts across domains'",
+        "Anti-affinity is pairwise (binary per node); spread is global (counts across the whole domain set) — different math",
+        "Large Deployments: required podAntiAffinity against every zone is expensive and can dead-lock; spread scales better",
+        "preferred anti-affinity with weight gives 'prefer not together' soft packing — good for latency-sensitive replicas",
+        "topologyKey for anti-affinity can be kubernetes.io/hostname (one pod per node) — the classic HA pattern",
+        "Spread constraints express 'at most N+1 skew' natively, which anti-affinity cannot state (it has no counting)",
+        "Rolling-update behavior differs: spread handles generations poorly without matchLabelKeys; anti-affinity sees all pods equally",
+        "Rule of thumb: per-replica one-per-node → anti-affinity; even distribution across zones/nodes → topology spread",
+        "They compose: anti-affinity for per-node exclusion + spread for zonal balance is a common production combo"
+      ]
+    },
+    {
+      "title": "9. Trade-offs, Pitfalls & Debugging Playbook",
+      "points": [
+        "Over-constraining = Pending pods: every hard rule (required affinity, taint, DoNotSchedule spread) shrinks the feasible set — budget your constraints",
+        "Scheduling is bin-packing (NP-hard) — the scheduler scores heuristically; adding plugins adds latency per pod at scale",
+        "Tight requests = high utilization but more evictions/OOMs; padded requests = waste and Unschedulable nodes",
+        "Mistake: requests far above actual usage starves the cluster; use VPA recommendations or metrics to right-size",
+        "Mistake: forgetting that relabeling/tainting nodes doesn't move existing pods — plan a rollout or drain",
+        "Debug flow: kubectl describe pod (Events) → check FailedScheduling message → inspect node taints/labels → check allocatable vs requests",
+        "kubectl get pods -o wide + custom-columns to see real distribution across zones and nodes",
+        "Scheduler dry-run trick: kubectl create --dry-run=server won't schedule, but events + kubectl explain help validate spec syntax",
+        "Cluster autoscaler interplay: Pending pods with unsatisfiable constraints won't trigger helpful scale-up — verify constraints match node-pool labels",
+        "Preemption surprises: a critical class on one busy team's pods can silently kill neighbors — cap priority usage with policies",
+        "Watch kube-scheduler logs (--v=4) to trace filtering/scoring decisions per pod"
+      ]
+    },
+    {
+      "title": "10. Closing Summary: The Scheduling Decision Stack",
+      "points": [
+        "Full evaluation order: taints/tolerations + required affinity + resources (filter) → scoring (spread, preferred affinity, least-request) → preemption if infeasible",
+        "Filter phase is all-or-nothing; scoring phase is weighted preferences — know which of your rules is which",
+        "Golden pattern for prod: explicit requests/limits + Guaranteed or sane Burstable QoS + spread across zones + taints for special hardware",
+        "Priority ladder: system-critical > platform add-ons > production apps > batch — reserve preemption for real tiers",
+        "Capacity equation to remember: sum(requests) ≤ allocatable per node; limits may exceed — that's overcommit, with QoS as the safety net",
+        "IgnoredDuringExecution semantics: all affinity is schedule-time only — control existing pods with disruptions/drain, not label edits",
+        "Eviction order mental map: preemption (scheduler, by priority) → kubelet pressure eviction (by QoS/usage) → taint NoExecute (by tolerations)",
+        "Checklist: name every hard constraint's failure mode — what happens when the zone dies, the node pool is full, or the labels are wrong",
+        "Scheduling is declarative like everything else in k8s: you state constraints, the scheduler optimizes — your job is choosing constraints that can always be satisfied"
+      ]
+    }
+  ]
+}

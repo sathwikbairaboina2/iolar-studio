@@ -1,0 +1,460 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "REDIS EXPIRY & EVICTION — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Approximated LRU: 24 Bits and a Sample Pool",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Why Not True LRU"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "True LRU needs a doubly-linked list touched on every access.",
+            "That is extra pointers per object plus cache-hostile chasing.",
+            "Redis refuses to pay it and approximates instead."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "`robj` 24-bit `lru` field",
+            "cells": [
+              "clock",
+              "clock",
+              "clock",
+              "unix sec",
+              "truncated",
+              "24 bits"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each `robj` carries a 24-bit coarse clock: Unix seconds, truncated.",
+            "24 bits of seconds wraps every ~194 days.",
+            "Comparison code handles wraparound; idle time is modulo that range.",
+            "`LRU_CLOCK_RESOLUTION` = 1000 ms."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "No syscall per access",
+          "text": "The clock is read from a cached global that `serverCron` updates — never `gettimeofday` on the hot path."
+        },
+        {
+          "type": "heading",
+          "text": "Sample and Pool"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "sample 5 keys",
+              "score by clock",
+              "merge into pool(16)",
+              "evict oldest"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Eviction samples `maxmemory-samples` random keys, default 5.",
+            "It evicts the one with the oldest clock value.",
+            "Redis 3.0 added a 16-entry pool of the best candidates so far.",
+            "The pool is refilled each round, so good victims survive passes."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`maxmemory-samples`",
+            "Quality",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "5",
+              "visibly worse",
+              "baseline"
+            ],
+            [
+              "10",
+              "near true LRU",
+              "~2x sampling"
+            ],
+            [
+              "20",
+              "no real gain",
+              "wasted CPU"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Highest-value LRU knob",
+          "text": "`CONFIG SET maxmemory-samples 10`. Measure hit ratio before and after — do not raise it past that on faith."
+        },
+        {
+          "type": "heading",
+          "text": "Inspecting and Its Limits"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "OBJECT IDLETIME user:42   # seconds since access",
+            "# meaningful only under an LRU policy",
+            "# DEBUG paths do not count as an access here"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Approximated LRU: 24 Bits and a Sample Pool (cont.)",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "One scan job touches everything once and evicts your hot set.",
+            "A `KEYS`-style traversal or big `MGET` sweep does exactly this.",
+            "That failure has a name: scan resistance failure.",
+            "LRU also cannot tell 'once, recently' from '10,000 times, recently'."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Shared bits, shared machinery",
+          "items": [
+            "`volatile-ttl` reuses the pool, ranking by nearest deadline.",
+            "Under LFU the same 24 bits mean counter + timestamp.",
+            "You get recency or frequency, never both.",
+            "`utils/lru/test-lru.rb` renders true vs approximated victims."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Blind Spot It Fixes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Added in Redis 4.0 to answer LRU's weakness.",
+            "An item hit thousands of times should outrank one hit ten seconds ago.",
+            "Recency alone throws that history away."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "same 24 bits, reinterpreted",
+            "cells": [
+              "last decr",
+              "minutes",
+              "16 bits",
+              "counter",
+              "log",
+              "8 bits"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "16 bits: last-decrement time, in minutes.",
+            "8 bits: a logarithmic access counter.",
+            "8 bits cannot hold a real count, so the counter is probabilistic.",
+            "It is a Morris counter — approximate by construction."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "How the Counter Grows"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "P(increment) = 1 / (counter * lfu_log_factor + 1)",
+            "# fast at first, then slower and slower",
+            "# saturates at 255",
+            "# ~1M accesses at log factor 10"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "New keys start at `LFU_INIT_VAL` = 5, not 0.",
+            "So a fresh key gets a chance to prove itself first.",
+            "Otherwise every new key would be the instant next victim."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Decay Keeps It Honest"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Without decay, yesterday's hot key stays untouchable forever.",
+            "So the counter is halved or decremented over time.",
+            "`lfu-decay-time` (default 1) = minutes of idleness per step down.",
+            "Decay is lazy: applied on next touch or sample, never swept."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Lazy decay is free",
+          "text": "No background pass walks the keyspace to age counters, so an idle instance spends nothing on LFU bookkeeping."
+        }
+      ]
+    },
+    {
+      "page_title": "Approximated LFU: Morris Counters and Decay",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Two Dials"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`lfu-log-factor`",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "lower",
+              "counter climbs fast"
+            ],
+            [
+              "lower",
+              "separates cold keys"
+            ],
+            [
+              "10 (default)",
+              "balanced"
+            ],
+            [
+              "higher",
+              "wide range, hot keys"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "OBJECT FREQ page:home   # raw counter, LFU only",
+            "OBJECT IDLETIME page:home  # (error) under LFU",
+            "# use FREQ to check the hot set reads as hot"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Scan resistance",
+          "text": "A one-pass batch job leaves counters near 5, so its keys go first and your hot set survives. LRU cannot do this."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per-access work is the same as LRU: one field update.",
+            "The trade-off is tuning complexity, not throughput.",
+            "Failure mode: a real traffic shift promotes slowly.",
+            "New feature or new tenant slow to warm? Shorten `lfu-decay-time`."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Comparison row to memorise",
+          "items": [
+            "LRU: recency, 1 knob, loses to scans.",
+            "LFU: frequency + decay, 3 knobs, resists scans.",
+            "LFU adapts slowly to genuine shifts."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Persistence Behaviour"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Path",
+            "Expiry handling"
+          ],
+          "rows": [
+            [
+              "RDB",
+              "absolute timestamps"
+            ],
+            [
+              "RDB load (primary)",
+              "drops expired"
+            ],
+            [
+              "RDB load (replica)",
+              "keeps until told"
+            ],
+            [
+              "AOF",
+              "explicit `DEL`/`UNLINK`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "AOF never records an expiry implicitly.",
+            "Expiry and eviction are both written as real commands.",
+            "So AOF replay is deterministic, not clock-dependent."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Failover hazard",
+          "text": "After promotion, a replica's own clock and its inherited-but-unexpired keys govern. Large skew between nodes changes what is visible."
+        },
+        {
+          "type": "heading",
+          "text": "Keyspace Notifications"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "CONFIG SET notify-keyspace-events Ex",
+            "SUBSCRIBE __keyevent@0__:expired",
+            "# fires on reclamation, not on the deadline"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Delay between deadline and event is unbounded.",
+            "Delivery is pub/sub: fire-and-forget, no persistence.",
+            "Never build a job scheduler on it alone.",
+            "Cluster: keys expire per shard, so related keys never expire together."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Gotchas, Persistence, and the Cheat Sheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Six Classic Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`SET` after `EXPIRE` clears the TTL — the key goes immortal.",
+            "`EXPIRE` on every `INCR` slides the rate-limit window forever.",
+            "`volatile-lru` with no TTLs anywhere: OOM on an 'evictable' instance.",
+            "Assuming a TTL frees memory on time — reclamation is only 'soon'."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Uniform TTLs: synchronised expiry, CPU spike, replication burst, stampede.",
+            "Treating `DBSIZE` as authoritative — it counts logically-expired keys.",
+            "And it differs between primary and replica by design."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SET sess:1 v EX 60",
+            "SET sess:1 v2 KEEPTTL   # right",
+            "SET sess:1 v2           # wrong: immortal now",
+            "EXPIRE sess:1 60 GT     # right: extend only"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Config Cheat Sheet"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Budget: `maxmemory`, `maxmemory-policy`, `maxmemory-samples`.",
+            "LFU: `lfu-log-factor`, `lfu-decay-time`.",
+            "Expiry rate: `hz`, `dynamic-hz`.",
+            "Latency: `lazyfree-lazy-expire`, `lazyfree-lazy-eviction`, `activedefrag`."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Monitoring set",
+          "items": [
+            "`evicted_keys`, `expired_keys`.",
+            "`used_memory` vs `maxmemory`.",
+            "`mem_fragmentation_ratio`.",
+            "`keyspace_hits`/`misses`, latency percentiles."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The whole handbook in one line",
+          "text": "TTLs make keys invisible on time and reclaimed approximately; `maxmemory` turns approximate reclamation into a hard budget; LRU and LFU are both sampled guesses, tuned by `maxmemory-samples` and the two `lfu-*` dials."
+        },
+        {
+          "type": "qa",
+          "q": "Shipping checklist?",
+          "a_bullets": [
+            "`maxmemory` set, policy matched to the workload.",
+            "TTLs jittered; `KEEPTTL` audited on every overwrite path.",
+            "Lazyfree on for big values.",
+            "Eviction counters on a dashboard before traffic arrives."
+          ],
+          "example_code": [
+            "CONFIG GET maxmemory*",
+            "CONFIG GET lazyfree*"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of REDIS EXPIRY & EVICTION. Your Redis key did not disappear at its deadline — it just became invisible. This handbook walks the whole death pipeline: the TTL command surface and the flags that quietly clear it, the lazy and active expiry cycles that actually reclaim memory, and how maxmemory turns 'soon' into a hard budget under approximated LRU and LFU. Ten pages of internals, sampling math, and the six mistakes that cause silent data loss or an OOM at 3am.",
+    "hashtags": [
+      "#redis",
+      "#backendengineering",
+      "#systemdesign",
+      "#caching",
+      "#databases",
+      "#devops",
+      "#sre",
+      "#performance",
+      "#softwareengineering",
+      "#codingnotes",
+      "#techhandbook",
+      "#distributedsystems"
+    ]
+  }
+}

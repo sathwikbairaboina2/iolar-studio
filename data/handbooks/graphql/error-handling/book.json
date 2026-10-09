@@ -1,0 +1,176 @@
+{
+  "title": "GraphQL Errors: Partial Responses, Paths, Codes & Non-Null Propagation",
+  "summary": "A 10-page study series on how GraphQL reports failure: the data + errors envelope, partial responses, error paths and extensions.code, the resolver error lifecycle, non-null propagation, masking internal errors, client-side handling, and the trade-offs versus REST-style signaling.",
+  "chapters": [
+    {
+      "title": "The Response Envelope: data + errors",
+      "points": [
+        "A GraphQL response is one JSON object with at most three top-level keys: data, errors, extensions — application failures do not change the HTTP status.",
+        "data and errors can coexist: a 200 response may carry partial data plus error objects — partial success is the default contract, not an exception.",
+        "Each errors[] entry is a GraphQLError: message is the only spec-required field; locations, path, extensions are optional convention.",
+        "The spec defines NO error codes — everything beyond message is server convention, which is why extensions.code became the de facto standard.",
+        "Parse and validation errors happen before execution: the response is errors only, with data omitted entirely.",
+        "Execution errors happen per-resolver: the response is data (possibly partial) plus errors — always know which phase an error came from.",
+        "extensions is also a reserved top-level map for request-level metadata: tracing, cost, persisted-query info, requestId.",
+        "Worked example: user.name resolves, user.email throws — data.user.name is populated, user.email is null, errors[] holds one entry.",
+        "Servers may add unknown keys anywhere; clients must tolerate extra fields for forward compatibility.",
+        "Why this design: GraphQL operates on graphs — one broken leaf should not abort the whole tree, unlike a single REST resource.",
+        "Mental model: HTTP status = did transport work; errors[] = did execution work.",
+        "Antipattern preview: returning failures as data (user: { error: ... }) hides them from tooling and monitoring — real failures belong in errors[]."
+      ]
+    },
+    {
+      "title": "Partial Responses: One Broken Leaf Doesn't Kill the Tree",
+      "points": [
+        "Definition: a partial response contains every successfully resolved field plus one errors[] entry per failed field.",
+        "Mechanics: resolvers run independently — a throw in one resolver is caught by the executor and never aborts sibling resolvers.",
+        "Executor rule on a field error: append a GraphQLError, set that field's value to null, continue executing the rest of the selection set.",
+        "The failed field shows up as null in data — that null is the hole the matching error path points at.",
+        "Multiple failures produce multiple errors[] entries, each with its own path; resolver completion order does not matter.",
+        "Lists fail per item: path posts[2].title means only post index 2's title failed, not the whole list.",
+        "Partial responses depend on nullable fields — non-null types change this behavior entirely (non-null propagation chapter).",
+        "Client contract: always null-check nested objects even on success; null + errors entry means a failed field, not missing data.",
+        "Example: feed of 10 posts, one author lookup fails — render 9 posts fully and a degraded card for the broken one.",
+        "REST contrast: a 500 on /feed kills the entire payload; GraphQL degrades field by field.",
+        "Trade-off: resilience buys ambiguity — clients must join data with errors[] to know what to trust.",
+        "Schema design rule: keep a field nullable when failure is recoverable at that node; reserve ! for when null makes the parent meaningless."
+      ]
+    },
+    {
+      "title": "path & locations: Pinpointing Failures",
+      "points": [
+        "errors[].path is an ordered array of field names and list indices from the response root down to the failing field.",
+        "Example: path user.friends[3].avatar = the 4th element of friends failed while resolving its avatar.",
+        "Paths use response keys: aliased fields appear under their alias, so path always matches the keys actually present in data.",
+        "errors[].locations gives {line, column} of the failing field in the query source text — great for dev tooling, rarely used at runtime.",
+        "No path = request-level error (parse/validation): the whole operation failed, so retry and refresh logic must differ from field errors.",
+        "Client recovery pattern: map each error.path to the UI component that owns that fragment — disable the broken widget, keep the rest.",
+        "Path is response-space: you never need to re-walk the query document or resolve fragments to find the failing node.",
+        "A resolver fanning out over a large list can emit many near-identical errors differing only in index — aggregate server-side.",
+        "Gotcha: paths contain indices, so changing pagination or arguments changes paths — never hardcode them in client logic.",
+        "Debugging: path locates the throw site in the graph, locations locates it in the query text — use both in trace overlays.",
+        "Testing tip: assert on path + extensions.code in integration tests; asserting on message strings is brittle.",
+        "Mutations follow the same path rules per field — but non-null root mutation fields escalate failures (see non-null propagation)."
+      ]
+    },
+    {
+      "title": "extensions.code: Machine-Readable Errors",
+      "points": [
+        "extensions is a free-form object on each error for machine-readable data — message is for humans, extensions for programs.",
+        "De facto standard: extensions.code — Apollo Server popularized BAD_USER_INPUT, GRAPHQL_VALIDATION_FAILED, GRAPHQL_PARSE_FAILED, INTERNAL_SERVER_ERROR.",
+        "Convention codes worth adopting: UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, RATE_LIMITED, PAYMENT_REQUIRED.",
+        "Apollo maps thrown types: SyntaxError -> GRAPHQL_PARSE_FAILED, ValidationError -> GRAPHQL_VALIDATION_FAILED, anything unknown -> INTERNAL_SERVER_ERROR.",
+        "Codes are an API contract: stable, documented, UPPERCASE — renaming a code is a breaking change like renaming a field.",
+        "Transport hints in extensions: code RATE_LIMITED plus retryAfter seconds lets clients back off correctly.",
+        "Structured validation payloads: extensions.invalidArgs [{field, issue}] or details — bind server errors to form fields.",
+        "Branch on extensions.code in clients — never regex the message; copy changes, codes do not.",
+        "Publish a code table like enum docs: code -> meaning -> expected client action.",
+        "Never leak debug data through extensions in production — sanitize extensions as aggressively as message.",
+        "HTTP mapping: GraphQL-over-HTTP guidance says application errors stay 200; only transport failures (malformed request, server down) get 4xx/5xx — some gateways map code -> status for legacy clients.",
+        "Antipattern: encoding machine info in the message (Error 403: user not found) — that is a code living in the wrong field."
+      ]
+    },
+    {
+      "title": "Error Lifecycle Inside Resolvers",
+      "points": [
+        "Two error phases: request errors (parse + validation, before any resolver runs) vs field errors (raised during execution).",
+        "Throwing in a resolver never crashes the request: the executor catches, converts to GraphQLError, appends to errors[], nulls the field.",
+        "GraphQLError constructor: new GraphQLError(message, { extensions, originalError }) — path and locations are auto-filled at execution time.",
+        "originalError preserves the root cause: chain it for server-side logging, strip it before sending to clients.",
+        "Pattern: define domain error classes (NotFound, Forbidden, RateLimited) carrying a code; a middleware maps class -> extensions.code.",
+        "Expected vs unexpected: throw curated GraphQLErrors for domain failures; let unknown exceptions surface as masked INTERNAL_SERVER_ERROR.",
+        "Async resolvers: a rejected promise behaves exactly like a throw — the executor awaits and catches it.",
+        "Return-instead-of-throw: some teams model expected failures as union result types (comparisons chapter) and reserve errors[] for the unexpected.",
+        "Error volume: a resolver invoked per list item can emit thousands of errors — dedupe/aggregate in formatError.",
+        "Single choke point: shape all outgoing errors in formatError / didEncounterErrors hooks — never patch messages ad hoc across resolvers.",
+        "Attach requestId/userId in a server plugin before masking, so masked production errors stay traceable in logs.",
+        "Rule: never throw raw strings or plain objects — non-Error throws lose stack traces and break originalError chaining."
+      ]
+    },
+    {
+      "title": "Non-Null Propagation: How One Error Nulls Everything",
+      "points": [
+        "Core rule: if a non-null field (type T!) throws or resolves to null, the executor cannot place null there — it must propagate null to the parent.",
+        "Propagation continues: parent nullable -> parent becomes null (its other resolved fields are discarded too); parent also non-null -> null bubbles to the nearest nullable ancestor.",
+        "Worst case: an error under a chain of ! fields nulls the entire data object — one failing avatar can wipe the whole response.",
+        "errors[] still holds the original leaf error with the leaf path — nulling happens in data, the diagnosis stays in errors.",
+        "Fields are nullable by default in SDL: resilience is the default, non-null strictness is opt-in with !.",
+        "Use ! deliberately: fields whose null would make the parent meaningless (id: ID!, root fields returning objects).",
+        "Non-null root mutation fields give all-or-nothing semantics: a failure nulls data entirely — decide this consciously per mutation.",
+        "List gotcha: [Post!]! means a single bad post nulls the whole list; use [Post] (nullable items) for per-item failure isolation.",
+        "Trade-off: nullable = local failure + partial UI; non-null = stronger guarantees + bigger blast radius up the tree.",
+        "Audit nullability via introspection: every ! in the schema is a propagation edge — treat each as a failure-amplification point.",
+        "Null is not failure: a field can be legitimately null (missing data) with no error entry — check errors[] to distinguish absent vs failed.",
+        "Versioning: adding ! to an existing field is a breaking change — nullability is part of your public contract."
+      ]
+    },
+    {
+      "title": "Masking Internal Errors",
+      "points": [
+        "Threat: raw resolver exceptions leak stack traces, SQL, file paths, and third-party keys into errors[].message — free recon for attackers.",
+        "Golden rule: expected errors carry curated user-facing messages; unexpected errors are masked to a generic message and logged server-side.",
+        "Standard mask: message -> 'Internal server error', extensions.code -> INTERNAL_SERVER_ERROR, originalError logged, never shipped.",
+        "Correlation IDs: put a debug/correlationId in extensions so a user-reported failure maps to exactly one log line.",
+        "Fail closed with an allowlist: only instances of your public error classes pass through unmasked; everything else is masked.",
+        "Apollo Server 4 masks unexpected errors by default in production; includeStacktraceInErrorResponses and the debug flag control the rest.",
+        "Implement masking in formatError / didEncounterErrors — one choke point redacts message, strips originalError and stack.",
+        "Sanitize extensions too: a well-meaning details object can leak query params, internal IDs, or endpoint names.",
+        "Validation leak: 'Did you mean...' field suggestions reveal schema shape — disable them in production, as Apollo does.",
+        "Federation: downstream subgraph errors traverse the gateway — mask at the outermost edge, trust no passthrough.",
+        "Do not over-mask: blanket-masking NOT_FOUND or VALIDATION destroys UX — mask by error class, not everything.",
+        "CI test: throw a fake exception in a test resolver and assert the client sees only INTERNAL_SERVER_ERROR — no stack, no originalError."
+      ]
+    },
+    {
+      "title": "Client-Side Handling & Error Policies",
+      "points": [
+        "Apollo Client error shape: error.graphQLErrors (array), error.networkError, error.clientErrors — handle all three, not just a try/catch.",
+        "Partial data still lands in the cache: data and errors arrive together — render what resolved, degrade the failed paths.",
+        "errorPolicy: none (default — errors reject the result, data dropped), ignore (errors dropped, data kept), all (data + graphQLErrors delivered together).",
+        "urql equivalent: the OperationResult carries error alongside data; CombinedError exposes graphQLErrors and networkError.",
+        "Retry policy by code: retry network errors with backoff, honor retryAfter for RATE_LIMITED, never retry VALIDATION or FORBIDDEN.",
+        "Map codes to UX: UNAUTHENTICATED -> login redirect, FORBIDDEN -> hide affordance, NOT_FOUND -> empty state, RATE_LIMITED -> countdown.",
+        "Path-driven recovery: match error.path to the component owning that fragment so only the broken subtree degrades.",
+        "Unpack structured validation: extensions.invalidArgs / details -> bind per-field form errors.",
+        "Classic bug: awaiting a query never rejects on field errors — failure arrives as a resolved response carrying errors[], so explicit checks are mandatory.",
+        "Two kinds of null: null with no error = data genuinely absent; null with a matching error = resolution failed — same shape, different UX.",
+        "Centralize mapping in one link/interceptor layer: codes -> typed app errors, so screens never parse raw GraphQL errors.",
+        "Dev vs prod: show path and locations in developer overlays; strip them from user-facing toasts."
+      ]
+    },
+    {
+      "title": "GraphQL vs REST vs Unions: Trade-offs",
+      "points": [
+        "vs REST: REST signals per-endpoint status codes (200/404/500) — coarse and all-or-nothing; GraphQL reports per-field in-band with transport 200.",
+        "GraphQL-over-HTTP guidance: application failures = 200 + errors[]; only transport-level failures (malformed request, server down) deserve 4xx/5xx.",
+        "Alternative pattern: result unions (type UserResult = User | NotFoundError | PermissionError) make failures visible in the schema and force exhaustive handling.",
+        "Union trade-off: compile-time safety vs verbosity — every query must inline fragments (... on NotFoundError) and the schema grows per failure mode.",
+        "errors[] trade-off: uniform and spec-blessed but invisible to the type system — clients can silently ignore them.",
+        "Hybrid convention used by strong APIs: expected domain failures -> union types; unexpected/infra failures -> masked errors[].",
+        "vs gRPC: 16 canonical gRPC status codes per call vs free-form extensions.code per API — standardization vs domain expressiveness.",
+        "Payload bloat: a list with many failing items can emit more error objects than data — cap, dedupe, or aggregate.",
+        "Caching: only data is cacheable, errors are not — error-heavy designs push recovery complexity onto every client.",
+        "Observability: partial responses make request success ambiguous — track error rate per path and code, not per request.",
+        "Masking tension: hiding internals protects you and blinds you — solve with correlationId plus full server-side detail.",
+        "Where errors[] shines: heterogeneous or federated graphs where independent sources fail independently — per-node failure is the norm."
+      ]
+    },
+    {
+      "title": "Common Mistakes & Cheat Sheet",
+      "points": [
+        "Mistake 1: throwing raw Error with internal messages in production — wrap expected failures in coded GraphQLErrors, mask the rest.",
+        "Mistake 2: sprinkling ! everywhere for safety — every non-null is a propagation edge; one failure can null the whole response.",
+        "Mistake 3: if (errors) return — discarding valid partial data; render what resolved, degrade the failed paths.",
+        "Mistake 4: branching on message strings or regex — extensions.code is the contract, message is human copy.",
+        "Mistake 5: leaking stack traces via originalError serialization or a debug extensions field.",
+        "Mistake 6: infinite retry loops on non-retryable codes like VALIDATION or FORBIDDEN.",
+        "Mistake 7: treating null as failure (or ignoring failed nulls) — join against errors[].path before deciding UX.",
+        "Mistake 8: unbounded error arrays from hot list resolvers — dedupe and cap in formatError.",
+        "Mistake 9: masking in subgraphs but trusting the gateway passthrough — mask at the outermost edge.",
+        "Cheat sheet: response = data? + errors[]; each error = message + locations + path + extensions.code.",
+        "Cheat sheet: null + no error = absent; null + error = failed; ! = propagation edge; request errors carry no path.",
+        "Final checklist: nullable by default, curate expected errors, mask unexpected, code in extensions, always render partial data, retry only retryable codes."
+      ]
+    }
+  ]
+}

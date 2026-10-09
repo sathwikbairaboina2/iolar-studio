@@ -1,0 +1,967 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "MONGODB SHARDING",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Shard At All: Scaling Limits & Cluster Anatomy",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Vertical Ceiling",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bigger box caps out on RAM, IOPS, cost-per-GB",
+            "Sharding scales sideways over commodity nodes",
+            "Working set larger than one node's RAM",
+            "Write throughput past one primary's capacity",
+            "Dataset larger than a single server's disk"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Replication vs Sharding",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Replica set",
+              "items": [
+                "Same data, 3 copies",
+                "HA + read scaling",
+                "Zero capacity relief"
+              ]
+            },
+            "right": {
+              "title": "Sharded cluster",
+              "items": [
+                "Different data per shard",
+                "Splits writes and disk",
+                "HA comes from the shards"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Cluster Anatomy"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "app driver",
+              "mongos",
+              "chunk map",
+              "owning shard"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Shard: a replica set holding one slice of data",
+            "Config servers: a replica set holding metadata",
+            "`mongos` is stateless, caches routing, forwards ops",
+            "Run many `mongos`, typically one per app server"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "What Config Servers Hold",
+          "items": [
+            "`config.chunks`: key range to owning shard",
+            "`config.collections`: shard key per collection",
+            "Since 3.4 they must be a replica set (CSRS)",
+            "Legacy 3-mirror SCCC mode is gone"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "Where Data Lives"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A sharded collection's data sits only on shards",
+            "Unsharded collections sit on the DB's primary shard"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.status()        // the whole picture",
+            "// shards, primary shards, shard keys,",
+            "// chunk counts, balancer state"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Why Shard At All: Scaling Limits & Cluster Anatomy (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Timing The Move"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Disk curve climbing to full with no plateau",
+            "Single primary saturated on write ops",
+            "Index size past RAM: page-fault storms",
+            "Never shard early: ops cost, hops, irreversible key"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Shard Before You Are Desperate",
+          "text": "Draining chunks off a full node needs free disk and I/O headroom. At 95% full you have neither."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Piece",
+            "Count",
+            "Why"
+          ],
+          "rows": [
+            [
+              "CSRS",
+              "3",
+              "metadata HA"
+            ],
+            [
+              "Shards",
+              "2 x 3",
+              "data + HA"
+            ],
+            [
+              "mongos",
+              "N",
+              "one per app node"
+            ],
+            [
+              "Total",
+              "10+",
+              "processes to run"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Pay The Hop",
+          "items": [
+            "app, then mongos, then shard, then back",
+            "Budget one extra round trip in latency SLOs"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Key Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One or more indexed fields, value picks the chunk",
+            "Chunk picks the shard: that is the whole chain",
+            "Compound keys route on the prefix, not the tail"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.shardCollection(\"app.users\",",
+            "  { userId: 1 })     // single field",
+            "sh.shardCollection(\"app.orders\",",
+            "  { tenantId: 1, createdAt: 1 }) // compound"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Hard Constraints",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every document needs a value for every key field",
+            "Explicit nulls pass in some versions, never rely on it",
+            "Index on the key prefix must exist before sharding",
+            "Auto-created only when the collection is empty",
+            "No multikey (array), text, or geoHaystack key"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Immutable, Then Not Quite",
+          "text": "Since 4.2 you can update a shard key value, but only inside a transaction or a retryable write, and it may move the document to another shard."
+        },
+        {
+          "type": "sidebox",
+          "title": "Keep It Small",
+          "items": [
+            "512 bytes was the historic key size cap",
+            "Key bytes live in every chunk boundary",
+            "And in every index entry, on every shard"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "The Shard Key: Definition, Rules & Constraints",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Three Quality Axes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Property",
+            "Bad case",
+            "Damage"
+          ],
+          "rows": [
+            [
+              "Cardinality",
+              "boolean",
+              "2 ranges max"
+            ],
+            [
+              "Frequency",
+              "whale tenant",
+              "hot jumbo chunk"
+            ],
+            [
+              "Monotonicity",
+              "ObjectId",
+              "max-key hotspot"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cardinality caps parallelism: 2 values never fill 3 shards",
+            "40% of orders on one customer builds a jumbo chunk",
+            "Timestamps and counters send every insert to one shard"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Changing It Later"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "5.0+ `reshardCollection` rewrites under a new key",
+            "4.4+ `refineCollectionShardKey` appends fields",
+            "Refine only adds suffixes, never removes or reorders",
+            "Original prefix still dictates routing afterwards"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.adminCommand({",
+            "  refineCollectionShardKey: \"app.orders\",",
+            "  key: { tenantId: 1, _id: 1 } })",
+            "// index for the new key must exist first"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Uniqueness"
+        },
+        {
+          "type": "qa",
+          "q": "Can I keep a unique index on `email`?",
+          "a_bullets": [
+            "Only if the unique index is prefixed by the shard key",
+            "Global uniqueness on any other field is impossible",
+            "Enforce the rest in application logic, not the engine"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Half-Open Ranges",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A chunk is a contiguous range `[min, max)` of key values",
+            "Lower bound inclusive, upper bound exclusive",
+            "First chunk spans `$minKey` to `$maxKey`, all on one shard",
+            "A chunk is metadata, not a file on disk"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "config.chunks for app.users",
+            "cells": [
+              "MinKey..1k",
+              "1k..5k",
+              "5k..9k",
+              "9k..MaxKey"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Splits Move Nothing",
+          "text": "Splitting a chunk copies zero bytes. It writes new boundary metadata into `config.chunks`. Only migration moves data."
+        }
+      ]
+    },
+    {
+      "page_title": "Chunks: The Unit of Distribution",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Size And Splitting"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default chunk size 128 MB, 64 MB before 6.0",
+            "Configurable per cluster or per collection",
+            "Auto-split fired when `mongos` saw a chunk exceed threshold",
+            "6.0+ dropped auto-split for data-size migration decisions"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Chunk size",
+            "Chunks",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Small",
+              "many",
+              "migration churn"
+            ],
+            [
+              "Large",
+              "few",
+              "long moves"
+            ],
+            [
+              "Large",
+              "few",
+              "coarse balance"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Jumbo Chunks",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Unsplittable: every doc inside shares one key value",
+            "Marked jumbo, then skipped by the balancer forever",
+            "A permanent hotspot pinning unbounded data to one shard",
+            "The number one symptom of a low-cardinality key"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pre-Splitting"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.splitAt(\"app.users\", { userId: 5000 })",
+            "sh.splitFind(\"app.users\", { userId: 42 })",
+            "// splitFind splits the chunk holding a doc"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Standard bulk-load move: pre-create ranges first",
+            "Distribute the empty chunks before writing any data",
+            "Loader then hits every shard from the first insert"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Measuring Balance"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`config.chunks` records min, max, shard, and `lastmod`",
+            "That version detects a stale routing table on `mongos`",
+            "100 chunks of 1 MB vs 10 of 128 MB: counts lie",
+            "6.0+ balances by data size, not chunk count"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.users.getShardDistribution()",
+            "// docs, data size, avg obj size per shard",
+            "// the only honest skew check"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Two Partition Modes",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Ranged",
+              "items": [
+                "Natural sort order",
+                "Neighbours share a chunk",
+                "Range reads targeted"
+              ]
+            },
+            "right": {
+              "title": "Hashed",
+              "items": [
+                "Partitions on the hash",
+                "Neighbours scattered",
+                "Range reads broadcast"
+              ]
+            }
+          }
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.shardCollection(\"app.events\",",
+            "  { _id: \"hashed\" },",
+            "  { numInitialChunks: 8 })",
+            "// empty coll defaults to 2 chunks/shard"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Ranged vs Hashed Sharding",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Hashing Trade"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Kills the monotonic hotspot: ObjectIds hash uniformly",
+            "Sequential inserts land evenly on every shard",
+            "Price: a value range maps to non-contiguous hashes",
+            "Ranged keeps `createdAt` between two dates on few chunks"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Compound Hashed 4.4+",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.shardCollection(\"app.users\",",
+            "  { region: 1, userId: \"hashed\" })",
+            "// exactly one hashed field allowed"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Locality on the ranged prefix, spread inside it",
+            "Lets you zone-pin by `region` and still fan out writes",
+            "The middle path when neither pure mode fits"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Hashing Traps",
+          "ink": "red"
+        },
+        {
+          "type": "sidebox",
+          "title": "Three To Remember",
+          "items": [
+            "`2.0` and `2` hash the same value",
+            "A float losing precision hashes inconsistently",
+            "Never use floating-point fields as a shard key",
+            "Sort order on a hashed key is meaningless"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sorted range scans still merge results from every shard",
+            "Zones need ranged semantics on the zoned fields",
+            "You cannot zone-pin on a purely hashed key"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Side By Side"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Workload",
+            "Ranged",
+            "Hashed"
+          ],
+          "rows": [
+            [
+              "Monotonic inserts",
+              "hotspot",
+              "even"
+            ],
+            [
+              "Range reads",
+              "targeted",
+              "broadcast"
+            ],
+            [
+              "Equality on key",
+              "targeted",
+              "targeted"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Equality Is Free Either Way",
+          "text": "An equality predicate on the full key resolves to one hash or one range, so both modes hit exactly one shard."
+        },
+        {
+          "type": "heading",
+          "text": "Two Routing Paths",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Targeted",
+              "items": [
+                "Key or prefix present",
+                "mongos reads chunk map",
+                "Contacts owning shards only"
+              ]
+            },
+            "right": {
+              "title": "Scatter-gather",
+              "items": [
+                "Key absent from filter",
+                "Sent to every shard",
+                "mongos merges results"
+              ]
+            }
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Broadcast latency is bounded by the slowest shard",
+            "Tail latency dominates as shard count grows",
+            "10 shards means 10x the work for a one-hop query"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Query Routing: Targeted vs Scatter-Gather",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What Targets"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Equality on the full key resolves to one chunk",
+            "A range on a ranged key hits the overlapping chunks",
+            "Prefix rule decides everything for compound keys"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key {a,b,c}",
+            "Filter",
+            "Routing"
+          ],
+          "rows": [
+            [
+              "compound",
+              "{a}",
+              "targeted"
+            ],
+            [
+              "compound",
+              "{a,b}",
+              "targeted"
+            ],
+            [
+              "compound",
+              "{b,c}",
+              "broadcast"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reading Explain"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.orders.find({ tenantId: \"t7\" })",
+            "  .explain(\"executionStats\").shards",
+            "// count the entries: 1 means targeted"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`SINGLE_SHARD` stage: one shard answered the query",
+            "`SHARD_MERGE` stage: the router merged many shards",
+            "Stage name tells you the path without guessing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Writes And Pipelines"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`updateOne`/`deleteOne` once needed the shard key or `_id`",
+            "7.0+ allows them without it by broadcasting",
+            "`updateMany`/`deleteMany` always broadcast without the key",
+            "Sorts without the key: shards sort, `mongos` merge-sorts"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Aggregation Split",
+          "items": [
+            "Pipeline splits into a shards part and a merging part",
+            "`$group`, `$sort`, `$lookup` often force one merger",
+            "Merge lands on one shard or on `mongos` memory",
+            "`$lookup` on a sharded foreign coll needs 5.1+"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "qa",
+          "q": "Which query should pick the key?",
+          "a_bullets": [
+            "The one you run a million times a day, not the pretty one",
+            "The natural primary key is often the wrong choice",
+            "Design from the highest-QPS read path backwards"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "The Balancer & Chunk Migration",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What Runs Where",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Background process living on the config server primary",
+            "6.0+ evens out data size per shard",
+            "Older versions counted chunks and tolerated real skew",
+            "Acts past a 3-chunk gap, or the 6.0 size threshold"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Migration Phases"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "clone docs",
+              "catch up deltas",
+              "critical section",
+              "commit metadata",
+              "delete source"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Critical section blocks writes to that range only",
+            "Short but real: migrations show up as latency spikes",
+            "Range deletion afterwards is asynchronous"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Orphans",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Copies linger on the donor until the deleter task runs",
+            "They inflate `count()` and show in direct shard reads",
+            "Always read through `mongos`, never a shard's `mongod`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Operator Controls"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.stopBalancer(); sh.startBalancer()",
+            "sh.getBalancerState()  // enabled?",
+            "sh.isBalancerRunning() // mid-round?",
+            "sh.disableBalancing(\"app.audit\")"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`disableBalancing` stops one collection, not the cluster",
+            "`moveChunk` / `moveRange` migrate a range by hand",
+            "Use them to drain a shard or shift a stubborn hotspot"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "use config",
+            "db.settings.updateOne({ _id: \"balancer\" },",
+            "  { $set: { activeWindow:",
+            "    { start: \"01:00\", stop: \"05:00\" } } })"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "The Balancer & Chunk Migration (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Turn It Off For Backups",
+          "items": [
+            "Filesystem snapshots need a still chunk map",
+            "A running balancer makes that map inconsistent",
+            "Some maintenance ops disable it for you"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Migration Cost"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Since 3.4 one shard joins several migrations at once",
+            "Parallelism is roughly `floor(numShards / 2)`",
+            "Disk I/O and network burn on donor and recipient",
+            "A skewed cluster spends hours catching up after `addShard`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Zones Pin Ranges",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Zones, formerly tags, bind key ranges to named shards",
+            "The mechanism behind locality and tiered storage",
+            "Label the shard first, then assign the range"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.addShardToZone(\"shard0\", \"EU\")",
+            "sh.updateZoneKeyRange(\"app.users\",",
+            "  { region: \"EU\", _id: MinKey },",
+            "  { region: \"EU\", _id: MaxKey }, \"EU\")"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "app.users zones",
+            "branches": [
+              {
+                "label": "EU",
+                "children": [
+                  "shard0",
+                  "shard1"
+                ]
+              },
+              {
+                "label": "US",
+                "children": [
+                  "shard2"
+                ]
+              },
+              {
+                "label": "archive",
+                "children": [
+                  "shard3 HDD"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Why Zone At All"
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "The Balancer & Chunk Migration (cont.)",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Use case",
+            "Zoned by",
+            "Payoff"
+          ],
+          "rows": [
+            [
+              "Data residency",
+              "region",
+              "EU docs in EU DCs"
+            ],
+            [
+              "Tiered hardware",
+              "date range",
+              "recent on NVMe"
+            ],
+            [
+              "Tiered hardware",
+              "old range",
+              "archive on HDD"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Zone Rules",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Zone ranges must sit on a prefix of the shard key",
+            "Zones use ranged semantics even with compound hashed",
+            "Balancer enforces zones first, evens out inside them",
+            "A bad zone can starve one shard and drown another",
+            "Overlapping ranges rejected; gaps float unzoned"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Adding A Shard"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "sh.addShard(\"rs2/h1:27017,h2:27017\")",
+            "// replica set connection string",
+            "db.adminCommand({ removeShard: \"shard2\" })",
+            "// repeat until state is \"completed\""
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Your shard key is the one decision MongoDB will not let you take back cheaply, and most teams pick it from the field that felt like the natural primary key. This handbook walks the full chain: cluster anatomy, how keys turn documents into chunks, ranged vs hashed, why a missing key turns every read into a scatter-gather, and what the balancer is actually doing while your p99 spikes. Ends with the decision framework and the repair commands you hope you never need.",
+    "hashtags": [
+      "#mongodb",
+      "#sharding",
+      "#databases",
+      "#nosql",
+      "#backend",
+      "#systemdesign",
+      "#scalability",
+      "#distributedsystems",
+      "#devops",
+      "#dataengineering",
+      "#softwareengineering",
+      "#techstudynotes"
+    ]
+  }
+}

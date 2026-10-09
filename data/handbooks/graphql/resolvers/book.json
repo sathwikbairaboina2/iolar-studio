@@ -1,0 +1,202 @@
+{
+  "title": "GraphQL Resolvers: The Chain, The Args, The Execution",
+  "summary": "A deep field-by-field tour of how GraphQL resolvers actually run: the four arguments, the parent-to-child resolver chain, default resolvers, execution order and concurrency, context and dataloaders, errors and nullability, and the performance traps that bite real schemas.",
+  "chapters": [
+    {
+      "title": "What A Resolver Actually Is",
+      "points": [
+        "Definition: a resolver is a function attached to one field of one type that returns the value for that field",
+        "Signature in graphql-js: resolve(parent, args, context, info) — four positional arguments, always in that order",
+        "Resolvers live in a resolver map keyed by type name then field name: { Query: { user: fn }, User: { posts: fn } }",
+        "A resolver resolves a FIELD, not a type — 'User resolver' is loose talk for 'resolvers on User's fields'",
+        "The schema (SDL) declares shape and types; resolvers supply behavior — they are two separate layers glued at makeExecutableSchema/buildSchema time",
+        "Query, Mutation, Subscription are ordinary object types; their fields are the entry points, nothing more special",
+        "Example: const resolvers = { Query: { hello: () => 'world' } } with type Query { hello: String }",
+        "A resolver may return a scalar, object, array, null, a Promise, or throw — the executor handles all five",
+        "Returning a Promise is normal; the executor awaits it before descending into child fields",
+        "Resolvers are not middleware and not controllers: one field, one job, called once per parent object per request",
+        "Field arguments declared in SDL (user(id: ID!)) arrive in the args object, already coerced and validated",
+        "Leaf fields (scalars, enums) end the chain — after their resolver returns, serialization happens and no children are visited",
+        "Mental model: GraphQL execution is a depth-first walk of the query AST where each node calls one resolver",
+        "Gotcha: a field with no resolver is not an error — the default resolver quietly takes over (see the defaults chapter)"
+      ]
+    },
+    {
+      "title": "The Four Arguments: parent, args, context, info",
+      "points": [
+        "parent (a.k.a. root, source, obj): the value returned by the resolver of the PARENT field — this is the whole resolver chain in one argument",
+        "For top-level Query fields, parent is the rootValue passed to graphql()/execute(), usually undefined or {}",
+        "args: an object of the field's arguments, already type-coerced, defaults applied, and nulls distinguished from absent keys",
+        "args only contains arguments declared on THAT field in the SDL — undeclared arguments fail validation before execution",
+        "context: one object created per request, shared by every resolver in that request — the place for db clients, the authed user, dataloaders, request headers",
+        "context is built by the server integration (Apollo's context function, Yoga's context) and must never be a module-level global",
+        "info: the resolver's view of execution — fieldName, fieldNodes, returnType, parentType, path, schema, fragments, operation, variableValues, rootValue",
+        "info.path is a linked list of the exact traversal position, e.g. user > posts > 2 > title — best thing to log in errors",
+        "info.fieldNodes lets you inspect the sub-selection to do projection (only SELECT the columns actually requested)",
+        "Rule of thumb: read from parent, filter with args, get resources from context, and touch info only for optimization or logging",
+        "Example: posts: (user, { first = 10 }, { db }) => db.posts.byAuthor(user.id, first)",
+        "Argument order is positional — a resolver written (args, context) is silently wrong because args lands in the parent slot",
+        "Arrow functions vs. method shorthand: 'this' is not meaningful inside resolvers; never rely on it",
+        "Anti-pattern: stuffing per-field state onto context to pass data sideways between sibling resolvers — execution order makes that unreliable",
+        "Gotcha: mutating the parent object inside a child resolver leaks across sibling fields sharing that same object reference"
+      ]
+    },
+    {
+      "title": "The Resolver Chain: Parent Feeds Child",
+      "points": [
+        "The chain rule: whatever a field's resolver returns becomes the `parent` argument of every resolver on that field's sub-selection",
+        "Worked example: Query.user returns { id: 7, name: 'Ada' } → User.posts receives that exact object as parent",
+        "The returned object need not match the GraphQL type's shape — it only needs enough data for the child resolvers to do their work",
+        "Common pattern: return a thin row from the database ({ id, author_id }) and let child resolvers hydrate the rest lazily",
+        "Chain depth equals query depth: a 4-level query runs 4 layers of resolvers, each layer fanning out over the previous layer's results",
+        "List fields fan out: if Query.users returns 20 users, User.name runs 20 times — once per item, with parent set to that item",
+        "Nested lists multiply: 20 users × 10 posts each = 200 calls to Post.title — this is the N+1 shape in its native habitat",
+        "Null short-circuits the branch: if a resolver returns null, its child resolvers are never called for that branch",
+        "Returning a Promise of a list is fine; returning a list of Promises is also fine — the executor awaits each item",
+        "The chain crosses type boundaries: Post.author returning a user id means User.name's parent is whatever Post.author resolved to, not the original user",
+        "Circular queries (user → posts → author → posts) are legal and just keep walking the chain — depth-limit them in production",
+        "Passing data down the chain deliberately: return { ...row, _tenantId } and read it in the child, instead of re-fetching",
+        "Trade-off: fat parents (fetch everything up front, few resolvers) vs. thin parents (fetch per field, more round-trips but no over-fetching)",
+        "Gotcha: a child resolver that assumes a hydrated parent breaks the moment another query path reaches that type with a thin parent"
+      ]
+    },
+    {
+      "title": "Default Resolvers: The Invisible Majority",
+      "points": [
+        "If a field has no resolver in the map, graphql-js calls defaultFieldResolver instead — most fields in a real schema use it",
+        "defaultFieldResolver(source, args, ctx, info): reads source[info.fieldName]; if that value is a function it CALLS it with (args, ctx, info) and returns the result",
+        "So a plain object { name: 'Ada' } resolves User.name for free — no resolver needed",
+        "Class instances work too: a getter or method named `name` on the parent instance is invoked by the default resolver",
+        "The function-calling branch is why ORM model methods sometimes 'just work' as GraphQL fields — and why they get called with args as the first parameter",
+        "Undefined property → the field resolves to null (or errors if the field is non-null)",
+        "Property name must match the field name exactly — snake_case columns vs. camelCase fields is the single most common 'why is it null' bug",
+        "Fix options for name mismatch: alias in SQL, map in the model layer, write an explicit one-line resolver, or use a field-name-mapping directive",
+        "You can override defaults globally: pass fieldResolver to execute(), or set defaultFieldResolver via schema transforms/plugins",
+        "Explicit resolvers always win over the default for that field",
+        "Performance: the default resolver is a property read — vastly cheaper than a user-written resolver that hits a service; don't add resolvers you don't need",
+        "Type resolvers are different: interfaces and unions need __resolveType (or isTypeOf on each member) — there is no useful default",
+        "Default __resolveType behavior: graphql-js falls back to source.__typename if present, otherwise errors 'Abstract type must resolve to an Object type'",
+        "Scalar leaf values still go through the scalar's serialize() after the default resolver returns them",
+        "Gotcha: a Date object resolving into a String field silently becomes an ISO string via String coercion — declare a custom scalar instead"
+      ]
+    },
+    {
+      "title": "Execution Order and Concurrency",
+      "points": [
+        "Execution is breadth-per-level, depth-overall: all fields of one selection set start, then each result is descended into",
+        "Query fields execute in PARALLEL — the spec permits any order and graphql-js kicks them all off then awaits",
+        "Mutation top-level fields execute SERIALLY, in the order written in the document — this is the one ordering guarantee in the spec",
+        "Serial mutations only apply to the ROOT mutation fields; everything nested under them is parallel again",
+        "Practical consequence: two mutations in one document run one-after-another, so a create followed by a read in the same document sees the write",
+        "Sibling fields at the same level must be treated as order-independent — never let one sibling depend on another's side effect",
+        "Field collection happens first: fragments are flattened and identically-aliased fields merged before any resolver runs",
+        "Same field requested twice with the same arguments is executed once (merged); with different arguments and different aliases it runs twice",
+        "The executor awaits every Promise at a level before moving to the next level of the tree",
+        "@skip / @include are evaluated during field collection, so excluded fields never call a resolver at all",
+        "Response key order follows query order, even though resolution order does not — the serialized JSON is deterministic",
+        "graphql-js's ExecuteField loop: resolve value → complete value (unwrap non-null, iterate lists, recurse into objects, serialize leaves)",
+        "@defer / @stream (incremental delivery) break the single-response assumption: parts of the tree resolve after the initial payload",
+        "Subscriptions run once per published event: the source stream yields a value, then normal parallel execution runs over that payload",
+        "Gotcha: relying on 'resolvers run top to bottom' to sequence writes is a bug that only appears under load"
+      ]
+    },
+    {
+      "title": "Context, Auth, and Per-Request State",
+      "points": [
+        "Context is created once per request, before execution, and passed unchanged to every resolver in the tree",
+        "Typical contents: authenticated user/claims, database or ORM handle, dataloaders, request-scoped logger, trace id, feature flags",
+        "Never put per-field or mutable cross-resolver state in context — parallel execution makes ordering assumptions false",
+        "Dataloaders MUST be created per request inside the context factory; a module-level dataloader leaks cached data between users",
+        "Auth in resolvers: check context.user at the field where the data is exposed, not only at the entry point — nested paths reach the same type",
+        "Field-level authorization pattern: a wrapper/higher-order resolver, e.g. requireRole('admin')(resolverFn)",
+        "Schema-directive authorization (@auth(requires: ADMIN)) wraps defaultFieldResolver via a schema transform so unresolved fields are covered too",
+        "Auth errors should be thrown, not returned as null, so the client sees an errors entry with a code extension",
+        "Context typing in TypeScript: define one Context interface and parameterize the generated resolver types so every resolver is checked",
+        "Batching/transaction handle on context lets a mutation run all its writes in one database transaction",
+        "Subscriptions get context per connection (and often per event) — connection auth differs from HTTP request auth",
+        "Cost tracking and depth limiting typically read info + context together in a validation rule or plugin, not inside resolvers",
+        "Testing: build a fake context object and call the resolver function directly — no HTTP server needed",
+        "Gotcha: caching a fetch result on context for the whole request is fine; caching it in module scope is a cross-tenant data leak"
+      ]
+    },
+    {
+      "title": "N+1, DataLoader, and Resolver Performance",
+      "points": [
+        "N+1 defined: one query for the list plus one query per item because the child resolver fetches individually",
+        "Concrete cost: 50 posts each calling Post.author → 1 + 50 database round trips instead of 2",
+        "DataLoader fixes it by batching: collect all .load(key) calls in one tick, then call your batchFn(keys) once",
+        "batchFn contract: given keys [1,2,3] you must return values in the SAME order and SAME length, with null/Error for misses",
+        "DataLoader also memoizes per instance, so the same key requested by 10 resolvers hits the database once",
+        "Batching window is the microtask tick — resolvers running in the same execution level get batched together naturally",
+        "Per-request instantiation is mandatory: cache lifetime = request lifetime, or you serve stale/foreign data",
+        "Alternative to per-field loading: join up front in the parent resolver and let default resolvers read the already-joined fields",
+        "Look-ahead optimization: read info.fieldNodes to build a projection/JOIN only for the fields actually requested",
+        "Query cost analysis and depth limits (graphql-depth-limit, cost directives) protect against pathological nesting before execution starts",
+        "Resolver-level caching: cache by (parentId, args) in a request cache; cross-request caching needs explicit invalidation and auth-aware keys",
+        "Trade-off table: DataLoader (low code change, still N queries batched into 1 per level) vs. eager JOIN (1 query, over-fetches) vs. per-field fetch (simple, slowest)",
+        "Measure with tracing: Apollo tracing / OpenTelemetry gives per-resolver duration keyed by info.path",
+        "Async overhead is real: thousands of tiny async resolvers cost measurable time — returning plain values instead of Promises where possible helps",
+        "Gotcha: DataLoader hides the N+1 in your metrics dashboard but not in your database if your batchFn itself loops"
+      ]
+    },
+    {
+      "title": "Errors, Nullability, and Return Shapes",
+      "points": [
+        "A thrown error becomes an entry in the response's `errors` array, with message, locations, and path from info.path",
+        "Nullable field that errors → that field becomes null, siblings still resolve, execution continues",
+        "Non-null field (String!) that errors or returns null → the error propagates UP to the nearest nullable ancestor, nulling that whole subtree",
+        "Worst case: an errored non-null field under a non-null chain nulls `data` entirely — one bad row kills the response",
+        "Design rule: make fields nullable by default; reserve ! for values that genuinely cannot be absent",
+        "[Post!]! vs [Post]! vs [Post]: the inner ! nulls the whole list if one element fails; no inner ! nulls only that element",
+        "Return null vs. throw: null means 'no value', throw means 'something went wrong' — 'not found' is a design choice, pick one and be consistent",
+        "Expected errors as data: union/result types (type UserResult = User | NotFoundError) keep failures typed and in `data`",
+        "Error extensions carry machine-readable codes (extensions.code = 'FORBIDDEN'), plus stacktrace in dev only",
+        "formatError/maskedErrors hooks strip internal messages before they reach clients — never leak SQL or stack traces in production",
+        "Unhandled Promise rejections inside a resolver are caught by the executor; unhandled rejections in fire-and-forget side calls are not",
+        "Resolvers should not return the raw GraphQL type name — __typename is derived from the schema or __resolveType, not from your return value's shape",
+        "Partial success is normal in GraphQL: clients must be written to handle data + errors together, unlike REST's single status code",
+        "Gotcha: catching every error and returning null makes debugging impossible — log with info.path before swallowing"
+      ]
+    },
+    {
+      "title": "Beyond Object Fields: Interfaces, Unions, Subscriptions, Directives",
+      "points": [
+        "__resolveType(value, context, info) picks the concrete object type for an interface or union; return a type name string",
+        "isTypeOf(value, context, info) is the per-member alternative: each object type answers 'is this mine?'; slower because it may be probed in order",
+        "Once the concrete type is chosen, that type's field resolvers run normally — abstract types add one step, not a new mechanism",
+        "Adding __typename in the parent's returned row is the cheapest __resolveType strategy",
+        "Subscriptions have TWO functions per field: subscribe() returns an AsyncIterator, resolve() maps each published payload to the field value",
+        "Without an explicit subscription resolve(), the default resolver reads payload[fieldName] — a classic source of null subscription events",
+        "withFilter / async generator filtering decides which published events reach which subscriber, using args and context",
+        "Schema directives are implemented as resolver wrappers: a mapSchema transform replaces field.resolve with a function calling the original (or defaultFieldResolver)",
+        "Wrapping order matters when several directives apply to the same field — the outermost wrapper runs first",
+        "Custom scalars are not resolvers: serialize (out), parseValue (variable in), parseLiteral (inline in) — three functions on GraphQLScalarType",
+        "Enum values may have internal values that differ from the SDL name; resolvers return the internal value",
+        "Federation adds __resolveReference(reference, context, info) so a subgraph can resolve an entity from just its key fields",
+        "Federation @external/@requires/@provides change which fields a subgraph's resolvers must supply — the chain now spans services",
+        "Gotcha: interfaces implemented by types across files need the type map registered, or __resolveType returns a name that isn't in the schema"
+      ]
+    },
+    {
+      "title": "Mistakes, Trade-offs, and the One-Page Recap",
+      "points": [
+        "Recap of the signature: (parent, args, context, info) — parent is the chain, args is the query, context is the request, info is the position",
+        "Recap of order: Query fields parallel, root Mutation fields serial, everything nested parallel, field collection before any of it",
+        "Recap of defaults: no resolver → read parent[fieldName], call it if it's a function — this covers most of a real schema",
+        "Mistake: wrong argument position — writing (args, context) and reading undefined properties",
+        "Mistake: snake_case database columns against camelCase schema fields, producing silent nulls via the default resolver",
+        "Mistake: creating DataLoader outside the request, leaking one user's data to another",
+        "Mistake: depending on sibling resolver order or on side effects set by another field",
+        "Mistake: over-using ! so a single failing field nulls the whole response",
+        "Mistake: business logic inside resolvers instead of a service layer — resolvers should be thin adapters that are trivially testable",
+        "Mistake: fetching in the parent AND re-fetching in the child, doubling the load for no benefit",
+        "Trade-off: thin parent + per-field resolvers (composable, N+1-prone) vs. fat parent + default resolvers (fast, over-fetches, couples types)",
+        "Trade-off: DataLoader everywhere (uniform, adds indirection) vs. targeted JOINs (fastest for known hot paths, more code)",
+        "Trade-off: errors as thrown exceptions (simple, partial nulls) vs. result unions (typed, verbose schema)",
+        "Checklist before shipping a resolver: correct arg order, per-request context deps, batched fetch, nullability chosen deliberately, error logged with info.path, no cross-sibling state",
+        "Debug drill: log info.path + info.fieldName + typeof parent at the top of a suspect resolver — it answers 'why null' faster than anything else",
+        "Final mental model: a GraphQL response is a tree built by one function call per field per parent, and every performance and correctness question reduces to how many of those calls run and what each one touches"
+      ]
+    }
+  ]
+}

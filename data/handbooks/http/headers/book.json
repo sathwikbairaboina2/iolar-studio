@@ -1,0 +1,177 @@
+{
+  "title": "HTTP Headers Deep Dive: Negotiation, Ranges, Compression & Security",
+  "summary": "A dense-notes carousel covering how HTTP headers drive content negotiation, range downloads, compression, browser security (CSP, HSTS, X-Frame-Options), and custom header conventions — with mechanics, gotchas, and practical recipes.",
+  "chapters": [
+    {
+      "title": "Headers 101: Structure & Categories",
+      "points": [
+        "Header = case-insensitive 'Name: value' pairs; multiple values comma-separated or repeated lines",
+        "Four categories: general, request, response, entity (representation) headers",
+        "End-to-end vs hop-by-hop headers (Connection, Keep-Alive are hop-by-hop)",
+        "Syntax rules per RFC 9110: no leading/trailing whitespace in field values, obs-fold deprecated",
+        "Field ordering doesn't matter semantically — except Set-Cookie quirks via proxies",
+        "Response header examples: Server, Date, Content-Length, Content-Type",
+        "Request header examples: Host (mandatory in HTTP/1.1), User-Agent, Referer (misspelled on purpose)",
+        "HTTP/2 & 3 lowercase headers + HPACK/QPACK compression; 'Host' becomes ':authority'",
+        "Size budgets: browsers/proxies often cap headers ~8–16 KB per side",
+        "Inspect with curl -v, browser DevTools Network tab, or httpie -v",
+        "Gotcha: duplicate headers with conflicting meaning → undefined behavior; join with commas",
+        "Trade-off: every header costs bytes on the wire — trim unnecessary ones on CDNs"
+      ]
+    },
+    {
+      "title": "Content Negotiation: Accept & Friends",
+      "points": [
+        "Proactive (server-driven) negotiation: client states preferences, server picks representation",
+        "Four dimensions: Accept (media type), Accept-Language, Accept-Charset (deprecated), Accept-Encoding",
+        "Media range syntax: type/subtype, type/*, */*; quality values q=0..1, default q=1",
+        "Specificity beats q: text/html beats text/* beats */* regardless of q",
+        "Example: Accept: text/html;q=0.9, application/json;q=0.8, */*;q=0.1",
+        "Server returns 406 Not Acceptable only when nothing acceptable AND no fallback chosen",
+        "Vary: response header lists request headers that affect the representation — required for caching",
+        "Reactive (agent-driven) negotiation: server offers choices via 300 Multiple Choices / Allow",
+        "API design: negotiate via Accept header vs URL extension (.json) vs query param (?format=json)",
+        "Accept* headers drive CDN/proxy cache keys — missing Vary = serving wrong language/type",
+        "Gotcha: browsers send Accept: */* on fetch/XHR by default — you often negotiate manually",
+        "Testing: curl -H 'Accept: application/xml' https://api.example.com/data"
+      ]
+    },
+    {
+      "title": "Range Requests: Resumable & Partial Content",
+      "points": [
+        "Client requests partial bytes: Range: bytes=0-499 (first 500) or bytes=500- (open-ended)",
+        "Server support signal: Accept-Ranges: bytes in a normal 200 response",
+        "Success response: 206 Partial Content + Content-Range: bytes 0-499/12345",
+        "Unsatisfiable range → 416 Range Not Satisfiable with Content-Range: bytes */12345",
+        "Suffix ranges bytes=-500 = last 500 bytes; overlapping multiple ranges in one request",
+        "Multiple ranges → multipart/byteranges response, one part per range with its own headers",
+        "Resume a failed download: If-Range with ETag or Last-Modified to avoid stale-part mixing",
+        "If the resource changed since the 206 started, If-Range fails → server sends fresh 200",
+        "Use cases: video seeking, download managers, PDF page loading, resumable uploads (tus-style)",
+        "Gotcha: 206 must NOT be cached as if it were the full representation; Vary/ETag must match",
+        "Servers/CDNs may ignore Range (send 200) — clients must handle both",
+        "Validate: curl -H 'Range: bytes=0-99' -i url → expect 206 and 100 bytes"
+      ]
+    },
+    {
+      "title": "Accept-Encoding & Content Compression",
+      "points": [
+        "Client offers codecs: Accept-Encoding: gzip, deflate, br, zstd; identity = no compression",
+        "Server confirms actual codec via Content-Encoding: gzip (never send unoffered encoding)",
+        "Order = preference: br, gzip; modern browsers add zstd (Chrome 117+)",
+        "Brotli vs gzip: ~15–20% smaller, but slower to compress — great for static pre-compression",
+        "zstd: near-brotli ratio, much faster compression/decompression — rising default for dynamic",
+        "Static assets: pre-compress at build time (file.br, file.gz) — best ratio, zero CPU at request time",
+        "Dynamic responses: compress on the fly with level ~4–6 gzip; watch CPU on high traffic",
+        "Content-Length reflects compressed size; chunked transfer if length unknown",
+        "Never compress already-compressed media (JPEG, video, ZIP) — wastes CPU, can grow size",
+        "BREACH/CRIME: compressing responses with secrets + attacker-reflected input can leak data",
+        "Mitigate BREACH: random padding, CSRF token rotation, or disable compression on sensitive routes",
+        "Vary: Accept-Encoding is mandatory or proxies serve gzipped to clients that can't decode",
+        "Debug: check Network → Response Headers; verify Size (transfer) vs actual content size"
+      ]
+    },
+    {
+      "title": "Security Headers: The First Line of Defense",
+      "points": [
+        "Security headers are response headers instructing the browser's security policy",
+        "CSP restricts what the page may load/execute; HSTS forces HTTPS; XFO/X-Frame-Options blocks framing",
+        "Also in the family: Referrer-Policy, Permissions-Policy, X-Content-Type-Options: nosniff",
+        "Headers only work as response headers — sending them in requests does nothing",
+        "Deploy at CDN/reverse-proxy level for consistency, not app-by-app",
+        "Test with securityheaders.com grade scan and browser console CSP violation reports",
+        "Missing headers = XSS, clickjacking, mixed-content, and MIME-sniffing attack surface",
+        "They complement (never replace) server-side auth checks and output escaping",
+        "Add headers early in the request lifecycle so error pages get them too",
+        "Report-Only variants (CSP, Permissions-Policy reporting) let you test without breaking",
+        "Oversized headers waste bytes: keep CSP concise, use hashes/nonces not huge whitelists",
+        "Remember: headers are advisory to the browser — non-browser clients ignore them entirely"
+      ]
+    },
+    {
+      "title": "Content-Security-Policy in Depth",
+      "points": [
+        "Directive model: default-src, script-src, style-src, img-src, connect-src, frame-ancestors, etc.",
+        "Fallback chain: unspecified directives fall back to default-src; frame-ancestors ignores it",
+        "Sources: 'self', host patterns, https:, 'none', 'unsafe-inline', 'unsafe-eval'",
+        "Nonce-based scripts: script-src 'nonce-r4nd0m' — rotate per response, unguessable",
+        "Hash-based scripts: script-src 'sha256-...' for static inline blocks",
+        "Strict-Dynamic: nonce-approved script may load further scripts — modern recommended baseline",
+        "Danger: 'unsafe-inline' + 'unsafe-eval' largely defeats XSS protection",
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'self' — three cheap hard wins",
+        "Reporting: Content-Security-Policy-Report-Only + report-uri/report-to for safe rollout",
+        "Gotcha: CSP does NOT protect against server-side vulns or trusted-domain compromise (JSONP on allowed host)",
+        "Gotcha: inline event handlers (onclick) and style attributes blocked unless allowed explicitly",
+        "Example: Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-X'; object-src 'none'"
+      ]
+    },
+    {
+      "title": "HSTS, X-Frame-Options & Frame Control",
+      "points": [
+        "Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+        "Mechanics: browser caches the policy on first HTTPS response; future http:// URLs auto-upgrade to https://",
+        "First-visit gap: HSTS can't protect the very first request — hence the preload list",
+        "Gotcha: HSTS is sticky — misconfigured max-age or subdomains can lock sites out until max-age expires",
+        "Roll out gradually: short max-age first (e.g., 300), then raise; submit to hstspreload.org carefully",
+        "X-Frame-Options: DENY | SAMEORIGIN — legacy clickjacking defense",
+        "XFO is superseded by CSP frame-ancestors (supports origins, XFO does not)",
+        "Best practice: send BOTH XFO and frame-ancestors for old browsers",
+        "Clickjacking attack recap: invisible iframe + overlaid UI triggers user actions",
+        "ALLOW-FROM is dead — unsupported by modern browsers, don't ship it",
+        "Cross-origin embed use case: use frame-ancestors with the partner origin list instead",
+        "Bonus hardening: X-Content-Type-Options: nosniff + correct Content-Type prevents MIME confusion"
+      ]
+    },
+    {
+      "title": "Caching & Conditional Headers Interplay",
+      "points": [
+        "ETag / Last-Modified: validators returned with a representation",
+        "Conditional requests: If-None-Match → 304 Not Modified; If-Modified-Since for date validators",
+        "Strong vs weak ETags: W/\"...\" allows semantically-equal matches; strong = byte-identical",
+        "Cache-Control directives: max-age, no-cache (revalidate), no-store (never persist), private/public",
+        "must-revalidate / stale-while-revalidate / stale-if-error control freshness fallbacks",
+        "Vary ties everything together: cache key = URL + listed request headers (Accept, Accept-Encoding, Accept-Language)",
+        "Range + caching: full 200 response may satisfy a range request; intermediaries must coalesce carefully",
+        "ETag consistency requirement: same ETag across all nodes of a load-balanced cluster, or spurious 200s",
+        "Immutable + max-age=31536000 for fingerprinted assets (app.9f3c2.js) — the standard strategy",
+        "Gotcha: no-cache ≠ no-store; no-cache means 'store but revalidate'",
+        "304 saves body bytes but not the request — pair with long max-age to eliminate requests",
+        "Debug: DevTools shows '(from disk cache)', '304 Not Modified', or full 200 per resource"
+      ]
+    },
+    {
+      "title": "Custom Header Conventions",
+      "points": [
+        "Naming: X-Prefix is deprecated by RFC 6648 — new headers just use descriptive names",
+        "Keep custom app headers namespaced: Api-Version, RateLimit-Remaining, Request-Id",
+        "Vendor trees still legit: x-amz-*, x-goog-* — namespaced by organization, not just 'X-'",
+        "Follow existing ecosystem conventions: Link, Retry-After, Location, Warning instead of inventing",
+        "Rate limiting convention: RateLimit-Limit / RateLimit-Remaining / RateLimit-Reset (draft RFC)",
+        "Request tracing: X-Request-Id / traceparent (W3C Trace Context) for distributed tracing",
+        "Documentation: every custom header needs docs — name, type, allowed values, default, mutability",
+        "Case-insensitivity reminder: clients may send api-version; canonicalize when reading",
+        "Size discipline: don't stuff payloads into headers; move data to body for anything large",
+        "Security: never trust client-sent identity headers (X-Forwarded-For, X-User-Id) without proxy sanitization",
+        "X-Forwarded-* family: For, Proto, Host — set only by trusted reverse proxies; strip from external input",
+        "Versioning & deprecation: Deprecation + Sunset headers to announce API retirement"
+      ]
+    },
+    {
+      "title": "Summary: Debugging Checklist & Mental Model",
+      "points": [
+        "Mental model: request headers = client's offer/preferences; response headers = server's decision & policy",
+        "Negotiation trio: Accept* (request) → Content-* (response) → Vary (cache binding)",
+        "Range flow: Accept-Ranges → Range → 206 + Content-Range; resume via If-Range",
+        "Compression flow: Accept-Encoding → Content-Encoding → Vary: Accept-Encoding always",
+        "Security stack: CSP + HSTS + frame-ancestors/XFO + nosniff + Referrer-Policy — ship all, test in Report-Only",
+        "Golden rule: any response that varies by a request header MUST declare Vary",
+        "Debug recipe 1: curl -v -H 'Accept: ...' -H 'Range: bytes=0-99' --compressed URL; read status + headers",
+        "Debug recipe 2: DevTools → Network → Headers/Response tabs; check 'Size' vs 'Time' for compression wins",
+        "Debug recipe 3: grep your CDN/proxy config for headers stripped or overridden en route",
+        "Common mistakes recap: missing Vary, 206 cached as full body, unsafe-inline CSP, client-trusted X- headers",
+        "Trade-off matrix: compression (CPU vs bytes), HSTS preload (security vs lock-in risk), strict CSP (security vs DX)",
+        "Ship checklist: correct status codes (406/416/206/304), minimal custom headers, security scan green, docs updated"
+      ]
+    }
+  ]
+}

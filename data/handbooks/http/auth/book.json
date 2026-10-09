@@ -1,0 +1,178 @@
+{
+  "title": "HTTP Authentication: Field Notes",
+  "summary": "A dense study-notes carousel covering how HTTP authentication actually works: Basic auth, Bearer tokens, HMAC request signing, API keys vs tokens, the 401/403 split, and the WWW-Authenticate header that drives it all.",
+  "chapters": [
+    {
+      "title": "1. Authentication Fundamentals",
+      "points": [
+        "Authentication = proving WHO you are; authorization = deciding WHAT you may do — HTTP conflates them in one header: Authorization",
+        "The Authorization header: 'Authorization: <scheme> <credentials>' — scheme token tells the server how to interpret the rest",
+        "Common scheme names: Basic, Bearer, Digest, HOBA, plus custom ones like 'Token' or 'HMAC-SHA256'",
+        "401 Unauthorized is misleadingly named — it really means 'Unauthenticated': your identity was not established",
+        "RFC 7235 defines the framework (challenge/response); RFC 7617 defines Basic, RFC 6750 defines Bearer",
+        "Challenge-response flow: client sends request → server replies 401 + WWW-Authenticate → client retries with credentials",
+        "Proxies have their own pair: Proxy-Authenticate / Proxy-Authorization with status 407",
+        "Transport security is a prerequisite: any credential sent over plain HTTP is readable by anyone on the path",
+        "Servers usually read auth from the header, but many APIs also accept ?api_key= or cookies — query strings leak into logs",
+        "Stateless HTTP: every request must re-present credentials unless you layer sessions/cookies on top",
+        "Auth headers are typically added per request by clients, interceptors, or gateway middleware",
+        "Rule of thumb: never roll your own credential format when a standard scheme fits"
+      ]
+    },
+    {
+      "title": "2. WWW-Authenticate: The Challenge Header",
+      "points": [
+        "Response header, not request header: server → client, announcing accepted schemes and how to join",
+        "Shape: 'WWW-Authenticate: <scheme> realm=\"...\", <params>' — e.g. Basic realm=\"Admin Panel\"",
+        "realm is a human-readable label shown in browser login prompts; it also scopes credentials per protection space",
+        "Multiple challenges allowed: 'WWW-Authenticate: Bearer, Basic realm=\"api\"' — client picks the strongest it supports",
+        "Bearer challenges carry error info (RFC 6750): error=\"invalid_token\", error_description=\"token expired\"",
+        "Digest challenges include nonce, qop, opaque, algorithm — parameters the client must echo into its response hash",
+        "Browsers react to Basic challenges with a native popup; API clients should NOT — a JSON API returning a browser popup is a UX smell",
+        "Always pair a 401 with WWW-Authenticate (RFC says it's required); 403 must NOT include it",
+        "Caching gotcha: 401 responses are cacheable unless explicitly prevented — add Cache-Control: no-store",
+        "Inspecting WWW-Authenticate with curl -v is the fastest way to learn what a protected endpoint expects",
+        "Some frameworks misconfigure this: returning 401 with no challenge breaks clients that retry correctly",
+        "Custom schemes still use this header: 'WWW-Authenticate: HMAC-SHA256 realm=\"api\"'"
+      ]
+    },
+    {
+      "title": "3. Basic Auth: Mechanics & Pitfalls",
+      "points": [
+        "Basic auth = username:password encoded with Base64, NOT encrypted: 'Authorization: Basic dXNlcjpwYXNz'",
+        "Base64 is reversible encoding, zero secrecy — decode with `echo dXNlcjpwYXNz | base64 -d`",
+        "Full flow: request → 401 with WWW-Authenticate: Basic realm=... → browser popup → retry with encoded credentials",
+        "Credentials are re-sent on EVERY request — there is no logout, only browser-tab close or credential invalidation",
+        "Colon in username is illegal as separator: 'user:na:me:pass' parses as username 'user', password 'na:me:pass'",
+        "Charset pitfalls: non-ASCII passwords need RFC 7617 charset=\"UTF-8\" param, or behavior is undefined",
+        "Server side: compare hashes (bcrypt/argon2), never plaintext; beware timing attacks — use constant-time compare",
+        "Legit uses: quick internal tools, curl prototyping, sub-protected staging behind TLS, basic proxies",
+        "Bad uses: public APIs, mobile apps (credentials baked in = stolen), anything needing per-scope permissions",
+        "No expiry, no revocation granularity, no scopes, no MFA support — one leaked header = full account",
+        "Mitigation if forced to use it: TLS only, IP allowlists, rate limiting on auth failures, strong random passwords",
+        "curl example: `curl -u alice:s3cret https://api.example.com/me` sets the header for you",
+        "Digest auth was the historical upgrade (hash challenge instead of plaintext) — now deprecated territory; prefer tokens"
+      ]
+    },
+    {
+      "title": "4. Bearer Tokens & OAuth 2.0",
+      "points": [
+        "Bearer = 'whoever bears this token gets access' — the token itself IS the credential, no signature to present",
+        "Typical shape: opaque random string or a JWT: 'Authorization: Bearer eyJhbGciOi...' three dot-separated base64url parts",
+        "JWT anatomy: header {alg,typ} . payload {sub, exp, scope...} . signature — payload is readable by anyone, just not forgeable",
+        "Never put secrets in a JWT payload; it's Base64url, not encryption — use JWE or keep secrets server-side",
+        "Validate JWTs fully: signature, exp, nbf, iss, aud, and algorithm (reject 'alg: none' and algorithm-confusion attacks)",
+        "OAuth 2.0 is the delegation framework that issues Bearer tokens: grant types = authorization_code (web apps), client_credentials (machine-to-machine), refresh_token",
+        "Token lifetimes: short-lived access tokens (minutes) + long-lived refresh tokens = blast-radius control",
+        "Storage matters: browsers → httpOnly cookies or memory; localStorage is XSS-readable; servers → secrets manager, never git",
+        "Revocation: opaque tokens are trivially revocable at the auth server; JWTs are valid until exp unless you add a denylist or short TTL",
+        "RFC 6750 sender-constrained tokens: DPoP / mTLS bind a token to a key so a stolen token can't be replayed",
+        "curl example: `curl -H \"Authorization: Bearer $TOKEN\" https://api.example.com/me`",
+        "Common bug: pasting the token with the word 'Bearer' already inside the env var → 'Bearer Bearer xyz' 401"
+      ]
+    },
+    {
+      "title": "5. HMAC Request Signing",
+      "points": [
+        "HMAC = Hash-based Message Authentication Code: keyed hash proving both authenticity AND integrity of the request",
+        "Core idea: signature = HMAC-SHA256(secret, canonical_string_of_request) — sent alongside, e.g. 'Authorization: HMAC-SHA256 ...' or X-Signature header",
+        "Canonical string typically includes: method, path, sorted query params, headers like host/date/content-type, and a SHA-256 of the body",
+        "The secret never travels the wire — only the signature does; server recomputes and constant-time compares",
+        "Replay protection: include a timestamp (+/- 5 min window) and/or nonce; AWS SigV4 adds 'X-Amz-Date' plus scope for this",
+        "AWS SigV4 is the reference implementation: canonical request → string-to-sign → signing key derived from secret + date/region/service → final signature",
+        "Body must be hashed into the signature, or attackers can swap your JSON payload while keeping a valid signature",
+        "Why HMAC over Bearer for machine-to-machine: nothing bearer-like to steal, request is tamper-proof, no token expiry churn",
+        "Costs: harder client integration, clock-skew failures ('Signature expired'), every middleware touching the request can break signing",
+        "Debugging recipe: log canonical string on both sides — 99% of failures are byte-level mismatch (trailing newline, unsorted params, different casing)",
+        "curl sketch: `SIG=$(echo -n \"$CANONICAL\" | openssl dgst -sha256 -hmac \"$SECRET\")` then attach X-Signature",
+        "Gotcha: proxies/load balancers rewriting Host or Date headers invalidate signatures — sign only headers you control",
+        "Constant-time comparison (hmac.compare_digest) prevents timing attacks on signature verification"
+      ]
+    },
+    {
+      "title": "6. API Keys vs Tokens",
+      "points": [
+        "API key = static identifier string, often just proof that 'this app is calling'; token = dynamic credential representing a subject + permissions",
+        "API keys usually travel as headers (X-API-Key) or query params; tokens use the Authorization: Bearer scheme",
+        "Semantic difference: key identifies an application or project; token identifies a user/session or a scoped delegation",
+        "API keys: no expiry by default, no standard refresh, no scopes (or coarse ones), revocation = regenerate and redeploy",
+        "Tokens: expiration, refresh, fine-grained scopes (read:orders), and standardized issuance via OAuth",
+        "Rate limiting and billing are the real jobs of API keys — authn for humans is not",
+        "Baking an API key into frontend JavaScript = publishing it; use a backend proxy or token-exchange pattern instead",
+        "Hybrid pattern: API key identifies the client app + Bearer token identifies the acting user — many real APIs require both",
+        "Rotation story: keys are painful to rotate (outages, redeploy); tokens rotate invisibly via refresh flow",
+        "Leak handling: leaked token dies at exp; leaked key lives until you notice — scan repos with secret-scanning tooling",
+        "Use keys for server-to-server telemetry/quotas; use tokens whenever user identity or least-privilege matters",
+        "Never send API keys in query strings — they end up in server logs, browser history, and referrer headers"
+      ]
+    },
+    {
+      "title": "7. 401 vs 403: Who Are You vs May You",
+      "points": [
+        "401 Unauthorized = 'I don't know who you are' — authentication failed or missing; fixable by sending valid credentials",
+        "403 Forbidden = 'I know exactly who you are, and you can't do this' — authorization failed; retrying won't help",
+        "Hard rule: 401 responses SHOULD include WWW-Authenticate; 403 responses MUST NOT",
+        "Decide with one question: 'Would sending different credentials change the outcome?' yes → 401, no → 403",
+        "Examples of 401: missing Authorization header, expired token, bad signature, malformed Basic encoding",
+        "Examples of 403: valid user lacking 'admin' role, token scope 'read' hitting a write endpoint, IP/geo blocked for an authenticated user",
+        "404-instead-of-403 pattern: hide existence of resources from unauthorized eyes to avoid enumeration leaks",
+        "Security smell: returning 403 for expired tokens lets attackers map valid tokens — use 401 for credential-validity failures",
+        "Client behavior: on 401 → refresh token or re-authenticate once; on 403 → show access-denied UI, don't retry",
+        "Related statuses: 407 (proxy needs auth), 407+Proxy-Authenticate mirrors the 401 flow through proxies",
+        "Some APIs hide all failures as generic 401/403 messages to avoid leaking which emails or endpoints exist — deliberate opacity is fine",
+        "Common bug: framework default returns 403 for unauthenticated requests (Spring Security, Django defaults vary) — audit your error mapping"
+      ]
+    },
+    {
+      "title": "8. Security Trade-offs & Threat Model",
+      "points": [
+        "TLS is non-negotiable: Basic auth, Bearer tokens, and API keys are all plaintext credentials once on the wire",
+        "Attack surfaces: credential stuffing, replay attacks, token theft via XSS, key leakage via logs and referrer, MITM without TLS",
+        "Blast radius ranking (best→worst): HMAC signed request < short-lived scoped Bearer < long-lived Bearer < static API key < Basic auth",
+        "HMAC defeats replay/tamper but costs integration complexity and clock sync; Bearer trades security for universal simplicity",
+        "Scopes = least privilege: a token that can only 'read:orders' limits damage even when stolen",
+        "Token lifetime vs revocation trade-off: short TTL + denylist gives both, but adds infrastructure (auth server checks)",
+        "Constant-time comparisons everywhere: password hashes, API keys, signatures — timing attacks recover secrets byte-by-byte",
+        "Rate-limit and lock out on auth failures; standardize on 401 with WWW-Authenticate so clients can back off",
+        "Logging discipline: redact Authorization headers, mask keys (show last 4 chars), never log full tokens even in debug",
+        "Secrets in code/repos are the #1 real-world leak — use env vars, secret managers, and pre-commit secret scanning",
+        "MFA and passwordless (WebAuthn/passkeys) sit above all these schemes for human login — use OAuth/OIDC to bridge into API auth",
+        "Defense in depth: combine schemes — API key for app identity + Bearer for user + HMAC for sensitive money-moving endpoints"
+      ]
+    },
+    {
+      "title": "9. Practical Playbook",
+      "points": [
+        "Choosing a scheme: human sessions → OAuth/OIDC + Bearer; server-to-server → mTLS, OAuth client_credentials, or HMAC; quotas/analytics → API key",
+        "Debugging 401s, step 1: `curl -v` and read the WWW-Authenticate header — it literally tells you what the server wants",
+        "Step 2: verify header formatting — exact scheme casing, single space, no quotes around the token, no CRLF/whitespace from env vars",
+        "Step 3: check clock skew for HMAC (NTP) and expiry for JWTs; decode JWT payload with jwt.io to inspect exp/aud/iss",
+        "Client implementation: attach auth via an interceptor/middleware so every request gets it consistently; handle 401 with one refresh-and-retry",
+        "Never implement Basic auth login pages yourself in browsers — the native popup has no logout, no MFA, no password reset UX",
+        "Server checklist: require TLS, reject 'alg: none' JWTs, constant-time compares, rate-limit failures, return correct 401/403 + challenge",
+        "Versioning and deprecation: when rotating schemes, keep WWW-Authenticate advertising the accepted set so clients can migrate",
+        "Testing: unit-test auth middleware with expired/missing/wrong-scope credentials; fuzz Authorization header parsing (malformed encodings cause 500s)",
+        "Observability: log auth events (success/failure/scheme) with request IDs — failed-auth spikes are your first breach signal",
+        "Documentation pattern for APIs: show the exact curl with -H \"Authorization: Bearer ...\" and one 401 and one 403 example response",
+        "Golden rule: standard schemes + TLS + least-privilege scopes beats any clever homemade auth design"
+      ]
+    },
+    {
+      "title": "10. Cheat Sheet & Summary",
+      "points": [
+        "One-line map: Basic = Base64 user:pass · Bearer = portable token · HMAC = signed request · API key = app identifier",
+        "Flow to memorize: request → 401 + WWW-Authenticate → credentials → 200, or valid-credentials-but-denied → 403 (no challenge)",
+        "Authorization header anatomy: 'Scheme' + space + credentials; response twin is WWW-Authenticate; proxy twins are Proxy-Authenticate/Proxy-Authorization (407)",
+        "Basic auth: only with TLS, only for demos/internal — no logout, no scopes, no revocation",
+        "Bearer: short-lived access + refresh, validate signature + exp + iss + aud, never trust payload contents as secrets",
+        "HMAC: sign method+path+headers+body-hash, add timestamp/nonce for replay defense, compare in constant time",
+        "API key vs token: key = who the APP is (quotas, billing); token = who the USER is and what scope was delegated",
+        "401 vs 403 decision: would new credentials change the answer? yes → 401, no → 403",
+        "Top mistakes recap: secrets in query strings, localStorage token storage, 'alg: none', Base64 mistaken for encryption, 403/401 swapped",
+        "Top mistakes recap 2: forgetting WWW-Authenticate on 401, logging Authorization headers, signing headers that proxies rewrite",
+        "Escalation path for humans: passwords → MFA → passkeys (WebAuthn), then OAuth/OIDC issues the API tokens — don't hand-roll",
+        "Final exam question: a request with a valid, unexpired token hits an admin endpoint and the user lacks the role — status? Answer: 403, no WWW-Authenticate"
+      ]
+    }
+  ]
+}

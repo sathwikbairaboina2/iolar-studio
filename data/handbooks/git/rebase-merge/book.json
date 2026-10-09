@@ -1,0 +1,193 @@
+{
+  "title": "Git Rebase & Merge: The Complete Handbook",
+  "summary": "A dense field guide to how Git integrates branches — fast-forward, three-way merge, rebase, interactive rebase, and conflict resolution — grounded in the commit graph and three-way diff internals. Covers the mechanics, the trade-offs, the failure modes, and a decision rulebook for which tool to reach for.",
+  "chapters": [
+    {
+      "title": "The Commit Graph: What Integration Actually Operates On",
+      "points": [
+        "A commit is an immutable object: tree SHA (full snapshot, not a diff) + parent SHA(s) + author + committer + message. Changing any field changes the hash.",
+        "Git stores snapshots, not deltas; a 'diff' is computed on demand between two trees. Every integration operation is really graph surgery plus tree comparison.",
+        "A branch is a 41-byte file in .git/refs/heads/ containing one SHA — a movable pointer, nothing more. Creating a branch is O(1).",
+        "HEAD is a symbolic ref, normally pointing at a branch ref (`ref: refs/heads/main`); detached HEAD means it points straight at a commit SHA.",
+        "Parent count defines commit type: 0 parents = root, 1 parent = normal, 2+ parents = merge commit. `git log --graph` renders this topology.",
+        "Ancestry test: `git merge-base --is-ancestor A B` — this single question decides fast-forward vs three-way merge.",
+        "Merge base = the best common ancestor of two commits, found by `git merge-base A B`. It's the fork point where the histories diverged.",
+        "Commit identity = content + parents + metadata, so rebasing a commit onto a new base necessarily produces a NEW SHA even if the diff is byte-identical.",
+        "`A..B` means 'reachable from B but not A'; `A...B` is symmetric difference. `git log main..feature` lists exactly what feature adds.",
+        "Reflog (`git reflog`) records every movement of HEAD and branch tips for ~90 days — the undo log that makes rebase recoverable."
+      ]
+    },
+    {
+      "title": "Fast-Forward Merge: When History Is a Straight Line",
+      "points": [
+        "Fast-forward happens when the current branch tip is an ancestor of the branch being merged — no divergence, so nothing to reconcile.",
+        "Mechanically it is pointer movement only: Git rewrites refs/heads/main to point at feature's tip. No new commit object is created.",
+        "Cost is O(1) plus a working-tree checkout of changed files. No merge base needed, no conflict possible — ever.",
+        "Example: `main` at C2, `feature` = C2→C3→C4. `git checkout main && git merge feature` moves main to C4. History stays linear.",
+        "`git merge --ff-only feature` fails loudly instead of creating a merge commit — a safety flag for scripts and CI gates.",
+        "`git merge --no-ff feature` forces a merge commit even when a fast-forward is possible, preserving the shape of the feature branch.",
+        "Trade-off: fast-forward gives clean linear history but erases the fact that a branch existed; `--no-ff` keeps a visible topic-branch bubble.",
+        "Config `merge.ff = only` globally forbids implicit merge commits; `pull.ff = only` is the safe default for `git pull`.",
+        "GitHub 'Rebase and merge' and 'Squash and merge' both produce fast-forwardable linear history; 'Create a merge commit' does not.",
+        "Gotcha: a fast-forward silently discards nothing, but it also runs no merge driver — hooks expecting a merge commit will not fire."
+      ]
+    },
+    {
+      "title": "Three-Way Merge: The Core Algorithm",
+      "points": [
+        "Needed when both branches have commits since the merge base — histories diverged, so pointer motion is impossible.",
+        "Three inputs: BASE (merge base tree), OURS (current branch tip), THEIRS (branch being merged). Hence 'three-way'.",
+        "Per-file, per-hunk rule: if only one side changed a region relative to BASE, take that side. If both changed it identically, take it once. If both changed it differently, conflict.",
+        "Why two-way diff is not enough: without BASE, Git cannot tell an addition on one side from a deletion on the other.",
+        "Result is a merge commit with two parents: first parent = the branch you were on, second parent = the branch merged in. `HEAD^1` vs `HEAD^2`.",
+        "First-parent ordering matters: `git log --first-parent main` shows only integration commits, hiding intra-feature noise.",
+        "Default strategy is `ort` (Ostensibly Recursive's Twin), which replaced `recursive` in Git 2.34 — faster, fewer edge-case bugs, better rename handling.",
+        "Criss-cross merges yield multiple merge bases; `ort`/`recursive` merges the bases themselves into a synthetic virtual base, then merges against that.",
+        "Rename detection: Git tracks no renames explicitly; it infers them by content similarity (default 50%, `-M` threshold) so edits follow renamed files.",
+        "Strategy options: `-X ours` / `-X theirs` auto-resolve only the conflicting hunks (not whole files); `-s ours` discards the other side's content entirely while still recording the parent.",
+        "Complexity is roughly O(number of changed files) with per-file diff cost; the graph walk to find the base is near-linear in commits since divergence."
+      ]
+    },
+    {
+      "title": "Rebase: Replaying Commits Onto a New Base",
+      "points": [
+        "`git rebase main` on `feature`: compute commits in `main..feature`, then re-apply each as a new commit on top of main's tip.",
+        "Every replayed commit gets a new SHA — same tree content possibly, but a different parent, so a different hash. Old commits become unreachable, not modified.",
+        "Internally: Git checks out the new base into a detached HEAD, cherry-picks each commit in order, then moves the branch ref to the final result.",
+        "Result is a linear history: feature's work appears as if it were written on top of the latest main, with no merge commit.",
+        "`git rebase --onto newbase upstream branch` is the three-argument form for transplanting a range — e.g. moving a branch off a wrong parent branch.",
+        "Conflicts are resolved per replayed commit, not once — a 10-commit rebase can present the same conflict 10 times.",
+        "`git rerere` (reuse recorded resolution) caches conflict resolutions and replays them automatically; enable with `git config rerere.enabled true`.",
+        "Rebase halts on conflict: fix files, `git add`, then `git rebase --continue`. `--skip` drops the current commit; `--abort` restores the pre-rebase state exactly.",
+        "`git pull --rebase` replays your local commits on top of fetched upstream instead of creating a merge bubble; set permanently with `pull.rebase = true`.",
+        "Rebase is O(n) cherry-picks for n commits — linear in commit count, and each pick pays a full three-way merge cost.",
+        "Recovery: the pre-rebase tip is always in `git reflog` as `HEAD@{n}`; `git reset --hard ORIG_HEAD` undoes a completed rebase."
+      ]
+    },
+    {
+      "title": "Cherry-Pick and the Rebase Primitive",
+      "points": [
+        "`git cherry-pick C` applies the diff of C (relative to C's parent) onto HEAD as a new commit — rebase is essentially a loop over cherry-pick.",
+        "Cherry-pick itself is a three-way merge: BASE = C's parent, OURS = HEAD, THEIRS = C. This is why cherry-picks can conflict.",
+        "`git cherry-pick A..B` picks a range; `-n` / `--no-commit` stages without committing so you can squash several picks together.",
+        "`-x` appends '(cherry picked from commit …)' to the message — essential for tracking backports to release branches.",
+        "Duplicate-commit hazard: cherry-picking then later merging the source branch can present the same change twice, causing spurious conflicts.",
+        "`git cherry main feature` or `git log --cherry-mark` detects commits already present upstream by patch-id, not SHA.",
+        "Patch-id: a hash of the normalized diff, ignoring line numbers and whitespace — how Git recognizes 'same change, different commit'.",
+        "Rebase drops commits whose patch-id already exists upstream by default, which is why re-rebasing an already-merged branch usually becomes a no-op.",
+        "`git revert C` is the inverse operation: applies the reverse diff as a new commit, safe on shared history because it adds rather than rewrites."
+      ]
+    },
+    {
+      "title": "Interactive Rebase: Rewriting Your Own History",
+      "points": [
+        "`git rebase -i HEAD~5` opens a todo list of the last 5 commits, oldest first, each with a command verb you edit before saving.",
+        "`pick` — keep as is. Reordering the lines reorders the commits.",
+        "`reword` — keep the change, open an editor for a new message. Use for fixing typos in subjects.",
+        "`edit` — stop after applying so you can amend the tree, split the commit, or run tests, then `git rebase --continue`.",
+        "`squash` — fold into the previous commit and open an editor to combine both messages. `fixup` — same, but discard this commit's message.",
+        "`drop` (or deleting the line) — remove the commit entirely. `exec cmd` — run a shell command after that point; `git rebase -i --exec 'npm test'` bisects a whole branch for breakage.",
+        "`break` — stop unconditionally at that point in the todo list, useful for inspection.",
+        "Splitting a commit: mark it `edit`, `git reset HEAD^`, then stage and commit in pieces.",
+        "`git commit --fixup=<sha>` plus `git rebase -i --autosquash` auto-orders fixups next to their targets — the fast review-feedback workflow.",
+        "`git rebase -i --root` reaches the very first commit, allowing edits to the root of history.",
+        "Every commit from the edited point onward is rewritten, even untouched ones, because their parent SHA changed.",
+        "`git rebase --update-refs` (Git 2.38+) moves dependent branch pointers along during a stacked-branch rebase instead of orphaning them."
+      ]
+    },
+    {
+      "title": "Conflicts: Anatomy and Resolution",
+      "points": [
+        "A conflict is recorded in the index as multiple stages for one path: stage 1 = base, stage 2 = ours, stage 3 = theirs. See them with `git ls-files -u`.",
+        "Conflict markers: `<<<<<<< HEAD` (ours) … `=======` … `>>>>>>> branch` (theirs). Resolution means editing to the intended final content and removing all markers.",
+        "`merge.conflictStyle = diff3` (or `zdiff3`) adds a `|||||||` section showing the BASE text — dramatically easier to reason about intent.",
+        "During merge, OURS = your current branch. During rebase, OURS = the upstream you're replaying onto and THEIRS = your own commit — the labels invert, and this trips up nearly everyone.",
+        "Content conflict vs tree conflict: modify/delete, rename/rename, rename/modify, and add/add are structural conflicts with no marker text to edit.",
+        "`git checkout --ours <file>` / `--theirs <file>` takes one whole side; `git checkout --merge <file>` regenerates the markers if you overwrote them.",
+        "`git diff` during a conflict shows a combined diff against both parents; `git diff --ours` / `--theirs` / `--base` compare against a single stage.",
+        "Resolve then stage: `git add <file>` is what marks a path resolved. `git merge --continue` or `git rebase --continue` proceeds; `--abort` unwinds.",
+        "`git mergetool` launches a configured three-pane tool; `git rerere` replays previously recorded resolutions on repeated conflicts.",
+        "Semantic conflict: both sides merge cleanly but the result is broken — e.g. one branch renames a function, the other adds a new call to the old name. Git cannot detect this; only tests can.",
+        "Custom merge drivers via `.gitattributes` (e.g. `*.lock merge=ours`, `binary` for images) prevent unresolvable line-based merges on generated files."
+      ]
+    },
+    {
+      "title": "Merge vs Rebase: Head-to-Head",
+      "points": [
+        "History shape: merge preserves the true branching topology; rebase produces a straight line that never actually happened.",
+        "SHAs: merge never changes existing commits; rebase rewrites every replayed commit's hash.",
+        "Safety on shared branches: merge is always safe to push; rebase requires force-push and breaks collaborators' clones.",
+        "Conflict handling: merge resolves everything once at the merge point; rebase can resurface conflicts once per replayed commit.",
+        "Traceability: a merge commit records exactly when and by whom integration happened; rebase loses the integration event but keeps per-commit authorship.",
+        "Bisecting: linear rebased history makes `git bisect` results unambiguous; merge-heavy history still bisects but can land on merge commits with mixed causes.",
+        "Reverting: reverting a merge needs `git revert -m 1 <merge>` and poisons future re-merges of that branch; reverting linear commits is straightforward.",
+        "Auditability of what shipped: `git log --first-parent main` is clean and useful only if you use merge commits consistently.",
+        "Effort: merge is one operation regardless of branch size; rebase cost scales with number of commits being replayed.",
+        "Both produce the same final tree when there are no conflicts — the difference is entirely about recorded history, not about the resulting code."
+      ]
+    },
+    {
+      "title": "Squash, Merge, or Rebase: Choosing an Integration Policy",
+      "points": [
+        "Squash merge collapses a whole branch into one commit on the target — the diff is preserved, the intermediate commits are not.",
+        "Squash pros: one atomic, revertible unit per feature; clean main history; hides messy WIP commits. Cons: loses granular authorship and bisect resolution inside the feature.",
+        "Squash hazard: because the squashed commit has a different patch-id set, re-merging the original branch later can conflict; delete the branch after squashing.",
+        "Merge-commit policy fits long-lived teams, release branches, and anywhere the branch structure is itself information.",
+        "Rebase-then-fast-forward policy fits small teams and open-source patch series where each commit must stand alone and be reviewable.",
+        "'Rebase locally, merge publicly' is the standard compromise: clean up your own unpushed work with rebase, integrate with merge.",
+        "Trunk-based development pairs naturally with rebase or squash and short-lived branches; Git Flow depends on merge commits between develop, release, and main.",
+        "Long-lived branch + frequent rebases = repeated conflict resolution; long-lived branch + periodic merges from main = conflicts amortized. Prefer short branches over either.",
+        "Enforce whatever you pick in CI/settings: branch protection with 'require linear history', or `merge.ff = false` on integration branches — policy that isn't mechanical won't hold."
+      ]
+    },
+    {
+      "title": "The Golden Rule and Force-Push Safety",
+      "points": [
+        "Golden rule of rebasing: never rebase commits that exist outside your repository and that others may have based work on.",
+        "Why it breaks: after a rebase your branch and the remote branch share no commits from the divergence point, so a normal push is rejected as non-fast-forward.",
+        "`git push --force` overwrites the remote unconditionally, including commits a teammate pushed 30 seconds ago. Use `--force-with-lease` instead.",
+        "`--force-with-lease` refuses the push if the remote tip is not the value you last fetched — turns a silent overwrite into an error.",
+        "`--force-with-lease --force-if-includes` (Git 2.30+) closes the remaining hole where a background fetch made a stale lease look current.",
+        "Teammate recovery after someone force-pushed a rebase: `git fetch`, then `git rebase --onto origin/feature <old-upstream> local-work`, or hard reset if there is nothing local to keep.",
+        "Rebasing a branch that already has merge commits flattens them by default; `--rebase-merges` replays the merge topology instead.",
+        "Public/shared branches — main, develop, release/* — should be protected server-side against force pushes; that's the enforceable form of the golden rule.",
+        "Personal feature branches and unpushed work are fair game: rebase freely, force-with-lease freely.",
+        "Exception in practice: a PR branch that only you work on is conventionally rebasable even after pushing, as long as reviewers are warned."
+      ]
+    },
+    {
+      "title": "Common Mistakes and How to Undo Them",
+      "points": [
+        "Rebasing a shared branch, then force-pushing — teammates lose work. Fix: coordinate, or `git revert` instead of rewriting.",
+        "Resolving a rebase conflict backwards because ours/theirs are inverted. Fix: enable `diff3` conflict style and read the base section.",
+        "Committing conflict markers. Fix: add a pre-commit hook grepping for `^<<<<<<< `, and `git diff --check`.",
+        "`git checkout --theirs` on a modify/delete conflict does nothing useful because there is no theirs stage. Fix: decide explicitly with `git rm` or `git add`.",
+        "Aborting mid-rebase with `git reset --hard` instead of `git rebase --abort`, leaving .git/rebase-merge state behind. Fix: always use `--abort`.",
+        "Lost commits after a bad rebase. Fix: `git reflog`, find the pre-rebase `HEAD@{n}`, `git reset --hard` to it — or `git fsck --lost-found` for orphans past the reflog.",
+        "Merge already committed and wrong. Fix: `git reset --hard ORIG_HEAD` if unpushed; `git revert -m 1 <merge-sha>` if pushed.",
+        "Re-merging a branch after reverting its merge brings back nothing, because the merge base already accounts for those commits. Fix: revert the revert, then merge.",
+        "Squash-merging a branch and then continuing to work on it and merging again — duplicated changes and conflicts. Fix: delete and re-branch after squash.",
+        "Rebasing with a dirty working tree fails or auto-stashes unexpectedly. Fix: commit or stash first; `rebase.autoStash = true` if you want it automatic.",
+        "Long-running rebase repeating the same conflict on every commit. Fix: `git config --global rerere.enabled true` before starting.",
+        "`git pull` creating surprise merge commits on every sync. Fix: set `pull.rebase = true` or `pull.ff = only`."
+      ]
+    },
+    {
+      "title": "Decision Rules & Cheat Sheet",
+      "points": [
+        "Branch not diverged, want it in → fast-forward (`git merge --ff-only`). Zero risk, zero new objects.",
+        "Both sides have commits, branch is shared or already pushed → three-way merge (`git merge`). Never rewrites, always safe.",
+        "Your local branch behind main, nothing pushed → `git rebase main` for a clean linear PR.",
+        "Messy WIP commits before opening a PR → `git rebase -i` with squash/fixup/reword.",
+        "Review feedback on a specific old commit → `git commit --fixup=<sha>` then `git rebase -i --autosquash`.",
+        "Need one commit from another branch → `git cherry-pick -x <sha>`, not a merge.",
+        "Need to undo something already public → `git revert`, never rebase.",
+        "Branch built on the wrong base → `git rebase --onto correct-base wrong-base branch`.",
+        "Repeated conflicts across many replayed commits → enable rerere before you start.",
+        "Ambiguity about which side is which → set `merge.conflictStyle = zdiff3` once, globally, and stop guessing.",
+        "Recovery reflex: `git reflog` first, `git reset --hard <good-sha>` second — nothing committed in the last 90 days is truly lost.",
+        "One-line summary: merge records what happened; rebase edits the story; fast-forward means there was no story to reconcile — choose by who else can see the commits."
+      ]
+    }
+  ]
+}

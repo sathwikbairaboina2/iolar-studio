@@ -1,0 +1,197 @@
+{
+  "title": "MongoDB Schema Design: Patterns, Bucketing & Anti-Patterns",
+  "summary": "A dense field guide to modeling data in MongoDB — embedding vs referencing, the one-to-few/many/squillions rules, bucketing time-series and high-churn arrays, computed and extended-reference fields, and the anti-patterns that silently destroy performance. Covers the document model fundamentals, the 16 MB and working-set constraints that drive every decision, and the trade-offs between read speed, write amplification, and consistency.",
+  "chapters": [
+    {
+      "title": "Document Model Fundamentals",
+      "points": [
+        "MongoDB stores BSON documents in collections; BSON is binary JSON with extra types (ObjectId, Date, Decimal128, Binary, Int32/Int64).",
+        "Hard limit: a single document is at most 16 MB after BSON encoding — this is the ceiling that kills unbounded embedding.",
+        "Max nesting depth is 100 levels; deeply nested docs are also painful to index and query.",
+        "MongoDB is schema-flexible, NOT schema-less: every app has a schema, it just lives in application code unless you enforce it.",
+        "$jsonSchema validator on a collection enforces required fields, bsonType, and ranges at the server; validationAction: 'warn' vs 'error'.",
+        "Core design rule: 'data that is accessed together should be stored together' — model for your query patterns, not for entity purity.",
+        "Relational normalization (3NF) is the wrong default here; MongoDB rewards deliberate, controlled denormalization.",
+        "A single document read is one atomic unit — one seek, one page load, no join. That is the whole performance argument for embedding.",
+        "Since v4.0 (replica sets) / v4.2 (sharded), multi-document ACID transactions exist — but they cost more than a well-embedded document.",
+        "_id is mandatory, immutable, and automatically unique-indexed; ObjectId embeds a 4-byte timestamp so sorting by _id ≈ sorting by insertion time.",
+        "Working set = indexes + frequently accessed documents; if the working set exceeds RAM, the WiredTiger cache thrashes and reads hit disk.",
+        "Example doc shape: { _id, name, addresses: [ {...} ], created: ISODate() } — arrays and subdocuments are first-class, not a join table.",
+        "Design questions to answer first: what are the top 5 queries, what is the read/write ratio, what is the cardinality of each relationship, does the child ever get queried alone?"
+      ]
+    },
+    {
+      "title": "Embed vs Reference: The Decision Frame",
+      "points": [
+        "Embedding = child data lives inside the parent document; referencing = child stores parent's _id (or vice versa) in a separate collection.",
+        "Embed when: child is always read with the parent, child has no independent lifecycle, and the array is bounded.",
+        "Reference when: child is queried alone, is large, is written far more often than the parent, or the array grows without bound.",
+        "Embedding gives single-round-trip reads and atomic single-document updates — no transaction needed.",
+        "Embedding costs: duplicated data, larger documents, more bytes moved for queries that only wanted the parent.",
+        "Referencing gives small documents and normalized truth, but requires $lookup or a second query per read.",
+        "$lookup is a left outer join executed on the server; on sharded collections the foreign collection must be unsharded (or use $lookup on sharded from v5.1 with limits) — treat it as expensive, not free.",
+        "Rule of thumb: prefer embedding until a specific requirement forces referencing — start denormalized, normalize under pressure.",
+        "Cardinality drives the choice: one-to-few → embed, one-to-many → reference-by-child, one-to-squillions → reference-by-parent.",
+        "Read/write ratio drives it too: read-heavy favors embedding + duplication; write-heavy favors referencing to avoid update fan-out.",
+        "Projection lets you limit embedded cost: db.c.find({}, { comments: 0 }) skips the array, but the full doc is still fetched from disk.",
+        "$slice projection reads only part of an array: { comments: { $slice: -10 } } returns the last 10 — useful for embedded-but-longish arrays.",
+        "Comparison row — read one parent + children: embed = 1 query / 1 doc; reference = 1 query + $lookup or N+1 client queries.",
+        "Comparison row — update one child: embed = update parent doc (whole doc rewritten if it grows); reference = update small child doc only."
+      ]
+    },
+    {
+      "title": "One-to-Few: Embed the Array",
+      "points": [
+        "One-to-few = a bounded handful of children, typically under ~100 and never growing unbounded (addresses, phone numbers, roles, tags).",
+        "Pattern: store children as an array of subdocuments directly on the parent.",
+        "Example: { _id: 1, name: 'Ada', addresses: [ { label: 'home', city: 'Dublin' }, { label: 'work', city: 'Cork' } ] }.",
+        "Query on an array element: db.people.find({ 'addresses.city': 'Dublin' }) — dot notation matches any element.",
+        "$elemMatch is required when two conditions must hold on the SAME element: { addresses: { $elemMatch: { label: 'home', city: 'Dublin' } } }.",
+        "Without $elemMatch, { 'addresses.label': 'home', 'addresses.city': 'Cork' } matches a doc where different elements satisfy each condition — classic bug.",
+        "Multikey index: an index on an array field indexes every element; db.people.createIndex({ 'addresses.city': 1 }) creates one automatically.",
+        "A compound index can include at most ONE array field — two multikey paths in one index is an error.",
+        "Update a matched element with the positional operator $: db.people.updateOne({ 'addresses.label': 'home' }, { $set: { 'addresses.$.city': 'Galway' } }).",
+        "$[] updates all elements; $[<identifier>] with arrayFilters updates all elements matching a condition.",
+        "$push adds, $pull removes by predicate, $addToSet adds only if absent — all atomic within the one document.",
+        "$push with $each + $slice + $sort keeps a capped, sorted array (e.g. last 10 items) in one atomic operation.",
+        "Trade-off: children have no independent identity or index of their own unless you give each subdocument an _id.",
+        "Gotcha: you cannot query the children alone efficiently — every match returns whole parent documents."
+      ]
+    },
+    {
+      "title": "One-to-Many: Reference by Child",
+      "points": [
+        "One-to-many = hundreds to a few thousand children; too many to embed comfortably, but each child set is still enumerable.",
+        "Pattern: child documents carry the parent's _id; the parent holds nothing about the children.",
+        "Example: parts collection { _id, name, qty } and products collection { _id, name } with each part storing product_id.",
+        "Inverse variant: parent stores an array of child _ids (parts: [ObjectId, ObjectId, ...]) — good when order matters or the list is short.",
+        "Array-of-ids gets you a fast 'fetch these children' query: db.parts.find({ _id: { $in: product.parts } }).",
+        "Child-holds-parent-id gets you unbounded growth with no parent-document rewrite: db.parts.find({ product_id: id }).",
+        "Always index the foreign key on the child side: db.parts.createIndex({ product_id: 1 }) — without it every child lookup is a COLLSCAN.",
+        "Two-query pattern is often faster than $lookup: fetch parent, then fetch children by index — the client round trip is cheap versus join memory.",
+        "$lookup pipeline: { $lookup: { from: 'parts', localField: '_id', foreignField: 'product_id', as: 'parts' } }.",
+        "$lookup with a sub-pipeline lets you filter/project the joined side before it lands, cutting the 16 MB result risk.",
+        "$graphLookup handles recursive/hierarchical joins (org charts, category trees) with maxDepth — powerful but memory-hungry.",
+        "Cascade deletes do not exist: removing a parent leaves orphan children unless the app cleans up or a transaction covers both.",
+        "Trade-off table row — consistency: referenced data is always current; embedded copies can go stale.",
+        "Trade-off table row — atomicity: cross-collection writes need a multi-document transaction, which holds locks and has a 60 s default limit."
+      ]
+    },
+    {
+      "title": "One-to-Squillions: Parent Reference Only",
+      "points": [
+        "One-to-squillions = millions of children per parent (log lines, sensor readings, event streams, message history).",
+        "Embedding is impossible — the 16 MB cap and document rewrite cost make it a non-starter.",
+        "Even the array-of-ids inverse fails: an array of a million ObjectIds is 12 MB of ids alone.",
+        "Only viable shape: the child holds host_id / device_id / user_id; the parent knows nothing.",
+        "Example: logs collection { _id, host_id, time, level, message } with index { host_id: 1, time: -1 }.",
+        "Compound index order matters: equality field first (host_id), then range/sort field (time) — the ESR rule (Equality, Sort, Range).",
+        "Query the most recent slice, never the whole set: find({host_id}).sort({time:-1}).limit(100).",
+        "Pair this with bucketing (next chapter) to cut document count by 10-100x.",
+        "TTL index expires old children automatically: createIndex({ time: 1 }, { expireAfterSeconds: 2592000 }) — background sweep runs every 60 s.",
+        "Capped collections give fixed-size, insertion-ordered storage with automatic overwrite — but no deletes, no shard key, limited updates.",
+        "Time series collections (v5.0+) are purpose-built for this: declare timeField, metaField, granularity and the server buckets for you internally.",
+        "Time series collections give automatic columnar compression and clustered index on time — often 10x smaller than naive one-doc-per-reading.",
+        "Sharding decision lives here: a monotonically increasing shard key (time) creates a hot chunk; use a compound or hashed key instead.",
+        "Cardinality summary table: few (<100) → embed; many (100-10k) → reference; squillions (>10k) → parent-reference + bucket + TTL."
+      ]
+    },
+    {
+      "title": "The Bucket Pattern",
+      "points": [
+        "Bucketing groups many small related documents into one document holding an array of measurements — trading document count for document size.",
+        "Motivation: per-document overhead (BSON header, _id, index entry) dominates when documents are tiny; 1M readings = 1M index entries.",
+        "Canonical shape: { _id, sensor_id, start: ISODate('...T10:00'), end, count: 60, measurements: [ { t, v }, ... ] }.",
+        "Bucket key is usually entity + time window: one bucket per sensor per hour, per user per day, per device per 200 readings.",
+        "Insert via upsert so the bucket is created on first write: updateOne({ sensor_id, count: { $lt: 200 } }, { $push: {...}, $inc: { count: 1 } }, { upsert: true }).",
+        "The count: { $lt: N } guard is what caps bucket size — when the current bucket fills, the upsert creates a fresh one automatically.",
+        "Benefits: fewer index entries, better data locality, one disk read serves a whole time window, dramatically smaller index footprint.",
+        "Costs: queries need $unwind or array filtering to get individual readings; ad-hoc single-reading lookups get harder.",
+        "Precompute per-bucket rollups on write — min, max, sum, count — so dashboards read the summary and never touch the array.",
+        "Sizing rule: pick a bucket so the document stays well under 16 MB and ideally under a few hundred KB — oversized buckets hurt the WiredTiger cache.",
+        "Anti-pattern inside the pattern: unbounded buckets. Always cap by count OR by time window, never trust that time alone bounds it.",
+        "MongoDB 5.0+ time series collections implement this pattern natively — prefer them over hand-rolled bucketing for new work.",
+        "Bucketing also applies outside time: IoT batches, per-day chat transcripts, per-month invoice line items, page-view rollups.",
+        "Query a window: find({ sensor_id, start: { $gte: t0 }, end: { $lte: t1 } }) then $unwind + $match to drill into readings.",
+        "Complexity note: reading a day of 1-minute data goes from 1440 document fetches to 24 (hourly buckets) — same bytes, ~60x fewer seeks."
+      ]
+    },
+    {
+      "title": "Computed & Extended Reference Patterns",
+      "points": [
+        "Computed pattern: calculate on write, store the result, read it for free — trade write cost and staleness for read latency.",
+        "Three flavors: mathematical (sum/avg), roll-up (grouped summaries), and fan-out (write derived data to many docs).",
+        "Example: store review_count and avg_rating on the product document instead of running an aggregation on every page view.",
+        "Update atomically with $inc plus a recomputed average, or recompute from a counter pair: { rating_sum, rating_count }.",
+        "Storing sum + count instead of the average is more robust — the average is derivable and stays exact under concurrent $inc.",
+        "Extended reference pattern: copy the few fields you actually display from the referenced doc alongside the reference id.",
+        "Example: an order stores { customer_id, customer: { name, city } } so rendering an order list needs zero joins.",
+        "Only copy fields that rarely change — name and city, not last_login or balance.",
+        "Staleness is the price: when the source changes you must fan out updates, or accept eventual/never consistency where it is harmless.",
+        "Fan-out on write is fine for low-churn fields; for high-churn fields use a change stream or scheduled job instead of synchronous writes.",
+        "Change streams (watch()) give you a resumable, ordered feed of collection changes — the standard way to keep derived copies in sync.",
+        "Subset pattern: keep the hot slice inline (top 10 reviews) and the full set in another collection — bounds document size while keeping the common read at one query.",
+        "Materialized views: $merge / $out in an aggregation pipeline writes rollups to a collection you can index and query directly.",
+        "$merge supports incremental updates into an existing collection (whenMatched/whenNotMatched), so rollups can run on a schedule without a full rebuild.",
+        "Decision rule: if a value is read far more often than its inputs change, compute it once and store it."
+      ]
+    },
+    {
+      "title": "More Patterns Worth Knowing",
+      "points": [
+        "Attribute pattern: turn many rarely-queried fields into an array of { k, v } pairs, then index { 'specs.k': 1, 'specs.v': 1 } — one index covers all attributes.",
+        "Use attribute pattern when documents have hundreds of sparse, variable fields (product specs, film release dates per country).",
+        "Polymorphic pattern: store related-but-different entity shapes in one collection with a type discriminator field; keeps single-collection queries possible.",
+        "Schema versioning pattern: add schema_version to every document; the app handles multiple versions and migrates lazily on write — no downtime migration.",
+        "Outlier pattern: handle the rare mega-document (the celebrity user with 10M followers) with an has_extras: true flag and overflow documents.",
+        "Approximation pattern: for expensive counters, increment by N with probability 1/N — trades exactness for a massive write reduction on page views.",
+        "Tree patterns for hierarchies: parent references, child references, array of ancestors, materialized paths, nested sets — each optimizes a different query.",
+        "Array of ancestors makes 'find all descendants' one indexed query: find({ ancestors: nodeId }).",
+        "Materialized path stores 'Books,Programming,Databases' and finds subtrees with an anchored regex: find({ path: /^Books,Programming/ }).",
+        "Preallocation pattern: create the document with its full array shape up front (e.g. 31 days) — mostly legacy, mattered more under MMAPv1.",
+        "Document versioning pattern: keep current in the main collection, prior revisions in a history collection with a revision field.",
+        "Single-collection pattern: co-locate related entity types with a shared partition field so one index and one query serves a whole aggregate.",
+        "Pattern selection is driven by the read query, always: name the query first, then choose the pattern that makes it one indexed lookup."
+      ]
+    },
+    {
+      "title": "Anti-Patterns That Bite",
+      "points": [
+        "Unbounded arrays: the #1 anti-pattern. An array that grows forever eventually hits 16 MB and rewrites the whole document on every push.",
+        "Symptom of unbounded arrays: growing document size, index bloat on the multikey field, and rising write latency over months.",
+        "Fix: reference the children, or bucket them, or apply the subset pattern with $push/$slice to cap the inline array.",
+        "Massive number of collections: thousands of collections/indexes means huge storage overhead and slow startup; each index costs at least ~4 KB plus memory.",
+        "Fix for too many collections: use the polymorphic or single-collection pattern with a type field.",
+        "Bloated documents: fetching a 2 MB document to read one field wastes cache — the working set no longer fits RAM.",
+        "Fix for bloat: split cold, rarely-read fields into a separate collection keyed by the same _id.",
+        "Unnecessary indexes: every index slows writes and eats RAM; use $indexStats to find and drop never-used indexes.",
+        "Missing index on a hot query: check with explain('executionStats') — look for COLLSCAN, and for totalDocsExamined >> nReturned.",
+        "Case-insensitive queries via regex are unindexable in general; use a collation with strength: 2 or store a normalized lowercase field.",
+        "Separating data accessed together: mirroring relational tables 1:1 into collections and joining everything is the most common porting mistake.",
+        "$lookup abuse: repeated joins in hot paths signal a schema that should have embedded or used an extended reference.",
+        "Monotonically increasing shard key (ObjectId, timestamp): all inserts hit one chunk — use hashed or compound shard keys instead.",
+        "Low-cardinality shard key: cannot split chunks, leading to jumbo chunks that the balancer cannot move.",
+        "Storing large binaries in documents: put files in object storage and keep a URL; GridFS only when you truly need the database to hold them.",
+        "Using arrays as unbounded queues or logs inside a hot document — every $push rewrites and re-indexes the array."
+      ]
+    },
+    {
+      "title": "Trade-offs, Validation & Summary",
+      "points": [
+        "Master trade-off: embedding buys read speed and atomicity; referencing buys write efficiency, consistency, and bounded document size.",
+        "Duplication is a deliberate tool, not a mistake — the question is only whether the duplicated field changes often enough to hurt.",
+        "Consistency ladder: single-document update (atomic, free) < transaction (correct, costly) < change stream sync (eventual, cheap) < nightly job (stalest, cheapest).",
+        "Transactions have real limits: default 60 s runtime, cache pressure from held snapshots, and retry logic required for TransientTransactionError.",
+        "Measure, don't guess: explain('executionStats') gives nReturned, totalKeysExamined, totalDocsExamined, executionTimeMillis.",
+        "Health signal: totalKeysExamined ≈ totalDocsExamined ≈ nReturned means the index is doing its job; large gaps mean scanning waste.",
+        "Covered query = all needed fields are in the index, so totalDocsExamined is 0 — the fastest possible read.",
+        "Use $collStats, db.collection.stats(), and Atlas Performance Advisor / schema anti-pattern flags to find problems before users do.",
+        "Enforce shape with $jsonSchema validation once the model stabilizes; use schema_version to evolve without a big-bang migration.",
+        "Sizing checklist per collection: expected document count, average document size, array growth ceiling, top queries, read/write ratio, index list.",
+        "Design workflow: list workload queries, map entity relationships and cardinality, apply patterns, model, then review against anti-patterns.",
+        "Quick decision table — few & always-read-together: embed. Many & queried alone: reference. Squillions: parent-ref + bucket + TTL. Read-heavy derived value: compute and store.",
+        "Final rule set: store together what is read together, bound every array, index every foreign key, precompute what is read hot, and let the query plan — not intuition — be the judge."
+      ]
+    }
+  ]
+}

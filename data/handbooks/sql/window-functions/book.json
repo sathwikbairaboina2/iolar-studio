@@ -1,0 +1,189 @@
+{
+  "title": "SQL Window Functions: A Handwritten Handbook",
+  "summary": "A complete study-notes handbook on SQL window functions — the OVER clause, PARTITION BY, ordering, ranking, running totals, and frame specifications — covering syntax, execution semantics, practical recipes, comparisons with GROUP BY and self-joins, performance trade-offs, and the classic mistakes that produce silently wrong results.",
+  "chapters": [
+    {
+      "title": "What a Window Function Is",
+      "points": [
+        "Definition: a function that computes a value across a set of rows related to the current row, without collapsing those rows into one",
+        "Key contrast: aggregate functions reduce N rows to 1; window functions keep all N rows and add a computed column",
+        "Minimal example: SELECT name, salary, AVG(salary) OVER () AS company_avg FROM employees — every row keeps its identity and gains the global average",
+        "The 'window' is the set of rows visible to the function for the current row; each row gets its own window",
+        "Three families: aggregate windows (SUM, AVG, COUNT, MIN, MAX), ranking windows (ROW_NUMBER, RANK, DENSE_RANK, NTILE, PERCENT_RANK, CUME_DIST), and offset/value windows (LAG, LEAD, FIRST_VALUE, LAST_VALUE, NTH_VALUE)",
+        "Standardized in SQL:2003; supported in PostgreSQL, Oracle, SQL Server 2005+, MySQL 8.0+, MariaDB 10.2+, SQLite 3.25+, BigQuery, Snowflake, DuckDB",
+        "Canonical use cases: running totals, rank within group, period-over-period deltas, moving averages, top-N per group, gap detection, deduplication",
+        "Mental model: the query first produces a result set, then window functions annotate that set — they are a post-processing layer, not a filter",
+        "Terminology note: 'window function' and 'analytic function' (Oracle/BigQuery term) mean the same thing"
+      ]
+    },
+    {
+      "title": "Anatomy of the OVER Clause",
+      "points": [
+        "Full grammar: function_name(args) OVER ( [PARTITION BY expr, ...] [ORDER BY expr [ASC|DESC] [NULLS FIRST|LAST], ...] [frame_clause] )",
+        "OVER () with an empty parentheses = one window containing every row of the result set",
+        "OVER is mandatory — a function is only a window function because OVER is attached; SUM(x) and SUM(x) OVER () are different constructs",
+        "PARTITION BY splits rows into independent groups; the function restarts for each partition",
+        "ORDER BY inside OVER defines row sequence within the partition — it is unrelated to the query's final ORDER BY",
+        "frame_clause (ROWS/RANGE/GROUPS) narrows the window further to a moving subset of the ordered partition",
+        "Example decomposed: SUM(amount) OVER (PARTITION BY customer_id ORDER BY order_date ROWS UNBOUNDED PRECEDING) — sum of amount, per customer, in date order, from the partition start to the current row",
+        "Expressions allowed in PARTITION BY and ORDER BY: columns, arithmetic, CASE, function calls — but not other window functions (no nesting)",
+        "Multiple PARTITION BY keys form a composite grouping: PARTITION BY region, product_line",
+        "Whitespace and line breaks inside OVER are free; long OVER clauses are conventionally broken across lines for legibility"
+      ]
+    },
+    {
+      "title": "PARTITION BY: Slicing the Rows",
+      "points": [
+        "PARTITION BY divides the result set into buckets; window computation is fully independent inside each bucket",
+        "Omitting PARTITION BY = a single partition holding all rows",
+        "Example: AVG(salary) OVER (PARTITION BY department) gives each employee their own department's average alongside their row",
+        "Composite example: ROW_NUMBER() OVER (PARTITION BY region, year ORDER BY revenue DESC) numbers rows fresh for every (region, year) pair",
+        "Partition boundaries reset ranking counters, running totals, and LAG/LEAD — LAG at the first row of a partition returns NULL, not the last row of the previous partition",
+        "NULL handling: all rows with NULL in a partition key land in the same partition (NULLs are treated as equal for partitioning, unlike in = comparisons)",
+        "Contrast with GROUP BY: GROUP BY collapses each group into one output row; PARTITION BY keeps every input row",
+        "You can mix different partitionings in one SELECT: SUM(x) OVER (PARTITION BY a), SUM(x) OVER (PARTITION BY b) — each column gets its own window",
+        "Practical pattern: per-group share of total — amount / SUM(amount) OVER (PARTITION BY category) * 100",
+        "Cardinality rule: output row count equals input row count regardless of how many partitions exist"
+      ]
+    },
+    {
+      "title": "ORDER BY Inside OVER",
+      "points": [
+        "ORDER BY inside OVER establishes row sequence for order-sensitive functions: rankings, offsets, and cumulative aggregates",
+        "Critical semantic: adding ORDER BY to an aggregate window silently changes it from a whole-partition aggregate to a running (cumulative) aggregate, because the default frame becomes RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        "Compare: SUM(x) OVER (PARTITION BY g) = partition total on every row; SUM(x) OVER (PARTITION BY g ORDER BY t) = running total up to the current row",
+        "Ranking functions require ORDER BY — ROW_NUMBER() OVER () is legal in some engines but produces non-deterministic numbering",
+        "Ties: rows with equal ORDER BY values are 'peers'; RANGE frames and RANK treat peers as one unit, ROWS frames do not",
+        "NULLS FIRST / NULLS LAST controls NULL placement; defaults differ by engine (PostgreSQL: NULLS LAST for ASC, NULLS FIRST for DESC; MySQL: NULLs sort first for ASC)",
+        "Multi-key ordering breaks ties deterministically: ORDER BY score DESC, created_at ASC, id ASC",
+        "The window ORDER BY is fully independent of the query-level ORDER BY; you must repeat it at query level if you want the output sorted that way",
+        "Deterministic-output rule: without a unique tiebreaker in the window ORDER BY, results can vary between runs and between engines"
+      ]
+    },
+    {
+      "title": "Ranking Functions: ROW_NUMBER, RANK, DENSE_RANK",
+      "points": [
+        "ROW_NUMBER(): assigns 1,2,3,... with no ties ever — arbitrary but distinct numbers for peer rows",
+        "RANK(): peers share a rank, then a gap follows — scores 90,90,80 give ranks 1,1,3",
+        "DENSE_RANK(): peers share a rank, no gap — scores 90,90,80 give ranks 1,1,2",
+        "Choosing: ROW_NUMBER for deduplication and pagination keys, RANK for competition-style standings with gaps, DENSE_RANK for tier/level labels",
+        "NTILE(n): splits the ordered partition into n roughly equal buckets; when rows don't divide evenly, earlier buckets get the extra rows",
+        "PERCENT_RANK(): (rank - 1) / (total_rows - 1), yielding 0 to 1; CUME_DIST(): fraction of rows at or before the current row's value",
+        "Top-N-per-group recipe: wrap in a subquery or CTE, then filter — SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) rn FROM emp) t WHERE rn <= 3",
+        "Deduplication recipe: number duplicates by a key, keep rn = 1 — DELETE FROM t WHERE id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY email ORDER BY created_at) rn FROM t) x WHERE rn > 1)",
+        "All ranking functions ignore the frame clause entirely — specifying ROWS with RANK is an error or a no-op depending on engine",
+        "Gotcha: ROW_NUMBER cannot be used directly in WHERE of the same SELECT — window functions are evaluated after WHERE"
+      ]
+    },
+    {
+      "title": "Running Totals and Cumulative Aggregates",
+      "points": [
+        "Running total: SUM(amount) OVER (ORDER BY order_date ROWS UNBOUNDED PRECEDING) accumulates from the first row to the current row",
+        "Per-group running total: add PARTITION BY account_id so the accumulator resets at each account",
+        "Running count: COUNT(*) OVER (ORDER BY event_time ROWS UNBOUNDED PRECEDING) gives a 1-based sequence that respects ties differently than ROW_NUMBER",
+        "Running average, min, max: AVG/MIN/MAX with the same frame — a running MAX gives 'best so far'",
+        "Ledger/balance pattern: opening balance + SUM(delta) OVER (PARTITION BY account ORDER BY posted_at, txn_id ROWS UNBOUNDED PRECEDING) = balance after each transaction",
+        "Percent-of-total-so-far: SUM(x) OVER (ORDER BY t ROWS UNBOUNDED PRECEDING) / SUM(x) OVER () ",
+        "Tie trap: the implicit default frame with ORDER BY is RANGE, which lumps all rows with the same ORDER BY value into the same cumulative step — two orders on the same date both show the day-end total",
+        "Fix the tie trap by writing ROWS UNBOUNDED PRECEDING explicitly, or by adding a unique tiebreaker to ORDER BY",
+        "Reverse running total (remaining): SUM(x) OVER (ORDER BY t ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)",
+        "Nesting is illegal: you cannot write SUM(SUM(x) OVER ()) OVER () — use a CTE or subquery to layer window computations"
+      ]
+    },
+    {
+      "title": "Frames: ROWS, RANGE, and GROUPS",
+      "points": [
+        "Frame clause syntax: {ROWS | RANGE | GROUPS} BETWEEN <start> AND <end>, where bounds are UNBOUNDED PRECEDING, n PRECEDING, CURRENT ROW, n FOLLOWING, UNBOUNDED FOLLOWING",
+        "ROWS counts physical rows — ROWS BETWEEN 2 PRECEDING AND CURRENT ROW is exactly 3 rows (or fewer at partition edges)",
+        "RANGE counts by ORDER BY value — RANGE BETWEEN 7 PRECEDING AND CURRENT ROW over a date column means a 7-day value interval, including all peer rows",
+        "GROUPS counts peer groups — GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW covers the current tie-group plus the previous tie-group (PostgreSQL 11+, SQLite, not MySQL 8)",
+        "Default frames: no ORDER BY = RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING (whole partition); with ORDER BY = RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW (cumulative through peers)",
+        "Shorthand: writing only a start bound implies AND CURRENT ROW — ROWS UNBOUNDED PRECEDING == ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        "RANGE with a numeric or interval offset requires exactly one ORDER BY column of a compatible type; RANGE with n PRECEDING is illegal over a text column",
+        "Moving average: AVG(price) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) = trailing 7-row average; centered version uses 3 PRECEDING AND 3 FOLLOWING",
+        "Edge behavior: at the partition start the frame is truncated, so early rows average fewer values — guard with a COUNT(*) OVER (same frame) >= 7 check if you need full windows only",
+        "EXCLUDE options (EXCLUDE CURRENT ROW | GROUP | TIES | NO OTHERS) remove rows from the frame; supported in PostgreSQL 11+ and SQLite, absent in MySQL"
+      ]
+    },
+    {
+      "title": "Offset and Value Functions: LAG, LEAD, FIRST_VALUE",
+      "points": [
+        "LAG(expr, offset, default): value from a row `offset` rows earlier in the partition; offset defaults to 1, default defaults to NULL",
+        "LEAD(expr, offset, default): the same, looking forward",
+        "Period-over-period delta: amount - LAG(amount) OVER (PARTITION BY sku ORDER BY month) gives month-on-month change",
+        "Percent change: (amount - LAG(amount) OVER w) / NULLIF(LAG(amount) OVER w, 0) — NULLIF guards the divide-by-zero",
+        "Gap detection: WHERE event_time - LAG(event_time) OVER (PARTITION BY session ORDER BY event_time) > INTERVAL '30 minutes' marks session boundaries",
+        "FIRST_VALUE(expr) and LAST_VALUE(expr) return the value from the frame's first/last row — they are frame-sensitive, unlike LAG/LEAD",
+        "LAST_VALUE trap: with the default frame it returns the current row's value because the frame ends at CURRENT ROW; fix with ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING",
+        "NTH_VALUE(expr, n) returns the nth row of the frame; PostgreSQL supports FROM FIRST / FROM LAST, MySQL does not",
+        "IGNORE NULLS / RESPECT NULLS modifiers let LAG and FIRST_VALUE skip NULLs — a clean last-known-value fill; supported in Oracle, SQL Server 2022+, BigQuery, Snowflake, and PostgreSQL 16+",
+        "LAG/LEAD ignore the frame clause entirely — they always address rows relative to the whole partition"
+      ]
+    },
+    {
+      "title": "Window Functions vs GROUP BY vs Self-Joins",
+      "points": [
+        "GROUP BY: collapses rows, output has one row per group, non-aggregated columns must be in GROUP BY — best when you only want summary rows",
+        "Window function: preserves rows, output has one row per input row, any column may appear alongside — best when you need detail plus context",
+        "Combined use: a window function can operate on the output of GROUP BY — SELECT dept, SUM(sal) t, RANK() OVER (ORDER BY SUM(sal) DESC) FROM e GROUP BY dept",
+        "Self-join alternative for running totals: JOIN t b ON b.date <= a.date then SUM — O(n²) comparisons, versus one sorted pass for the window version",
+        "Correlated-subquery alternative: (SELECT SUM(x) FROM t b WHERE b.id = a.id AND b.d <= a.d) — re-executes per row, usually far slower and harder to read",
+        "DISTINCT ON (PostgreSQL) vs ROW_NUMBER() = 1: DISTINCT ON is terser and often faster for one-row-per-group, but is non-portable",
+        "Readability comparison row: window functions express 'per-row context' declaratively; self-joins bury the intent in join predicates",
+        "When GROUP BY still wins: pure rollups feeding a report, HAVING-based filtering, and cases where reducing row count early cuts downstream work",
+        "When neither fits: recursive/iterative accumulation with feedback (each step depends on the previous computed result) needs a recursive CTE, not a window",
+        "Rule of thumb: if you find yourself joining a table to itself on an inequality to get context, a window function is almost certainly the right rewrite"
+      ]
+    },
+    {
+      "title": "Execution Order and Performance",
+      "points": [
+        "Logical evaluation order: FROM → WHERE → GROUP BY → HAVING → SELECT (window functions here) → DISTINCT → ORDER BY → LIMIT",
+        "Consequence: window functions cannot appear in WHERE, GROUP BY, or HAVING of the same query level — wrap in a CTE or subquery to filter on their output",
+        "Windows are computed after WHERE, so filtering rows out changes the window contents — a WHERE that removes rows also removes them from every running total",
+        "Execution mechanics: the engine sorts by (PARTITION BY keys, ORDER BY keys), then streams through, maintaining accumulator state per partition",
+        "Cost model: dominated by the sort, O(n log n) time and O(n) memory for spill-free sorting; the scan itself is O(n)",
+        "A matching index on (partition_keys, order_keys) can let the planner skip the sort entirely — often the single biggest win",
+        "Multiple window functions sharing an identical OVER clause are computed in one pass; differing OVER clauses each force their own sort step",
+        "WINDOW clause for reuse: SELECT ..., SUM(x) OVER w, AVG(x) OVER w FROM t WINDOW w AS (PARTITION BY g ORDER BY t) — deduplicates definitions and signals the shared sort",
+        "RANGE frames with offsets cost more than ROWS because peer-group boundaries must be located by value comparison rather than by counting",
+        "Memory pressure: very large partitions and frames referencing FOLLOWING rows force buffering; watch for disk spills in EXPLAIN ANALYZE (external merge sort)",
+        "Read the plan: look for WindowAgg (PostgreSQL) or Window Spool / Segment (SQL Server) nodes and check whether a Sort sits underneath"
+      ]
+    },
+    {
+      "title": "Common Mistakes and Gotchas",
+      "points": [
+        "Filtering on a window result in WHERE — SELECT ... ROW_NUMBER() OVER (...) rn ... WHERE rn = 1 fails; move it to an outer query or use QUALIFY where supported (Snowflake, BigQuery, DuckDB, Teradata)",
+        "Assuming ORDER BY in OVER sorts the output — it does not; add a query-level ORDER BY",
+        "Forgetting that ORDER BY flips an aggregate window into a running total — a silently different number, no error raised",
+        "LAST_VALUE returning the current row instead of the partition's last value because the default frame stops at CURRENT ROW",
+        "Ties inflating running totals under the default RANGE frame — duplicate timestamps collapse into one cumulative step",
+        "Using RANK where ROW_NUMBER was meant — a top-3 filter with RANK can return 4+ rows when ranks tie",
+        "Mixing DISTINCT with window functions: DISTINCT runs after windows, so it dedupes the already-annotated rows, rarely what was intended",
+        "Assuming a partition without a unique ORDER BY tiebreaker is stable across runs — it is not; add id as the last sort key",
+        "Nesting window functions directly (SUM(RANK() OVER ()) OVER ()) — illegal; layer with CTEs",
+        "Expecting LAG to reach across partition boundaries — it returns the default (NULL) at each partition's first row",
+        "Empty frames return NULL for SUM/AVG/MAX but 0 for COUNT — guard aggregate arithmetic with COALESCE",
+        "Portability traps: MySQL 8 lacks GROUPS and EXCLUDE; SQLite lacks IGNORE NULLS in older builds; QUALIFY is not in the SQL standard"
+      ]
+    },
+    {
+      "title": "Recipes and Closing Summary",
+      "points": [
+        "Top-N per group: ROW_NUMBER() OVER (PARTITION BY g ORDER BY metric DESC) in a CTE, filter rn <= N outside",
+        "Running balance: SUM(delta) OVER (PARTITION BY account ORDER BY ts, id ROWS UNBOUNDED PRECEDING)",
+        "7-day moving average: AVG(v) OVER (ORDER BY d ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)",
+        "Month-over-month growth: v / NULLIF(LAG(v) OVER (PARTITION BY sku ORDER BY month), 0) - 1",
+        "Share of group total: v * 1.0 / SUM(v) OVER (PARTITION BY category)",
+        "Sessionization: flag gaps with LAG, then SUM the flags as a running total to build session ids — the classic two-step window idiom",
+        "Islands and gaps: ROW_NUMBER() minus a date-sequence number produces a constant grouping key for consecutive runs",
+        "Deduplication: keep ROW_NUMBER() = 1 partitioned by the natural key, ordered by recency",
+        "Decision checklist: need all rows kept? use a window. Need per-row context from neighbors? LAG/LEAD. Need cumulative? ORDER BY plus ROWS frame. Need one row per group? GROUP BY.",
+        "Three rules to memorize: OVER makes it a window, ORDER BY inside OVER creates a running frame by default, and ROWS is what you almost always want over RANGE",
+        "Performance one-liner: index on (partition keys, order keys), reuse one OVER clause via the WINDOW clause, and check EXPLAIN for a redundant Sort",
+        "Final framing: window functions turn multi-pass, self-join-heavy SQL into a single declarative sorted pass — learn the frame defaults and most of the surprises disappear"
+      ]
+    }
+  ]
+}

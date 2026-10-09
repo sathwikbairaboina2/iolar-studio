@@ -1,0 +1,451 @@
+{
+  "brand": "iolar",
+  "template": "margin-qa",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA PRODUCERS — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Delivery Semantics End to End",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Ordering"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ordering is per partition only, never global by default",
+            "Global order needs one partition and kills parallelism",
+            "Same key -> same partition -> per-entity order",
+            "Adding partitions breaks key pinning and historical order"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "ordering",
+            "branches": [
+              {
+                "label": "per partition",
+                "children": [
+                  "always held"
+                ]
+              },
+              {
+                "label": "per key",
+                "children": [
+                  "stable while N fixed"
+                ]
+              },
+              {
+                "label": "global",
+                "children": [
+                  "one partition only"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Silent Failures",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ignoring the `send()` return value hides every failure",
+            "The app reports a success it never actually received",
+            "`try/catch` around `send()` sees serialize and buffer errors only",
+            "Broker errors arrive later, never in that catch"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "p.send(rec);            // failures vanish",
+            "p.send(rec, (md, e) -> {",
+            "  if (e != null) dlq.write(rec, e);",
+            "});                     // handled"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Throughput Killers"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`send().get()` in a loop: 100k msg/s becomes ~1k msg/s",
+            "Zero durability gain over a proper callback",
+            "Heavy work in the callback blocks the Sender thread",
+            "Then every partition's throughput drops at once"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Lifecycle Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Producer per request: connection churn, metadata refetch, no batching",
+            "Forgetting `close()`: buffered records are simply lost",
+            "`close(Duration)` in a shutdown hook drains with a bound"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "Runtime.getRuntime().addShutdownHook(",
+            "  new Thread(() ->",
+            "    p.close(Duration.ofSeconds(30))));"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Config Mistakes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Why it hurts"
+          ],
+          "rows": [
+            [
+              "`acks=all`, minISR=1",
+              "quietly leader-only"
+            ],
+            [
+              "unclean election on",
+              "truncates acked records"
+            ],
+            [
+              "`retries=0`",
+              "loses instead of deduping"
+            ],
+            [
+              "huge `linger.ms`",
+              "invisible in benchmarks"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Idempotence already kills duplicates without losing records",
+            "`linger.ms` pain shows up only on latency-sensitive paths"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Error Handling and Common Mistakes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Reading Exceptions"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`TimeoutException`: unknown outcome — log the key, dedupe downstream",
+            "`RecordTooLargeException`: fix `max.request.size` and `message.max.bytes`",
+            "Or shrink the payload instead",
+            "Branch on exception type, not a blanket retry wrapper"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "auto.create.topics.enable",
+          "text": "Producing to a missing topic with auto-create on silently makes one with default partitions and replication — a wrongly configured topic you then live with."
+        },
+        {
+          "type": "heading",
+          "text": "Three Recipes",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Goal",
+            "Key settings"
+          ],
+          "rows": [
+            [
+              "throughput",
+              "`linger.ms=20..100`, `batch.size=131072`, `lz4`"
+            ],
+            [
+              "low latency",
+              "`linger.ms=0`, default size, `none`/`lz4`"
+            ],
+            [
+              "max durability",
+              "`acks=all`, idempotence, minISR=2, RF=3"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Throughput recipe also wants `buffer.memory=64MB+`, `acks=1` or `all`",
+            "Low latency keeps `max.in.flight=5` for pipelining",
+            "Max durability: high `delivery.timeout.ms`, unclean election off"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "acks=all",
+            "linger.ms=100",
+            "batch.size=131072",
+            "compression.type=lz4",
+            "buffer.memory=134217728"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "JMX Metrics"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`record-send-rate`, `record-error-rate`, `record-retry-rate`",
+            "`request-latency-avg`, `batch-size-avg`, `buffer-available-bytes`",
+            "`record-queue-time-avg` rising means the accumulator backs up",
+            "That is broker or network pressure, not your app code"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Predict the stall",
+          "text": "`buffer-available-bytes` trending toward zero predicts `send()` blocking on `max.block.ms` before any user feels it."
+        }
+      ]
+    },
+    {
+      "page_title": "Tuning, Monitoring and Real Config Recipes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Diagnosis"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "High `request-latency-avg` with normal send rate: broker or ISR",
+            "Not producer config — stop retuning batch sizes",
+            "Rule of thumb: `batch.size` first, `linger.ms` second, compression third",
+            "Most wins come from bigger batches"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Codec",
+            "Typical JSON"
+          ],
+          "rows": [
+            [
+              "`zstd`",
+              "best ratio"
+            ],
+            [
+              "`gzip`",
+              "good ratio, high CPU"
+            ],
+            [
+              "`snappy`",
+              "in between"
+            ],
+            [
+              "`lz4`",
+              "fastest"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Scaling Out"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ceiling = partition count x per-partition rate",
+            "More producer instances help only if partitions allow",
+            "Too many partitions raises broker memory and latency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Deliberate Failure Modes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`max.block.ms` turns an outage into backpressure or fast failure",
+            "Pick it on purpose, not by leaving the default",
+            "Test durability with chaos: kill the leader mid-load, count records",
+            "Config review alone proves nothing"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Interceptors",
+          "text": "`interceptor.classes` adds tracing or auditing to every record without touching a single call site."
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "One-line mental model",
+          "text": "`send()` buffers, the Sender batches, `acks` decides who must confirm, and sequence numbers kill duplicates."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`acks=0` loses; `acks=1` loses on failover",
+            "`acks=all` + `min.insync.replicas=2` is the durable baseline",
+            "`delivery.timeout.ms` is the only bound on how long a send takes",
+            "`retries` is effectively infinite — stop tuning it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Free Correctness",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`enable.idempotence=true`: no duplicates, no reordering",
+            "Still up to 5 in-flight requests per connection",
+            "Transactions add atomicity across partitions and the CPP loop",
+            "They cost latency, not correctness"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Invariants To Memorize"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`delivery.timeout >= linger + request.timeout`",
+            "`max.request.size <= broker message.max.bytes`",
+            "RF > `min.insync.replicas`",
+            "`max.in.flight <= 5` with idempotence on"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Summary: The Producer Cheat Sheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Default-Good Config"
+        },
+        {
+          "type": "code",
+          "lang": "properties",
+          "lines": [
+            "acks=all",
+            "enable.idempotence=true",
+            "linger.ms=10",
+            "batch.size=65536",
+            "compression.type=lz4"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Ordering And Batching"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ordering is per partition; keys pin entities to partitions",
+            "Adding partitions breaks that pinning forever",
+            "Bigger batches lift throughput, ratio and broker CPU together",
+            "`linger.ms` is the only knob trading latency for throughput"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Never Skip These"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Always handle the callback or the future",
+            "Fire-and-forget is a silent data-loss policy",
+            "Always `close(Duration)` on shutdown or buffers vanish",
+            "Kafka exactly-once ends at Kafka's boundary"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Outside Kafka",
+          "text": "External sinks still need idempotent writes, a dedupe key, or an outbox table. No producer config fixes a non-idempotent downstream."
+        },
+        {
+          "type": "heading",
+          "text": "Debug Order"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "record-queue-time",
+              "request-latency",
+              "ISR health",
+              "config"
+            ]
+          }
+        },
+        {
+          "type": "qa",
+          "q": "Producing is slow. First move?",
+          "a_bullets": [
+            "Check `record-queue-time-avg`: is the accumulator backed up?",
+            "Then `request-latency-avg`: is the broker slow?",
+            "Then ISR health, and only then the config file"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of KAFKA PRODUCERS. Most Kafka data loss is not a broker problem — it is a `send()` whose return value nobody read. This handbook walks the whole producer path: the two threads behind one call, what each `acks` level really waits for, how `batch.size` and `linger.ms` race each other, and why `enable.idempotence=true` is free correctness. Ten pages of dense notes, config recipes and the invariants worth memorizing.",
+    "hashtags": [
+      "#kafka",
+      "#apachekafka",
+      "#distributedsystems",
+      "#backendengineering",
+      "#systemdesign",
+      "#dataengineering",
+      "#eventdriven",
+      "#softwareengineering",
+      "#devops",
+      "#javadeveloper",
+      "#streamprocessing",
+      "#codingnotes"
+    ]
+  }
+}

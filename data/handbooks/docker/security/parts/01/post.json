@@ -1,0 +1,1027 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "DOCKER SECURITY NOTES",
+  "date": "15/09/2026",
+  "slides": [
+    {
+      "page_title": "Threat Model",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Containers ≠ VMs",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Namespaces (`pid`,`net`,`mnt`,`user`) + `cgroups`",
+            "All containers share the host kernel",
+            "Breakout = kernel vuln or privileged syscall"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Root in a container ≈ root on host at kernel level. Docker is isolation by default, not a boundary."
+        },
+        {
+          "type": "heading",
+          "text": "Attack Surfaces",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "surface",
+            "example"
+          ],
+          "rows": [
+            [
+              "engine",
+              "`dockerd` compromise"
+            ],
+            [
+              "host kernel",
+              "kernel exploit"
+            ],
+            [
+              "mounts",
+              "`/` bind mount"
+            ],
+            [
+              "network",
+              "flat bridge"
+            ],
+            [
+              "image",
+              "malware layers"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Threat actors: supply chain, runtime escape, leaked secrets",
+            "`--privileged` removes nearly all isolation",
+            "Red flag in any Dockerfile or run cmd"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "non-root",
+              "drop caps",
+              "seccomp",
+              "read-only FS",
+              "scan",
+              "secrets"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rule of thumb",
+          "text": "Each layer shrinks blast radius. No single control stops every escape vector."
+        },
+        {
+          "type": "qa",
+          "q": "Is a container a security boundary?",
+          "a_bullets": [
+            "No, by default",
+            "Add user namespaces + layers",
+            "Defense in depth, always"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Why Drop UID 0",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "UID 0 inherits kernel-level power",
+            "Historic escapes needed root",
+            "Create user after `apt install`"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM debian:12",
+            "RUN adduser --system \\",
+            "  --no-create-home appuser",
+            "COPY --chown=appuser app /app",
+            "USER appuser"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Runtime override: `docker run --user 1000:1000`",
+            "Works even on root-default images",
+            "K8s: `runAsNonRoot: true` in securityContext"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Gotchas",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Files made before `USER` stay root-owned",
+            "`chown` first or bind mounts fail to write",
+            "Ports <1024 privileged → use 8080"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "sysctl net.ipv4.\\",
+            "  ip_unprivileged_port_start=0",
+            "# or: --cap-add NET_BIND_SERVICE"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`userns-remap` maps root → host UID range",
+            "Breaks shared volumes + some images",
+            "Set `ENV HOME=/home/appuser`"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Verify",
+          "items": [
+            "`docker exec c id` → uid=1000",
+            "`docker inspect` → `.Config.User`"
+          ],
+          "ink": "green"
+        }
+      ]
+    },
+    {
+      "page_title": "Running as Non-Root",
+      "blocks": [
+        {
+          "type": "qa",
+          "q": "App still crashes as non-root?",
+          "a_bullets": [
+            "Check root-owned file perms",
+            "Check `$HOME` env",
+            "Check privileged port"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Root, Split Up",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "~40 caps: `CAP_SYS_ADMIN`, `CAP_NET_ADMIN`...",
+            "Docker grants a default subset",
+            "Default drop list removes the worst"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "cap",
+            "power"
+          ],
+          "rows": [
+            [
+              "`CAP_SYS_ADMIN`",
+              "mount, ns — 'new root'"
+            ],
+            [
+              "`CAP_NET_ADMIN`",
+              "firewall, routing"
+            ],
+            [
+              "`CAP_DAC_OVERRIDE`",
+              "ignore perms"
+            ],
+            [
+              "`CAP_SYS_PTRACE`",
+              "inspect procs"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run --cap-drop=ALL \\",
+            "  --cap-add=NET_BIND_SERVICE \\",
+            "  myapp:1.0   # whitelist only"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Auditing Caps",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec c sh -c \\",
+            "  'grep Cap /proc/1/status'",
+            "capsh --decode 0x00000000a80425fb",
+            "capsh --print  # bounding set"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`setcap cap_net_bind_service+ep nginx`",
+            "Per-binary cap, no container-wide root",
+            "Avoid `CAP_SYS_ADMIN` unless legit"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Bounding set",
+          "text": "`--cap-add` can't restore caps dropped from the bounding set — restart with the right flags."
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "`--privileged`",
+              "items": [
+                "all caps",
+                "+ devices",
+                "cgroup write"
+              ]
+            },
+            "right": {
+              "title": "whitelist",
+              "items": [
+                "drop ALL",
+                "add 1-2 caps",
+                "prod-safe"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Syscall Firewall",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "BPF filter attached at process start",
+            "Default profile blocks ~44 risky syscalls",
+            "`kexec_load`, `keyctl`, `open_by_handle_at`"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "process",
+              "syscall",
+              "BPF filter",
+              "allow / EPERM"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "json",
+          "lines": [
+            "{\"defaultAction\":",
+            " \"SCMP_ACT_ERRNO\",",
+            " \"syscalls\": [{\"names\":",
+            "  [\"read\",\"write\"],",
+            "  \"action\":\"SCMP_ACT_ALLOW\"}]}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Usage",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`--security-opt seccomp=profile.json`",
+            "`seccomp=unconfined` disables — never in prod",
+            "`notify` action → proxy to supervisor (gVisor)"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "control",
+            "gates"
+          ],
+          "rows": [
+            [
+              "capabilities",
+              "resources touched"
+            ],
+            [
+              "seccomp",
+              "kernel entry points"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Seccomp",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Debugging",
+          "text": "Random `EPERM`? Often seccomp. Run `strace -c` outside the filter to derive the allowlist."
+        },
+        {
+          "type": "sidebox",
+          "title": "Gotchas",
+          "items": [
+            "Not namespaced — per container",
+            "Set at run time, not in image",
+            "Keep profiles minimal allowlists"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Read-Only Root",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker run --read-only \\",
+            "  --tmpfs /tmp:rw,noexec,\\",
+            "  nosuid,size=64m myapp"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Tamper-proof + ransomware-resistant",
+            "Volumes stay writable under `--read-only`",
+            "Grant only the paths the app needs"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Why `tmpfs` Flags",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "flag",
+            "blocks"
+          ],
+          "rows": [
+            [
+              "`noexec`",
+              "running payloads"
+            ],
+            [
+              "`nosuid`",
+              "setuid escalation"
+            ],
+            [
+              "`size=64m`",
+              "disk-fill abuse"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "PID files, caches break → fix via env config",
+            "Pair with `--cap-drop=ALL`",
+            "No writable code path + no root powers"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "cgroup Limits",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "--memory=512m",
+            "--pids-limit=100  # fork bombs",
+            "--cpus=1.5"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "no limits",
+              "items": [
+                "fork bomb eats host",
+                "noisy neighbors"
+              ]
+            },
+            "right": {
+              "title": "limited",
+              "items": [
+                "escape hits wall",
+                "OOM-contained"
+              ]
+            }
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Gotcha",
+          "text": "`apk`/`apt` need writable `/var` — do installs at build time, never runtime."
+        },
+        {
+          "type": "heading",
+          "text": "Minimal Bases",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "base",
+            "size",
+            "CVEs"
+          ],
+          "rows": [
+            [
+              "`scratch`",
+              "~10MB",
+              "0 (static bin)"
+            ],
+            [
+              "`alpine`",
+              "~5MB",
+              "few"
+            ],
+            [
+              "`distroless`",
+              "~20MB",
+              "few"
+            ],
+            [
+              "`debian`",
+              "~120MB",
+              "more"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM golang:1.22 AS build",
+            "COPY . .",
+            "RUN go build -o /app .",
+            "FROM scratch",
+            "COPY --from=build /app /app"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Multi-stage: toolchain ≠ runtime",
+            "No shells, pkg managers in runtime",
+            "Fewer tools = fewer post-exploit moves"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pin & Ignore",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20@sha256:abc123...",
+            "# digest = reproducible build",
+            "COPY --chown=node:node . .",
+            "USER node"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`.dockerignore`: `.env`, `.git`, keys",
+            "`COPY .` leaks secrets into layers",
+            "`COPY --chown` beats post-hoc `chown` layers"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "fat image",
+              "items": [
+                "big CVE surface",
+                "shell available",
+                "slow pull"
+              ]
+            },
+            "right": {
+              "title": "minimal",
+              "items": [
+                "~10MB",
+                "no shell",
+                "zero pkg CVEs"
+              ]
+            }
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Layers never forget",
+          "text": "Secrets in `ENV`/`RUN` persist in history forever — `docker history` shows every layer."
+        }
+      ]
+    },
+    {
+      "page_title": "Image Hardening",
+      "blocks": [
+        {
+          "type": "qa",
+          "q": "Best runtime base?",
+          "a_bullets": [
+            "Static Go/Rust → `scratch`",
+            "Need libc → `distroless`",
+            "Shell debug needs → sidecar"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "CVE Scanners",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Trivy`, `Grype`, `Docker Scout`, `Snyk`",
+            "Match installed pkgs vs CVE DBs",
+            "Covers OS + `pip`/`npm` deps"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "trivy image myapp:1.2",
+            "trivy image --exit-code 1 \\",
+            "  --severity HIGH,CRITICAL \\",
+            "  myapp:1.2   # fail the CI"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Triage",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "finding",
+            "action"
+          ],
+          "rows": [
+            [
+              "CRIT in runtime webserver",
+              "fix now"
+            ],
+            [
+              "CRIT in unused lib",
+              "accept + track"
+            ],
+            [
+              "new CVE in base",
+              "re-pull base"
+            ],
+            [
+              "weekly scan gap",
+              "rescan images"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Rebuild bases regularly — fixes come from re-pull",
+            "Scan at build = snapshot only",
+            "Rescan registried images on schedule"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Provenance",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "trivy image --format cyclonedx \\",
+            "  myapp:1.2   # SBOM",
+            "cosign verify \\",
+            "  myapp@sha256:..."
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SBOM: inventory for audit + diffing",
+            "`cosign`/Notary: ran what was built",
+            "Pin `requirements.txt` for deterministic scans"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Priority rule",
+          "text": "Rank by exploitability, not just severity — unused lib vs your runtime web server."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "build",
+              "scan",
+              "sign",
+              "push",
+              "deploy",
+              "rescan"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Docker Socket",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`-v /var/run/docker.sock:/...` = root on host",
+            "Socket API spawns privileged containers",
+            "Use `docker-socket-proxy` to limit verbs"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "container",
+              "socket proxy",
+              "filtered API",
+              "dockerd"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Rootless Docker: `dockerd` as unprivileged user",
+            "Daemon compromise ≠ host root",
+            "TCP 2375 unauthenticated = instant compromise"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Socket, Daemon & Network",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Network Isolation",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "setup",
+            "reach"
+          ],
+          "rows": [
+            [
+              "default bridge",
+              "all containers"
+            ],
+            [
+              "user-defined",
+              "per trust zone"
+            ],
+            [
+              "`--network=none`",
+              "no network"
+            ],
+            [
+              "`internal: true`",
+              "no external egress"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "mTLS still matters inside the bridge",
+            "Proximity is not trust",
+            "`--link` is legacy → DNS service names"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker network create --internal app",
+            "docker network inspect app",
+            "docker port myapp  # 0.0.0.0 leaks?"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Audit habit",
+          "text": "Regularly check `docker network inspect` + `docker port` for accidental host-published ports."
+        },
+        {
+          "type": "qa",
+          "q": "Need socket access?",
+          "a_bullets": [
+            "Proxy with verb whitelist",
+            "Or rootless Docker/Podman",
+            "Never raw socket mount"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Detect What Slips",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Falco, Sysdig, eBPF monitors",
+            "Flag: shell in nginx container",
+            "Unexpected `/etc` writes, odd egress IPs"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "- rule: shell_in_nginx",
+            "  condition: evt.type=execve and",
+            "    container.name=nginx and",
+            "    proc.name in [sh, bash]"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Hardened Runtimes",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "runtime",
+            "isolation",
+            "cost"
+          ],
+          "rows": [
+            [
+              "`runc`",
+              "kernel-shared",
+              "fastest"
+            ],
+            [
+              "`gVisor`",
+              "user-space kernel",
+              "syscall latency"
+            ],
+            [
+              "`Kata`",
+              "per-container VM",
+              "mem + startup"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "runc",
+              "gVisor",
+              "Kata VMs"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Secrets & Checklist",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "gVisor intercepts syscalls user-space",
+            "Kata: VM boundary, heavier budget",
+            "Pick by threat model + latency budget"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "MAC & Forensics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`--security-opt apparmor=profile`",
+            "Docker ships a default AppArmor profile",
+            "Seccomp overhead ≈ 0; gVisor costs I/O"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Post-incident",
+          "items": [
+            "FS is ephemeral",
+            "`docker cp` evidence first",
+            "Diff `docker ps` vs image IDs"
+          ],
+          "ink": "accent"
+        },
+        {
+          "type": "heading",
+          "text": "Never Bake Secrets",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`ENV`/`ARG`/`RUN` persist in layer history",
+            "`docker history` reveals all layers",
+            "Gitleaks/trufflehog on the repo"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "# syntax=docker/dockerfile:1",
+            "RUN --mount=type=secret,\\",
+            "  id=npm \\",
+            "  npm install \\",
+            "  # secret never in layer"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Runtime Secrets",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "source",
+            "notes"
+          ],
+          "rows": [
+            [
+              "Swarm secrets",
+              "tmpfs `/run/secrets`"
+            ],
+            [
+              "K8s Secrets",
+              "base64 ≠ encrypted"
+            ],
+            [
+              "Vault / SOPS",
+              "short-lived tokens"
+            ],
+            [
+              "env vars",
+              "leak via `/proc/environ`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "K8s: enable etcd encryption + RBAC",
+            "Prefer mounted files over env vars",
+            "Rotate after ANY exposure"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Deleting ≠ unpulled",
+          "text": "Removed images live on in mirrors, caches and attacker machines. Rotate the secret."
+        },
+        {
+          "type": "heading",
+          "text": "The 10-Layer Checklist",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "non-root",
+              "drop caps",
+              "seccomp",
+              "read-only",
+              "scan CI",
+              "secrets"
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Also",
+          "items": [
+            "pinned distroless image",
+            "no socket mounts",
+            "runtime detection + limits"
+          ],
+          "ink": "accent"
+        },
+        {
+          "type": "qa",
+          "q": "All ten controls?",
+          "a_bullets": [
+            "Each costs convenience",
+            "One failure ≠ host root",
+            "Layered trade-offs win"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your container is a process sharing the host kernel — not a tiny VM. Save this 10-slide hardening handbook: non-root, capabilities, seccomp, read-only FS, scanning and secrets, layer by layer.",
+    "hashtags": [
+      "#docker",
+      "#devops",
+      "#containers",
+      "#kubernetes",
+      "#cybersecurity",
+      "#infosec",
+      "#devsecops",
+      "#cloudnative",
+      "#technotes",
+      "#studygram"
+    ]
+  }
+}

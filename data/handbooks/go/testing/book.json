@@ -1,0 +1,176 @@
+{
+  "title": "Testing in Go: The Dense-Notes Handbook",
+  "summary": "A ten-page deep dive into Go's built-in testing stack: table-driven tests and subtests, benchmarks, native fuzzing, test helpers, golden files, and coverage — with internals, trade-offs, and the classic mistakes each tool prevents.",
+  "chapters": [
+    {
+      "title": "Go Testing Fundamentals & How go test Works",
+      "points": [
+        "Tests live in files ending in _test.go, same package as the code; go test compiles them only for test builds, so no dead test code ships in binaries.",
+        "A test is any func TestXxx(t *testing.T) — capital T prefix required, pointer to testing.T required, or go test silently ignores it.",
+        "go test runs the current package; go test ./... runs everything; -v prints each test name with PASS/FAIL, -run 'Regex' selects by name.",
+        "t.Error/Errorf logs a failure and continues; t.Fatal/Fatalf logs and stops that test now — use Fatal when later steps depend on the failed step.",
+        "t.Log is test-only printf output, hidden unless the test fails or -v is set — cheap breadcrumbs, zero noise on green runs.",
+        "A test fails by calling Error/Fatal; an uncaught panic also fails the test — go test recovers per-test and prints the goroutine stack.",
+        "Tests within a package run sequentially, in source order, by default; each package's tests run in a separate process.",
+        "TestMain(m *testing.M) hooks process-wide setup/teardown — you must call os.Exit(m.Run()) yourself; use for global resources, never per-test logic.",
+        "Same _test.go files hold benchmarks (BenchmarkXxx) and examples (ExampleXxx) — one go test invocation discovers them all by name prefix.",
+        "go test caches passing results keyed on code + env; -count=1 forces a rerun — the classic 'my fix didn't run' gotcha when debugging.",
+        "Slow-test convention: guard with if testing.Short() { t.Skip('...') } so go test -short drops the expensive cases.",
+        "No assertion library needed: plain if + t.Errorf keeps failures explicit and the dependency list empty — idiomatic Go style."
+      ]
+    },
+    {
+      "title": "Table-Driven Tests: The Core Pattern",
+      "points": [
+        "The pattern: a slice of anonymous struct rows — name, inputs, want — ranged over in one loop running identical assertions per case.",
+        "One row = one scenario; name rows like sentences ('negative input returns error') so a failure reads like a bug report.",
+        "Skeleton: for _, tc := range cases { t.Run(tc.name, func(t *testing.T) { got := F(tc.in); if got != tc.want { t.Errorf(...) } }) }.",
+        "Prefer t.Errorf inside the loop so one bad case doesn't abort the rest — you see all failures in one run; reserve t.Fatal for per-case setup failures.",
+        "Add a wantErr field per row to test error paths in the same table; compare with errors.Is/As, never == on formatted error strings.",
+        "Comparing values: == for comparable types, reflect.DeepEqual for deep structs (slow, panics on funcs), bytes.Equal for []byte, go-cmp for readable diffs.",
+        "Rows can carry more than data: a func field for case-specific setup, a []string want for multi-line output, or per-case config flags.",
+        "No parametrize decorator exists — the table IS the parametrization; editor snippets or gopls 'fill struct' generate the boilerplate fast.",
+        "Table-driven does not require t.Run: a bare range works, but subtests add per-case names, -run filtering, skips, and parallelism (next chapter).",
+        "Keep the test body tiny: data lives in the table, logic outside it; if cases need wildly different assertions, split into two tables instead of if tc.special branches.",
+        "Edge cases worth a row in every table: zero value, empty slice/map, nil input, int boundaries, unicode, whitespace, the error-inducing input.",
+        "One behavior per test function: separate tables for happy path vs errors so a failure message pinpoints exactly which contract broke."
+      ]
+    },
+    {
+      "title": "Subtests: t.Run, Filtering & Parallelism",
+      "points": [
+        "t.Run(name, func(t *testing.T)) creates a named subtest with its own PASS/FAIL line — output shows the path TestX/sub, indented under the parent.",
+        "Names become slash paths: TestParse/space_input — rerun exactly one table case with go test -run 'TestParse/space_input'.",
+        "-run matches per slash level, each level its own regex: -run 'TestParse/space' selects only the space subtests; great for debugging a single case.",
+        "Sequential subtests run in order and share the test's state — a later subtest silently depending on an earlier one is a hidden coupling; set up independently.",
+        "t.Parallel() inside a subtest pauses it; it resumes concurrently after the parent test function returns — the t.Run call itself returns immediately.",
+        "The classic bug (pre-Go 1.22): parallel subtests capture the loop variable, so every goroutine sees the LAST row — fix by shadowing: tc := tc before t.Run.",
+        "-parallel flag caps concurrent parallel subtests (default GOMAXPROCS) — matters when tests share a database, ports, or API rate limits.",
+        "t.Fatal must run on the test's own goroutine: calling it from a spawned goroutine neither stops the test nor is well-defined — funnel results over channels, or use t.Error.",
+        "Group setup: wrap the table in an outer t.Run('group', ...), register t.Cleanup there — teardown fires only after ALL inner subtests finish.",
+        "t.Cleanup(fn) registers LIFO teardown that runs after the test and its subtests complete — even on failure or skip — perfect inside helpers.",
+        "t.Skip(reason) inside a subtest for platform/env cases ('not on windows', 'needs docker') — reported as SKIP with the reason, never a failure.",
+        "Name subtests for humans: avoid generated 'case-3' labels — spaces become underscores in the path, but a descriptive name is what you grep for later."
+      ]
+    },
+    {
+      "title": "Benchmarks: Measure, Don't Guess",
+      "points": [
+        "func BenchmarkXxx(b *testing.B) with the b.N loop — for i := 0; i < b.N; i++ — the framework grows b.N until the timing sample is stable.",
+        "Run with go test -bench=. ; benchmarks are skipped without -bench; add -run='^$' to skip unit tests; -benchmem adds allocation columns.",
+        "Reading output: BenchmarkX-8 means GOMAXPROCS 8; ns/op is total time / b.N; -benchmem adds B/op and allocs/op — allocation count is often the story.",
+        "b.ResetTimer() after expensive setup so it doesn't pollute ns/op; b.StopTimer/StartTimer excludes per-iteration work but adds overhead — restructure instead when you can.",
+        "b.ReportAllocs() enables alloc tracking for one benchmark; -benchmem turns it on for the whole run.",
+        "-benchtime=2s forces longer sampling (default 1s per benchmark); -benchtime=100x fixes exact iterations — short benchtime means noisy numbers.",
+        "b.Run('size_100', func(b *testing.B)) creates subbenchmarks with slash paths, filterable with -bench, tabled over input sizes like test tables.",
+        "Stop the optimizer: assign results to a package-level sink var (var sink T; sink = F(x)) or the compiler deletes the call and ns/op collapses to ~0.",
+        "Noise control: run -count=10 and compare with benchstat; swings under ~5% are usually noise; close apps, pin CPU frequency for A/B claims.",
+        "b.RunParallel(body) measures concurrent throughput across goroutines; pair with -cpu=1,2,4 to expose scaling limits and lock contention.",
+        "b.ReportMetric lets you emit custom units (e.g. MB/s); b.Elapsed gives measured time; b.Fatal and b.Skip work inside benchmarks too.",
+        "Benchmarks exist for decisions: change ONE thing, measure before/after with benchstat, record the machine context — don't chase nanoseconds users can't feel."
+      ]
+    },
+    {
+      "title": "Fuzzing: Coverage-Guided Testing (Go 1.18+)",
+      "points": [
+        "A fuzz target: func FuzzXxx(f *testing.F) { f.Add(seed1); f.Fuzz(func(t *testing.T, in []byte) { assert invariant }) } — the invariant must hold for ALL inputs.",
+        "Two modes: plain go test runs the seed corpus as unit tests; go test -fuzz=FuzzXxx starts mutation-based fuzzing (one target per run, workers default GOMAXPROCS).",
+        "Seeds come from f.Add(...) calls plus files under testdata/fuzz/FuzzXxx/ — committed to the repo as known-interesting inputs, run on every plain go test.",
+        "The engine is coverage-guided: inputs reaching new code are kept and mutated further — same idea as AFL/libFuzzer, built into go test, zero dependencies.",
+        "What to fuzz: parsers surviving malformed input without panic, decoders rejecting garbage, round-trip properties (decode(encode(x)) == x), sanitizers vs injection.",
+        "On a crash or failing assertion, the offending input is written to testdata/fuzz/FuzzXxx/ — it becomes a permanent regression test that runs on every go test afterwards.",
+        "Target body rules: no t.Parallel, no calling other fuzz functions, no logging to stdout; keep it fast and deterministic — same input, same behavior, always.",
+        "Fail loudly and legibly: t.Fatalf with decoded fields in the message ('len=%d val=%q') so a random-bytes repro is understandable from logs alone.",
+        "Fuzzing finds crashes, not spec conformance — it cannot know your expected output; pair it with table-driven tests for concrete input/expected pairs.",
+        "Budget it: -fuzztime=30s as a CI smoke, long open-ended local sessions before releases; each worker saturates roughly one core.",
+        "No global state in the target: time.Now, unseeded rand, or network calls break reproducibility — the saved corpus input must reproduce the failure exactly.",
+        "vs property-based testing: generators + shrinking (rapid-style) give typed random values; Go fuzzing's corpus + coverage steering IS the shrinking — failures are minimized for you."
+      ]
+    },
+    {
+      "title": "Test Helpers: t.Helper(), t.Cleanup, t.TempDir",
+      "points": [
+        "Rule: any function taking *testing.T is a test helper — call t.Helper() on line one so failures report the CALLER's file:line, not the helper's internals.",
+        "Without t.Helper(), a failing assert helper points at its own if-statement — the number-one reason hand-rolled assertion helpers feel useless.",
+        "Standard skeleton: func requireEqual(t *testing.T, got, want any) { t.Helper(); if !reflect.DeepEqual(got, want) { t.Fatalf('got %v, want %v', got, want) } }.",
+        "t.Cleanup(fn) registers teardown in LIFO order, running after the test and its subtests finish — even on failure or t.Skip — never forgotten.",
+        "defer vs t.Cleanup: defer must be written by the caller; Cleanup lets a helper encapsulate create-and-forget — newTestThing(t) that cleans up itself.",
+        "t.TempDir() returns a scratch directory removed automatically when the test ends — file-based tests and golden updates live here, cross-platform and race-free.",
+        "Setup helper pattern: newTestServer(t) starts an httptest.Server and registers Cleanup(server.Close) — callers structurally cannot forget teardown.",
+        "Respect the test deadline: t.Deadline() (Go 1.15+) returns the remaining budget — derive context.WithTimeout from it instead of hardcoded sleeps.",
+        "Helpers may t.Skip for environment problems ('docker unavailable') — always with a reason, and never for conditions CI is supposed to exercise.",
+        "Handler tests as a helper: build with httptest.NewRequest + httptest.NewRecorder, assert status/body in one call — no live listener needed.",
+        "Error assertions: errors.Is for identity, errors.As for unwrapping custom types — helpers should take the sentinel, not a substring.",
+        "Shared helpers live in _test.go files of the package or an internal/testutil package — keeping heavy imports out of every test binary's dependency graph."
+      ]
+    },
+    {
+      "title": "Golden Files: Snapshot Testing",
+      "points": [
+        "A golden file is the expected output stored as a real file (testdata/golden/*.golden); the test renders actual output and compares byte-for-byte, diffing on failure.",
+        "The -update pattern: declare flag.Bool(\"update\", false, \"update .golden files\") in the test file; go test -update rewrites goldens after an intentional change.",
+        "Updates must be deliberate: the git diff of testdata/ is the actual review artifact — regenerating goldens blindly in CI bakes regressions in as new truth.",
+        "Minimal stdlib helper: updateGolden(t, path, got) — if flag update, os.WriteFile; else os.ReadFile + compare; normalize (trim trailing space) to cut diff churn.",
+        "Layout convention: read-only fixtures in testdata/, scratch output in t.TempDir(); goldens are the only writable files, and only under -update.",
+        "Flag gotcha: the update flag registers on the shared flag set — with TestMain you must call flag.Parse() yourself or -update silently never happens.",
+        "Golden files shine for big outputs: rendered templates, generated code, CLI help text, JSON/XML dumps, error-message catalogs — anything longer than a screen.",
+        "Inline want vs golden: inline strings win for short stable values (single source of truth); goldens win when output is large or you want real diff tooling in review.",
+        "Normalize before comparing: strip timestamps, versions, absolute paths; sort lines — otherwise every run is a new 'failure'.",
+        "Determinism trap: Go map iteration order is randomized — never golden raw map output; encoding/json sorts keys, otherwise sort explicitly first.",
+        "Libraries: goldie and gotest.tools/golden give the same semantics with less boilerplate; the stdlib version is ~15 lines and dependency-free.",
+        "Pair with subtests: derive the filename from t.Name() — testdata/TestRender/case_name.golden — so every table case gets its own reviewable golden."
+      ]
+    },
+    {
+      "title": "Coverage: Measure What Your Tests Execute",
+      "points": [
+        "go test -cover prints statement coverage per package; -coverprofile=cover.out writes a profile; go tool cover -func=cover.out breaks it down per function.",
+        "go tool cover -html=cover.out opens the color-coded source view: green = executed, red = missed, grey = untracked — the fastest way to find untested branches.",
+        "Modes: -covermode=set (default: executed yes/no), count (times executed), atomic (count, safe for t.Parallel tests — required for accurate parallel counting).",
+        "Mechanics: the compiler instruments each basic block with a counter at build time — small overhead, and coverage only exists where instrumentation was compiled in.",
+        "Percentages measure statements, not behavior: a test asserting got != nil over any input covers every line while verifying nothing — coverage counts execution, not assertions.",
+        "Coverage cannot see: goroutine timing, error paths needing fault injection, recovered panics, integration edges — those require deliberate tests, not more statements.",
+        "Set a per-project target (commonly 70–90% on core logic) and track the trend; chasing 100% yields assertion-free tests and brittle mocks for mock's sake.",
+        "Table-driven tests naturally maximize coverage while verifying little — when the map is all green, review the assertions, not the colors.",
+        "go test ./... -coverprofile=cover.out aggregates a multi-package profile in one run (Go 1.10+); gate CI on threshold or per-PR delta coverage.",
+        "Statement coverage hides untaken branches: if an if-block runs once, its red side may be untested — add table rows covering both branches explicitly.",
+        "Integration coverage (Go 1.20+): build with go build -cover and run with GOCOVERDIR=./cov to collect profiles from production-like binaries, not just unit tests.",
+        "Use coverage to FIND gaps, never to DESIGN tests: red blocks prompt 'what behavior is unverified?', not 'how do I touch this line?'"
+      ]
+    },
+    {
+      "title": "Choosing the Right Tool: Comparisons & Trade-offs",
+      "points": [
+        "Table-driven vs subtests: same loop, different reporting — bare range for cheap uniform asserts; t.Run when you need per-case names, -run filtering, parallel, or cleanup.",
+        "Unit test vs benchmark vs fuzz: known input → known output; benchmark asks how fast; fuzz asks what breaks under unknown input — three different questions, none replaces another.",
+        "Example tests: func ExampleXxx with an // Output: comment is compiled AND its output verified by go test — ideal for doc-adjacent API demos, wrong for assertion-heavy logic.",
+        "Golden files vs inline assertions: inline for small stable values you read in the test; goldens for large or generated text where file diffs aid review.",
+        "Stdlib testing vs testify: stdlib keeps zero deps and explicit failures; testify cuts boilerplate (assert.Equal, require.Fatal on first failure) — many teams mix both.",
+        "t.Fatal vs t.Error decision rule: Fatal when you cannot continue meaningfully; Errorf inside table loops to collect every case failure in a single run.",
+        "t.Parallel trade-off: parallelize I/O-bound tests for wall-clock speed; keep shared-resource tests serial or -parallel-bounded — a flaky fast suite always loses to a boring green one.",
+        "Behavior vs implementation: asserting private functions couples tests to refactors; test the public API and error contracts, and use coverage to find gaps rather than to design tests.",
+        "Integration tests: gate with //go:build integration tags or testing.Short(), t.Skip with a reason when endpoints are missing so default go test ./... stays hermetic.",
+        "Fuzzing vs load testing: fuzz = correctness under malformed single inputs; load tools (k6, vegeta) = performance under concurrency; benchmarks measure your code, not your service's clients.",
+        "Complexity budget: every mechanism (subtests, goldens, fuzz targets) adds maintenance surface — add it only when its payoff (filtering, diff review, mutation reach) is concrete.",
+        "Pick by failure cost: parsers and security boundaries → fuzz first; generated/visual output → goldens; hot paths → benchmarks + benchstat; everything else → tables and subtests."
+      ]
+    },
+    {
+      "title": "Common Mistakes & The Closing Playbook",
+      "points": [
+        "Sleep-based sync (time.Sleep to 'let it finish') flakes by design — replace with channels, sync.WaitGroup, or poll-until-deadline helpers.",
+        "Asserting errors with == on strings breaks on any wrap — use errors.Is/errors.As and exported sentinel errors (var ErrNotFound = errors.New(...)).",
+        "t.Fatal from a goroutine the test spawned doesn't stop the test — FailNow must run on the test goroutine; route goroutine results back via channels, then Fatal.",
+        "Forgetting t.Helper() in assert helpers: failure lines point at helper internals and bury the actual failing case.",
+        "Parallel table tests capturing the loop variable (pre-Go 1.22): every case reports with the LAST case's data — shadow with tc := tc regardless of toolchain version.",
+        "Benchmarking with unsunk results: the compiler eliminates dead calls and ns/op looks like zero — always assign to a package-level sink.",
+        "Trusting the coverage number: 100% with weak assertions is a trophy, not a guarantee — green map + no assertions = zero behavioral verification.",
+        "Regenerating golden files blindly (running -update in CI): real regressions become the new expected output — update locally, review the testdata diff.",
+        "Non-deterministic tests: time.Now, random map order, unseeded rand, live network — inject fake clocks, sort output, seed randomness, stub dependencies.",
+        "One giant happy-path test: split per behavior — error paths, boundaries, empty inputs — as named subtests so failure messages locate the bug in seconds.",
+        "Cache confusion while debugging: a 'fix' that doesn't run is often go test's passing cache — rerun with -count=1 before doubting your edit.",
+        "The playbook: start with tables + subtests; grow helpers with t.Helper/t.Cleanup; golden the big outputs; benchmark hot paths with benchstat; fuzz every parser and trust boundary; watch coverage as a trend — ship the smallest suite that catches real regressions."
+      ]
+    }
+  ]
+}

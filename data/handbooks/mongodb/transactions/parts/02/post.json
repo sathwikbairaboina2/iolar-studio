@@ -1,0 +1,592 @@
+{
+  "brand": "iolar",
+  "template": "terminal-dark",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "MONGODB TRANSACTIONS — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Causal Consistency: Read Your Own Writes",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Cluster Time",
+          "items": [
+            "Nodes gossip `$clusterTime` on every message",
+            "It is signed, so a client cannot forge a future time",
+            "That signature is why you cannot skip replication waits"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Cheaper than a transaction",
+          "text": "Transactions are causally consistent by construction. If you only need ordering and not atomicity, a causal session costs far less — just some read latency waiting for replication."
+        },
+        {
+          "type": "heading",
+          "text": "Spanning Shards",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Since 4.2 one transaction can touch multiple shards",
+            "`mongos` coordinates the whole thing for the client",
+            "A single-shard txn skips coordination entirely"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two-Phase Commit"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "mongos",
+              "elect coordinator",
+              "send prepare",
+              "collect votes",
+              "commit or abort"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One participating shard is elected transaction coordinator",
+            "Prepared shards write a prepare oplog entry",
+            "The decision is durable in `config.transaction_coordinators`",
+            "Only then does each shard actually commit"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cost Model"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Shards",
+            "Path",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "1",
+              "no 2PC",
+              "≈ replica set txn"
+            ],
+            [
+              "2",
+              "full 2PC",
+              "prepare + decide"
+            ],
+            [
+              "N",
+              "full 2PC",
+              "grows with N"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Shard key is the lever",
+          "text": "Co-locate documents that must change together — same shard key prefix — and the transaction stays single-shard. That is the whole performance story."
+        },
+        {
+          "type": "heading",
+          "text": "Constraints"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "readConcern must be snapshot, or majority/local",
+            "`snapshot` uses a global cluster-wide timestamp",
+            "`readPreference` secondary is not allowed",
+            "A shard cannot join the transaction once commit begins"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fighting The Balancer"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A chunk migration conflicting with an in-flight txn aborts it",
+            "In-progress prepared txns block chunk migration",
+            "They also block some DDL until they resolve"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Killed mongos",
+          "text": "The coordinator finishes the job without it. The client gets UnknownTransactionCommitResult and must retry commitTransaction — not the whole transaction."
+        }
+      ]
+    },
+    {
+      "page_title": "Sharded Cluster Transactions",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.serverStatus().transactions.totalPrepared",
+            "db.serverStatus()",
+            "  .twoPhaseCommitCoordinator",
+            "// watch these before blaming the network"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Design Checklist",
+          "items": [
+            "Keep the txn on one shard where you can",
+            "Never span shards for a bulk job",
+            "Measure participating shard count, not just latency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Labels Drive Everything",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Error label",
+            "Retry what"
+          ],
+          "rows": [
+            [
+              "TransientTransactionError",
+              "whole transaction"
+            ],
+            [
+              "UnknownTransactionCommitResult",
+              "commitTransaction only"
+            ],
+            [
+              "neither label",
+              "fail, do not retry"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Transient covers write conflict, stepdown, NoSuchTransaction",
+            "It means nothing applied — safe to run from the beginning",
+            "Unknown-commit means the commit may or may not have landed"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "if (e.hasErrorLabel(",
+            "  'UnknownTransactionCommitResult')) {",
+            "  await session.commitTransaction()  // again",
+            "}  // txnNumber makes this idempotent"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Let the driver do it",
+          "text": "`withTransaction` implements both loops correctly. Hand-rolled retries almost always get the commit-unknown case wrong."
+        },
+        {
+          "type": "heading",
+          "text": "Time Limits"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Limit",
+            "Default",
+            "Bounds"
+          ],
+          "rows": [
+            [
+              "transactionLifetimeLimitSeconds",
+              "60",
+              "snapshot age"
+            ],
+            [
+              "maxCommitTimeMS",
+              "unset",
+              "the commit"
+            ],
+            [
+              "maxTimeMS",
+              "unset",
+              "one operation"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A periodic cleanup thread kills transactions past the lifetime",
+            "You get `Transaction with { txnNumber } has been aborted`",
+            "The fix is a smaller transaction, not a bigger limit"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Sharded Cluster Transactions (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Size Limits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pre-4.2 the total writes had to fit one 16 MB oplog entry",
+            "4.2+ splits the transaction into multiple oplog entries",
+            "The 16 MB cap on an individual document still stands"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Killed From Outside"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Automatic abort on primary stepdown or election",
+            "Automatic abort when the session is reaped",
+            "Manual: `killSessions`, or `killOp` on the txn's opid"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Keep The Snapshot Young",
+          "items": [
+            "No network calls between start and commit",
+            "No user input, no long computation",
+            "The snapshot ages the entire time you wait"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Idempotency detail",
+          "text": "Because the callback re-runs, generate ObjectIds OUTSIDE it. Otherwise a retry writes a different `_id` than the attempt you thought failed."
+        },
+        {
+          "type": "heading",
+          "text": "Three Rules",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Model to avoid them — embed, or accept eventual consistency",
+            "Keep them short — under 1000 docs, well under 60 seconds",
+            "Keep them narrow — fewer collections, fewer shards, fewer conflicts"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Index the filters",
+          "text": "Index every field the transaction filters on. A collection scan inside a transaction holds the snapshot open far longer than the work deserves."
+        },
+        {
+          "type": "heading",
+          "text": "Reach For These First"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "Need atomicity?",
+            "branches": [
+              {
+                "label": "one document",
+                "children": [
+                  "$inc / $push / $set",
+                  "findAndModify"
+                ]
+              },
+              {
+                "label": "across services",
+                "children": [
+                  "outbox pattern",
+                  "idempotent job queue"
+                ]
+              },
+              {
+                "label": "truly multi-doc",
+                "children": [
+                  "transaction"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Optimistic Concurrency"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const r = await c.updateOne(",
+            "  { _id, version: v },",
+            "  { $set: doc, $inc: { version: 1 } })",
+            "if (r.modifiedCount === 0) retry()  // lost race"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A version field plus a filter — no snapshot held open",
+            "Zero `modifiedCount` means someone else won the race",
+            "Cheapest fix when only one document has to change"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Errors, Retries, and Limits",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Outbox Pattern"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "await orders.insertOne(o, { session })",
+            "await outbox.insertOne(evt, { session })",
+            "// worker drains outbox, publishes later"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "State change and its event land in one write scope",
+            "A worker republishes until the consumer acknowledges",
+            "Delivery becomes at-least-once, so consumers stay idempotent"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Choosing The Tool"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Reach for"
+          ],
+          "rows": [
+            [
+              "one document",
+              "$inc / $set"
+            ],
+            [
+              "read-modify-write",
+              "findAndModify"
+            ],
+            [
+              "lost-update risk",
+              "version filter"
+            ],
+            [
+              "cross-service",
+              "outbox"
+            ],
+            [
+              "truly multi-doc",
+              "transaction"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Avoid the hot document",
+          "text": "One global stats document updated by every order serializes the whole system. Shard the counter across buckets, or aggregate it offline."
+        },
+        {
+          "type": "heading",
+          "text": "Five Common Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Missing `{ session }` on one op — it commits and never rolls back",
+            "Hand-rolled retry replaying a commit-unknown error twice",
+            "Implicit collection creation inside a txn on pre-4.4 servers",
+            "Skipping `endSession`, exhausting the server session pool",
+            "Assuming serializability — it is snapshot, so write skew bites"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two More Traps"
+        }
+      ]
+    },
+    {
+      "page_title": "Performance, Patterns, and Pitfalls",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`count()` inside a txn errors — use `countDocuments()`",
+            "`readPreference` secondary is rejected inside a transaction",
+            "Write concern set per-operation inside a txn is an error"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What To Watch"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "Tells you"
+          ],
+          "rows": [
+            [
+              "currentActive",
+              "in-flight work"
+            ],
+            [
+              "currentInactive",
+              "idle open snapshots"
+            ],
+            [
+              "totalAborted",
+              "conflict pressure"
+            ],
+            [
+              "WT cache pressure",
+              "long-lived snapshots"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sizing Guidance"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Knob",
+            "Practical cap"
+          ],
+          "rows": [
+            [
+              "documents",
+              "under 1000"
+            ],
+            [
+              "duration",
+              "well under 60s"
+            ],
+            [
+              "collections",
+              "as few as possible"
+            ],
+            [
+              "shards",
+              "one where possible"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Shape That Works"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "await session.withTransaction(async () => {",
+            "  await a.updateOne(q, u, { session })",
+            "  await b.insertOne(doc, { session })",
+            "}, { readConcern, writeConcern })"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Read the label, not the message",
+          "text": "Branch on the error label before anything else. It alone tells you whether to replay the whole transaction or only retry the commit."
+        },
+        {
+          "type": "qa",
+          "q": "What does a transaction actually cost?",
+          "a_bullets": [
+            "Single-shard: about a normal write plus one commit round-trip",
+            "Multi-shard: that, multiplied by prepare and decide phases",
+            "Contention cost dwarfs both once a hot document appears"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Escape Hatch, Not Default"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "If most operations need a txn, the schema is relational-shaped",
+            "Embedding related data makes atomicity free",
+            "Document-level atomicity already covers roughly 90% of cases"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Closing Checklist",
+          "items": [
+            "Session passed to every single operation",
+            "`withTransaction` used, callback idempotent",
+            "readConcern and writeConcern chosen deliberately",
+            "Transaction short, narrow, hot documents avoided"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of MONGODB TRANSACTIONS. MongoDB gives you atomicity for free inside one document — the moment you need two, you inherit sessions, snapshots, write conflicts and a two-phase commit. This handbook is the whole path: the core API, read and write concern, why snapshot isolation still lets write skew through, what changes on a sharded cluster, and the two error labels that decide whether you retry the transaction or just the commit. Save it for the day a transfer has to land on both sides.",
+    "hashtags": [
+      "#mongodb",
+      "#nosql",
+      "#databases",
+      "#acid",
+      "#transactions",
+      "#backenddev",
+      "#distributedsystems",
+      "#systemdesign",
+      "#softwareengineering",
+      "#devnotes",
+      "#codingnotes",
+      "#techhandbook"
+    ]
+  }
+}

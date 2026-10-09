@@ -1,0 +1,174 @@
+{
+  "title": "systemd Field Notes: Units, Targets, Timers & Journal",
+  "summary": "A dense 10-page study series on systemd: writing and wiring unit files, targets and dependency graphs, service types and restart policy, timers, journalctl querying, drop-in overrides, and a practical method for troubleshooting failed services.",
+  "chapters": [
+    {
+      "title": "systemd 101: PID 1, Units & systemctl",
+      "points": [
+        "systemd is PID 1: the init system that starts, supervises and stops every user-space process, in parallel, tracking them with Linux cgroups.",
+        "A unit is any resource systemd manages; the suffix names the type: .service, .timer, .mount, .socket, .path, .target.",
+        "systemctl is the control plane: start, stop, restart, reload, status, enable, disable.",
+        "start vs enable: start runs the unit now (runtime only); enable creates a boot-time symlink; enable --now does both.",
+        "Unit search path: /etc/systemd/system (admin) beats /run/systemd/system (runtime) beats /usr/lib/systemd/system (packages).",
+        "systemctl cat foo.service prints the effective unit plus every drop-in that applies to it.",
+        "After editing or masking, daemon-reload makes PID 1 re-read unit files; systemd v253+ detects changes itself, but the habit keeps older hosts sane.",
+        "list-units shows loaded/active units; list-unit-files shows what is installed on disk and whether it is enabled.",
+        "systemctl status shows load/active/sub state, main PID, cgroup members and the unit's last journal lines in one screen.",
+        "Script-friendly probes: is-active and is-enabled return clean exit codes for shell checks.",
+        "systemd kept SysV compatibility: it can run legacy init scripts, but native units are the goal."
+      ]
+    },
+    {
+      "title": "Anatomy of a Unit File",
+      "points": [
+        "[Unit] holds metadata + relationships: Description=, Documentation=, Wants=, After= — common to every unit type.",
+        "The type section ([Service], [Timer], [Socket]…) carries the real work: ExecStart=, OnCalendar=, ListenStream=.",
+        "[Install] is only read by enable/disable: WantedBy=multi-user.target decides which target's wants/ directory gets the symlink.",
+        "Sections and keys are case-sensitive; assigning an empty value (Key=) resets that key to its default.",
+        "Exec lines are argv lists: quote args containing spaces, continue lines with a trailing backslash, # starts a comment.",
+        "% specifiers: %i instance name, %n unit name, %h user home, %t runtime dir — sshd@web1 gives %i=web1.",
+        "Template units end in @: sshd@.service spawns instances sshd@foo.service, sshd@bar.service, each with its own %i.",
+        "Environment=FOO=bar sets vars inline; EnvironmentFile=/etc/app/env loads KEY=value lines; $FOO expands inside ExecStart.",
+        "Time values accept suffixes: 90, 90s, 5min 30s — a bare number means seconds.",
+        "Booleans are 1/yes/true/on; commas separate items in most list-typed settings.",
+        "systemd-analyze verify foo.service parses the file and flags unknown keys, bad paths and ordering cycles before anything runs.",
+        "Misplaced keys are ignored with a warning: Restart= under [Unit] silently does nothing — every key belongs to one section."
+      ]
+    },
+    {
+      "title": "Targets: Boot Goals & Runlevels",
+      "points": [
+        "A target is a synchronization point: a unit with no ExecStart that groups other units — systemd's replacement for runlevels.",
+        "Boot converges on default.target; get-default / set-default manage the /etc/systemd/system/default.target symlink.",
+        "multi-user.target = full text-mode system; graphical.target adds the display manager through a Wants= dependency.",
+        "Runlevel mapping for old habits: 3 → multi-user.target, 5 → graphical.target, 1/S → rescue.target.",
+        "systemctl isolate foo.target switches the running system now; the target must set AllowIsolate=yes.",
+        "Isolation stops everything the new target doesn't want; IgnoreOnIsolate=yes opts a unit out of being killed.",
+        "rescue.target: single-user shell with local filesystems mounted; emergency.target: minimal read-only root, for /etc/fstab damage.",
+        "Enable-on-boot works via target.wants directories: /etc/systemd/system/multi-user.target.wants/nginx.service → the real unit file.",
+        "Default target behavior: every Wants=/Requires= a target lists gains an implicit After=, so members are up before the target counts as reached.",
+        "Build your own: app-stack.target with Wants=api.service db.service and After=network-online.target groups a whole deployment.",
+        "systemd-analyze blame and critical-chain rank boot time per unit — the fastest way to find slow starters.",
+        "Recovery drill: append systemd.unit=rescue.target to the kernel command line when a normal boot fails."
+      ]
+    },
+    {
+      "title": "Dependencies & Ordering",
+      "points": [
+        "Wants= is the default glue: pulls the unit in and keeps going if it fails — the weak dependency.",
+        "Requires= makes it hard: if the dependency is stopped or fails, this unit stops too; add After= so a failed dependency also blocks start-up.",
+        "Ordering ≠ dependency: After=/Before= only sequence start order and pull nothing in — always pair them with Wants=/Requires=.",
+        "BindsTo= (+ After=): lifetime binding — when the bound unit stops or crashes, this unit stops immediately.",
+        "PartOf=: propagate stop/restart only — restarting the parent restarts the child; ideal for reload groups.",
+        "Requisite=: never starts the dependency; fails instantly if it is not already active.",
+        "Conflicts=: negative dependency — starting one stops the other; the relation is symmetric.",
+        "Skip file edits: drop symlinks into /etc/systemd/system/foo.service.wants/ to add Wants= without touching the unit.",
+        "DefaultDependencies= adds implicit scaffolding (After=basic.target, Conflicts=shutdown.target); only disable it for very early boot units.",
+        "Condition*= gates without dependency semantics: ConditionPathExists=/etc/app false skips the unit quietly — skipped, not failed.",
+        "Shutdown mirrors startup: a unit with After=foo stops before foo when both shut down together.",
+        "One directive can list many: Wants=a.service b.service — rule of thumb: Wants= for launch, After= for order, BindsTo= for lifetime."
+      ]
+    },
+    {
+      "title": "Service Types, Restarts & Exec Lifecycle",
+      "points": [
+        "Type=simple (default): the unit counts as started the moment ExecStart launches — no readiness check.",
+        "Type=exec: same, but 'started' only after execve() succeeds — catches 'binary not found' instead of hanging.",
+        "Type=forking: classic double-forking daemons; set PIDFile= so systemd knows the real main PID — prefer converting to simple/notify.",
+        "Type=notify: the daemon calls sd_notify('READY=1'); start-up completes only then — the modern standard.",
+        "Type=oneshot: run-to-completion scripts; restart semantics are restricted — schedule reruns with a timer, and RemainAfterExit=yes to stay 'active' after exit.",
+        "Lifecycle hooks: ExecStartPre=, ExecStartPost=, ExecStop=, ExecStopPost=; prefix '-' to ignore failure, '+' to run with full privileges.",
+        "Restart=on-failure covers crashes and non-zero exits; Restart=also restarts clean exits (always); RestartSec= adds delay between tries.",
+        "Rate limiting: StartLimitIntervalSec= + StartLimitBurst= stop crash loops — 'start request repeated too quickly' means you hit it.",
+        "TimeoutStartSec=/TimeoutStopSec= bound each phase (default 90s); WatchdogSec= makes notify services prove liveness.",
+        "Stopping is cgroup-wide: KillMode=control-group (default) SIGTERMs every process the service spawned; process kills only the main PID.",
+        "Basics that matter: User=/Group= (avoid root), WorkingDirectory=, EnvironmentFile=.",
+        "Hardening starters: NoNewPrivileges=yes, ProtectSystem=strict, PrivateTmp=yes, ProtectHome=yes — ship sandboxing with the unit."
+      ]
+    },
+    {
+      "title": "Timers: systemd's cron Replacement",
+      "points": [
+        "A timer fires its matching .service (same basename): backup.timer → backup.service; Unit= overrides the pairing.",
+        "Enable the timer, not the service — timer-paired services usually carry no [Install] section at all.",
+        "OnCalendar= uses wall-clock events: 'Sun *-*-* 03:00:00' or 'Mon..Fri 09:00'; systemd-analyze calendar 'expr' validates and previews runs.",
+        "Compact syntax: '*:0/15' = every 15 minutes; 'daily' and 'weekly' are built-in shortcuts; expressions are DST-aware.",
+        "Monotonic timers key off events: OnBootSec=10min, OnUnitActiveSec=1h, OnUnitInactiveSec= — immune to clock changes.",
+        "Persistent=yes replays missed OnCalendar runs after downtime (anacron behavior); monotonic timers cannot be persistent.",
+        "AccuracySec= (default 1min) lets systemd coalesce wakeups; RandomizedDelaySec= spreads fleet load — set both deliberately.",
+        "Timer logs live in the journal: journalctl -u backup.timer -u backup.service replaces cron's mail; add OnFailure=alert@%n.service for a push.",
+        "Timers vs cron: timers get structured logs, dependencies (After=network-online.target), cgroup tracking and persistence; cron wins only on tiny syntax and ubiquity.",
+        "systemctl list-timers --all shows NEXT, LEFT, LAST, PASSED and which unit each timer activates.",
+        "WakeSystem=true can wake suspended machines (needs ACPI support) — calendar alarms for laptops and servers.",
+        "Classic bug: the weekly job silently skips closed weekends during downtime — no Persistent=yes, no replay."
+      ]
+    },
+    {
+      "title": "journalctl: Querying the Journal",
+      "points": [
+        "The journal is a structured, indexed binary log from systemd-journald — status output embeds a unit's last log lines for free.",
+        "Filter by unit: journalctl -u nginx.service; repeat -u for several units; append -b to scope to the current boot.",
+        "Navigation: -f follows live, -n 100 shows the last N lines, -e jumps to the end.",
+        "Boots: -b -1 = previous boot; --list-boots indexes every recorded boot with offsets.",
+        "Priority: -p err filters syslog severities; ranges like -p warning..alert cut noise precisely.",
+        "Time windows: --since '2024-06-01 09:00' --until '1 hour ago' accepts dates, 'yesterday', 'now-30min'.",
+        "Persistence is opt-in on some distros: mkdir /var/log/journal (or Storage=persistent in journald.conf) or logs vanish at reboot.",
+        "Output modes: -o json / json-pretty for tooling, -o verbose to see trusted fields _PID, _SYSTEMD_UNIT, _COMM, MESSAGE.",
+        "Field filters beat grep: journalctl _SYSTEMD_UNIT=foo.service _COMM=cron queries indexed fields directly and fast.",
+        "Disk control: journalctl --disk-usage; cap with SystemMaxUse=1G in /etc/systemd/journald.conf; --vacuum-size=500M trims right now.",
+        "Kernel messages: -k equals dmesg routed through the journal — one tool for everything.",
+        "journald ≠ syslog: ForwardToSyslog=yes keeps rsyslog text files flowing alongside the binary journal."
+      ]
+    },
+    {
+      "title": "Override Drop-ins & systemctl edit",
+      "points": [
+        "systemctl edit foo.service opens an editor on /etc/systemd/system/foo.service.d/override.conf — the drop-in that survives package upgrades.",
+        "Merge order: every *.conf in foo.service.d/ applies alphabetically over the vendor file; /etc beats /run beats /usr/lib.",
+        "List-valued keys append, they don't replace: a second ExecStart= in a drop-in is a load error unless Type=oneshot.",
+        "The clear-then-set idiom: first a bare 'ExecStart=' line empties the list, then the new 'ExecStart=/usr/bin/…' line sets it.",
+        "Drop-ins must still use section headers — [Service], [Unit] — directives outside a section are ignored.",
+        "systemctl cat foo.service shows the vendor file with every drop-in inlined in order — the first step of any override debug.",
+        "systemctl revert foo.service deletes your drop-ins and restores the packaged unit in one move.",
+        "systemctl mask foo.service symlinks the name to /dev/null: nothing — manual, boot or dependency — can start it; unmask reverses.",
+        "Drop-ins are the only clean way to customize generated units (/run/systemd/generator), e.g. fstab-derived mounts.",
+        "Template-wide tuning: sshd@.service.d/override.conf hits every instance; an instance drop-in sshd@web1.service.d wins last.",
+        "Typical overrides: bump LimitNOFILE=, inject Environment=, set Restart=on-failure, layer hardening like ProtectHome=yes.",
+        "After editing: daemon-reload before restart — v253+ warns or auto-reloads, but older hosts run stale config silently."
+      ]
+    },
+    {
+      "title": "Troubleshooting Failed Units",
+      "points": [
+        "Start here: systemctl --failed lists every failed unit; systemctl status foo.service names the culprit process and exit code.",
+        "Exit code 203/EXEC = binary or interpreter path wrong — typo, missing shebang, or a denied executable; the most common dead-on-arrival.",
+        "The status result line decodes the death: exit-code vs signal, oom-kill, timeout, or start-limit-hit.",
+        "Follow with journalctl -u foo.service -b --no-pager — the service's stderr lands here even with no log file configured.",
+        "Segfaults: coredumpctl list and coredumpctl info give backtraces without touching core_pattern.",
+        "'Start request repeated too quickly' = StartLimitBurst hit: systemctl reset-failed clears it — but fix the crash before restarting.",
+        "'Unit is masked' or a masked dependency: check is-enabled — an old mask from months ago still wins over config.",
+        "Hung startup ending in TimeoutStartSec: a forking daemon without PIDFile= is the usual suspect.",
+        "Silent skip ≠ failure: Condition*= evaluated false logs 'condition failed' and leaves the unit inactive by design.",
+        "Dependency diagnosis: systemctl list-dependencies foo (add --after on newer systemd) shows who it waits for; systemd-analyze verify catches cycles.",
+        "'Active' but broken: check Main PID and cgroup in status — a wrapper that forked and exited means the wrong Type=.",
+        "EPERM/EACCES right after adding sandboxing? ProtectSystem/PrivateTmp blocked a write path — add ReadWritePaths= exceptions."
+      ]
+    },
+    {
+      "title": "Trade-offs, Classic Mistakes & Cheat Sheet",
+      "points": [
+        "vs SysV init: cgroup-tracked processes (no escaped PIDs), parallel startup, explicit per-unit dependencies — why units replaced scripts.",
+        "Timers vs cron verdict: prefer timers on systemd hosts for logs, persistence and dependencies; keep cron for portability.",
+        "Trade-off: drop-ins add indirection — but they beat forked vendor units: package upgrades never overwrite /etc overrides.",
+        "Trade-off: Restart=always hides crashes from humans — pair aggressive restarts with OnFailure= alerts or you get silent flapping.",
+        "Trade-off: the journal is indexed and fast but binary — without /var/log/journal or syslog forwarding, grep-and-tail workflows break.",
+        "Trade-off: Requires= chains turn one failure into an outage — default to Wants= and reserve hard deps for true correctness needs.",
+        "Classic mistake: editing /usr/lib/systemd/system directly — package updates overwrite it; use drop-ins or copies in /etc.",
+        "Classic mistake: changing a unit and restarting without daemon-reload — you just tested the old configuration.",
+        "Classic mistake: After= alone and wondering why the dependency never starts — ordering never pulls anything in.",
+        "Debug loop to memorize: status → journalctl -u → systemd-analyze verify → systemctl cat → edit → daemon-reload → restart.",
+        "Ship-it checklist: Description= set, honest Type=, deliberate Restart=, sandbox keys on, timer Persistent=yes, overrides as drop-ins."
+      ]
+    }
+  ]
+}

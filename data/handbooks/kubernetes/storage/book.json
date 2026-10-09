@@ -1,0 +1,176 @@
+{
+  "title": "Kubernetes Storage: The Dense Notes Edition",
+  "summary": "A 10-page study-notes carousel covering PVs, PVCs, StorageClasses, access modes, StatefulSet volume templates, and dynamic provisioning — from fundamentals to internals, gotchas, and a final cheat-sheet recap.",
+  "chapters": [
+    {
+      "title": "Why Kubernetes Storage Is Hard",
+      "points": [
+        "Containers are ephemeral: a restarted Pod loses its writable layer — you need storage that outlives Pods",
+        "The problem: Pods are scheduled to any node, but disks live on specific hosts — decoupling is required",
+        "Kubernetes answer: a storage API — PersistentVolumes, Claims, and StorageClasses — separate 'what storage' from 'who uses it'",
+        "Three roles: cluster admin provisions PVs; developer claims with PVC; StorageClass automates it all",
+        "Storage is also a state problem: databases, queues, and message brokers need identity + disk together",
+        "Analogy: PV = the power outlet in the wall, PVC = your plug, StorageClass = the electrician who installs outlets on demand",
+        "The four actors this series covers: PV, PVC, StorageClass, and volumeClaimTemplates",
+        "Prerequisite check: you should know Pods, Deployments, and YAML basics",
+        "What you'll be able to do after: size a claim, pick an access mode, read Reclaim policies, and run a StatefulSet with real disks",
+        "Rule of thumb to keep in mind: Pods die, data must not — design storage for the data's lifetime, not the Pod's"
+      ]
+    },
+    {
+      "title": "PersistentVolumes: The Cluster's Disk Pool",
+      "points": [
+        "PV = a piece of cluster storage (disk, NFS, cloud volume) as an API object, lifecycle independent of any Pod",
+        "PV is a cluster-scoped resource — it lives outside any namespace",
+        "Key spec fields: capacity.storage, accessModes, storageClassName, and the actual volume source (hostPath, nfs, csi, awsElasticBlockStore...)",
+        "Static provisioning: admin hand-creates a PV manifest pointing at pre-existing storage",
+        "hostPath example works for single-node test clusters but is a production anti-pattern — data is node-bound",
+        "csi volume source: modern way to reference an external CSI driver's volume handle",
+        "Reclaim policies: Retain (keep data + PV after claim deletion), Delete (wipe volume), Recycle (deprecated scrub-and-reuse)",
+        "Check policy with: kubectl get pv — column RECLAIM POLICY; patch with kubectl patch pv <name> -p '{\"spec\":{\"persistentVolumeReclaimPolicy\":\"Delete\"}}'",
+        "PV phases: Available → Bound → Released → (Failed); a Released Retained PV needs manual deletion + recreation to be reused",
+        "Gotcha: local-path/hostPath PVs survive Pod deletion by accident and quietly eat disk — audit them",
+        "Pre-bound PV trick: set claimRef to a PVC name to reserve a specific disk for a specific claim",
+        "Mental model: PVs are supply; without claims they just sit Available"
+      ]
+    },
+    {
+      "title": "PersistentVolumeClaims: The Developer's Request",
+      "points": [
+        "PVC = a namespaced request for storage: how much, what access mode, which StorageClass",
+        "Binding: controller finds a PV matching size ≥ request, access modes ⊇ request, class, and labels/selector",
+        "Binding is 1:1 — one PV serves exactly one PVC; two claims can never share a volume",
+        "PVC phases: Pending (no match yet) → Bound; verify with kubectl get pvc",
+        "Selectors: matchLabels/matchExpressions on a PVC filter candidate PVs by their labels",
+        "Once bound, the claimRef sticks: changing size/class/selector won't rebind to a different PV",
+        "Resize: expand spec.resources.requests.storage on the PVC (AllowVolumeExpansion=true on the StorageClass); filesystem grows online for most CSI drivers",
+        "Shrinking is not supported — over-request or plan migrations",
+        "volumeMode: Filesystem (default, mounts a fs) vs Block (raw device at /dev/...)",
+        "Troubleshooting Pending claims: kubectl describe pvc shows events — usually 'no matching PV' (size/mode/class mismatch)",
+        "Pod uses a claim via volumes: [{name: data, persistentVolumeClaim: {claimName: my-pvc}}] then mounts it at a containerPath",
+        "Deleting a Pod keeps the PVC; deleting the PVC triggers the PV's reclaim policy"
+      ]
+    },
+    {
+      "title": "Access Modes Explained",
+      "points": [
+        "RWO = ReadWriteOnce: volume mountable read-write by a single node at a time",
+        "ROX = ReadOnlyMany: many nodes, read-only — good for shared assets, models, static sites",
+        "RWX = ReadWriteMany: many nodes, read-write — needs a shared filesystem (NFS, CephFS, EFS, Azure Files)",
+        "RWOP = ReadWriteOncePod (1.29 GA): single Pod only, stricter than RWO",
+        "Key subtlety: access modes are about NODES, not Pods — 10 Pods on one node can share an RWO volume",
+        "Access mode is a capability of the storage backend, not a permission knob you can wish into existence",
+        "Block storage (EBS, PD, Azure Disk) = RWO only; filesystem storage (NFS, CephFS) = RWX capable",
+        "Requesting multiple modes means the PV must support ALL of them simultaneously",
+        "Common error: two Deployments replicas on different nodes mount the same RWO PVC → Multi-Attach error, second Pod stuck ContainerCreating",
+        "Multi-attach errors surface in events: 'Multi-Attach error for volume ... Volume is already used by pod(s)'",
+        "Access modes in the PV spec list what it CAN do; in the PVC spec, what you NEED",
+        "Rule: replicas > 1 on distinct nodes with shared writable data ⇒ RWX, or rethink architecture"
+      ]
+    },
+    {
+      "title": "StorageClasses & Dynamic Provisioning",
+      "points": [
+        "StorageClass = a template telling the cluster HOW to create volumes: provisioner (CSI driver) + parameters",
+        "Dynamic provisioning: PVC with storageClassName triggers the class's provisioner to create a real volume on demand — no admin pre-made PVs",
+        "Default class: annotation storageclass.kubernetes.io/is-default-class=\"true\" — a PVC with no class uses it; with none set and no name given, PVC stays Pending",
+        "Example SC params: type: gp3, iops, encrypted, allowVolumeExpansion: true, reclaimPolicy: Delete",
+        "reclaimPolicy on the SC (Delete or Retain) applies to dynamically provisioned PVs — Retain survives claim deletion",
+        "volumeBindingMode: Immediate binds at PVC creation; WaitForFirstConsumer waits for a Pod to schedule, so the disk lands in the right zone",
+        "WaitForFirstConsumer is the multi-zone gotcha fix — prevents EBS us-east-1a volume + Pod scheduled to us-east-1b",
+        "Parameters are driver-specific: what's valid for EBS CSI is meaningless for NFS — read your driver's docs",
+        "kubectl get sc to list; set a PVC's class explicitly in production — implicit defaults cause surprises",
+        "Deleting a StorageClass doesn't delete provisioned volumes, but new claims can't reference it",
+        "Cost angle: class choice = performance/cost tier (gp2 vs gp3 vs io2) — expose classes as your platform's 'SKU names'",
+        "Flow recap: PVC → StorageClass → CSI provisioner → cloud volume → PV → bind"
+      ]
+    },
+    {
+      "title": "Inside the Machinery: Controllers & CSI",
+      "points": [
+        "PersistentVolume controller (kube-controller-manager) watches PVCs, runs the matching/binding loop, updates phases",
+        "AttachDetachController handles the node-level attach/detach of volumes; kubelet then mounts into the container",
+        "Three distinct steps: PROVISION (create disk) → ATTACH (to node) → MOUNT (into Pod); failures differ per step",
+        "CSI = Container Storage Interface: a gRPC standard so vendors ship storage drivers as Pods, no kube recompile",
+        "CSI sidecars: external-provisioner (watches PVCs, calls CreateVolume), external-attacher, node-driver-registrar",
+        "Driver deployment: Controller plugin (Deployment, cloud API calls) + Node plugin (DaemonSet, node-level mount ops)",
+        "Volume lifecycle via CSI verbs: CreateVolume, ControllerPublishVolume (attach), NodeStageVolume/NodePublishVolume (mount), and the reverse for teardown",
+        "Kubernetes 1.31+ supports DRA (Dynamic Resource Allocation) as the long-term successor to in-tree volume scheduling logic",
+        "In-tree volume plugins (awsElasticBlockStore etc.) are deprecated — always prefer CSI drivers",
+        "volumeName in a bound PVC and claimRef in a PV record the binding; CSI PVs carry a driver + volumeHandle",
+        "Debug order for a stuck Pod: describe pod (events) → describe pvc → get pv → CSI driver pod logs → node kubelet logs",
+        "Snapshot support: VolumeSnapshot / VolumeSnapshotContent CRDs + SnapshotClass via the snapshot-controller and CSI driver"
+      ]
+    },
+    {
+      "title": "StatefulSets & volumeClaimTemplates",
+      "points": [
+        "StatefulSet = workload controller for stable identity + stable storage: ordered names (db-0, db-1), stable network IDs, ordered rollout",
+        "volumeClaimTemplates: each replica gets its OWN PVC auto-created from the template — no shared-disk chaos",
+        "Naming scheme: claim <template-name>-<statefulset-name>-<ordinal>, e.g. data-db-0 — pods and claims map 1:1",
+        "Deleting a StatefulSet does NOT delete its PVCs (or Pods, by default) — orphans are a real cost trap",
+        "Pod db-0 is always re-scheduled with claim data-db-0: identity-to-disk stickiness is the whole point",
+        "Scaling down keeps the claims — scale back up and the replica reuses its old data (and old zombie data if you weren't careful)",
+        "Each claim needs a StorageClass + access mode — typically RWO block storage, one volume per replica",
+        "Replication happens at the APP layer (Postgres streaming, Kafka ISR, etcd raft) — Kubernetes gives disks, not data sync",
+        "Update strategies: RollingUpdate (default, reverse ordinal order) vs OnDelete; partition: N for canary rollouts",
+        "podManagementPolicy: OrderedReady (default) vs Parallel (faster boot for peer-discovery systems like Cassandra)",
+        "PersistentVolumeClaimRetentionPolicy (1.32 GA): whenDeleted/whenScaled: Retain or Delete — automate claim cleanup",
+        "Anti-pattern: a Deployment with replicas>1 mounting one RWO PVC — crashes loop; use a StatefulSet or RWX",
+        "Quick check: kubectl get pvc -l app=mydb to see every replica's disk at a glance"
+      ]
+    },
+    {
+      "title": "Comparisons & Choosing Storage",
+      "points": [
+        "PV vs PVC: PV = supply/implementation (cluster-scoped), PVC = demand/request (namespaced) — developer never touches PVs",
+        "Static vs dynamic provisioning: static = admin-controlled, good for pre-existing NFS/san; dynamic = default choice, zero ticket-wait",
+        "StorageClass vs direct PV: class is a reusable SKU; hand-written PVs are one-off snowflakes that rot",
+        "RWO vs RWX decision: single-writer per node → RWO (cheaper, faster block); many-node shared writes → RWX (NFS-class, slower, often no snapshot/resize guarantees)",
+        "Deployment vs StatefulSet: stateless → Deployment; per-replica disk + stable identity → StatefulSet",
+        "emptyDir vs PV: emptyDir dies with the Pod (scratch space, /tmp, sort buffers); PV outlives it",
+        "emptyDir medium: Memory — RAM-backed tmpfs; great for fast scratch, counts against container memory limit",
+        "ConfigMap/Secret volumes vs PVC: config injection, not durable data — different tools for different jobs",
+        "local PVs (node-attached NVMe) vs network volumes: local = latency win but node-pinned scheduling; network = portable, zone-flexible",
+        "File vs Block volumeMode: databases and Kafka often prefer raw Block (skip filesystem overhead); Filesystem is the default for everything else",
+        "Snapshot vs backup: snapshots are crash-consistent, storage-level, fast; backups (Velero) are app-consistent, portable, off-cluster",
+        "Pick order: 1) access pattern, 2) durability/HA needs, 3) performance tier, 4) cost — in that order"
+      ]
+    },
+    {
+      "title": "Gotchas, Mistakes & Field Notes",
+      "points": [
+        "PVC Pending forever: 90% of the time it's size too big, access mode unsupported, or wrong/missing StorageClass — read describe pvc events first",
+        "Topology/zone mismatch: 'volume node affinity conflict' — volume is in zone A, node in zone B; fix with WaitForFirstConsumer",
+        "Multi-Attach errors on scale-up: RWO + replicas>1 across nodes; fix with StatefulSet per-replica claims or RWX",
+        "Reclaim policy surprise: default Delete silently destroyed the database volume after someone deleted a PVC — set Retain on important classes",
+        "Retained PVs pile up as Released — schedule a cleanup, they still cost money in the cloud account",
+        "Forgetting volumeMounts: PVC declared in volumes: but never mounted = paid-for unused disk",
+        "Resizing done wrong: expansion only grows, needs allowVolumeExpansion, and some drivers require the Pod to restart to see new size",
+        "hostPath in production: node-bound, security risk (host escalation), and no scheduling awareness — reserve it for kind/k3s labs",
+        "Assuming snapshots = backups: snapshots live in the same zone/account; a region outage or a bad deletion hits both",
+        "StatefulSet leftovers: scale down retains PVCs and (with default retention) old replicas reappear with stale data on scale-up — decide deliberately",
+        "Permission mismatches: container runs as non-root but volume owned by root — use fsGroup/securityContext or initContainer chown",
+        "No resource hygiene: no default SC, no quotas (ResourceQuota on requests.storage), no monitoring → runaway disk spend",
+        "Health: add volume metrics (kubelet volume stats, CSI metrics) and alert on capacity before the disk-full 500s do it for you"
+      ]
+    },
+    {
+      "title": "The One-Page Recap",
+      "points": [
+        "Core flow: PVC (request, namespaced) → matches PV (supply) directly, or via StorageClass → dynamic provision → bind → Pod mounts",
+        "PV facts: cluster-scoped, Available→Bound→Released, reclaim policy Retain/Delete decides data fate",
+        "PVC facts: 1:1 binding, resize-only-grow, describe pvc for Pending diagnosis",
+        "Access modes: RWO (1 node), ROX (many, read), RWX (many, write), RWOP (1 pod) — counted per NODE, dictated by the backend",
+        "StorageClass: provisioner + parameters + reclaimPolicy + volumeBindingMode; WaitForFirstConsumer fixes zone mismatch; one class = default",
+        "Dynamic provisioning: PVC triggers CSI external-provisioner → cloud volume → PV; in-tree drivers are legacy",
+        "Internals: provision (controller) → attach (node) → mount (kubelet); debug in that order",
+        "StatefulSets: volumeClaimTemplates give replica-ordered PVCs (data-app-N); app-level replication; retention policy for claims",
+        "Golden defaults: dynamic provisioning + RWO block storage + WaitForFirstConsumer + Retain for anything precious",
+        "Golden workflow: describe pvc → get pv → get sc → CSI driver logs → kubelet logs",
+        "Cost guardrails: default StorageClass, quotas, claim retention policy, snapshot+backup strategy, capacity alerts",
+        "Final exam question: 'Pod stuck ContainerCreating, event = Multi-Attach' — answer: RWO volume, two nodes; use per-replica claims in a StatefulSet or RWX"
+      ]
+    }
+  ]
+}

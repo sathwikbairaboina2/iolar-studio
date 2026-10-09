@@ -1,0 +1,203 @@
+{
+  "title": "Kafka Consumer Groups: Rebalancing, Assignment, Offsets & the Poll Loop",
+  "summary": "A field guide to how Kafka consumer groups divide partitions, coordinate through rebalances, track offsets, and survive the poll loop's timeout rules. Covers assignment strategies, static membership, incremental cooperative rebalancing, commit semantics, and the failure modes that cause duplicate or lost messages.",
+  "chapters": [
+    {
+      "title": "1. Why Consumer Groups Exist",
+      "points": [
+        "Definition: a consumer group is a set of consumers sharing one `group.id` that cooperatively consume a topic's partitions",
+        "Core invariant: within a group, each partition is assigned to exactly one consumer at a time — never two",
+        "A consumer may own many partitions; a partition never has two owners in the same group",
+        "Parallelism ceiling: max useful consumers in a group = number of partitions; extras sit idle with zero assignment",
+        "Adding partitions raises the ceiling, but partitions can never be removed from a topic",
+        "Different groups reading the same topic each get a full independent copy of the stream (pub/sub fan-out)",
+        "Same group = queue semantics (work split); different groups = topic semantics (work duplicated)",
+        "`group.id` is the identity: change it and the consumer is a brand-new group with no committed offsets",
+        "Ordering guarantee is per-partition only — no total order across a topic",
+        "Keyed messages hash to a fixed partition, so all events for one key stay ordered under one consumer",
+        "The group coordinator is a broker that owns the group's partition of `__consumer_offsets`, chosen by `hash(group.id) % partitions`",
+        "Group states: Empty, PreparingRebalance, CompletingRebalance, Stable, Dead",
+        "`kafka-consumer-groups.sh --describe --group orders` shows members, assignment, current offset, log-end offset, and lag",
+        "Consumer lag = log-end offset − committed offset; the single most important consumer health metric",
+        "Common mistake: scaling consumers past partition count and expecting more throughput"
+      ]
+    },
+    {
+      "title": "2. Group Membership: Join, Sync, Heartbeat",
+      "points": [
+        "FindCoordinator: consumer first asks any broker which broker owns its group",
+        "JoinGroup: every member sends its supported assignment strategies and subscription; coordinator picks one member as group leader",
+        "The leader (a consumer, not a broker) computes the assignment — assignment logic lives client-side",
+        "SyncGroup: leader uploads the full assignment map; coordinator fans out each member's slice",
+        "Heartbeat: background thread pings the coordinator to prove liveness; also how the consumer learns a rebalance started",
+        "`member.id` is coordinator-assigned per session; a restarted consumer gets a new one (unless static membership)",
+        "`generation.id` increments each rebalance; requests carrying a stale generation are rejected — this fences zombies",
+        "First JoinGroup is intentionally rejected with MEMBER_ID_REQUIRED so the coordinator can register the member (guards against join storms)",
+        "The leader gets the whole subscription picture, which is why custom assignors can do rack- or load-aware placement",
+        "Coordinator failure triggers a rebalance to a new coordinator once the `__consumer_offsets` partition leader moves",
+        "KIP-848 (next-gen protocol) moves assignment computation to the broker, removing the client-side leader and stop-the-world sync",
+        "Metric to watch: `rebalance-rate-per-hour` and `rebalance-latency-avg`",
+        "Gotcha: all members must share at least one common assignment strategy or the join fails",
+        "Gotcha: consumers subscribed to different topics under one `group.id` still rebalance together and can thrash"
+      ]
+    },
+    {
+      "title": "3. Rebalancing: Triggers and Cost",
+      "points": [
+        "Rebalance = the group re-deciding who owns which partition",
+        "Trigger 1: a new member joins (scale-up, restart, deploy)",
+        "Trigger 2: a member leaves gracefully via LeaveGroup on `close()`",
+        "Trigger 3: a member is evicted — heartbeat gap > `session.timeout.ms`",
+        "Trigger 4: a member is evicted — processing gap > `max.poll.interval.ms`",
+        "Trigger 5: partition count of a subscribed topic changes, or a regex subscription matches a new topic",
+        "Eager (stop-the-world) rebalance: every member revokes every partition, then the whole group re-joins — full consumption stall",
+        "Stall duration ≈ detection time + join wait + assignment + state restore; can run into minutes for stateful apps",
+        "Rolling restart of N consumers with eager rebalancing can cause up to N (or worse, N²-ish churn) rebalances",
+        "`ConsumerRebalanceListener` hooks: `onPartitionsRevoked` (commit here), `onPartitionsAssigned` (seek/restore state), `onPartitionsLost` (do NOT commit — ownership already gone)",
+        "`onPartitionsLost` fires when the member was fenced or timed out; committing there would clobber a new owner's progress",
+        "Cascading rebalance: a slow member times out mid-rebalance, re-joins, and re-triggers — a self-sustaining storm",
+        "`group.initial.rebalance.delay.ms` (broker, default 3000) batches startup joins so a fresh group doesn't rebalance once per booting consumer",
+        "Rebalance safety rule: commit offsets in `onPartitionsRevoked` or duplicates are guaranteed after the switch",
+        "Cost summary: rebalances are correctness-safe but availability-hostile — design to minimize them, not to handle them faster"
+      ]
+    },
+    {
+      "title": "4. Assignment Strategies Compared",
+      "points": [
+        "`partition.assignment.strategy` names an ordered list of assignor classes; the group picks the highest common one",
+        "RangeAssignor (default legacy): per topic, sorts partitions and consumers, hands out contiguous ranges",
+        "Range flaw: with 3 partitions and 2 consumers per topic, consumer-0 always gets the extra — skew compounds across topics",
+        "Range benefit: co-partitioned topics align (topic-A-p0 and topic-B-p0 land on the same consumer), which enables local joins",
+        "RoundRobinAssignor: flattens all partitions of all subscribed topics and deals them one by one — best raw balance",
+        "RoundRobin flaw: any membership change reshuffles nearly everything; no stickiness",
+        "StickyAssignor: balances like round-robin but preserves prior assignment where possible, minimizing partition movement",
+        "CooperativeStickyAssignor: sticky balance plus incremental protocol — the modern default choice",
+        "Kafka 4.x default list is `[RangeAssignor, CooperativeStickyAssignor]`; explicitly set cooperative-sticky to actually get it",
+        "Comparison row — balance quality: RoundRobin ≈ Sticky ≈ CooperativeSticky > Range",
+        "Comparison row — movement on rebalance: Range/RoundRobin high, Sticky low, CooperativeSticky low and non-blocking",
+        "Comparison row — co-partitioning: Range yes, others no guarantee",
+        "Custom assignor: extend `AbstractPartitionAssignor` for rack-aware, weighted, or cost-based placement",
+        "`assign()` (manual partition assignment) bypasses groups entirely: no rebalance, no coordinator-managed membership, you own the placement and failover",
+        "Gotcha: switching strategies across a running fleet requires a two-phase rolling deploy so members always share one strategy"
+      ]
+    },
+    {
+      "title": "5. Incremental Cooperative Rebalancing",
+      "points": [
+        "Goal: stop the world for the few partitions that actually move, not for the entire group",
+        "Protocol version bumped from EAGER to COOPERATIVE via `CooperativeStickyAssignor`",
+        "Round 1: everyone rejoins keeping their partitions; the leader computes the target assignment and revokes only the deltas",
+        "Round 2: a second rebalance immediately follows to hand the revoked partitions to their new owners",
+        "Two rebalances per change, but consumers keep polling their untouched partitions throughout",
+        "Kafka Streams and long state-restore apps benefit most — no full state store rebuild on every scale event",
+        "Migration path is strict: rolling deploy 1 sets strategy list to `[CooperativeSticky, Eager-compatible]`, deploy 2 removes the eager entry",
+        "Skipping the two-phase migration mixes protocols and can raise `IllegalStateException` / broken assignments",
+        "With cooperative mode, `onPartitionsRevoked` receives only the moved partitions — not the full set",
+        "`onPartitionsLost` becomes meaningful: it distinguishes clean handoff from fencing",
+        "Static membership (`group.instance.id`) is complementary, not an alternative — combine both",
+        "Static membership: a stable identity means a restart within `session.timeout.ms` causes NO rebalance at all",
+        "Set `session.timeout.ms` above your pod restart time (e.g. 45s–5min) for static members; too high delays real failure detection",
+        "Static member removal for real scale-down: `kafka-consumer-groups.sh --delete-offsets` / admin `removeMembersFromConsumerGroup`",
+        "Gotcha: duplicate `group.instance.id` across two live pods fences one of them with FencedInstanceIdException"
+      ]
+    },
+    {
+      "title": "6. Offsets: Storage and Semantics",
+      "points": [
+        "An offset is a per-partition monotonically increasing message index — not a timestamp, not global",
+        "Committed offset semantics: it is the NEXT offset to read, i.e. last processed + 1 — off-by-one is a classic bug",
+        "Offsets live in the internal compacted topic `__consumer_offsets` (50 partitions by default), keyed by (group, topic, partition)",
+        "Log compaction keeps only the latest offset per key, so the topic stays bounded",
+        "`offsets.retention.minutes` (default 7 days) deletes offsets for a group that has been fully inactive — the group then falls back to `auto.offset.reset`",
+        "`auto.offset.reset=earliest` replays from the start; `latest` skips everything before now; `none` throws NoOffsetForPartitionException",
+        "`position()` = next record this consumer will read; `committed()` = last durably stored offset — they diverge in flight",
+        "Current offset vs committed offset vs log-end offset vs high watermark — four distinct numbers on the same partition",
+        "High watermark: the highest offset replicated to all in-sync replicas; consumers can only read below it",
+        "`seek(partition, offset)`, `seekToBeginning()`, `seekToEnd()` for manual repositioning; only valid after assignment exists",
+        "`offsetsForTimes()` maps a wall-clock timestamp to the first offset at or after it — the basis for time-travel replay",
+        "Resetting a group: `kafka-consumer-groups.sh --reset-offsets --to-earliest --group g --topic t --execute` (group must be inactive)",
+        "Offset commits are per-partition maps, so a partial commit of some partitions is possible and normal",
+        "Gotcha: offsets are per group, so a typo in `group.id` silently produces a full replay or a full skip"
+      ]
+    },
+    {
+      "title": "7. Committing Offsets: Auto, Sync, Async",
+      "points": [
+        "`enable.auto.commit=true` (default) commits the last poll's offsets on a timer during `poll()`, every `auto.commit.interval.ms` (default 5000)",
+        "Auto-commit hazard: it commits what was RETURNED by poll, not what was PROCESSED — a crash mid-batch loses those records",
+        "Auto-commit therefore gives at-most-once behavior relative to processing, despite feeling safe",
+        "`commitSync()` blocks, retries on retriable errors, and throws on failure — use at the end of a batch and in shutdown",
+        "`commitAsync()` fires and forgets with an optional `OffsetCommitCallback`; higher throughput, no retry",
+        "Never blindly retry `commitAsync()` — a late retry of an old offset can overwrite a newer commit and cause replay",
+        "Canonical pattern: `commitAsync()` in the hot loop, `commitSync()` once in the `finally` block before `close()`",
+        "Explicit offsets: `commitSync(Map.of(tp, new OffsetAndMetadata(lastOffset + 1)))` for per-partition or mid-batch commits",
+        "At-most-once = commit before processing; at-least-once = commit after processing; exactly-once needs transactions",
+        "At-least-once is the practical default: assume duplicates and make consumers idempotent (dedupe key, upsert, idempotency table)",
+        "Transactional exactly-once: producer `sendOffsetsToTransaction()` plus `isolation.level=read_committed` binds output writes and offset commit atomically",
+        "`read_committed` consumers cannot read past the Last Stable Offset, so an open transaction stalls that partition's reads",
+        "Storing offsets externally (in your own DB, in the same transaction as your writes) gives exactly-once against a relational sink",
+        "Rule: whatever the strategy, commit only offsets whose side effects are already durable",
+        "Gotcha: committing an offset for a partition you no longer own throws CommitFailedException — the classic sign of a missed rebalance"
+      ]
+    },
+    {
+      "title": "8. The Poll Loop and Its Timeouts",
+      "points": [
+        "`poll(Duration)` is not just a fetch — it joins the group, triggers rebalance callbacks, and drives coordination",
+        "A consumer that stops calling `poll()` is a dead consumer to the group, regardless of thread health",
+        "`max.poll.interval.ms` (default 300000 / 5 min): max wall-clock time between polls before the member is removed",
+        "`session.timeout.ms` (default 45000 in modern versions): max gap between heartbeats before eviction",
+        "`heartbeat.interval.ms` (default 3000): heartbeat cadence; keep it ≤ 1/3 of `session.timeout.ms`",
+        "Since KIP-62, heartbeats run on a background thread, so session timeout detects process death and poll interval detects processing stalls — two independent failure detectors",
+        "`max.poll.records` (default 500) caps records per poll — the primary lever to keep processing time under the poll interval",
+        "`fetch.min.bytes` / `fetch.max.wait.ms` trade latency for throughput at the broker fetch level",
+        "`fetch.max.bytes` and `max.partition.fetch.bytes` bound memory per fetch response",
+        "Sizing rule: `max.poll.records` × worst-case per-record processing time must be comfortably under `max.poll.interval.ms`",
+        "Loop skeleton: `while (running) { var recs = consumer.poll(Duration.ofMillis(100)); process(recs); consumer.commitAsync(); }`",
+        "Shutdown: call `consumer.wakeup()` from another thread; `poll()` throws `WakeupException`; catch it, `commitSync()`, then `close()`",
+        "`close(Duration)` sends LeaveGroup so the group rebalances immediately instead of waiting out the session timeout",
+        "The consumer is NOT thread-safe — one consumer per thread, or hand records to a worker pool and manage offsets yourself",
+        "Offloading to a worker pool: you must `pause()` partitions while workers lag, and only commit offsets below the lowest in-flight record"
+      ]
+    },
+    {
+      "title": "9. Common Failure Modes and Fixes",
+      "points": [
+        "Symptom: CommitFailedException — cause: processing exceeded `max.poll.interval.ms`, partitions reassigned. Fix: lower `max.poll.records` or raise the interval",
+        "Symptom: endless rebalance loop — cause: one slow member repeatedly timing out. Fix: find the slow record, add a per-record timeout, cap batch size",
+        "Symptom: duplicates after every deploy — cause: no commit in `onPartitionsRevoked` and no `close()`. Fix: graceful shutdown plus revocation commit",
+        "Symptom: consumer idle with zero partitions — cause: more consumers than partitions. Fix: add partitions or shrink the fleet",
+        "Symptom: whole topic replayed after a quiet weekend — cause: `offsets.retention.minutes` expiry plus `auto.offset.reset=earliest`",
+        "Symptom: silent data skip — cause: `auto.offset.reset=latest` on a brand-new group. Fix: set `earliest` or seed offsets deliberately",
+        "Symptom: lag on one partition only — cause: hot key skew from the producer's partitioner. Fix: change the key or use a custom partitioner",
+        "Symptom: reads stall under `read_committed` — cause: a hung open transaction blocking the Last Stable Offset",
+        "Symptom: FencedInstanceIdException — cause: two pods sharing one `group.instance.id`",
+        "Symptom: rebalance on every pod restart despite static membership — cause: restart is slower than `session.timeout.ms`",
+        "Poison-pill record: a single record that always throws will re-deliver forever. Fix: try/catch per record and route to a dead-letter topic",
+        "Anti-pattern: catching the exception, skipping the record, and committing anyway — that is silent data loss, log it explicitly",
+        "Anti-pattern: blocking network calls inside the poll loop with no timeout — the number-one cause of poll-interval eviction",
+        "Anti-pattern: `Thread.sleep()` for backpressure — use `pause()`/`resume()` instead so heartbeats and polls continue",
+        "Debug toolkit: `--describe` for lag, `--describe --state` for group state, `--members --verbose` for assignment, and the `records-lag-max` / `commit-latency-avg` client metrics"
+      ]
+    },
+    {
+      "title": "10. Design Checklist & Summary",
+      "points": [
+        "Pick partition count from peak throughput ÷ per-consumer throughput, then add headroom — you can add partitions but never remove them",
+        "Set `partition.assignment.strategy=CooperativeStickyAssignor` and roll it out in two phases",
+        "Set `group.instance.id` per pod (from the StatefulSet ordinal) for static membership and set `session.timeout.ms` above restart time",
+        "Turn off `enable.auto.commit` for anything where a duplicate or a loss matters; commit explicitly after processing",
+        "Implement `ConsumerRebalanceListener` with commit-on-revoke and no-commit-on-lost",
+        "Tune `max.poll.records` down before tuning `max.poll.interval.ms` up — shorter batches beat longer deadlines",
+        "Always `close()` on shutdown via a shutdown hook plus `wakeup()`; it converts a 45-second stall into an instant rebalance",
+        "Make every consumer idempotent; at-least-once plus idempotency is simpler and cheaper than transactions in most systems",
+        "Reach for transactional exactly-once only for Kafka-to-Kafka pipelines; use DB-transaction offsets for Kafka-to-database",
+        "Alert on consumer lag trend and on rebalance rate, not just on absolute lag",
+        "Timeout hierarchy to memorize: `heartbeat.interval.ms` < `session.timeout.ms` << `max.poll.interval.ms`",
+        "Failure-detector split: session timeout catches a dead process; poll interval catches a stuck processor",
+        "Mental model: the group owns the partitions, the coordinator owns the membership, the leader computes the assignment, and the offset topic owns the progress",
+        "One-line summary: poll often, commit only what you finished, move as few partitions as possible, and assume you will see every record at least twice"
+      ]
+    }
+  ]
+}

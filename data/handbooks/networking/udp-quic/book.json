@@ -1,0 +1,159 @@
+{
+  "title": "UDP & QUIC: Notes from the Wire",
+  "summary": "A dense study-notes carousel on UDP's connectionless semantics, when it beats TCP, and how QUIC rebuilds reliability over it to power HTTP/3 — with handshakes, head-of-line blocking, trade-offs, and common mistakes.",
+  "chapters": [
+    {
+      "title": "UDP Fundamentals: The Connectionless Datagram",
+      "points": [
+        "UDP = User Datagram Protocol: no connection setup, no handshake, send and forget",
+        "Header is only 8 bytes: src port, dst port, length, checksum",
+        "Datagram = self-contained message; no sequence numbers, no ACKs, no retransmission",
+        "Checksum is optional in IPv4 (0 = skip) but recommended; catches corruption, not loss",
+        "No congestion control, no flow control — the app owns pacing",
+        "MTU matters: datagrams over ~1472 bytes (Ethernet) may fragment; fragmentation amplifies loss (lose 1 fragment, drop whole packet)",
+        "Best-effort delivery: packets can be lost, duplicated, reordered, or arrive at different times",
+        "Socket model: one socket can talk to many peers via sendto()/recvfrom(); no accept()/connect() state machine",
+        "Zero connection state in the OS/kernel per peer — scales to millions of flows cheaply",
+        "UDP is a thin layer over IP: think 'IP plus ports plus checksum', nothing more",
+        "Common uses: DNS, DHCP, NTP, VoIP, gaming, QUIC itself",
+        "Gotcha: 'UDP is unreliable' is fine only if the app tolerates loss or rebuilds reliability itself (like QUIC)"
+      ]
+    },
+    {
+      "title": "When UDP Beats TCP — and When It Doesn't",
+      "points": [
+        "Latency-sensitive real-time: VoIP/video prefer a fresh late sample over a retransmitted old one",
+        "Request/response one-shots (DNS): a full TCP handshake triples round trips vs one UDP datagram",
+        "Pub/sub and multicast/broadcast: TCP is strictly point-to-point; UDP fans out natively",
+        "Live event streams (gaming state, telemetry): latest-wins semantics beat ordered delivery",
+        "Firewall/NAT traversal: UDP hole punching is easier and cheaper than TCP simultaneous open",
+        "Custom protocol stacks: QUIC, WebRTC RTP, WireGuard all build on UDP to dodge OS TCP constraints",
+        "Rule of thumb: use UDP when loss is recoverable OR freshness beats completeness",
+        "When NOT UDP: file transfer, web pages, anything needing every byte — loss recovery is hard to do right",
+        "When NOT UDP #2: sending large blobs as raw datagrams — fragmentation turns one lost fragment into whole-packet loss",
+        "Unmanaged UDP floods can starve links (no congestion control = bad internet citizen)",
+        "Middlebox hazard: some networks rate-limit or block UDP entirely; fallback path needed",
+        "Middle ground: app-layer reliability over UDP is a big engineering lift — prefer QUIC before hand-rolling"
+      ]
+    },
+    {
+      "title": "QUIC: Reliability Rebuilt on UDP",
+      "points": [
+        "QUIC (RFC 9000): a secure, multiplexed transport over UDP, origin at Google, standardized by IETF",
+        "Design premise: TCP is frozen in kernel + middleboxes; evolve transport in user space over UDP",
+        "Encryption is not optional: TLS 1.3 is baked into the protocol — no plaintext QUIC",
+        "Most header fields are encrypted; middleboxes can't see or mangle sequence numbers (fixes ossification)",
+        "Streams: QUIC multiplexes multiple independent byte streams over one connection",
+        "Loss in stream A does not stall stream B — this is the core head-of-line blocking fix",
+        "Connection IDs: connection survives IP changes (phone Wi-Fi → LTE) with no re-handshake",
+        "Streams are ordered and reliable individually; datagram mode (RFC 9221) offers unreliable delivery too",
+        "Every QUIC packet is independently acknowledged — no TCP-style byte-stream ACK dependency",
+        "Congestion control pluggable in user space (NewReno default; CUBIC, BBR deployable without OS updates)",
+        "Cost: user-space crypto + packet processing uses more CPU than kernel TCP",
+        "Adoption: all major browsers + CDNs speak HTTP/3 over QUIC; ~30% of web traffic and growing"
+      ]
+    },
+    {
+      "title": "The QUIC Handshake: TLS 1.3 Inside",
+      "points": [
+        "Crypto and transport handshake merged: 1-RTT gets you an encrypted, established connection",
+        "Compare TCP: handshake (1 RTT) + TLS 1.3 (1 RTT) = 2-RTT before first byte of app data",
+        "0-RTT resumption: returning clients send app data in the very first flight — but it's replayable, never use for non-idempotent requests",
+        "Initial packets use keys derived from a well-known salt + DCID — Obfuscated, not secret; version negotiation rides along",
+        "Handshake flight 1: client → Initial (ClientHello); flight 2: server → Initial + Handshake (ServerHello, cert, Finished)",
+        "Flight 3: client sends Handshake Finished + can already carry 1-RTT app data",
+        "Transport parameters (max data, idle timeout, flow control windows) travel inside the TLS extension — inseparable from auth",
+        "No cleartext stage at all: TCP's options (MSS, window scale) were visible/attackable; QUIC's are encrypted",
+        "Address validation: server may require Retry token before spending resources (anti-amplification, anti-spoofing)",
+        "Amplification rule: server may send ≤3× bytes received until the client's address is validated",
+        "Connection migration = just start sending from a new IP; same Connection ID, no handshake",
+        "Gotcha: 0-RTT data can be dropped if server rejects it — app must handle retransmission of the early flight"
+      ]
+    },
+    {
+      "title": "Killing Head-of-Line Blocking",
+      "points": [
+        "TCP HOL: one lost segment stalls delivery of ALL later data until retransmission arrives — for the whole connection",
+        "HTTP/2 over TCP multiplexes streams but inherits TCP's single ordered byte stream → one loss blocks every stream",
+        "Loss probability rises with RTT×bandwidth (window size); on 1% loss paths, HOL dominates HTTP/2 performance",
+        "QUIC fix: per-stream ordering; receiver reassembles each stream independently, delivers streams that are complete",
+        "Loss on stream 2 → streams 1, 3, 4 still delivered immediately to the app",
+        "Remaining HOL: the QUIC packet itself — one lost packet carries frames from multiple streams, so ALL those streams lose that data",
+        "Mitigation: senders coalesce frames from the same stream per packet when possible",
+        "Flow-control HOL: connection-level flow control window can stall all streams if one stream hogs it — sized carefully",
+        "Cross-layer caveat: QUIC removes transport HOL, but app-level (HTTP/3 request) dependencies still serialize by choice",
+        "Measured effect: biggest wins on lossy/high-RTT networks (mobile, satellite); small gains on clean fiber",
+        "Diagram idea: TCP timeline (loss → stall everything) vs QUIC timeline (loss → stall one stream)",
+        "Exam trap: 'QUIC eliminates HOL' is only true across streams, not within one stream — a single stream is still ordered/reliable"
+      ]
+    },
+    {
+      "title": "HTTP/3: The Web over QUIC",
+      "points": [
+        "HTTP/3 = HTTP semantics (RFC 9110) over QUIC instead of TCP — same methods, headers, status codes",
+        "Header compression: QPACK (HPACK redesigned) because QUIC streams can arrive out of order",
+        "QPACK uses separate encoder/decoder streams + indexed field sections; static table covers common headers",
+        "Blocking risk: a compressed header depending on a not-yet-received reference stalls — senders track 'known received count' before using dynamic refs",
+        "Request/response mapping: each HTTP request is one QUIC stream; priorities via extensible priority fields",
+        "Server push exists but is deprecated in practice; early hints via 103 preferred",
+        "Version negotiation is built in: ALPN 'h3' during the TLS handshake (no h2c-style upgrade dance)",
+        "Migration means downloads/streams survive network handoffs — a browser-visible UX win",
+        "Deployment: served over Alt-Svc or HTTPS DNS records advertising h3; browsers race TCP+TLS vs QUIC on first visit",
+        "HTTP/2 fallback mandatory in practice: UDP-blocked networks (some enterprise/captive portals) still common",
+        "Same-origin rules, cookies, CORS unchanged — the web's application layer didn't move, only the transport did",
+        "Practical win: 0-RTT + no TCP HOL ≈ faster page loads especially on mobile; biggest on repeat visits"
+      ]
+    },
+    {
+      "title": "QUIC vs TCP+TLS: The Trade-off Table",
+      "points": [
+        "Handshake latency: QUIC 1-RTT (0-RTT on resume) vs TCP+TLS 2-3 RTT",
+        "HOL blocking: QUIC per-stream vs TCP whole-connection",
+        "Encryption: QUIC mandatory TLS 1.3 vs TCP optional/stacked",
+        "Header visibility: QUIC encrypted (no middlebox meddling) vs TCP cleartext (NATs, ossified options)",
+        "Mobility: QUIC connection IDs survive IP change vs TCP dies on IP change",
+        "CPU cost: QUIC higher (user-space crypto, per-packet processing) vs kernel-optimized TCP",
+        "Middlebox compatibility: QUIC can be UDP-blocked/rate-limited vs TCP nearly universally allowed",
+        "Evolution: QUIC upgrades ship with app vs TCP upgrades wait for OS/kernel years",
+        "Congestion control: QUIC pluggable per-app vs TCP whatever the kernel ships",
+        "Debugging: QUIC traffic opaque to tcpdump/wireshark unless you decrypt keys (SSLKEYLOGFILE works for QUIC in modern tools)",
+        "Buffer/MTU: QUIC must do PMTUD itself; overhead ~ QUIC header + TLS records per packet vs lean TCP",
+        "Verdict: QUIC wins on latency-sensitive, mobile, lossy paths; TCP still wins on raw CPU-bound bulk transfer"
+      ]
+    },
+    {
+      "title": "Practical Usage & Common Mistakes",
+      "points": [
+        "Never assume UDP delivery for anything that must arrive — add ACK/retry or switch to QUIC/TCP",
+        "Mistake: relying on UDP checksum as integrity proof — it's weak (16-bit); app-level hashes for data that matters",
+        "Mistake: sending datagrams near MTU — keep app payloads under ~1200 bytes for QUIC, ~512 for safe cross-network UDP (DNS rule)",
+        "Mistake: assuming UDP socket buffers are big enough — tune SO_RCVBUF/SO_SNDBUF for high-throughput; silent drops at the kernel are common",
+        "QUIC servers: implement Retry + address validation or become a DDoS amplification vector",
+        "Mistake: using 0-RTT for POST/payments — replay attacks; restrict to idempotent reads",
+        "Mistake: ignoring PMTUD — hardcoding 1500-byte QUIC packets blackholes on paths with tunnels (VPN adds overhead)",
+        "Testing: loss/reorder emulation (tc netem, toxiproxy) before shipping a UDP or QUIC app",
+        "Observability: expose QUIC metrics (handshake RTT, 0-RTT rate, loss rate, stream resets) — encrypted transport hides them from middleboxes",
+        "Client strategy: advertise h3 via Alt-Svc, race against h2, remember the winner — this is how all browsers do it",
+        "Firewall/ops note: open UDP 443; verify no deep-packet-inspection box is throttling it",
+        "Rule: choose unreliable delivery (QUIC datagrams) only when the next sample supersedes the lost one"
+      ]
+    },
+    {
+      "title": "Closing Summary: The Decision Map",
+      "points": [
+        "UDP = ports + checksum + nothing: you own reliability, ordering, congestion, security",
+        "TCP = reliable ordered stream: right default for bulk and web, but HOL-bound and frozen in kernels",
+        "QUIC = the synthesis: UDP's deployability + TCP's reliability + TLS 1.3's security, in user space",
+        "Decision: freshness-over-completeness (VoIP, games, telemetry) → raw UDP; everything must arrive → TCP or QUIC",
+        "Decision: web delivery, mobile clients, lossy networks → HTTP/3 over QUIC; keep h2 fallback",
+        "Three wins to remember: 1-RTT handshake, per-stream HOL elimination, connection migration",
+        "One cost to remember: CPU overhead and UDP middlebox hostility — always have a TCP fallback",
+        "Mental model: TCP froze transport evolution; QUIC moved it into the app layer where it can iterate",
+        "The one-line exam answer: QUIC is what you get when you rebuild TCP's best parts on UDP, with TLS 1.3 welded in",
+        "HOL answer refined: eliminated across streams, never within one stream",
+        "Deployment reality: encrypted transport shifts visibility from network operators to endpoints — plan your metrics",
+        "Next reading: RFC 9000 (QUIC), RFC 9001 (TLS mapping), RFC 9114 (HTTP/3), RFC 9221 (datagrams)"
+      ]
+    }
+  ]
+}

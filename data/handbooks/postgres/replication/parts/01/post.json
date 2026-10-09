@@ -1,0 +1,1106 @@
+{
+  "brand": "iolar",
+  "template": "margin-qa",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES FIELD HANDBOOK",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "WAL Fundamentals: Write-Ahead Logging",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Write-Ahead Rule",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A change is flushed to the log before its data page.",
+            "Durability without fsyncing every heap page.",
+            "INSERT, UPDATE, DELETE, DDL, index change: all emit records.",
+            "A record describes the physical page change, not the SQL."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Record Anatomy"
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "XLogRecord",
+            "cells": [
+              "total len",
+              "xid",
+              "prev LSN",
+              "CRC-32C",
+              "rmgr id",
+              "info flags",
+              "block refs",
+              "payload"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Resource managers: Heap, Btree, Gin, Gist.",
+            "Also Transaction, XLOG, Standby, Sequence.",
+            "Each rmgr knows how to redo its own record type."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "LSN: The Cluster Clock"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A 64-bit byte offset into the infinite WAL stream.",
+            "Printed `X/YYYYYYYY`, e.g. `3F/A2B10C48`.",
+            "The universal clock every replication metric is built on."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pg_current_wal_lsn();  -- 3F/A2B10C48",
+            "-- 16 MB segment files live under pg_wal/",
+            "-- 000000010000003F000000A2 = 24 hex chars",
+            "-- timeline + logical log + segment number"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Buffers And Commit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`wal_buffers` holds WAL in shared memory.",
+            "Flushed on commit, buffer pressure, or by the WAL writer.",
+            "COMMIT is durable once its record is `fsync`'d.",
+            "Commit cost: one sequential write, not many random ones."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Checkpoints And Full Pages"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Checkpoint flushes dirty buffers, writes a checkpoint record.",
+            "Recovery replays only from the last redo pointer.",
+            "`full_page_writes` logs the whole 8 KB page after a checkpoint.",
+            "Guards torn pages; WAL volume spikes right after checkpoints."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- query three: raw disk under pg_wal",
+            "SELECT pg_size_pretty(sum(size))",
+            "FROM pg_ls_waldir();  -- alert well before full"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "WAL Fundamentals: Write-Ahead Logging (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "REDO only, no UNDO",
+          "text": "Crash recovery replays WAL forward from the redo point. Uncommitted rows are hidden by MVCC visibility, not rolled back by an UNDO log the way Oracle and InnoDB do it."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`wal_level`",
+            "What it buys"
+          ],
+          "rows": [
+            [
+              "`minimal`",
+              "no archive, no replica"
+            ],
+            [
+              "`replica`",
+              "streaming + PITR (default)"
+            ],
+            [
+              "`logical`",
+              "adds row-level decoding"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Read the raw WAL",
+          "items": [
+            "`pg_current_wal_lsn()` for the write position.",
+            "`pg_walinspect` (PG15+) reads records from SQL.",
+            "`pg_waldump -p pg_wal 000000010000003F000000A2`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Never for benchmarks",
+          "text": "`fsync=off` and `full_page_writes=off` make numbers fly and make crash recovery hand you a silently corrupt cluster."
+        },
+        {
+          "type": "heading",
+          "text": "What Fires A Checkpoint",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`checkpoint_timeout` elapsed (default 5min).",
+            "`max_wal_size` exceeded.",
+            "Manual `CHECKPOINT`, or a clean shutdown."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Smoothing The Flush"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`checkpoint_completion_target` 0.9 spreads I/O over the interval.",
+            "Raise `checkpoint_timeout` to 15–30min on busy systems.",
+            "Fewer checkpoints means fewer full-page images.",
+            "That is the cheapest WAL-volume win available."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "GUC",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`max_wal_size`",
+              "soft target, not a cap"
+            ],
+            [
+              "`min_wal_size`",
+              "preallocated recycle pool"
+            ],
+            [
+              "`wal_compression`",
+              "`on`/`lz4`/`zstd` on FPIs"
+            ],
+            [
+              "`archive_timeout`",
+              "force a segment switch"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Checkpoint lag or a pinned slot blows past the target.",
+            "Recycling renames obsolete segments to future names.",
+            "No filesystem churn; steady-state writes reuse the same files.",
+            "`wal_compression` often halves WAL on write-heavy OLTP."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Archiving"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "archive_mode = on   # PG15+: archive_library",
+            "archive_command = 'pgarch %p %f'  # nonzero=retry",
+            "archive_timeout = 60   # idle RPO under a minute"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "WAL Mechanics: Segments, Checkpoints, Archiving",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Never overwrite an existing file; `fsync` the copy.",
+            "Classic minimum: `test ! -f dst && cp src dst`.",
+            "Return nonzero on failure so Postgres retries the segment.",
+            "Without `archive_timeout`, a quiet cluster risks 16 MB."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Disk-fill bomb",
+          "text": "A failing `archive_command` stops segment recycling. `pg_wal` grows until the volume is full and the server PANICs."
+        },
+        {
+          "type": "heading",
+          "text": "PITR And Base Backups"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Base backup plus archived WAL equals point-in-time recovery.",
+            "Restore, set `restore_command` and `recovery_target_time`.",
+            "Recovery replays forward to the chosen instant.",
+            "`pg_basebackup -D dir -X stream -c fast -P` streams its own WAL."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Timelines"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "timeline 1",
+              "promote or PITR",
+              "timeline 2",
+              "`.history` file"
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Monitor the rhythm",
+          "items": [
+            "`pg_stat_bgwriter`, or `pg_stat_checkpointer` on PG17+.",
+            "`checkpoints_req` above `checkpoints_timed` is the alarm.",
+            "That ratio means `max_wal_size` is too small."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Physical Streaming",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ships raw WAL bytes, never statements.",
+            "The replica is a byte-identical block-level copy.",
+            "Same page layout, same file names, same major version.",
+            "Read-only: writes raise 'cannot execute INSERT in a read-only transaction'."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Who Does The Work"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "primary",
+              "walsender",
+              "network",
+              "walreceiver",
+              "startup proc",
+              "data files"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One `walsender` on the primary per connected replica.",
+            "`walreceiver` pulls; the startup process applies records.",
+            "Replica connects with `replication=true`, sends `START_REPLICATION`.",
+            "WAL arrives as a continuous CopyBoth stream."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Streaming Replication: How A Replica Follows",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Bootstrap"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "pg_basebackup -h primary -D /data \\",
+            "  -R -X stream -S rep1 -C",
+            "# -R writes standby.signal + primary_conninfo",
+            "# -C creates slot rep1 on the primary"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`standby.signal` (PG12+) puts the server in standby mode.",
+            "`recovery.conf` is gone; those settings are normal GUCs.",
+            "`primary_conninfo` needs a role with `REPLICATION`.",
+            "Add a `pg_hba.conf` line of type `replication`.",
+            "`hot_standby = on` serves reads while replay continues."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Four LSN Stages"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "sent_lsn",
+              "write_lsn",
+              "flush_lsn",
+              "replay_lsn"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT application_name, sent_lsn, replay_lsn,",
+            "  pg_wal_lsn_diff(pg_current_wal_lsn(),",
+            "                  replay_lsn) AS bytes",
+            "FROM pg_stat_replication;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`write_lag`, `flush_lag`, `replay_lag` give lag as time.",
+            "`pg_stat_replication` on the primary: one row per walsender.",
+            "`pg_stat_wal_receiver` on the replica: the other half."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Topology Tricks"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cascading: a standby walsends to downstream standbys.",
+            "Cuts primary load and WAN fanout.",
+            "`restore_command` on a standby falls back to the archive.",
+            "`recovery_min_apply_delay = '1h'` is a human-error undo button."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Feedback knobs",
+          "items": [
+            "`wal_receiver_status_interval`: how often position is reported.",
+            "`hot_standby_feedback`: sends the replica's oldest xmin upstream."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Read-only is broader than writes",
+          "text": "Sequences, temp tables and `VACUUM` are blocked on a standby too, not only `INSERT`."
+        }
+      ]
+    },
+    {
+      "page_title": "Synchronous vs Asynchronous Commit",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Two Commit Contracts",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Async (default)",
+              "items": [
+                "Commits at local fsync",
+                "Replicas may lag",
+                "Failover loses last txns",
+                "Primary never stalls"
+              ]
+            },
+            "right": {
+              "title": "Sync",
+              "items": [
+                "Waits for standby confirm",
+                "Zero data loss",
+                "One RTT per commit",
+                "Stalls if quorum gone"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The Five Levels"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Waits for"
+          ],
+          "rows": [
+            [
+              "`off`",
+              "nothing, not even local"
+            ],
+            [
+              "`local`",
+              "local fsync only"
+            ],
+            [
+              "`remote_write`",
+              "standby OS write"
+            ],
+            [
+              "`on`",
+              "standby fsync"
+            ],
+            [
+              "`remote_apply`",
+              "standby replay"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`off` risks `wal_writer_delay`x3 of loss, never corruption.",
+            "`local` fsyncs locally and ignores standbys.",
+            "`remote_write` survives a Postgres crash, not a host crash.",
+            "`remote_apply` is what makes read-your-writes work on a replica."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Choosing The Quorum"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "synchronous_standby_names = 'FIRST 1 (a, b, c)'",
+            "# priority order: a preferred, b and c ready",
+            "# 'ANY 2 (a, b, c)' = quorum commit, PG10+",
+            "synchronous_commit = on"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The level is per-transaction, not only cluster-wide.",
+            "`SET synchronous_commit = 'local'` inside a bulk load.",
+            "Cluster default stays `on` for everyone else."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Latency Math"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A sync commit costs at least one network round trip.",
+            "A 5 ms cross-AZ RTT caps one session near 200 commits/sec.",
+            "Faster disks change nothing; the wire sets the ceiling.",
+            "Batch, or drop to `local`, on bulk write paths."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "The availability trap",
+          "text": "`FIRST 1 (a)` with one sync standby stalls every commit the moment that node reboots. Always list N+1 candidates."
+        }
+      ]
+    },
+    {
+      "page_title": "Synchronous vs Asynchronous Commit (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Sharp Edges"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Canceling a waiting sync commit with Ctrl-C is dangerous.",
+            "The txn is already committed locally and returns after recovery.",
+            "The client is left with a genuinely ambiguous answer.",
+            "Sync protects durability, not availability: no auto-failover.",
+            "It never protects you from a bug that deletes rows."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "RPO",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Async",
+              "> 0",
+              "fastest, no stall"
+            ],
+            [
+              "Sync `on`",
+              "0",
+              "RTT-bound, can stall"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Sane hybrid",
+          "items": [
+            "`ANY 1` of two local standbys for durability.",
+            "Plus a third async cross-region replica for DR.",
+            "Local quorum survives a node, DR survives a region."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What A Slot Is",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Server-side state: the oldest LSN a consumer still needs.",
+            "The primary then refuses to remove that WAL.",
+            "Files live in `pg_replslot/`, not inside the WAL.",
+            "They survive restart but no base backup carries them."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Without a slot",
+          "text": "A replica offline too long meets 'requested WAL segment ... has already been removed' and has to be rebuilt from scratch."
+        },
+        {
+          "type": "heading",
+          "text": "Two Kinds"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "replication slot",
+            "branches": [
+              {
+                "label": "physical",
+                "children": [
+                  "streaming standby",
+                  "restart_lsn"
+                ]
+              },
+              {
+                "label": "logical",
+                "children": [
+                  "decoding consumer",
+                  "confirmed_flush_lsn",
+                  "catalog xmin"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Lifecycle"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- on the primary",
+            "SELECT pg_create_physical_replication_slot('r1');",
+            "-- standby: primary_slot_name = 'r1'",
+            "SELECT pg_drop_replication_slot('r1'); -- if idle"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Inspect"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`pg_replication_slots`: `active`, `restart_lsn`, `wal_status`.",
+            "`wal_status`: reserved, extended, unreserved, lost.",
+            "`safe_wal_size` is headroom before invalidation.",
+            "An active slot cannot be dropped, only disconnected first."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The number one slot outage",
+          "text": "An abandoned slot pins WAL forever, fills `pg_wal`, and shuts the primary down on out-of-disk. Bounded loss beats an outage."
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Replication Slots: Guaranteed Retention",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Bounding The Damage"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Guarantee",
+            "Risk"
+          ],
+          "rows": [
+            [
+              "Slot",
+              "exact retention",
+              "disk fill"
+            ],
+            [
+              "`wal_keep_size`",
+              "best effort, N MB",
+              "broken replica"
+            ],
+            [
+              "`max_slot_wal_keep_size`",
+              "capped per slot",
+              "slot invalidated"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`max_slot_wal_keep_size` (PG13+) caps retention per slot.",
+            "Past the cap the slot flips to `wal_status = 'lost'`.",
+            "Logical slots also hold back the catalog xmin.",
+            "That blocks catalog `VACUUM`: bloat plus wraparound risk."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Slots are not replicated to standbys by default.",
+            "Before PG17 a slot vanished on promotion.",
+            "Every logical subscriber broke at exactly the worst moment.",
+            "PG17: `failover = true` plus `sync_replication_slots` on the standby."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Alert to ship day one",
+          "items": [
+            "Warn when a slot is inactive and retaining GBs.",
+            "`pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)`",
+            "Page before the volume fills, not after."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rows, Not Blocks",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ships decoded row changes: INSERT, UPDATE, DELETE tuples.",
+            "Targets tables, not whole clusters.",
+            "Needs `wal_level = logical` on the publisher.",
+            "One logical replication slot per subscription."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Decoding Pipeline"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "WAL",
+              "logical decoding",
+              "output plugin",
+              "apply worker"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Plugins: `pgoutput` built in, `test_decoding`, `wal2json`.",
+            "Decoding reassembles WAL into a transaction-ordered stream.",
+            "`streaming = on` (PG14+) sends in-progress transactions.",
+            "Otherwise a huge txn buffers wholly on the publisher first."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Logical Replication & Logical Decoding",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Both Sides"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE PUBLICATION mypub FOR TABLE orders;",
+            "-- FOR ALL TABLES; publish='insert,update'",
+            "CREATE SUBSCRIPTION mysub",
+            "  CONNECTION 'host=p' PUBLICATION mypub;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The subscription creates the slot and starts an initial COPY.",
+            "Initial sync uses a temporary slot per table.",
+            "`copy_data = false` when you seeded the big table yourself.",
+            "Row filters (PG15) and column lists trim what ships."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Replica Identity"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Row identified by"
+          ],
+          "rows": [
+            [
+              "`DEFAULT`",
+              "primary key"
+            ],
+            [
+              "`FULL`",
+              "whole old row, seq scan"
+            ],
+            [
+              "`NOTHING`",
+              "nothing, changes fail"
+            ]
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Table has no primary key. What happens?",
+          "a_bullets": [
+            "Error: 'cannot update table ... it does not have a replica identity'.",
+            "INSERTs still flow; UPDATE and DELETE stop the worker.",
+            "Fix with a real key, or accept the `FULL` scan cost."
+          ],
+          "example_code": [
+            "ALTER TABLE t REPLICA IDENTITY FULL;"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Never Ships"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "DDL: apply schema changes by hand on both sides.",
+            "Sequence values, until PG16 sequence sync.",
+            "Large objects, and TRUNCATE unless it is published.",
+            "Both sides writable, so a duplicate key stalls apply.",
+            "Skip the bad LSN with `ALTER SUBSCRIPTION ... SKIP`."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "Physical",
+            "Logical"
+          ],
+          "rows": [
+            [
+              "Scope",
+              "whole cluster",
+              "per table"
+            ],
+            [
+              "Versions",
+              "same ver/arch",
+              "cross-version"
+            ],
+            [
+              "Target",
+              "read-only",
+              "writable"
+            ],
+            [
+              "Cost",
+              "tiny",
+              "decode + apply CPU"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Killer use case",
+          "text": "Near-zero-downtime major upgrade: replicate PG13 to PG16 logically, wait for lag to hit zero, then cut the application over."
+        }
+      ]
+    },
+    {
+      "page_title": "Logical Replication & Logical Decoding (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Monitor",
+          "items": [
+            "Subscriber: `pg_stat_subscription`, received_lsn, latest_end_lsn.",
+            "Publisher: `pg_replication_slots` for retention growth.",
+            "Apply-worker errors land in the subscriber log."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Read Scaling, Honestly",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Route reporting and analytics to hot standbys.",
+            "Never assume a replica is current; it is eventually consistent.",
+            "Replay is single-threaded: one startup process.",
+            "A parallel write workload outruns any replica disk."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Recovery Conflicts"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Replay wants to remove a row version a query still needs.",
+            "Five types: snapshot, lock, tablespace, buffer pin, deadlock.",
+            "Lock conflicts come from an `AccessExclusiveLock` upstream."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "ERROR:  canceling statement due to conflict",
+            "  with recovery",
+            "DETAIL:  User query might have needed to see",
+            "  row versions that must be removed."
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Two Knobs"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "max_standby_streaming_delay",
+              "items": [
+                "Pause replay N seconds",
+                "Then cancel the query",
+                "`-1` waits forever",
+                "Replica drifts unbounded"
+              ]
+            },
+            "right": {
+              "title": "hot_standby_feedback",
+              "items": [
+                "Sends oldest xmin up",
+                "VACUUM keeps those rows",
+                "Queries survive",
+                "Primary bloats instead"
+              ]
+            }
+          }
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The feedback tax",
+          "text": "One forgotten idle-in-transaction session on a replica blocks `VACUUM` cluster-wide and bloats the primary."
+        },
+        {
+          "type": "heading",
+          "text": "Read-Your-Writes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Simplest: `synchronous_commit = remote_apply` for that txn.",
+            "Or capture `pg_current_wal_insert_lsn()` right after the write.",
+            "Then poll `pg_last_wal_replay_lsn()` until it passes."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pg_is_in_recovery();  -- t on a standby",
+            "SELECT pg_wal_replay_pause(); -- freeze snapshot",
+            "SELECT pg_wal_replay_resume();"
+          ],
+          "runnable": false
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Replicas As Read Workhorses",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Routing And Limits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`pg_is_in_recovery()` is the cheap health-check probe.",
+            "libpq `target_session_attrs=read-write` finds the writable node.",
+            "Replicas cannot create temp tables or write work tables.",
+            "Some ORMs and BI tools fail on a standby for that alone."
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "A report needs a stable snapshot for 40 minutes?",
+          "a_bullets": [
+            "Pause replay on the replica, run it, then resume.",
+            "Lag grows while paused: watch disk and slot size.",
+            "Or point it at a `recovery_min_apply_delay` replica instead."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Backups off the replica",
+          "items": [
+            "Offloads backup I/O from the primary.",
+            "Needs a slot or archive access during the backup.",
+            "Otherwise needed WAL is recycled underneath you."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Promotion",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`pg_ctl promote` or `SELECT pg_promote()` ends recovery.",
+            "The timeline bumps and the standby becomes writable.",
+            "`promote_trigger_file` is deprecated in PG16.",
+            "Cascading standbys follow the timeline change automatically."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Switchover vs Failover"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Switchover",
+              "items": [
+                "Planned",
+                "Stop writes, catch up",
+                "Promote, then re-point",
+                "Lossless"
+              ]
+            },
+            "right": {
+              "title": "Failover",
+              "items": [
+                "Unplanned",
+                "Primary already gone",
+                "Async txns can vanish",
+                "RPO above zero"
+              ]
+            }
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "RPO: data you can lose. Async seconds, sync zero.",
+            "RTO: downtime = detection + promotion + client re-routing.",
+            "Most teams size RPO and forget the re-routing half of RTO."
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Most Postgres outages are not the query planner — they are a forgotten replication slot quietly eating the disk until the primary PANICs. This handbook walks the whole durability path: WAL records and LSNs, checkpoints and full-page writes, streaming replicas, the five synchronous_commit levels, slots, logical decoding, recovery conflicts, and failover without split brain. Ten pages of field notes, including the three checklist queries worth pinning above your monitor.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#database",
+      "#replication",
+      "#backend",
+      "#sre",
+      "#devops",
+      "#dataengineering",
+      "#systemdesign",
+      "#sql",
+      "#highavailability",
+      "#databaseadministration"
+    ]
+  }
+}

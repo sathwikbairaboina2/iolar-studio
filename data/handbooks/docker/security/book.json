@@ -1,0 +1,146 @@
+{
+  "title": "Docker Security Notes: Locking Down Containers",
+  "summary": "Dense handwritten study notes covering how to harden Docker containers: non-root users, Linux capabilities, seccomp, read-only filesystems, image scanning, and secret handling.",
+  "chapters": [
+    {
+      "title": "1. Threat Model: What Can Go Wrong",
+      "points": [
+        "Containers are processes isolated by kernel namespaces (pid, net, mnt, user) and cgroups — not VMs; they share the host kernel",
+        "Kernel exploits matter most: a container breakout is usually a kernel vuln or misused privileged syscall path",
+        "Attack surfaces: container engine (dockerd), host kernel, mounted host paths, container network, and the image itself",
+        "Default Docker is NOT a security boundary: root in container ≈ root on host for kernel-level access unless user namespaces are used",
+        "Threat actors: malicious image content (supply chain), compromised app inside a container (runtime escape), leaked secrets",
+        "Defense in depth layers: non-root user → drop capabilities → seccomp filters → read-only FS → scanned images → managed secrets",
+        "Rule of thumb: each layer reduces blast radius; no single control stops every escape vector",
+        "Privileged mode (--privileged) removes nearly all isolation — treat as a red flag in any Dockerfile or run command"
+      ]
+    },
+    {
+      "title": "2. Running as Non-Root",
+      "points": [
+        "Why: processes running as UID 0 in-container inherit kernel-level power; many historic escapes required root",
+        "Dockerfile: USER appuser after installing packages; create with RUN adduser --system --no-create-home appuser (or groupadd/useradd)",
+        "Runtime override: docker run --user 1000:1000 works even for images that default to root",
+        "Kubernetes parallel: runAsNonRoot: true + runAsUser in securityContext; Pod admission can enforce it",
+        "Gotcha: files created as root before USER stay root-owned — chmod/chown them first or bind mounts fail on write",
+        "Ports < 1024 are privileged: use high ports (8080) or set NET_BIND_SERVICE capability / sysctl net.ipv4.ip_unprivileged_port_start",
+        "User namespaces (userns-remap) map container root → unprivileged host UID range; adds isolation but breaks shared volumes and some images",
+        "HOME env: set ENV HOME=/home/appuser so tools writing dotfiles don't crash",
+        "Verify: docker exec <c> id → expect uid=1000(...), and docker inspect for the User field"
+      ]
+    },
+    {
+      "title": "3. Linux Capabilities: Granular Root Powers",
+      "points": [
+        "Root power is split into ~40 capabilities (CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_DAC_OVERRIDE, ...); Docker grants a default subset",
+        "Default Docker drop list removes dangerous ones: CAP_SYS_ADMIN (mount, namespaces), CAP_NET_ADMIN, CAP_SYS_PTRACE, CAP_MKNOD",
+        "docker run --cap-drop=ALL then --cap-add=NET_BIND_SERVICE: whitelist only what the app needs",
+        "CAP_SYS_ADMIN is 'the new root' — granting it approximates full root; avoid unless a container legitimately manages mounts/namespaces",
+        "Inspect a running container's caps: docker exec <c> sh -c 'cat /proc/1/status | grep Cap' then decode with capsh --decode",
+        "capsh --print inside the container shows effective, permitted, bounding sets — great for auditing",
+        "File capabilities (setcap) can grant a single binary a cap without container-wide privileges, e.g. setcap cap_net_bind_service+ep on nginx",
+        "Gotcha: --cap-add can't restore caps already dropped from the bounding set; restart with correct flags",
+        "Rule: --privileged = all caps + devices + cgroup write — never in production"
+      ]
+    },
+    {
+      "title": "4. Seccomp: Syscall Firewalls",
+      "points": [
+        "Seccomp (secure computing mode) filters which syscalls a process may call, via BPF rules attached at process start",
+        "Docker's default seccomp profile blocks ~44 risky syscalls (kexec_load, open_by_handle_at, keyctl...) and permits the rest",
+        "Profiles are JSON: list defaultAction (e.g. SCMP_ACT_ERRNO) plus allowed syscalls with args-based conditions",
+        "Custom profile: docker run --security-opt seccomp=/path/profile.json; --security-opt seccomp=unconfined disables entirely",
+        "Recent kernels: seccomp can use notify action to proxy syscalls to a supervisor (used by gVisor-style designs)",
+        "Seccomp ≠ capabilities: caps gate what resources you may touch; seccomp gates which kernel entry points exist",
+        "Debugging: EPERM on weird ops often means seccomp; use strace outside the filter to find the blocked syscall",
+        "Gotcha: seccomp is not namespaced — profile applies per container, set at run time, not in the image",
+        "Keep profiles minimal: allowlist only syscalls your runtime needs; use tools like `must`-mode tracing (strace -c) to derive the set"
+      ]
+    },
+    {
+      "title": "5. Read-Only Filesystems & Resource Limits",
+      "points": [
+        "docker run --read-only mounts the container's root filesystem read-only — tamper-proofing and ransomware resistance",
+        "Writable space: --tmpfs /tmp:rw,noexec,nosuid,size=64m for temp dirs; --mount type=tmpfs for selective writes",
+        "Volumes remain writable under a read-only rootfs; give the app only the volume paths it needs",
+        "Apps that write in-place (PID files, caches, logs) break on read-only roots — fix paths via env config or tmpfs",
+        "noexec on tmpfs prevents executing downloaded payloads; nosuid ignores setuid bits in writable areas",
+        "Pair read-only with --cap-drop=ALL: even a compromised process has no writable code path and no root powers",
+        "cgroup limits contain damage: --memory, --pids-limit (stops fork bombs), --cpus — an escaped process still hits limits",
+        "Don't disable the OOM-adjacent safety: memory limits force attackers into resource-constrained escapes",
+        "Gotcha: some base images (alpine apk, apt) need writable /var — do installs at build time, not runtime"
+      ]
+    },
+    {
+      "title": "6. Image Hardening: Minimal Base Images",
+      "points": [
+        "Every package in an image is attack surface and CVE load — prefer distroless, alpine, or scratch bases",
+        "Multi-stage builds: compile in a full toolchain image, COPY only the binary into a minimal runtime stage",
+        "Never ship build tools, package managers, or shells in runtime images — fewer tools = fewer post-exploit options",
+        "Pin base image digests: FROM node:20@sha256:<digest> for reproducible, tamper-checked builds",
+        "Run as non-root inside the Dockerfile (USER), COPY --chown instead of post-hoc chown layers",
+        "Use .dockerignore to keep secrets (.env, .git, keys) out of the build context — COPY . can leak them into layers",
+        "Multi-arch + reproducible builds reduce 'surprise' image drift; enable BuildKit for cleaner layer control",
+        "Don't store secrets in ENV or RUN lines — layer history preserves them forever (see chapter 10)",
+        "Static binaries (Go/Rust) make scratch images viable: ~10MB, zero package CVEs"
+      ]
+    },
+    {
+      "title": "7. Image Scanning & Supply Chain",
+      "points": [
+        "Scanners match installed packages against CVE databases: Trivy, Grype, Docker Scout, Snyk",
+        "Trivy usage: trivy image myapp:1.2 — reports OS packages, language deps (pip/npm), and config issues",
+        "Scan in CI on every build; fail the pipeline above a severity threshold: trivy image --exit-code 1 --severity HIGH,CRITICAL",
+        "Prioritize by exploitability: a CRITICAL in a base-image lib you never execute can often be accepted; one in your runtime web server cannot",
+        "Rebuild base images regularly — most CVE fixes arrive by re-pulling an updated base, not editing your code",
+        "SBOM (Software Bill of Materials): trivy image --format cyclonedx generates an inventory; use it for audit and diffing",
+        "Content trust / signatures: docker content trust (Notary) or cosign verify ensures the image you run is the one that was built",
+        "Gotcha: scanning at build time only is a snapshot — rescan running/registried images on a schedule (new CVEs appear daily)",
+        "Pin versions in requirements.txt/package-lock so scans are deterministic and diffs meaningful"
+      ]
+    },
+    {
+      "title": "8. Docker Socket, Daemon & Network isolation",
+      "points": [
+        "Mounting /var/run/docker.sock into a container = root on host: the socket API can spawn privileged containers",
+        "Safer alternatives to socket mounts: docker-socket-proxy restricting API verbs, or rootless Docker/Podman",
+        "Rootless Docker runs dockerd itself as unprivileged user with user namespaces — daemon compromise ≠ host root",
+        "Default bridge network is flat: all containers can reach each other — create user-defined networks and isolate per trust zone",
+        "--network=none for jobs that need no network; internal networks (internal: true) block external egress",
+        "Inter-container TLS/mTLS still matters inside the bridge — network proximity is not trust",
+        "Expose dockerd over TCP only with TLS and only if unavoidable; unauthenticated 2375 is instant host compromise",
+        "Gotcha: --link is legacy; use user-defined networks with DNS service names instead",
+        "Audit: docker network inspect and docker port to find accidental host-published ports (0.0.0.0 bindings)"
+      ]
+    },
+    {
+      "title": "9. Runtime Detection & Hardened Runtimes",
+      "points": [
+        "Controls reduce attack surface; runtime detectors catch what slips through: Falco, Sysdig, eBPF-based monitors",
+        "Falco rules flag suspicious behavior: shell spawned in nginx container, unexpected writes to /etc, outbound to odd IPs",
+        "gVisor: user-space kernel intercepting syscalls — huge seccomp-like reduction, at cost of per-syscall overhead",
+        "Kata Containers: lightweight VMs per container — kernel isolation like VMs, higher memory/startup cost",
+        "Trade-off spectrum: runc (fast, kernel-shared) → gVisor (syscall filtering) → Kata (VM boundary); pick by threat model and latency budget",
+        "AppArmor/SELinux add mandatory access control per container: --security-opt apparmor=profile (Docker's default profile exists)",
+        "Performance note: seccomp overhead is near-zero; gVisor adds meaningful syscall latency for I/O-heavy apps",
+        "Detect drift: compare running process list/image digest against expected (docker ps + image ID checks)",
+        "Post-incident: container filesystems are ephemeral — export evidence (docker cp) before the container dies"
+      ]
+    },
+    {
+      "title": "10. Secrets Handling & Summary Checklist",
+      "points": [
+        "Never bake secrets into images: ENV, ARG, and RUN layers persist in history (docker history shows every layer)",
+        "Build-time secrets: BuildKit mounts — RUN --mount=type=secret,id=npmNPM_TOKEN npm install; secret never lands in a layer",
+        "Runtime secrets: Docker Swarm secrets (tmpfs-backed at /run/secrets/<name>) or Kubernetes Secrets + encryption at rest",
+        "K8s Secrets are base64, not encrypted by default — enable etcd encryption and RBAC on the secrets API",
+        "Inject via mounted files over environment variables: env vars leak via /proc/<pid>/environ, crash dumps, and child processes",
+        "External managers: Vault, AWS Secrets Manager, SOPS for encrypted secrets in git; short-lived tokens beat static keys",
+        "Rotate after any exposure — deleting an image does not unpull it from mirrors, caches, or attacker machines",
+        "Gitleaks/trufflehog on the repo to stop .env and credentials entering the build context in the first place",
+        "Summary checklist: non-root USER → --cap-drop=ALL + needed caps → default/custom seccomp → --read-only + tmpfs → distroless pinned image → scanned CI → no socket mounts → secrets via BuildKit/swarm → runtime detection → resource limits",
+        "Security is layered trade-offs: each control costs a little convenience; apply all ten and a single failure rarely becomes a host compromise"
+      ]
+    }
+  ]
+}

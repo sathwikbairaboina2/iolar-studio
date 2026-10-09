@@ -1,0 +1,940 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "GRAPHQL SUBSCRIPTIONS",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "What a Subscription Actually Is",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Third Root Type",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`type Subscription` sits beside query and mutation",
+            "Wired through the schema's `subscription` root",
+            "Query resolves once; subscription is a long-lived stream",
+            "Spec rule: exactly ONE root field per operation",
+            "Two root fields is a validation error, not a warning"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "graphql",
+          "lines": [
+            "type Subscription {",
+            "  messageAdded(roomId: ID!): Message!",
+            "}  # args are filters, bound at subscribe"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Two-Phase Execution"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "subscribe",
+              "CreateSourceEventStream",
+              "event published",
+              "ExecuteSubscriptionEvent",
+              "ExecutionResult"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Phase one runs once: attach to the source",
+            "Phase two runs per event: run the selection set",
+            "Root field yields the raw event payload value",
+            "Child resolvers compose normally, exactly like a query"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Error Boundaries"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each event = full result with `data` plus `errors`",
+            "Shape is identical to a query on the same selection",
+            "Field error inside one event does not kill the stream",
+            "Error during `CreateSourceEventStream` fails the subscribe"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Naming Events"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Avoid",
+            "Prefer"
+          ],
+          "rows": [
+            [
+              "`getUser`",
+              "`userUpdated`"
+            ],
+            [
+              "`fetchOrders`",
+              "`orderShipped`"
+            ],
+            [
+              "`roomState`",
+              "`messageAdded`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Field name should read as a fact that happened",
+            "Resolvers stay side-effect free readers of the stream",
+            "Never trigger a mutation from a subscription resolver",
+            "Client declares interest once; server pushes deltas"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "What a Subscription Actually Is (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Topic + Projection",
+          "items": [
+            "Root field = topic name plus filter args",
+            "Selection set = projection applied to each event",
+            "One operation maps to one event source"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Not incremental delivery",
+          "text": "`@defer` and `@stream` chunk ONE operation's response. A subscription is an open-ended feed of separate results."
+        },
+        {
+          "type": "heading",
+          "text": "Spec Stops At Execution",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "The GraphQL spec defines execution only. How bytes reach the client is a protocol you layer on top."
+        },
+        {
+          "type": "heading",
+          "text": "Three Transports"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "WebSocket: `Upgrade: websocket`, 101, full duplex TCP",
+            "New subscribes ride the same socket, no reconnect",
+            "SSE: `text/event-stream`, one-way, `Last-Event-ID` resume",
+            "EventSource auto-reconnects in the browser for free",
+            "Long poll: hold request until event or timeout, reissue"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "WebSocket",
+            "SSE",
+            "Long poll"
+          ],
+          "rows": [
+            [
+              "multiplex",
+              "many per socket",
+              "one per stream",
+              "one per cycle"
+            ],
+            [
+              "proxies, CDN",
+              "needs upgrade config",
+              "plain HTTP",
+              "plain HTTP"
+            ],
+            [
+              "client to server",
+              "yes",
+              "no, needs POST",
+              "next request"
+            ],
+            [
+              "compression",
+              "permessage-deflate",
+              "gzip stream",
+              "gzip body"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Long poll is simplest to deploy, worst per-event overhead",
+            "gzip over a whole SSE stream beats per-frame deflate",
+            "Repetitive JSON compresses far better across frames"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "HTTP/2 Changed The Math"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SSE inherits connection multiplexing from HTTP/2",
+            "The '6 connections per origin' limit largely disappears",
+            "That was a core WebSocket argument; it has weakened"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keepalives Are Mandatory"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "SSE heartbeat: a `:` comment line on an interval",
+            "WebSocket heartbeat: Ping / Pong control frames",
+            "Load balancers silently drop idle sockets, typically 60s",
+            "Heartbeat interval must sit under that idle timeout"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Transport: WebSocket vs SSE vs Long Poll",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Pick SSE",
+              "items": [
+                "clients only consume",
+                "existing HTTP auth",
+                "tracing and logs work",
+                "one less protocol"
+              ]
+            },
+            "right": {
+              "title": "Pick WebSocket",
+              "items": [
+                "many subs per client",
+                "bidirectional needs",
+                "sub-second latency",
+                "socket layer already run"
+              ]
+            }
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Practical default",
+          "items": [
+            "Read-only clients: SSE, every time",
+            "Escalate to WebSocket for real multiplexing",
+            "Long poll only under legacy constraints"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Serverless caveat",
+          "text": "No single process owns the socket across invocations, so WebSocket needs a connection registry — API Gateway connection IDs or equivalent."
+        },
+        {
+          "type": "heading",
+          "text": "Which Library",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`graphql-ws` speaks the `graphql-transport-ws` subprotocol",
+            "That is the modern standard, start here",
+            "`subscriptions-transport-ws` is deprecated and unmaintained",
+            "Its subprotocol string is literally `graphql-ws`",
+            "Read the subprotocol on the wire, not the package name"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Subprotocol mismatch",
+          "text": "Negotiation happens in `Sec-WebSocket-Protocol`. A name mismatch between client and server is the number one cause of a silently dead connection."
+        },
+        {
+          "type": "heading",
+          "text": "Message Types"
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "graphql-transport-ws",
+            "cells": [
+              "ConnectionInit",
+              "ConnectionAck",
+              "Subscribe",
+              "Next",
+              "Error",
+              "Complete",
+              "Ping",
+              "Pong"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Handshake Order"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "-> connection_init {payload:{token}}",
+            "<- connection_ack   # required before subscribe",
+            "-> subscribe {id:'1', payload:{query}}",
+            "<- next {id:'1', payload:{data}}",
+            "<- complete {id:'1'}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every `Subscribe` carries a client-chosen `id`",
+            "`Next`, `Error`, `Complete` echo that id back",
+            "That echo is how one socket multiplexes many streams",
+            "`Error` terminates that id; `Complete` is the clean end",
+            "Client sends `Complete` to unsubscribe"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Close",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "4400",
+              "bad request"
+            ],
+            [
+              "4401",
+              "unauthorized"
+            ],
+            [
+              "4408",
+              "connection-init timeout"
+            ],
+            [
+              "4409",
+              "subscriber already exists"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Wire Protocols on the Socket",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "SSE Flavour"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Distinct connections mode: one stream per operation, stateless",
+            "Stateless means CDN and proxy friendly",
+            "Single connection mode: reservation stream plus separate POSTs",
+            "`event:` is `next` or `complete`, result JSON in `data:`"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "wscat -c ws://h/gql \\",
+            "  -s graphql-transport-ws  # paste JSON by hand",
+            "curl -N -H 'Accept: text/event-stream' \\",
+            "  http://h/graphql   # sse is human readable"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Two more facts",
+          "items": [
+            "Queries and mutations can ride these protocols",
+            "graphql-ws runs them as one `Next` plus `Complete`",
+            "Keep them on plain HTTP so caching still works",
+            "Ping/Pong here is app level, survives frame-stripping layers"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Resolver Is A Pair",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`subscribe` returns an AsyncIterable of raw events",
+            "`resolve` maps each raw event to the field value",
+            "With no `resolve`, payload must be keyed by field name",
+            "Wrong key yields `null` with no error at all"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "subscribe: (_, {roomId}) =>",
+            "  pubsub.asyncIterableIterator(",
+            "    `MSG_ADDED:${roomId}`),  // per-room topic",
+            "resolve: (payload) => payload.message,"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Publish From The Write Path"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "await tx.commit()   // write path first",
+            "await pubsub.publish(`MSG_ADDED:${id}`, {",
+            "  message,          // subscription only reads",
+            "})"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Filter Or Topic"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "withFilter",
+              "items": [
+                "runs per event per sub",
+                "must be cheap",
+                "fan-out then discard",
+                "predicate bugs leak"
+              ]
+            },
+            "right": {
+              "title": "Topic granularity",
+              "items": [
+                "`MESSAGE_ADDED:roomId`",
+                "broker does routing",
+                "no wasted delivery",
+                "wrong topic = silence"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Teardown Contract"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`next()` yields events, `return()` runs on unsubscribe",
+            "Release broker subscriptions and timers inside `return()`",
+            "Skip it and a dead client holds a Redis channel forever",
+            "Memory then grows monotonically until the pod dies"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Server-Side Resolvers and PubSub",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Connection-Scoped Context"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Context is built once from the `ConnectionInit` payload",
+            "Not per event, so it holds auth that ages badly",
+            "Never carry a request-scoped DataLoader into a stream",
+            "Its cache never invalidates, subscribers see frozen data"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Payload",
+            "Wire",
+            "Price"
+          ],
+          "rows": [
+            [
+              "thin, ids only",
+              "tiny",
+              "N queries per event"
+            ],
+            [
+              "fat, full object",
+              "large",
+              "leaks unauthorized fields"
+            ],
+            [
+              "either way",
+              "per-event authz",
+              "re-check at delivery"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Backpressure",
+          "text": "An AsyncIterable that ignores consumer speed buffers without bound. Cap the queue, then drop events or disconnect the slow consumer."
+        },
+        {
+          "type": "sidebox",
+          "title": "Test without sockets",
+          "items": [
+            "Call `subscribe` directly, get the iterable",
+            "Publish, then assert on yielded ExecutionResults",
+            "No transport, no server, fast in CI"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "In-Memory Breaks At Two",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`PubSub` from graphql-subscriptions is one EventEmitter",
+            "Documented as unsuitable for production, believe it",
+            "It breaks the moment a second replica exists"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Why do updates work locally but only sometimes in prod?",
+          "a_bullets": [
+            "N pods behind a load balancer, no shared broker",
+            "Mutation lands on pod A, subscriber sits on pod B",
+            "Delivery succeeds roughly 1/N of the time",
+            "Looks like flakiness; it is architecture"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "mutation on pod A",
+              "in-process emitter",
+              "pod A sockets only",
+              "pod B never notified"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Redis Options"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`graphql-redis-subscriptions`: fire and forget fan-out",
+            "At-most-once, no persistence, no replay",
+            "Event published during a reconnect is lost forever",
+            "Needs TWO clients: subscriber mode blocks other commands",
+            "Redis Streams adds replay from an ID plus consumer groups"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Kafka Trade-Offs"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Durable partitioned log, ordering held per partition",
+            "Right when events are also a system of record",
+            "Consumers keep offsets and can rewind",
+            "Rebalancing makes per-user ephemeral topics impractical",
+            "So subscribe broadly and filter at the gateway"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Pub/Sub Backends Compared",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Postgres And NATS"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`LISTEN`/`NOTIFY` adds zero new infrastructure",
+            "Transactional: the notification fires on commit",
+            "Payload capped at 8000 bytes, dropped if nobody listens",
+            "NATS: subject wildcards like `room.*.message`",
+            "JetStream layers optional persistence on top"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Backend",
+            "Delivery",
+            "Ordering"
+          ],
+          "rows": [
+            [
+              "in-memory",
+              "none",
+              "one process"
+            ],
+            [
+              "Redis Pub/Sub",
+              "at-most-once",
+              "per channel, best effort"
+            ],
+            [
+              "Redis Streams",
+              "at-least-once",
+              "per stream"
+            ],
+            [
+              "Kafka, JetStream",
+              "at-least-once",
+              "per partition"
+            ],
+            [
+              "Postgres",
+              "on commit",
+              "commit order"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Change data capture",
+          "text": "Debezium or logical replication turns table writes into events, so a forgotten `publish` call can never make subscriptions drift from the database."
+        },
+        {
+          "type": "sidebox",
+          "title": "Choosing and deduping",
+          "items": [
+            "Missed event = stale UI until refresh? Redis is fine",
+            "Missed event = lost financial state? durable log",
+            "At-least-once WILL redeliver, plan for it",
+            "Give every event a stable id, dedupe on the client"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Auth Once, Authorize Always",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The socket authenticates once at connect time",
+            "Authorization must be re-checked continuously after that",
+            "Revoked permissions do not close the socket by themselves",
+            "For fat payloads, re-check rights at delivery time"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where The Token Goes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Browsers cannot set headers on a WebSocket handshake",
+            "So no `Authorization: Bearer` on the upgrade",
+            "Tokens travel inside the `ConnectionInit` payload instead",
+            "Never in the URL query string: proxy logs, access logs, history",
+            "Cookies ARE sent on the handshake and work fine"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "onConnect: async (ctx) => {",
+            "  const p = ctx.connectionParams || {}",
+            "  const u = await verify(p.authorization)",
+            "  return { user: u, exp: u.exp }  // context",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Auth, Authorization, Multi-Tenancy",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Expiry And Refresh"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Throw inside `onConnect` to reject the handshake",
+            "A JWT valid at connect expires while the stream lives on",
+            "Schedule a server timer that closes the socket at `exp`",
+            "Allow a client message carrying a refreshed token",
+            "That message updates the connection context in place"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Tenancy And Origin"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bake the tenant id into the topic name itself",
+            "A filter bug leaks cross-tenant data; a wrong topic returns nothing",
+            "WebSocket handshakes are not protected by CORS",
+            "Validate the `Origin` header server-side, explicitly",
+            "With cookie auth, Origin checking is mandatory, not optional"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Limiting The Blast"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Scope",
+            "Cap"
+          ],
+          "rows": [
+            [
+              "per connection",
+              "subscriptions open"
+            ],
+            [
+              "per user",
+              "concurrent connections"
+            ],
+            [
+              "per subscriber",
+              "events per second"
+            ],
+            [
+              "per document",
+              "cost times event rate"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Rate limiting moves from requests to connections",
+            "A depth-5 selection set executes on EVERY event",
+            "True cost is query cost multiplied by event rate"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Denial of wallet",
+          "text": "Thousands of cheap subscriptions to one high-volume topic turn your fan-out into your invoice. Cap subscriptions before an attacker finds the ceiling."
+        },
+        {
+          "type": "heading",
+          "text": "Fan-Out Is The Number",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One publish times N subscribers = N executions",
+            "Plus N serializations of the same shape",
+            "CPU grows with subscriber count, not with write rate"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "1 publish, N subs",
+            "branches": [
+              {
+                "label": "CPU",
+                "children": [
+                  "N executions",
+                  "N serializations"
+                ]
+              },
+              {
+                "label": "memory",
+                "children": [
+                  "socket fd",
+                  "broker sub",
+                  "parsed document"
+                ]
+              },
+              {
+                "label": "egress",
+                "children": [
+                  "N times payload"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Scaling: Fan-Out, State, and Cost",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "State Per Connection"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Budget roughly tens of KB per open subscription",
+            "File descriptor limits (`ulimit -n`) bite first",
+            "Ephemeral port exhaustion on the proxy tier bites second",
+            "Application CPU is rarely the ceiling you hit"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Deploys And Balancers"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Raise LB idle timeout above your heartbeat interval",
+            "Never terminate connections on a routine config reload",
+            "Every rolling deploy disconnects 100% of subscribers",
+            "They all reconnect at once: a self-inflicted thundering herd",
+            "Cure: jittered exponential backoff plus a drain window"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Topology Choices"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Split the socket gateway from the query API",
+            "Socket load then cannot starve request latency",
+            "Sticky sessions unneeded if the broker reaches every node",
+            "Each node subscribes and pushes to the sockets it holds",
+            "Autoscale on connection count, not CPU; scale in after draining"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Dedupe identical documents on the same topic",
+            "10,000 clients, one execution, one serialized broadcast",
+            "Live queries push diffs instead: simpler client, heavy server",
+            "Federated subscriptions resolve in one subgraph, router proxies",
+            "You cannot fan one subscription across subgraphs"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "Tells you"
+          ],
+          "rows": [
+            [
+              "open connections",
+              "capacity headroom"
+            ],
+            [
+              "subs per connection",
+              "fan-out shape"
+            ],
+            [
+              "published vs delivered",
+              "silent drops"
+            ],
+            [
+              "delivery latency p99",
+              "real staleness"
+            ],
+            [
+              "teardown rate",
+              "leaked subscriptions"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Bandwidth math",
+          "text": "50k subscribers times 1 event/sec times 2KB is about 100 MB/s of egress. Bandwidth, not compute, is usually the binding constraint."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Most teams reach for GraphQL subscriptions and inherit a broker, a reconnect state machine, and a cache reconciliation problem — to save 2.5 seconds nobody asked for. This handbook walks the whole stack: the two-phase execution model, graphql-transport-ws message by message, pub/sub backends from EventEmitter to Kafka, fan-out cost math, and the exact arithmetic that tells you to just poll instead. Ten pages, every gotcha we have paid for.",
+    "hashtags": [
+      "#graphql",
+      "#websockets",
+      "#serversentevents",
+      "#backendengineering",
+      "#systemdesign",
+      "#apollo",
+      "#redis",
+      "#kafka",
+      "#realtime",
+      "#webdev",
+      "#softwareengineering",
+      "#devnotes"
+    ]
+  }
+}

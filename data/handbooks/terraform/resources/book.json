@@ -1,0 +1,196 @@
+{
+  "title": "Terraform Providers & Resources: The Handbook",
+  "summary": "A dense field guide to how Terraform providers plug into the core, how resource schemas define arguments and attributes, what every meta-argument really does, and how version constraints and lock files keep plans reproducible.",
+  "chapters": [
+    {
+      "title": "Providers: What They Actually Are",
+      "points": [
+        "A provider is a separate binary plugin; terraform core talks to it over gRPC on localhost, not in-process",
+        "Core owns the graph, state, and plan/apply lifecycle; the provider owns API calls and schema",
+        "Providers are downloaded by `terraform init` into `.terraform/providers/<registry>/<namespace>/<name>/<version>/<os_arch>/`",
+        "Source address anatomy: `registry.terraform.io/hashicorp/aws` — hostname / namespace / type; short form `hashicorp/aws`",
+        "`required_providers` inside the `terraform {}` block is the only correct place to declare source + version",
+        "A bare `provider \"aws\" {}` block configures, it does not declare — relying on implicit declaration guesses namespace `hashicorp`",
+        "Provider types: managed resource providers (aws, google), utility providers (random, null, time, local), logical providers (tls, http)",
+        "The provider protocol version (5 vs 6) must match what your Terraform CLI speaks; protocol 6 needs Terraform >= 1.0",
+        "Provider configuration is evaluated at apply time, so it cannot depend on values unknown until apply",
+        "Example: `terraform { required_providers { aws = { source = \"hashicorp/aws\", version = \"~> 5.0\" } } }`",
+        "`terraform providers` prints the provider dependency tree including inherited module requirements",
+        "Provider plugin cache (`plugin_cache_dir` in CLI config) avoids re-downloading the same binary per workspace",
+        "Third-party and in-house providers live under a different namespace or a private registry; source address changes, syntax does not",
+        "Gotcha: deleting `.terraform/` is safe and recoverable; deleting `.terraform.lock.hcl` silently allows version drift"
+      ]
+    },
+    {
+      "title": "Resource Schema: The Contract",
+      "points": [
+        "Every resource type ships a schema: a map of attribute names to types, plus behavior flags",
+        "Behavior flags: Required, Optional, Computed, ForceNew, Sensitive, Deprecated",
+        "Required = you must set it. Optional = you may. Computed = provider fills it in",
+        "Optional+Computed is the tricky combo: you may set it, and if you do not, the API supplies a default that Terraform records",
+        "Types: string, number, bool, list(T), set(T), map(T), object({...}), plus nested blocks",
+        "Set vs list: sets are unordered and deduplicated, so reordering causes no diff; lists are index-sensitive and reordering does",
+        "Nested blocks come in modes: single, list, set — this decides whether you write one block or repeat it",
+        "`terraform providers schema -json` dumps the full machine-readable schema for any provider you have installed",
+        "Schema is versioned per resource; state upgraders migrate old state shapes forward on read",
+        "A resource address is `type.name` (e.g. `aws_instance.web`); the type's prefix binds it to a provider by convention",
+        "Provider-defined validation runs at plan time (`ValidateFunc` / framework validators) and fails before any API call",
+        "Data sources have their own schema, almost entirely Computed with a few Required lookup arguments",
+        "Example: `aws_s3_bucket.bucket` is Optional+Computed — omit it and AWS generates a name Terraform then stores",
+        "Gotcha: registry docs are generated from the schema, so if docs and schema disagree, the schema wins"
+      ]
+    },
+    {
+      "title": "Arguments vs Attributes",
+      "points": [
+        "Argument = input you write in the config block. Attribute = value you read back with `resource.name.field`",
+        "Every argument is readable as an attribute; not every attribute is settable as an argument",
+        "Read-only attributes are the Computed-only ones: `id`, `arn`, `private_ip`, `endpoint`, timestamps",
+        "Setting a read-only attribute is a config error: `Can't configure a value for \"arn\": its value will be decided automatically`",
+        "The universal attribute is `id` — every managed resource has one, it is a string, and it is the provider's remote identifier",
+        "Referencing an attribute creates an implicit dependency edge in the graph — this is the primary ordering mechanism",
+        "Unknown values: at plan time a not-yet-created attribute renders as `(known after apply)`",
+        "Unknown values propagate — one unknown attribute makes every expression that consumes it unknown",
+        "Unknowns cannot be used in `count`, `for_each` keys, or provider config; that is what causes most \"value depends on resource attributes\" errors",
+        "Data source attributes are read during plan (or refresh) and are known early, unless the data source depends on an unknown",
+        "Comparison row: argument -> written by you -> validated at plan; attribute -> written by API -> resolved at apply",
+        "Sensitive attributes propagate their sensitivity through expressions and get redacted in plan output",
+        "Example: `subnet_id = aws_subnet.a.id` reads an attribute and orders subnet before instance in one stroke",
+        "Gotcha: `depends_on` is only needed when the dependency is real but invisible to the expression graph (IAM policy before instance profile use)"
+      ]
+    },
+    {
+      "title": "Meta-Arguments I: count & for_each",
+      "points": [
+        "Meta-arguments are core features, not provider features — they work on every resource type identically",
+        "`count = n` creates n instances addressed `type.name[0]` ... `[n-1]`, with `count.index` available inside",
+        "`for_each` takes a map or a set of strings and creates instances addressed `type.name[\"key\"]`, with `each.key` and `each.value`",
+        "count and for_each are mutually exclusive on one block",
+        "The killer difference: count keys by position, so removing the middle element shifts and recreates every element after it",
+        "for_each keys by identity, so removing one element destroys exactly one instance",
+        "Rule of thumb: count for identical or on/off resources, for_each for a keyed collection of distinct things",
+        "`count = var.enabled ? 1 : 0` is the standard conditional-resource idiom",
+        "for_each keys must be known at plan time — computed values in keys give \"The for_each map cannot be determined until apply\"",
+        "Convert a list to a valid for_each set with `toset(var.names)`; convert objects with `{ for o in var.objs : o.name => o }`",
+        "With count/for_each the whole resource becomes a list/map: `aws_instance.web[*].id` (splat) or `values(aws_instance.web)[*].id`",
+        "Migrating count to for_each without `moved` blocks destroys and recreates everything",
+        "`moved { from = aws_instance.web[0]  to = aws_instance.web[\"a\"] }` performs the rename in state, no API calls",
+        "Gotcha: `for_each` over a set gives `each.key == each.value`; over a map, `each.value` is the map's value"
+      ]
+    },
+    {
+      "title": "Meta-Arguments II: provider, depends_on, lifecycle",
+      "points": [
+        "`provider = aws.west` selects a non-default provider instance for that resource",
+        "`depends_on = [aws_iam_role_policy.p]` forces ordering when no attribute reference exists",
+        "depends_on takes references only, never strings, and makes the dependent's plan more conservative (more unknowns)",
+        "`lifecycle { create_before_destroy = true }` builds the replacement first; needed for resources behind a load balancer or with unique-name constraints",
+        "create_before_destroy propagates to dependencies — if a dependency cannot be created first, the whole chain must adopt it",
+        "`prevent_destroy = true` turns any destroy plan into a hard error; it is a guardrail, not a lock (removing the block removes the guard)",
+        "`ignore_changes = [tags, ami]` tells Terraform to stop diffing those attributes after creation",
+        "`ignore_changes = all` freezes the whole resource; useful for adopting drifted infrastructure",
+        "`replace_triggered_by = [aws_instance.web.id]` forces replacement when another resource changes",
+        "`lifecycle { precondition { ... } }` and `postcondition` assert invariants at plan and apply time",
+        "Lifecycle blocks accept only literal expressions — no variables, because they are evaluated before the graph walk",
+        "`-replace=aws_instance.web` on the CLI is the modern taint; `terraform taint` is deprecated",
+        "Comparison: prevent_destroy blocks apply; ignore_changes hides diffs; replace_triggered_by forces churn",
+        "Gotcha: ignore_changes on an argument does not stop the initial create from using it — it only silences later drift"
+      ]
+    },
+    {
+      "title": "Provider Configuration & Aliases",
+      "points": [
+        "One `provider` block per provider is the default instance; every resource of that type uses it implicitly",
+        "`alias = \"west\"` creates a second, named instance of the same provider with different settings",
+        "Aliased instances are selected explicitly: `provider = aws.west` on the resource, or `providers = { aws = aws.west }` on a module",
+        "Common alias uses: multi-region, multi-account (assume_role), multi-cluster kubernetes",
+        "Credentials should come from the environment (`AWS_PROFILE`, `GOOGLE_CREDENTIALS`) not hardcoded arguments",
+        "Child modules should NOT declare their own provider blocks — they inherit or receive them",
+        "A module with its own provider block cannot be removed cleanly and cannot use `for_each`/`count` on the module",
+        "Declare what a module needs with `required_providers` + `configuration_aliases = [aws.replica]`",
+        "Default (unaliased) providers are inherited automatically by child modules; aliased ones must be passed explicitly",
+        "Provider config values can reference variables and locals but not resource attributes computed at apply",
+        "Example: `provider \"aws\" { alias = \"west\"  region = \"us-west-2\" }` then `resource \"aws_s3_bucket\" \"b\" { provider = aws.west }`",
+        "`terraform init` errors with \"Missing required provider\" when a module's configuration_aliases is not satisfied by the caller",
+        "Provider-level `default_tags` (AWS) and `ignore_tags` apply across every resource that instance manages",
+        "Gotcha: destroying resources whose provider alias was deleted leaves state you cannot plan — remove the resources first, then the alias"
+      ]
+    },
+    {
+      "title": "Version Constraints & the Lock File",
+      "points": [
+        "Constraint operators: `=`, `!=`, `>`, `>=`, `<`, `<=`, `~>`, and comma-joined conjunctions",
+        "`~> 5.0` means >= 5.0 and < 6.0 (pessimistic at the minor level, one segment shorter than written)",
+        "`~> 5.31.0` means >= 5.31.0 and < 5.32.0 (pessimistic at the patch level)",
+        "`>= 5.0, < 6.0` is the explicit long form of `~> 5.0`",
+        "Providers follow semver: major = breaking schema changes, minor = new resources/arguments, patch = fixes",
+        "`.terraform.lock.hcl` records the exact selected version plus provider binary hashes (`h1:` and `zh:`)",
+        "COMMIT the lock file. It is the reproducibility guarantee, the analogue of package-lock.json",
+        "`terraform init -upgrade` re-resolves within the constraints and rewrites the lock file",
+        "`terraform providers lock -platform=linux_amd64 -platform=darwin_arm64` adds hashes for other platforms so CI does not fail",
+        "\"Provider produced inconsistent... checksums\" on CI usually means the lock has only your local platform's hashes",
+        "`required_version = \">= 1.5\"` in the terraform block constrains the CLI itself, separately from providers",
+        "Constraints from root and every module are intersected; an empty intersection is an init failure",
+        "Strategy: loose-ish constraints (`~> 5.0`) in reusable modules, tight in root configs, exactness from the lock file",
+        "Gotcha: pinning `= 5.31.0` in a shared module is antisocial — it makes the module uncomposable with any sibling that needs another patch"
+      ]
+    },
+    {
+      "title": "Resource Lifecycle: Plan, Diff, Apply",
+      "points": [
+        "Order per run: init -> refresh (read real state) -> plan (diff desired vs real) -> apply (call APIs) -> write state",
+        "Plan symbols: `+` create, `-` destroy, `~` update in place, `-/+` destroy then create, `+/-` create then destroy (CBD), `<=` read data source",
+        "Replacement happens when a changed argument is ForceNew in the schema; the plan prints `# forces replacement`",
+        "Update-in-place happens when the provider can express the change as an API update call",
+        "Refresh detects drift — changes made outside Terraform show up as a diff back toward config",
+        "`-refresh-only` plans show drift without proposing to fix it; useful for auditing",
+        "`terraform plan -out=tfplan` then `terraform apply tfplan` guarantees you apply exactly what you reviewed",
+        "`-target=aws_instance.web` narrows the graph; it is a break-glass tool, not a workflow",
+        "Terraform applies in dependency order and parallelizes independent nodes (default `-parallelism=10`)",
+        "Destroy walks the graph in reverse dependency order",
+        "\"Provider produced inconsistent result after apply\" is a provider bug: the returned state did not match the plan",
+        "`terraform import` (or an `import {}` block) binds existing infrastructure to a resource address without creating it",
+        "`import { to = aws_s3_bucket.b  id = \"my-bucket\" }` is the config-driven, plannable form added in 1.5",
+        "Gotcha: `terraform state rm` orphans real infrastructure — it forgets, it does not delete"
+      ]
+    },
+    {
+      "title": "Trade-offs, Cost, and Common Mistakes",
+      "points": [
+        "Provider API calls dominate wall-clock time; refresh is O(resources) network round trips",
+        "Big flat root modules refresh everything on every plan — split state to keep plans fast",
+        "Mistake: no version constraint at all — a provider major bump silently breaks the next init on a fresh machine",
+        "Mistake: lock file in .gitignore — every machine and CI runner resolves a different version",
+        "Mistake: hardcoded credentials in provider blocks — they land in the repo and often in state",
+        "State stores attribute values in plaintext, including passwords; sensitive markers only redact CLI output",
+        "Mistake: count over a list of names — inserting a name in the middle recreates the tail",
+        "Mistake: `ignore_changes = all` used as a bandage, hiding real drift forever",
+        "Mistake: provider blocks inside reusable modules — blocks module for_each and clean removal",
+        "Mistake: relying on `depends_on` where an attribute reference would express the same thing more precisely",
+        "Mistake: `-target` in normal operation, producing a state that never matches a full plan",
+        "Trade-off: many small states = fast plans, weak cross-cutting refactors; one big state = slow plans, easy references",
+        "Trade-off: `create_before_destroy` gives zero downtime but needs unique names and doubles capacity briefly",
+        "Trade-off: pinned exact versions give reproducibility, cost you security patches and drift the whole fleet at once"
+      ]
+    },
+    {
+      "title": "Summary: The Mental Model",
+      "points": [
+        "Core = graph, state, plan. Provider = schema, API. gRPC between them. That single split explains most behavior",
+        "Schema is the source of truth: it decides Required/Optional/Computed and therefore argument vs attribute",
+        "Arguments go in, attributes come out, `id` always exists, referencing an attribute builds the dependency edge",
+        "`(known after apply)` means unknown; unknowns are contagious and forbidden in for_each keys, count, and provider config",
+        "Meta-arguments are core-level and universal: count, for_each, provider, depends_on, lifecycle",
+        "for_each keys by identity, count keys by position — that difference is the single biggest source of accidental destroys",
+        "Use `moved` blocks for any address change, `import` blocks for any adoption; both are plannable and reviewable",
+        "`~> 5.0` in config sets the range; `.terraform.lock.hcl` picks the point; commit the lock",
+        "Add multi-platform hashes with `terraform providers lock` before CI bites you",
+        "Aliases give you N configured instances of one provider; pass them into modules with `configuration_aliases`",
+        "ForceNew in schema = `-/+` in plan; pair with `create_before_destroy` when downtime is unacceptable",
+        "Read the plan symbols before every apply; save the plan file and apply exactly that",
+        "Checklist: source pinned, version constrained, lock committed, no credentials in HCL, no provider block in child modules",
+        "One line to keep: Terraform does not know your infrastructure — it knows the schema, the state, and what the provider told it last"
+      ]
+    }
+  ]
+}

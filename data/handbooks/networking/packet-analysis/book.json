@@ -1,0 +1,176 @@
+{
+  "title": "Packet Analysis Field Notes: tcpdump, Wireshark & Reading the Wire",
+  "summary": "A dense 10-page study-notes carousel covering packet capture fundamentals, tcpdump BPF filters, Wireshark capture/display workflows, dissecting TCP conversations and handshake timing, and decoding the TLS handshake from raw captures.",
+  "chapters": [
+    {
+      "title": "1 · Packet Analysis Fundamentals",
+      "points": [
+        "What a packet capture is: a copy of frames as they traverse an interface, snarfed before kernel processing (libpcap on Linux/macOS, Npcap on Windows)",
+        "Promiscuous vs non-promiscuous mode: promiscuous captures frames not addressed to you; monitor mode is for Wi-Fi 802.11 frames, a different beast entirely",
+        "Frame anatomy: Ethernet header → IP header → TCP header → payload; each layer is parsed by a dissector",
+        "Capture filters (BPF) run in-kernel and drop uninteresting packets early; display filters run post-capture on decoded fields — know which one you're writing",
+        "Snap length (-s): truncating payloads saves disk but breaks TLS/TCP reassembly; full capture needs snaplen 0 (or 262144)",
+        "Ring buffers (-C filesize -W filecount) keep captures bounded on long-running boxes",
+        "Where to capture matters: on the client, on the server, or in between — NAT, offload, and asymmetry change what you see",
+        "Checksum offload gotcha: packets leaving the NIC show bad checksums locally; disable offload or ignore those errors",
+        "Capturing requires privileges: root or CAP_NET_RAW on Linux; expect 'you don't have permission' without it",
+        "The follow-the-conversation mindset: packets are noise, conversations (flows) are the signal",
+        "Timestamps are everything for latency work: verify clock sync (NTP) on hosts before trusting inter-packet deltas",
+        "Rule of thumb: filter early (capture), analyze late (display), never grep a 10 GB pcap"
+      ]
+    },
+    {
+      "title": "2 · tcpdump Essentials",
+      "points": [
+        "Basic usage: tcpdump -i eth0 -n (no DNS lookups — faster, less traffic), -nn for ports too, -v/-vv/-vvv for decoding depth",
+        "Write to file: tcpdump -w out.pcap; read back with -r out.pcap; combine with -A or -X to dump ASCII/hex payloads",
+        "Host filters: host 10.0.0.5, src host, dst host; net 10.0.0.0/8 for subnets",
+        "Port filters: port 443, src port 53, dst port 80; 'portrange 6000-6010' for a spread",
+        "Protocol & primitives: tcp, udp, icmp, arp, ip6; combine with and/or/not and parentheses (escape them in shells)",
+        "'tcp[13] & 2 != 0' — raw BPF on TCP flags byte to match SYN packets; classic interview filter",
+        "Quantifiers: less 100, greater 1500 (byte lengths); 'ether broadcast', 'ip multicast'",
+        "Limit count: -c 100 stops after 100 packets — perfect for quick sanity captures",
+        "Verbosity timing: use -ttttt for microsecond deltas between packets (absolute time deltas)",
+        "Common mistake: forgetting -n turns every packet into DNS lookups, polluting your own capture",
+        "tcpdump shows SYN, but retransmission detection is painful by hand — capture wide, then analyze in Wireshark",
+        "Recipe: tcpdump -i any -nn -s0 -w cap.pcap 'tcp port 443 and host api.example.com'"
+      ]
+    },
+    {
+      "title": "3 · BPF Filters Deep Dive",
+      "points": [
+        "BPF (Berkeley Packet Filter) compiles your filter expression to bytecode executed in-kernel — unmatched packets never cross the syscall boundary",
+        "Check compiled output: tcpdump -d '<expr>' prints the bytecode; -dd/-ddd give C/decimal forms",
+        "Primitive grammar: [proto] [dir] type value — e.g., 'src net', 'dst port', 'ether host'",
+        "Byte-access syntax: proto[expr:size] — tcp[0:2] is the source port, ip[2:2] is total length",
+        "Flag arithmetic: tcp[tcpflags] & (tcp-syn|tcp-fin) != 0 matches SYN or FIN without counting byte offsets by hand",
+        "Named offsets: tcp-syn, tcp-ack, tcp-fin, tcp-rst, tcp-push — prefer them over magic numbers",
+        "VLAN gotcha: tagged frames shift the Ethernet header — use 'vlan and tcp port 443' or offsets break",
+        "IPv6 caveat: 'ip proto tcp' misses IPv6; use 'ip6 protochain 6' or plain 'tcp' which matches both",
+        "Filter for TCP problems: 'tcp[tcpflags] & tcp-rst != 0' isolates resets — the fastest way to find refused connections",
+        "Complex filters get slow on busy boxes: pre-narrow with host/port before byte tests",
+        "tcpdump -G 3600 -w cap_%H.pcap rotates hourly when paired with -w and strftime-style names",
+        "Debug trick: if a filter matches nothing, drop to the broadest primitive and re-add terms one at a time"
+      ]
+    },
+    {
+      "title": "4 · Wireshark Workflows",
+      "points": [
+        "Capture options: choose interface, enable capture filter, set ring buffer for long captures; the double-click filter field is your BPF syntax check",
+        "Display filters vs capture filters: display uses dot-notation (ip.addr == 10.0.0.5), capture uses BPF (host 10.0.0.5) — different grammars, never mix",
+        "Essential display filters: tcp.stream eq 5, http.request, tls.handshake.type == 1, tcp.analysis.retransmission",
+        "Filter shortcuts: right-click a field → Apply as Filter / Prepare as Filter; Learn display filters from the packet bytes pane",
+        "Follow → Follow TCP Stream: reassembles a flow into readable request/response; 'Follow → Save as' exports one side",
+        "Statistics menu: Conversations (bytes/packets per flow), Endpoints, Protocol Hierarchy, I/O Graph",
+        "Protocol Hierarchy first: on any unknown pcap, it shows what's on the wire and where the anomalies concentrate",
+        "I/O Graph: plot bits/s or filtered traffic over time; spot throughput cliffs and retransmission storms visually",
+        "Coloring rules: green = TCP, gold = TLS, red = RST/errors — decode at a glance before filtering anything",
+        "Mark & ignore: mark packets (M) for a shortlist, ignore noisy chatter (N) to shrink analysis surface",
+        "Expert Information (Analyze → Expert Info): aggregated warnings — retransmissions, zero window, malformed — the triage panel",
+        "Keyboard flow: Ctrl-F to search packets, / to filter, Ctrl+Shift+C to colorize a conversation"
+      ]
+    },
+    {
+      "title": "5 · Reading TCP Conversations",
+      "points": [
+        "A conversation = 4-tuple (src IP:port, dst IP:port); Wireshark assigns each a stream index you filter on with tcp.stream eq N",
+        "Normal lifecycle: SYN → SYN/ACK → ACK (handshake) → data/PUSH → FIN or RST teardown",
+        "Follow TCP Stream shows client in red, server in blue; toggle 'Show data as' raw/ASCII/hex for binary protocols",
+        "Sequence numbers: Wireshark shows relative sequence numbers by default — disable in TCP preferences to see raw 32-bit ISNs",
+        "Retransmission: same sequence number seen again; Wireshark flags it via tcp.analysis.retransmission (and fast_retransmission)",
+        "Duplicate ACK = receiver signaling a gap; 3 dup-ACKs trigger fast retransmit before RTO fires",
+        "Zero window: receiver advertises window 0 — an application-not-reading problem, not a network one",
+        "TCP reset mid-stream: no FIN, conversation dies with RST — usually firewall, timeout kill, or crashed peer",
+        "MTU/fragmentation clues: 'TCP segment of a reassembled PDU' and 'length > MSS' point at path MTU trouble",
+        "Out-of-order vs retransmission: out-of-order = late but ordered arrival; retransmission = never arrived — different root causes",
+        "Statistics → Conversations sorted by duration finds long-lived flows; sorted by bytes finds the heavy hitters",
+        "Habit: label streams in Notes (Ctrl+M bookmarks) so a 2-hour investigation is re-readable tomorrow"
+      ]
+    },
+    {
+      "title": "6 · SYN/ACK Timing & Latency",
+      "points": [
+        "TCP handshake timing is a free RTT probe: SYN→SYN/ACK delta ≈ server-side RTT (plus backlog queueing)",
+        "SYN sent → SYN/ACK received: network round trip + accept queue processing — measure with frame.time_delta (Wireshark) or tcpdump -ttttt",
+        "SYN/ACK → ACK: client processing time, usually sub-millisecond; if not, client CPU is suspect",
+        "ACK → first data byte: application latency — server accepted but app is slow to respond",
+        "Wireshark: io,stat with frame.time_delta filter, or tcp.analysis.initial_rtt per stream; Statistics → TCP Stream Graphs → Round Trip Time",
+        "SYN with no SYN/ACK: packet dropped (ACL, asymmetric routing) or server backlog full — retransmitted SYNs at 1s/2s/4s backoff are the fingerprint",
+        "SYN → RST: port closed or firewall reject; distinguish from silent drop (nothing comes back)",
+        "Half-open connections: many SYNs without completion suggest SYN flood or accept-queue exhaustion (somaxconn/backlog)",
+        "Cloud gotcha: captures inside VMs miss hypervisor drops — SYN seen but never answered may die between host and wire",
+        "Intercontinental baseline: ~100 ms RTT coast-to-coast US, ~250 ms transpacific; know the floor before blaming the app",
+        "TCP timestamps option gives RTT samples on every packet, not just handshake — more robust for steady-state latency",
+        "Compare handshake time across captures at client AND server: client-side delta minus server-side delta ≈ one-way network"
+      ]
+    },
+    {
+      "title": "7 · The TLS Handshake in Captures",
+      "points": [
+        "TLS 1.2: ClientHello → ServerHello + Certificate + ServerHelloDone → ClientKeyExchange + ChangeCipherSpec → Finished — 2 round trips",
+        "TLS 1.3: ClientHello → ServerHello + {EncryptedExtensions, Certificate, Finished} → client Finished — 1 RTT, everything after ServerHello is encrypted",
+        "Filter handshake messages: tls.handshake.type == 1 (ClientHello), == 2 (ServerHello), == 11 (Certificate), == 12 (ServerKeyExchange)",
+        "ClientHello reveals: SNI (server name), cipher suites offered, ALPN (h2 vs http/1.1), supported versions — filter tls.handshake.extensions_server_name",
+        "Version negotiation: legacy_version + supported_versions extension; TLS 1.3 looks like 1.2 in the header — read the extension",
+        "Certificate chain in the clear (TLS ≤1.2): Wireshark shows issuer, SANs, validity — instant way to spot expired/mismatched certs",
+        "TLS 1.3 certificate encryption: server cert is inside encrypted extensions — you must decrypt to see it",
+        "ChangeCipherSpec in TLS 1.3 is a compatibility shim — its presence doesn't mean an old version",
+        "Failed handshakes: handshake_failure (cipher mismatch), certificate_unknown, alert encrypted after ClientHello in 1.3",
+        "Session resumption: session tickets / PSK shrink the handshake — resumed 1.3 connections send data in the first flight",
+        "Filter alerts: tls.alert_message.desc != 0; filter all TLS to one IP: tls.handshake and ip.addr == x",
+        "Diagnostic habit: ClientHello sent but no ServerHello = middlebox drop or SNI-based blocking; ServerHello but stalls = key exchange/MTU issue"
+      ]
+    },
+    {
+      "title": "8 · Decrypting TLS & Keylog Files",
+      "points": [
+        "SSLKEYLOGFILE: browsers and curl (libcurl) write per-session secrets to this env var; point Wireshark at it via Preferences → Protocols → TLS",
+        "Keylog format: one line per secret — CLIENT_HANDSHAKE_TRAFFIC_SECRET <client_random> <hex>",
+        "What decrypts: full HTTP/2 or HTTP/1.1 plaintext, extension details, certificates in TLS 1.3 — but only sessions whose keys you captured",
+        "Cannot decrypt without keys: ECDHE gives forward secrecy — a stolen server private key won't unlock old captures",
+        "RSA key exchange (legacy): Wireshark can decrypt with the server's private key alone (Preferences → TLS → RSA keys list)",
+        "Gotcha: ECDHE_RSA ciphers make RSA-key decryption fail silently — check the key exchange actually used in ServerKeyExchange",
+        "Decrypting server-side with OpenSSL s_server or NGINX SSLKEYLOGFILE support for controlled test captures",
+        "After enabling keylog: restart the browser — secrets only log for NEW sessions, resumed sessions need their tickets too",
+        "Verify decryption worked: 'Decrypted TLS' tab appears in the byte pane; http2 frames appear in the packet list",
+        "Privacy/compliance: keylog files are live credentials — never commit them; rotate and delete after analysis",
+        "Trace-level alternative: eBPF/strace on the app shows plaintext before encryption — sometimes easier than capture decryption",
+        "Workflow recap: set SSLKEYLOGFILE → reproduce issue in browser → capture with tcp.port == 443 → open pcap + keylog in Wireshark"
+      ]
+    },
+    {
+      "title": "9 · Common Mistakes & Triage Patterns",
+      "points": [
+        "Mistake: capturing without -s0 (or snaplen) — truncated TLS records and HTTP headers you can't dissect",
+        "Mistake: trusting timestamps from unsynced hosts; deltas across machines are meaningless without NTP",
+        "Mistake: filtering display vs capture syntax interchangeably — 'host x' in a display filter box matches nothing",
+        "Mistake: analyzing only one side of the conversation — always compare client-side and server-side captures of the same window",
+        "Mistake: chasing checksum errors caused by NIC offload instead of real corruption",
+        "Pattern — slow page load: capture, sort by tcp.time_delta descending, find the biggest gaps, map each gap to request/app/RTT",
+        "Pattern — intermittent failure: long ring-buffer capture + tcp.analysis.flags display filter to surface retransmits/RSTs when they happen",
+        "Pattern — connection refused vs dropped: RST back = reachable-but-refusing; silence = ACL/routing/blackhole",
+        "Pattern — high handshake latency: SYN→SYN/ACK big on both captures = network; big only server-side = accept queue/app",
+        "Tool laddering: tcpdump to capture wide and cheap → tshark for scripted extraction (tshark -r x.pcap -Y 'filter' -T fields) → Wireshark GUI for the deep dive",
+        "SplitRcap/mergecap: cut huge pcaps to the relevant window before opening the GUI — Wireshark chokes past a few hundred MB",
+        "Always document: which host, interface, filter, start/end time — a pcap without provenance is an unsolvable puzzle"
+      ]
+    },
+    {
+      "title": "10 · Cheat Sheet & Closing Summary",
+      "points": [
+        "Capture recipe: tcpdump -i any -nn -s0 -w cap.pcap 'tcp port 443 and host api.example.com'",
+        "Problem isolators: 'tcp[tcpflags] & tcp-rst != 0' (resets), 'tcp[tcpflags] & tcp-syn != 0 and tcp[tcpflags] & tcp-ack == 0' (bare SYNs)",
+        "Wireshark power filters: tcp.stream eq N, tcp.analysis.retransmission, tls.handshake.type == 1, tls.handshake.extensions_server_name contains \"example\"",
+        "Wireshark stats flow: Protocol Hierarchy → Conversations → I/O Graph → Expert Info → Follow Stream — run it in that order every time",
+        "Timing rules: SYN→SYN/ACK ≈ RTT; ACK→first data ≈ app latency; retransmit storms ≈ packet loss; zero window ≈ slow receiver",
+        "TLS triage tree: no ServerHello = drop/block; alert at ClientHello = cipher/SNI mismatch; handshake OK then stall = MTU or app",
+        "Decrypt checklist: SSLKEYLOGFILE set → app restarted → capture during session → keylog loaded in Wireshark TLS prefs",
+        "Trade-off recap: capture filters trade flexibility for kernel efficiency; full captures trade disk/scale for completeness; decryption trades privacy for visibility",
+        "Trade-off recap 2: client-side capture shows what the user felt; server-side shows what the app did — latency truth lives in the difference",
+        "Automation: tshark -r cap.pcap -Y 'tcp.analysis.retransmission' -T fields -e frame.time -e ip.src for scripted retransmit reports",
+        "Five-question checklist: Where captured? What filter? Clocks synced? Both sides? Keys available?",
+        "Final takeaway: packets don't lie — the wire is ground truth; capture wide, filter late, time everything, and always compare both ends"
+      ]
+    }
+  ]
+}

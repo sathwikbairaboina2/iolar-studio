@@ -1,0 +1,386 @@
+{
+  "title": "MongoDB Replication: A Handwritten Deep Dive",
+  "summary": "Ten dense study-note pages that go from replica set fundamentals to oplog internals, elections, chained replication, and the read preference vs write concern trade-offs, ending with an ops playbook of the mistakes that cause 3 a.m. pages.",
+  "chapters": [
+    {
+      "title": "Replication 101: Why Copy Your Data",
+      "points": [
+        "Replication = keeping identical copies of your data across several mongod processes; that group is a replica set.",
+        "Three wins: high availability (automatic failover), durability (survive disk or node loss), and maintenance with zero downtime.",
+        "Anatomy: exactly one PRIMARY accepts all writes; SECONDARY members replicate asynchronously by replaying the primary's oplog.",
+        "The oplog is the replication bloodstream: every write is recorded in the primary's oplog, then secondaries pull and apply it.",
+        "Failover is automatic: if the primary dies, survivors elect a new primary within seconds and the driver reroutes writes.",
+        "Minimum sane topology = 3 data-bearing voting members (P-S-S); a single-node set is for local dev only.",
+        "Replication is asynchronous by default: a w:1 ack means 'on the primary', not 'safe on every copy'.",
+        "Every member must share the same replica set name (replSet option) to join the group.",
+        "Bootstrap: rs.initiate() on the first member, then rs.add('host:port') for each remaining member.",
+        "Connect with a seed list or mongodb+srv URI listing several hosts so drivers discover the topology and the new primary.",
+        "Cost trade-off: each extra copy multiplies storage and write amplification - replicas are bought, not free."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Replication 101 - why copy your data"
+        },
+        {
+          "type": "paragraph",
+          "note": "Define replica set, primary/secondaries, and the three wins (HA, durability, maintenance)"
+        },
+        {
+          "type": "diagram",
+          "note": "App -> PRIMARY -> oplog arrows out to Secondary A and Secondary B; X over a dead primary with new election"
+        },
+        {
+          "type": "bullets",
+          "note": "Topology rules, rs.initiate/rs.add bootstrap, seed-list connection string"
+        },
+        {
+          "type": "callout",
+          "note": "Async by default: w:1 = 'primary got it', not 'everyone got it'"
+        }
+      ]
+    },
+    {
+      "title": "The Cast: Member Types and When to Use Each",
+      "points": [
+        "PRIMARY: the sole writer; records every change in its oplog; loses the role if it cannot reach a majority.",
+        "SECONDARY: read-only data copy that continuously fetches and applies the oplog from its sync source.",
+        "ARBITER: votes in elections but stores no data and can never be primary - it exists only to break voting ties.",
+        "Priority 0 secondary: priority:0 means never primary - ideal for dedicated reporting or backup nodes.",
+        "Hidden member: hidden:true + priority:0 - a data node invisible to driver read routing; almost always combined with priority 0.",
+        "Delayed member: secondaryDelaySecs (formerly slaveDelay), e.g. 3600 - a rolling time machine against dropped collections and bad migrations.",
+        "Hard limits: at most 7 voting members and 50 total members per replica set.",
+        "Non-voting members (votes:0) add data copies beyond the voting cap without changing quorum math.",
+        "PSS (primary + 2 secondaries) is the standard; PSA (secondary swapped for an arbiter) is cheaper but creates w:majority availability dilemmas.",
+        "Inspect roles with rs.conf(): each members[] entry has host, priority, votes, hidden, secondaryDelaySecs, tags.",
+        "Rule of thumb: odd number of data-bearing voting nodes; treat arbiters as a last-resort budget hack.",
+        "Geo pattern: a hidden, delayed, priority-0 node in another DC = disaster insurance that never takes traffic."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "The cast - member types and roles"
+        },
+        {
+          "type": "table",
+          "note": "Rows: primary, secondary, arbiter, priority-0, hidden, delayed; columns: holds data, votes, can be primary, typical job"
+        },
+        {
+          "type": "bullets",
+          "note": "Voting limits (7/50), votes:0 members, rs.conf() fields"
+        },
+        {
+          "type": "sidebox",
+          "note": "PSA trap: with an arbiter, w:majority can stall when the single secondary is down"
+        }
+      ]
+    },
+    {
+      "title": "The Oplog: Your Database's Flight Recorder",
+      "points": [
+        "The oplog (local.oplog.rs) is a capped collection: a fixed-size, rolling log of every data modification on a member.",
+        "Every write on the primary appends one oplog entry; secondaries tail this log to build identical copies.",
+        "Entry anatomy: ts (timestamp), op (i insert, u update, d delete, c command), ns (db.collection), o (the change document).",
+        "Idempotency rule: MongoDB logs the effect, not the intent - an update entry stores the resulting $set-style change so replaying twice is safe.",
+        "Ops touching many documents (multi:true updates, big deletes) explode into one oplog entry per document affected.",
+        "Default oplog size is about 5% of free disk space, floored at 990 MB on 64-bit Linux; override with replication.oplogSizeMB.",
+        "Oplog window = the time span covered from the oldest to the newest entry; secondaries must stay inside it to keep syncing.",
+        "Fall outside the window (RECOVERING / stale) and the only cure is a full initial sync - hours of copying on large data sets.",
+        "Same size cap, different workloads: a write-heavy hour can shrink the window from days to minutes - size for your busiest hour.",
+        "Inspect it: rs.printReplicationInfo() shows log length and window; query local.oplog.rs directly for auditing or CDC.",
+        "Change streams are a managed view over the oplog - resume tokens map onto oplog timestamps.",
+        "Oplog timestamps double as cluster time, the currency behind causally consistent sessions and majority commit points."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "The oplog - rolling record of every write"
+        },
+        {
+          "type": "code",
+          "note": "Sample oplog entry: { ts, op:'i', ns:'shop.orders', o:{...} }"
+        },
+        {
+          "type": "paragraph",
+          "note": "Capped-collection mechanics: fixed bytes, oldest entries recycled"
+        },
+        {
+          "type": "bullets",
+          "note": "Idempotency, multi-doc explosion, default sizing, window vs workload"
+        },
+        {
+          "type": "callout",
+          "note": "Fall off the window = RECOVERING = full initial sync; size oplog for your worst write hour"
+        }
+      ]
+    },
+    {
+      "title": "Catching Up: Initial Sync, Lag, Flow Control",
+      "points": [
+        "Initial sync = building a new secondary from scratch: copy all collections from a source, then replay oplog up to the present.",
+        "Triggers: adding a member, recovering a stale node, or manually resyncing a damaged one.",
+        "After initial sync, the member enters SECONDARY state and streams oplog entries from its sync source with a tailable cursor.",
+        "Replication lag = primary's newest oplog time minus a secondary's last applied optime - the number that rules everything.",
+        "Measure it: rs.printSecondaryReplicationInfo(), or rs.status() comparing members[].optimeDate values.",
+        "Lag causes ranked: initial syncs, write bursts exceeding apply capacity, slower secondary disks/CPU, network distance.",
+        "Oplog application is multi-threaded: secondaries batch entries and apply them in parallel while honoring write dependencies.",
+        "Flow control (4.2+): the primary throttles new writes when majority-commit lag approaches flowControlTargetLagSeconds - lag insurance paid in throughput.",
+        "The majority commit point advances as secondaries ack their applied position; it gates w:majority visibility and snapshot reads.",
+        "Each oplog entry carries term and wall-clock metadata so a stale primary cannot inject entries into a newer term.",
+        "A secondary chained to a lagging sync source inherits that lag - check syncSourceHost when one node trails.",
+        "Consequence to internalize: any un-replicated write is exactly one failover away from vanishing."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Catching up - initial sync and lag"
+        },
+        {
+          "type": "diagram",
+          "note": "Timeline: initial sync (copy all data) -> oplog replay -> SECONDARY; lag = gap between optime markers"
+        },
+        {
+          "type": "bullets",
+          "note": "Measuring lag, lag causes, parallel batch apply, term metadata"
+        },
+        {
+          "type": "callout",
+          "note": "Flow control: primary slows writes before secondaries drown - throughput traded for lag safety"
+        }
+      ]
+    },
+    {
+      "title": "Elections: How a New Primary Is Chosen",
+      "points": [
+        "Every member heartbeats every other member every 2 seconds - the liveness fabric of the set.",
+        "If members hear nothing from the primary for electionTimeoutMillis (default 10000), they conclude it is dead and call an election.",
+        "Elections use protocol version 1 (PV1), a Raft-inspired consensus: one primary per term, a majority of votes required.",
+        "Candidate checklist: electable (priority > 0), reasonably caught up on the oplog, and able to see a majority of voting members.",
+        "Highest priority wins when equally caught up - assign priorities to steer primaries into your best datacenter.",
+        "Every election increments the term; a primary that sees a higher term steps down immediately (split-brain protection).",
+        "A primary that loses majority visibility self-steps-down - it stops accepting writes rather than fork history.",
+        "Typical failover timeline: 10 s timeout + a few seconds of voting + catch-up = roughly 12-15 s without a writable primary.",
+        "Catch-up phase: the newly elected primary first pulls missing entries from peers before resuming writes.",
+        "Rehearse deliberately: rs.stepDown() demotes the primary and triggers an election - do this in staging regularly.",
+        "Even-numbered voting sets without a tie-breaker can deadlock: no candidate can gather a majority.",
+        "Post-election surprise: writes acked only by the old primary (w:1) may not exist on the new one - rollbacks happen."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Elections - choosing the next primary"
+        },
+        {
+          "type": "diagram",
+          "note": "Timeline: primary dies -> 10 s heartbeat timeout -> votes cast (PV1, term+1) -> catch-up -> new primary"
+        },
+        {
+          "type": "bullets",
+          "note": "Candidate checklist, priority steering, self-step-down on lost majority"
+        },
+        {
+          "type": "qa",
+          "note": "Q: Why did my healthy primary step down? A: It lost sight of a majority - it quit rather than risk split-brain"
+        },
+        {
+          "type": "callout",
+          "note": "~12-15 s write outage per failover is normal; apps need retry logic, not panic"
+        }
+      ]
+    },
+    {
+      "title": "Chained Replication: Secondaries Syncing Secondaries",
+      "points": [
+        "Definition: a secondary replicates from another secondary (its sync source) instead of directly from the primary.",
+        "Default behavior: each secondary picks the closest member (lowest ping) whose oplog is fresh enough - chains form on their own.",
+        "Purpose: spare the primary's network - one copy crosses the WAN, distant nodes then sync from it, not from the primary.",
+        "Typical habitat: geo-distributed sets where a region's secondaries would otherwise stream every write across an ocean.",
+        "Cost 1: lag compounds hop by hop - every chained link adds its own fetch and apply delay.",
+        "Cost 2: the majority commit point advances more slowly, so w:majority writes and snapshot reads get slower too.",
+        "Chaining can mask a sick primary: a downstream secondary looks healthy while its degraded sync source holds it back.",
+        "Turn it off: rs.reconfig with settings.chainingAllowed: false forces all members to pull straight from the primary.",
+        "See who feeds whom: rs.status() -> members[].syncSourceHost shows the current chain.",
+        "Observability rule: alert on each member's own applied optime, not the set's average lag - chains hide outliers.",
+        "One-line trade-off: chaining trades commit latency and lag visibility for primary bandwidth."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Chained replication - hop by hop"
+        },
+        {
+          "type": "diagram",
+          "note": "Primary in DC1 -> secondary in DC2 -> second secondary in DC2 (chain) vs direct fan-out dotted arrows"
+        },
+        {
+          "type": "bullets",
+          "note": "Sync source selection, WAN savings, compounded lag, chainingAllowed: false"
+        },
+        {
+          "type": "callout",
+          "note": "If one lagging node confuses you, check syncSourceHost - it may be inheriting someone else's lag"
+        },
+        {
+          "type": "sidebox",
+          "note": "Short chains also make election catch-up faster - another reason to limit hops"
+        }
+      ]
+    },
+    {
+      "title": "Read Preference: Choosing Where Reads Go",
+      "points": [
+        "Read preference is the driver's routing rule for which member type serves each read.",
+        "The five modes: primary (default), primaryPreferred, secondary, secondaryPreferred, nearest.",
+        "primary is the only mode that guarantees read-your-own-writes within a logical session.",
+        "nearest ignores role entirely - lowest round-trip latency wins, primary included.",
+        "secondary and secondaryPreferred offload analytics, dashboards, and search from the write path.",
+        "The classic footgun: flipping the app to secondary reads 'for performance', then debugging why users cannot see what they just saved.",
+        "maxStalenessSeconds bounds how far behind a secondary may be to still receive reads (minimum 90 seconds).",
+        "Tag sets route reads by member tags, e.g. purpose:reporting or dc:eu - pin workloads to specific nodes.",
+        "Hidden members are never selected by read preference, regardless of tags.",
+        "Transactions require primary read preference - secondaries cannot serve transactional reads.",
+        "Set the preference at any scope: connection string (readPreference=secondaryPreferred), database, collection, or single operation.",
+        "Decision shortcut: money and checkout paths -> primary; dashboards and search -> secondaryPreferred + maxStalenessSeconds + tags."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Read preference - who serves this read?"
+        },
+        {
+          "type": "table",
+          "note": "Five modes vs guarantee vs typical use (primary, primaryPreferred, secondary, secondaryPreferred, nearest)"
+        },
+        {
+          "type": "bullets",
+          "note": "maxStalenessSeconds, tag sets, hidden exclusion, transaction restriction"
+        },
+        {
+          "type": "code",
+          "note": "mongodb://host1,host2,host3/?replicaSet=rs0&readPreference=secondaryPreferred&maxStalenessSeconds=120"
+        },
+        {
+          "type": "callout",
+          "note": "Stale reads are a correctness bug in checkout flows - scale reads only where staleness is acceptable"
+        }
+      ]
+    },
+    {
+      "title": "Write Concern: When Is a Write 'Written'?",
+      "points": [
+        "Write concern defines how many members must acknowledge a write before it reports success.",
+        "w:0 - fire and forget: no ack, fastest, silent data loss on any hiccup; only for lossy telemetry.",
+        "w:1 - the old default: primary acks; the write lives on one node until replication catches up.",
+        "w:'majority' - a majority of voting data-bearing members applied it; survives single-node failure and elections.",
+        "j:true waits for the on-disk journal; since 5.0 journaling is on by default and w:'majority' implies journalled acks.",
+        "wtimeout caps the waiting; on timeout inspect writeConcernError - the write may still complete later.",
+        "From MongoDB 5.0 the implicit default write concern is w:'majority' (it was w:1 before) - newer apps are safer out of the box.",
+        "PSA sets keep w:1 as default because counting members toward majority could stall writes - a deliberate availability trade.",
+        "Every step of durability is a step of latency: each additional ack is a network round trip to the farthest required member.",
+        "Override granularity: set once per client, then override per database, per collection, or per single operation.",
+        "Tag-based custom write concerns (getLastErrorModes) can demand an ack from each datacenter - powerful, rarely used.",
+        "Policy of thumb: financial or mutable state -> w:'majority'; high-volume append-only logs -> w:1; never w:0 for data you care about."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Write concern - when does a write count?"
+        },
+        {
+          "type": "table",
+          "note": "w:0 / w:1 / w:majority vs durability vs latency vs rollback risk"
+        },
+        {
+          "type": "bullets",
+          "note": "j:true, wtimeout + writeConcernError, 5.0 default change, PSA exception"
+        },
+        {
+          "type": "code",
+          "note": "db.orders.insertOne(o, { writeConcern: { w: 'majority', j: true, wtimeout: 5000 } })"
+        },
+        {
+          "type": "callout",
+          "note": "w:1 + async replication = the write that was there, until failover wasn't"
+        }
+      ]
+    },
+    {
+      "title": "Rollbacks, Read Concern and the Consistency Dial",
+      "points": [
+        "Rollback: a former primary rejoins holding writes the new primary never saw; those writes are ejected from its oplog.",
+        "Rolled-back data lands in rollback files under dbPath as BSON - recover manually with bsondump and scripts; there is no auto-merge.",
+        "Rollbacks are the punishment for w:1 on writes you needed to keep; w:'majority' writes are rollback-proof.",
+        "Read concern local: returns this member's newest data, even data that might later roll back - fastest, weakest.",
+        "Read concern majority: returns only data committed at the majority commit point - the natural pair for w:'majority' writes.",
+        "Read concern linearizable: strongest single-document read; requires primary read preference and pays a commit-point wait.",
+        "Read concern snapshot: a consistent point-in-time view; required for multi-document transactions.",
+        "Causally consistent sessions: the client tracks cluster time so a write-then-read stays ordered, even across secondaries.",
+        "Retryable writes: drivers transparently retry a write once across network errors and failovers - why well-behaved apps often survive elections silently.",
+        "The dial: w:0/j:false -> w:1 -> w:'majority'+j mirrors latency vs safety; benchmark your SLO at each stop.",
+        "Cross-region gotcha: majority acks across oceans can add 100 ms+ per write - keep the voting quorum in one region.",
+        "Design mantra: choose guarantees per operation class; do not set the strongest combination globally and wonder why p99 doubled."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Rollbacks and read concern - the consistency dial"
+        },
+        {
+          "type": "table",
+          "note": "local / majority / linearizable / snapshot vs guarantee vs cost"
+        },
+        {
+          "type": "bullets",
+          "note": "Rollback files in dbPath, causal sessions, retryable writes, cross-region latency"
+        },
+        {
+          "type": "qa",
+          "note": "Q: Where did my w:1 write go after failover? A: Possibly a rollback file in dbPath - check before assuming it never happened"
+        },
+        {
+          "type": "callout",
+          "note": "Strongest everywhere = slowest everywhere; dial guarantees per operation class"
+        }
+      ]
+    },
+    {
+      "title": "Ops Playbook: Mistakes, Monitoring, One-Page Recap",
+      "points": [
+        "Mistake: even number of voting members -> some failures leave no majority -> election deadlock; keep voting membership odd.",
+        "Mistake: arbiter as the third node to save money -> PSA commit dilemmas; three real data nodes cost less than one data-loss incident.",
+        "Mistake: default oplog size on a write-heavy cluster -> secondaries tumble out of the window -> surprise initial syncs.",
+        "Mistake: secondary reads 'to scale' without maxStalenessSeconds -> users see yesterday's writes and file tickets.",
+        "Mistake: one-host connection string -> after failover the app talks to a secondary forever, or just dies.",
+        "Mistake: assuming w:1 is safe 'because we have replicas' - lag means the replicas may not have it yet.",
+        "Monitoring basics: rs.status() for member state, lastHeartbeat, pingMs, and optime lag - alert per member, not per set.",
+        "Monitoring extras: rs.printReplicationInfo() (oplog window), rs.printSecondaryReplicationInfo() (per-node lag), db.hello() for the current primary.",
+        "Chaos drill: run rs.stepDown() in staging on a schedule - an app that never survived an election in staging will not survive one in prod.",
+        "Cheap insurance: one hidden, delayed, priority-0 member gives you an hour-ago copy after every fat-fingered drop.",
+        "Standard topology: PSS across three availability zones, chaining on, w:'majority' defaults, primary reads, tags for reporting nodes.",
+        "The recap: primary + oplog + elections move writes; read preference picks who serves reads; write concern decides when a write counts."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Ops playbook - mistakes, monitoring, recap"
+        },
+        {
+          "type": "bullets",
+          "note": "The six classic mistakes: parity, arbiters, tiny oplog, blind secondary reads, one-host URI, w:1 overconfidence"
+        },
+        {
+          "type": "code",
+          "note": "rs.status(); rs.printReplicationInfo(); rs.printSecondaryReplicationInfo(); db.hello(); rs.stepDown()"
+        },
+        {
+          "type": "sidebox",
+          "note": "Staging chaos drill + hidden delayed member = resilience you do not have to think about"
+        },
+        {
+          "type": "callout",
+          "note": "Recap in one line: oplog moves writes, elections pick the writer, read preference and write concern pick your guarantees"
+        }
+      ]
+    }
+  ]
+}

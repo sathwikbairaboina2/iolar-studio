@@ -1,0 +1,186 @@
+{
+  "title": "Rust Async, Demystified",
+  "summary": "A dense field guide to Rust's async model: why futures do nothing until polled, what an await point really is, how runtimes and executors drive work, why Send bounds bite you, and what happens when you block inside async.",
+  "chapters": [
+    {
+      "title": "Lazy Futures: Nothing Runs Until Polled",
+      "points": [
+        "`async fn` returns an anonymous type implementing `Future`; calling it runs zero user code",
+        "A future is a value, not a task — building one allocates state, performs no work",
+        "`let f = fetch(); // nothing happened yet` — work starts only at `f.await` or `spawn(f)`",
+        "Contrast: JS `Promise` is eager and hot; a constructed Promise is already executing",
+        "Contrast: Go goroutines start on `go f()`; Rust needs an explicit executor to poll",
+        "Unused-future footgun: `#[must_use]` warning `unused implementer of Future that must be used`",
+        "Dropping a future before completion silently cancels it — no code after the last poll runs",
+        "`Future` trait core: `fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>`",
+        "`Poll::Pending` = not done, will wake later; `Poll::Ready(T)` = value produced",
+        "Laziness enables zero-cost composition: `timeout(select(a, b))` builds one state machine, no per-combinator allocation",
+        "Async blocks: `async { .. }` is also lazy; `async move { .. }` takes ownership of captures",
+        "Gotcha: side effects you expect at call time (logging, sending a request) are deferred to the first poll",
+        "Rule of thumb: a future is a recipe; the runtime is the cook"
+      ]
+    },
+    {
+      "title": "The State Machine Under async fn",
+      "points": [
+        "The compiler desugars each `async fn` into an enum state machine, one variant per await point",
+        "Variants store the locals that live across an await; locals that don't are ordinary stack slots",
+        "Each `poll` call resumes at the last await point and runs forward until the next `Pending`",
+        "Futures are self-referential (a local borrowed across an await points into the same struct)",
+        "`Pin<&mut T>` exists to promise the future won't move after first poll, so those pointers stay valid",
+        "`Unpin` = safe to move anyway; most hand-written futures are `Unpin`, compiler-generated ones are not",
+        "`Box::pin(fut)` pins to the heap; `tokio::pin!(fut)` / `std::pin::pin!(fut)` pins on the stack",
+        "Future size = the max of all live-across-await state, not the sum; big futures cause stack blowups",
+        "Fix for a huge future: `Box::pin` it, or shrink locals held across awaits",
+        "Recursion needs indirection: `async fn` calling itself requires `Box::pin` or the `async_recursion` crate",
+        "Code example — desugared shape: `enum Fetch { Start, AwaitingBody { resp: Response }, Done }`",
+        "`.await` is not a syscall or thread yield — it is a `return Poll::Pending` from the state machine",
+        "No allocation per await: whole chain compiles into one flat struct (a key Rust-vs-GC-language win)"
+      ]
+    },
+    {
+      "title": "Await Points: Where Control Actually Yields",
+      "points": [
+        "An await point is the only place an async fn can suspend — between them, execution is uninterrupted",
+        "`.await` on a ready future returns immediately; no yield, no scheduling",
+        "Cooperative scheduling: the runtime cannot preempt you; you must reach an await to give up the core",
+        "Cancellation happens only at await points — a dropped future stops between two awaits, never mid-statement",
+        "Cancel safety: `select!` may drop the losing branch; a partially-read buffer can be lost",
+        "Cancel-safe vs not: `AsyncReadExt::read` is cancel-safe, `read_exact` is not (may lose bytes)",
+        "Yield manually inside a long CPU loop: `tokio::task::yield_now().await`",
+        "Locks held across an await must be async locks — `std::sync::MutexGuard` is not `Send` and blocks peers",
+        "`tokio::sync::Mutex` is for guards held across awaits; prefer `std::sync::Mutex` for short non-await critical sections",
+        "Await points define the task's resume boundaries, so all state you need after must live in the future",
+        "Example gotcha: `for x in list { db.write(x).await; }` — cancellation can leave a partial write set",
+        "Await-in-loop is sequential; use `join_all` / `FuturesUnordered` for concurrency",
+        "`.await` in a non-async fn is a compile error: `await is only allowed inside async functions and blocks`"
+      ]
+    },
+    {
+      "title": "Wakers: How a Pending Future Gets Polled Again",
+      "points": [
+        "`Context` carries one thing that matters: the `Waker`",
+        "Contract: return `Pending` ONLY after arranging for `waker.wake()` to be called later",
+        "A future that returns `Pending` without registering a waker hangs forever — the classic lost-wakeup bug",
+        "`waker.wake()` puts the task back on the executor's ready queue; it does not run it inline",
+        "`wake_by_ref()` avoids consuming the waker when you'll wake the same task repeatedly",
+        "Spurious wakeups are legal — poll must be idempotent and re-check its condition",
+        "Store the newest waker each poll: the task may have moved threads and the old waker is stale",
+        "Leaf futures (timers, sockets) hold the wakers; combinators just forward the `Context` down",
+        "Reactor role: epoll/kqueue/IOCP readiness event fires, reactor looks up the token, calls `wake()`",
+        "Manual future example — poll a flag, else `cx.waker().wake_by_ref(); Poll::Pending` (a busy-spin, deliberately)",
+        "`std::task::Waker` is a vtable-based type-erased handle: `RawWaker` + `RawWakerVTable`",
+        "`futures::task::AtomicWaker` for the common single-consumer register-and-wake pattern",
+        "Mental model: `Pending` is a promise to knock on the door later"
+      ]
+    },
+    {
+      "title": "Runtimes: Executor + Reactor",
+      "points": [
+        "Rust ships the `Future` trait in std but NO runtime — you pick one",
+        "Executor: owns the ready queue, calls `poll` on tasks. Reactor: owns the OS event source, wakes tasks",
+        "Tokio = most common; multi-threaded work-stealing scheduler + `mio`-based reactor",
+        "async-std = std-shaped API; smol/`async-executor` = small and composable; embassy = embedded, no_std",
+        "`#[tokio::main]` desugars to `Runtime::new().block_on(async { .. })`",
+        "`block_on` drives one future to completion on the current thread; the bridge from sync to async",
+        "`tokio::spawn` hands a future to the executor, returns a `JoinHandle<T>` you can await or abort",
+        "Spawned tasks run even if you drop the handle; dropping a `JoinHandle` detaches, it does not cancel",
+        "Task ≈ green thread, but sized to the state machine (bytes), not a 8 MB stack — millions are feasible",
+        "Current-thread flavor: `Builder::new_current_thread()` — no `Send` bound needed via `spawn_local`",
+        "Work stealing: idle worker threads pull tasks from busy workers' queues to balance load",
+        "Runtime interop hazard: a Tokio timer/socket used under another runtime panics — `there is no reactor running`",
+        "Nesting `block_on` inside async panics: `Cannot start a runtime from within a runtime`",
+        "One runtime per process is the norm; passing a `Handle` beats creating a second"
+      ]
+    },
+    {
+      "title": "Concurrency Primitives: join, select, streams",
+      "points": [
+        "Concurrency ≠ parallelism: `join!` interleaves on one task; `spawn` can use many cores",
+        "`tokio::join!(a, b)` polls both to completion in the current task, returns a tuple",
+        "`try_join!` short-circuits on the first `Err`",
+        "`tokio::select!` races branches, returns the first ready, DROPS the rest — read the cancel-safety table",
+        "`select!` in a loop needs `&mut fut` or a pinned future, or you restart the branch each iteration",
+        "`FuturesUnordered` / `futures::stream::iter(..).buffer_unordered(n)` bounds in-flight concurrency",
+        "`join_all(v)` runs N futures in one task — fine for I/O, useless for CPU parallelism",
+        "Fan-out with parallelism: `spawn` each, then await the `JoinHandle`s",
+        "`Stream` = async `Iterator`; `poll_next` yields `Poll<Option<T>>`; consume with `while let Some(x) = s.next().await`",
+        "Channels: `mpsc` (bounded backpressure), `oneshot` (single reply), `broadcast` (fan-out), `watch` (latest value)",
+        "Backpressure comes free from a bounded `mpsc` — `send().await` suspends when the queue is full",
+        "`CancellationToken` + `select!` is the idiomatic graceful-shutdown pair",
+        "Timeouts: `tokio::time::timeout(Duration::from_secs(5), fut).await` returns `Err(Elapsed)`"
+      ]
+    },
+    {
+      "title": "Send, Sync, and 'static: Why the Compiler Yells",
+      "points": [
+        "`tokio::spawn` requires `F: Future + Send + 'static` and `F::Output: Send`",
+        "A future is `Send` iff every value held ACROSS an await point is `Send`",
+        "Classic error: `future cannot be sent between threads safely ... held across an await point`",
+        "`Rc<T>` / `RefCell<T>` across an await kills `Send`; use `Arc<T>` / `tokio::sync::Mutex`",
+        "`std::sync::MutexGuard` is `!Send` — scope it in a block that ends before the await, or use an async mutex",
+        "Fix pattern: `let v = { let g = m.lock().unwrap(); g.clone() }; use(v).await;`",
+        "`'static` doesn't mean 'lives forever' — it means 'borrows nothing from the caller'",
+        "Fix for `'static`: clone the data or move an `Arc` into the async block",
+        "Non-`Send` work belongs on `spawn_local` inside a `LocalSet`, or on a dedicated current-thread runtime",
+        "Auto traits leak through async fn: you cannot write `impl Future + Send` on a trait method's return without help",
+        "`async fn` in traits (stable since 1.75) returns an anonymous type with no `Send` bound; use `trait_variant` or `#[async_trait]` to get one",
+        "`#[async_trait]` boxes the future — one heap allocation and dynamic dispatch per call",
+        "Debug trick: assert it early with `fn assert_send<T: Send>(_: T) {}` on the future"
+      ]
+    },
+    {
+      "title": "Blocking Inside Async: The Cardinal Sin",
+      "points": [
+        "A blocked poll occupies its worker thread — no other task on that thread can run",
+        "Tokio's multi-thread runtime defaults to one worker per core; N blocking calls stall N cores",
+        "Symptoms: latency spikes, timers firing late, heartbeats missed, throughput cliff under load",
+        "Offenders: `std::thread::sleep`, `std::fs`, `reqwest::blocking`, synchronous DB drivers, `Mutex` contention",
+        "Also blocking: heavy CPU work — parsing a 200 MB JSON, hashing a password, image resize",
+        "`tokio::task::spawn_blocking(|| ..)` moves it to a separate blocking pool (default cap 512 threads)",
+        "`rayon` for data-parallel CPU work; bridge back with a `oneshot` channel",
+        "`block_in_place` converts the current worker thread (multi-thread runtime only) — a blunt escape hatch",
+        "Never `Handle::block_on` inside an async fn: panics, or deadlocks if the runtime is single-threaded",
+        "Detection: `tokio-console`, or the unstable runtime metrics / `--cfg tokio_unstable` task poll-time histogram",
+        "Rule of thumb: any poll taking >10–100 µs should be broken up or moved off the runtime",
+        "Async file I/O is a lie on Linux — `tokio::fs` is `spawn_blocking` under the hood",
+        "Password hashing example: `argon2` at ~100 ms per call will destroy a 4-core runtime at 40 requests/s"
+      ]
+    },
+    {
+      "title": "Costs, Trade-offs, and When Not To Use Async",
+      "points": [
+        "Async wins on I/O-bound, high-concurrency workloads: 10k+ sockets, proxies, chat, scrapers",
+        "Threads win on CPU-bound work, low connection counts, and simple blocking scripts",
+        "Memory: OS thread ≈ 8 MB virtual stack reserve; async task = size of its state machine, often <1 KB",
+        "Context switch: thread switch ≈ 1–5 µs through the kernel; task switch ≈ tens of ns, a function return",
+        "Latency cost: an await adds a poll and a possible queue hop; a hot path with no I/O is faster sync",
+        "Compile-time cost: deep future nesting produces large monomorphized types and slow builds",
+        "Debuggability cost: stack traces show executor frames, not your logical call chain",
+        "'Function coloring': async infects callers; a sync trait cannot call async code without `block_on`",
+        "Ecosystem split: a crate must pick tokio vs smol vs async-std traits (`AsyncRead` differs between futures-rs and tokio)",
+        "`async` in libraries: stay runtime-agnostic where possible, or feature-gate the runtime",
+        "Don't go async for a CLI that makes 3 HTTP calls — `ureq` and threads are simpler and faster to write",
+        "Comparison row: throughput ↑, tail latency ↑ if you block, complexity ↑↑, memory ↓↓"
+      ]
+    },
+    {
+      "title": "Common Mistakes and the Full Picture",
+      "points": [
+        "Forgetting `.await` — the future is built and dropped; nothing happens, only a `must_use` warning",
+        "Awaiting inside a loop when you meant concurrency — N sequential round-trips instead of one wave",
+        "Holding a `std::sync` lock across an await — `!Send` error, or a stalled worker",
+        "Blocking on the runtime thread — the #1 production incident cause in async Rust",
+        "Unbounded `mpsc` or unbounded `spawn` — no backpressure, memory grows until OOM",
+        "Ignoring `select!` cancel safety — silently dropped reads and partial writes",
+        "Spawning without ever awaiting the `JoinHandle` — panics inside the task are swallowed",
+        "Assuming `spawn` runs immediately — it queues; the task may not start before you await something else",
+        "Detached tasks outliving shutdown — use a `TaskTracker` / `JoinSet` and await them on exit",
+        "Nesting runtimes or mixing runtime types — the `no reactor running` panic",
+        "Async-in-trait without a `Send` bound, then failing to `spawn` the resulting future",
+        "Checklist to internalize: lazy until polled · await = suspend point · waker = the callback · runtime = executor + reactor · `Send` = safe across await · never block the poll",
+        "Debug toolkit: `tokio-console` for task state, `RUST_BACKTRACE` plus `#[track_caller]`, `tracing` spans that survive awaits"
+      ]
+    }
+  ]
+}

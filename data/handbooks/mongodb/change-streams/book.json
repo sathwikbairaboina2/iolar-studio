@@ -1,0 +1,176 @@
+{
+  "title": "MongoDB Change Streams — Handwritten Notes",
+  "summary": "A 10-page dense-notes carousel covering MongoDB change streams end to end: watching collections, internals, resume tokens, filtering, event-driven pipelines, trade-offs, common mistakes, and a final cheat sheet.",
+  "chapters": [
+    {
+      "title": "1. What Are Change Streams?",
+      "points": [
+        "Definition: a real-time, ordered stream of change events emitted by the MongoDB server — you subscribe, no polling needed",
+        "Available since MongoDB 3.6; built on top of the oplog (replication log)",
+        "Watch levels: collection (db.collection.watch()), database (db.watch()), or cluster (client.watch())",
+        "Basic usage: const cs = db.orders.watch(); await cs.next() returns one change document",
+        "Requires a replica set or sharded cluster — change streams DO NOT work on a standalone mongod",
+        "Roles needed: changeStream / read on the watched namespace; atlas users: must have find privilege",
+        "Change event shape: { _id, operationType, ns, fullDocument, documentKey, updateDescription }",
+        "operationType values: insert, update, replace, delete, invalidate, drop, dropDatabase, rename",
+        "Why it beats polling: push not pull, no full-collection scans, ordering guaranteed",
+        "Biggest mental shift: the cursor is long-lived and stays open until you close it or an invalidate arrives",
+        "Note: events survive only as long as the oplog — you can't read 'history' from before the stream opened",
+        "Use cases: cache invalidation, search index sync, audit logs, microservice notifications"
+      ]
+    },
+    {
+      "title": "2. Mechanics & Internals",
+      "points": [
+        "Foundation: the oplog — a capped collection 'local.oplog.rs' recording every write operation",
+        "Change stream = a tailable cursor over the oplog with server-side filtering and transformation",
+        "Global order: events are delivered in oplog order (approx. cluster-wide commit order)",
+        "In sharded clusters: each shard's oplog is merged by mongos/router; ordering is per-shard insertion, not globally strict",
+        "Majority-committed writes only: events appear after the write reaches majority commit (w: majority concern for 'no rollback' guarantee)",
+        "Full pipeline execution: change streams accept a $match-first aggregation pipeline run on the SERVER",
+        "Events for a change stream are generated lazily — server applies your pipeline to oplog entries as the cursor reads",
+        "Cursor lifecycle: server may kill idle cursors (default 30 min unless you call resumeToken-based re-open)",
+        "maxAwaitTimeMS in watch options controls how long getMore blocks waiting for a new event",
+        "fullDocument: 'default' returns only the delta for updates; 'updateLookup' fetches the CURRENT full doc (extra read, may race)",
+        "'updateLookup' gotcha: returned doc reflects the state at lookup time, not at update time",
+        "Drop/rename events close (invalidate) the stream — collection-identity events terminate the cursor"
+      ]
+    },
+    {
+      "title": "3. Resume Tokens",
+      "points": [
+        "Every change event's _id IS the resume token — a BSON document encoding an oplog position",
+        "Store the last token: resumeAfter lets a NEW stream continue exactly where the old one stopped",
+        "startAtOperationTime: begin the stream at a timestamp (great for re-processing after a crash with no saved token)",
+        "Key invariant: token validity window = oplog window. If the oplog has rolled past the token, resume fails (ChangeStreamHistoryLost)",
+        "Resume errors are fatal to the cursor: you must catch them and re-open with startAtOperationTime or fail loudly",
+        "Pattern: persist token in a durable store (another Mongo collection, Kafka offset, Redis) after EVERY processed event",
+        "Ordering trap: save the token AFTER processing succeeds, not before — otherwise you skip unprocessed events",
+        "Token _id format: contains _data hex string with timestamp + version + txnOpIndex — opaque; don't parse it, just pass it back",
+        "resumeAfter vs startAfter: startAfter tolerates invalidate events (e.g., after drop/rename), resumeAfter does not",
+        "Example: await cs.next() -> token = change._id; later db.watch([], { resumeAfter: token })",
+        "Sizing tip: larger oplog (replication.oplogSizeMB) = longer resume window = safer restarts",
+        "Test resume logic deliberately: kill the consumer mid-stream and verify no event is lost or duplicated (at-least-once semantics)"
+      ]
+    },
+    {
+      "title": "4. Filtering with $match",
+      "points": [
+        "Watch pipeline: db.orders.watch([ { $match: { operationType: 'insert' } } ])",
+        "Filter on operationType, 'ns.db', 'ns.coll', 'fullDocument.field', 'updateDescription.updatedFields.*'",
+        "Performance rule: $match SHOULD be the first stage — server-side filtering reduces network traffic",
+        "Only certain stages are allowed: $match, $project, $addFields, $replaceRoot, $set, $unset (no $group/$lookup in change streams pre-6.0)",
+        "$project can reshape events: strip fullDocument, keep only documentKey + token to shrink payload",
+        "Projections break fullDocument for updates: if you project it away, update events carry only deltas",
+        "Filter on documentKey._id to watch a single document: { $match: { 'documentKey._id': ObjectId(...) } }",
+        "Gotcha: filtering on fullDocument fields works for insert/replace but update events need updateLookup for those fields to exist",
+        "Multiple $match stages are allowed but keep it to one early one for clarity",
+        "Sharded clusters: filtering is pushed down to each shard — good $match = less cross-shard merge work",
+        "Wide-open watch (empty pipeline) on a hot collection floods the consumer — always filter in production",
+        "Prefix trick: use $or of operationTypes to watch exactly the subset you care about"
+      ]
+    },
+    {
+      "title": "5. Consuming the Stream (Practical Usage)",
+      "points": [
+        "Node.js pattern: const cs = coll.watch(pipeline, { fullDocument: 'updateLookup' }); use an async loop over tryNext()",
+        "tryNext() vs next(): tryNext returns null immediately when idle; next blocks — use tryNext in polling loops with your own backoff",
+        "Always iterate with resumeToken checkpointing: process event -> save token -> ack, in that order",
+        "Automatic resume: drivers auto-resume on transient errors, but NOT on invalidate or oplog-roll errors — handle those yourself",
+        "Concurrency tip: don't process events inline if handlers are slow; hand events to a queue/worker and checkpoint after worker ack",
+        "Graceful shutdown: close the cursor, flush the saved token, log last processed timestamp",
+        "Error classes to catch: MongoChangeStreamError, resume failure (ChangeStreamHistoryLost), network/MongoServerSelection errors",
+        "Full example shape: open watch -> loop tryNext -> if change: handle + save token; if null: sleep briefly",
+        "Batch reads: use cursor.tryNext() in a tight loop or buffered drain when catching up after downtime",
+        "Backpressure: a consumer slower than write rate grows lag indefinitely — monitor lag = now - event.clusterTime",
+        "Watch from a secondary with readPreference: 'secondary' to offload primaries (with replica set routing caveats)",
+        "Logging: always log operationType + documentKey + token on processing failure for replay"
+      ]
+    },
+    {
+      "title": "6. Building Event-Driven Pipelines",
+      "points": [
+        "Pattern 1 — Outbox/caches: watch inserts/updates -> invalidate Redis key -> read-back on next request",
+        "Pattern 2 — Search sync: stream to Elasticsearch/OpenSearch using documentKey for idempotent upserts",
+        "Pattern 3 — Event fan-out: publish each event to Kafka keyed by documentKey._id to keep per-document order",
+        "Idempotency is mandatory: change streams give AT-LEAST-ONCE delivery — consumers must tolerate duplicates",
+        "Ordering: per-document order is preserved per stream; parallel consumers must partition by documentKey to keep order",
+        "Idempotent writes: use upsert on documentKey._id rather than insert, so replays are harmless",
+        "Microservice decoupling: services subscribe to their own change streams instead of direct synchronous calls",
+        "Event enrichment: use updateLookup or a follow-up read inside the consumer to hydrate the full document",
+        "Dead-letter handling: events that repeatedly fail go to a DLQ with the resume token for later replay",
+        "Don't put business logic in the watch pipeline — keep transformation in consumers so pipelines stay simple and restartable",
+        "Exactly-once illusion: token checkpoint + idempotent sink = effectively-once; true exactly-once requires transactional sinks",
+        "Multi-tenant tip: run one stream per database with a ns filter rather than N collection streams to reduce cursor overhead"
+      ]
+    },
+    {
+      "title": "7. Limitations & Trade-offs",
+      "points": [
+        "No replica set / standalone = no change streams — dev setups with mongod alone silently can't use them",
+        "Oplog window bounds history: fast write volume + small oplog = tokens expire quickly, resume breaks",
+        "fullDocument: 'updateLookup' returns the CURRENT doc, which may already include later updates (racy reads)",
+        "Update events carry updateDescription deltas — deleted array elements/fields appear in removedFields, easy to mishandle",
+        "No $lookup/$group in the watch pipeline: aggregation-based enrichment must happen in the consumer",
+        "Throughput ceiling: one stream is one cursor — a single consumer is a serialization point; scale via Kafka/sharding downstream",
+        "Sharded cluster ordering: cross-shard ordering is not strict; transactions complicate event attribution",
+        "invalidate on drop/rename forces re-open logic (use startAfter, and re-validate ns)",
+        "Schema-less fullDocument: consumers must tolerate missing/null fields, especially for updates without updateLookup",
+        "Latency: events appear only after majority commit — expect a few ms to tens of ms, not microseconds",
+        "Large update storms (bulk rewrites) can flood streams — add rate limiting or batch in consumers",
+        "Change streams don't capture TTL-delete differently: TTL deletes show up as delete events, possibly in bursts"
+      ]
+    },
+    {
+      "title": "8. Comparisons",
+      "points": [
+        "vs Polling: change streams = push + ordered + no wasted reads; polling = simple but laggy and expensive at scale",
+        "vs Tailable cursors: raw tailable cursor on the oplog is fragile and unfiltered; change streams add filtering, resume tokens, and a clean API",
+        "vs Triggers (RDBMS): Mongo has no in-DB triggers — Atlas Triggers are BUILT on change streams; you can replicate the pattern yourself",
+        "vs Kafka Connect MongoDB source connector: connector wraps change streams for you with checkpointing + Kafka delivery semantics",
+        "vs Atlas Triggers: hosted handler functions with built-in resume + retry; change streams = you own infrastructure",
+        "vs CDC tools (Debezium): Debezium reads the oplog too, but change streams are the supported, higher-level native interface",
+        "vs App-level events (write to a queue in your code): change streams capture ALL writers including shell/scripts — no app-side omissions",
+        "Ordering guarantee table: change streams = oplog order; Kafka = per-partition; polling = none",
+        "Delivery semantics: change streams at-least-once (with resume); queues often at-least-once too — idempotency needed either way",
+        "Setup cost: change streams = one watch() call; CDC/Kafka = connector infra; polling = cron + queries",
+        "When polling still wins: tiny write volume, standalone servers, or when sub-ms latency of an in-process hook matters",
+        "Rule of thumb: internal Mongo-to-Mongo sync = change streams directly; cross-system fan-out = change streams + Kafka"
+      ]
+    },
+    {
+      "title": "9. Common Mistakes",
+      "points": [
+        "Mistake 1: resuming with a token older than the oplog window — always monitor oplog size vs downtime length",
+        "Mistake 2: saving the resume token BEFORE processing completes — a crash skips that event",
+        "Mistake 3: using fullDocument: 'updateLookup' and treating the doc as the state at update time — it's the state NOW",
+        "Mistake 4: running a watch with an empty pipeline on a hot collection — consumer floods and lags explode",
+        "Mistake 5: forgetting that delete events have NO fullDocument — only documentKey; don't dereference fullDocument on deletes",
+        "Mistake 6: not handling invalidate — stream dies silently after a drop/rename and processing stops",
+        "Mistake 7: assuming exactly-once delivery — replays after resume WILL duplicate; design idempotent handlers",
+        "Mistake 8: testing only on a standalone mongod — works in dev, change streams simply don't exist in prod equivalent",
+        "Mistake 9: putting heavy aggregation stages ($group-like logic) into the watch pipeline — invalid or kills performance",
+        "Mistake 10: parallelizing consumers on one stream without partitioning by documentKey._id — breaks per-document order",
+        "Mistake 11: ignoring updateDescription.removedFields / truncatedArrays when applying deltas to a downstream store",
+        "Debug habit: log the raw event JSON once per operationType — 80% of 'why is my field missing' bugs show up here"
+      ]
+    },
+    {
+      "title": "10. Cheat Sheet & Summary",
+      "points": [
+        "One-liner: change streams = server-side filtered, resumable, ordered subscription to the oplog",
+        "Core call: db.collection.watch(pipeline, { fullDocument, resumeAfter, startAfter, startAtOperationTime, maxAwaitTimeMS })",
+        "Event essentials: _id (resume token), operationType, ns, documentKey, fullDocument, updateDescription, clusterTime",
+        "Pipeline rule: $match first, only $match/$project/$addFields/$replaceRoot/$set/$unset allowed",
+        "Resume recipe: persist change._id after each success; re-open with resumeAfter (or startAfter after invalidate); fall back to startAtOperationTime",
+        "Delivery = at-least-once; ordering = per-stream oplog order; latency = post-majority-commit",
+        "Hard requirements: replica set or sharded cluster; read (find) privilege on watched ns",
+        "Scale recipe: filter hard -> checkpoint tokens -> idempotent consumers -> partition by documentKey._id -> optional Kafka in between",
+        "Monitor: consumer lag (now - clusterTime), resume failures, invalidate events, oplog window length",
+        "Anti-pattern recap: no pipeline, token saved too early, racy updateLookup, standalone dev testing",
+        "Golden path: watch($match) -> tryNext loop -> handle idempotently -> save token -> survive invalidate via startAfter",
+        "Final check before prod: kill -9 your consumer mid-stream and verify zero loss, zero unhandled duplicates, correct resume"
+      ]
+    }
+  ]
+}

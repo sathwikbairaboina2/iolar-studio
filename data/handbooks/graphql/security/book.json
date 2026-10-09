@@ -1,0 +1,175 @@
+{
+  "title": "GraphQL Security Field Notes: From Resolver AuthZ to Persisted Queries",
+  "summary": "A 10-page dense study-notes series on hardening GraphQL APIs: resolver and object-level authorization, introspection control, depth and cost limits, and persisted queries — with internals, comparisons, real pitfalls and a ship-it checklist.",
+  "chapters": [
+    {
+      "title": "Why GraphQL Breaks the Old Security Rules",
+      "points": [
+        "Single endpoint: every operation arrives as one POST — URL-based firewalls and per-route ACLs cannot see intent.",
+        "Client-controlled shape: the query picks the fields, so over-fetching is attacker-chosen — scraping gets exactly the fields it wants.",
+        "The type system is the real attack surface: every type, field and argument added needs its own authorization decision.",
+        "AuthN vs authZ: authentication (who you are) usually runs before resolvers; authorization (what you may touch) must run inside them.",
+        "Introspection meta-fields (__schema, __type) hand attackers the full API map in one query — free reconnaissance.",
+        "Nesting + aliases: one document can trigger thousands of resolver calls (hero{friends{friends{...}}} with alias duplication) — a built-in DoS primitive.",
+        "GraphQL is not insecure by design; it moved control from routes to the graph, so your controls must move too.",
+        "OWASP API Top 10 maps fully: BOLA/IDOR, broken auth, unrestricted resource consumption all apply.",
+        "Arguments are attacker input: every ID, limit and filter in args needs validation like any REST parameter.",
+        "Errors are surface too: verbose errors leak schema hints, stack traces and object-existence info.",
+        "Baseline hardening order: authenticate → per-field authZ → cap size/depth/cost → gate introspection → persisted queries → monitor.",
+        "Rule zero: deny by default — a field with no explicit authorization decision is a leak waiting to be found."
+      ]
+    },
+    {
+      "title": "Authorization in Resolvers: The Mechanics",
+      "points": [
+        "Resolver signature (parent, args, context, info): authorization reads context.user — never trust args alone.",
+        "AuthN before execution: verify JWT/session in the server context function and attach user + roles so every resolver can check.",
+        "Deny-by-default pattern: a requireAuth/requireRole wrapper that throws ForbiddenError before any data access.",
+        "Field-level authZ: wrap individual resolvers when sensitivity varies inside one type (User.email vs User.name).",
+        "Type-level checks: guard whole types (e.g., AdminReport) with middleware that intercepts all of its resolvers.",
+        "Schema directives: @auth(requires: ADMIN) declared in SDL and enforced by a transform pass — policy lives next to the contract.",
+        "Rule libraries: GraphQL Shield builds a rule tree with per-rule caching; caveat — it only protects resolver entry points.",
+        "Minimum code to memorize: if (!ctx.user) throw new ForbiddenError() — then verify ownership of the specific object.",
+        "Object-level authZ belongs in the business/data layer when the decision needs the fetched object, not just the field name.",
+        "Subscriptions: authorize at connection setup AND again on each pushed event — a live channel outlives the original check.",
+        "Batching pitfall: DataLoader may serve cached records to users who could not fetch them — scope cache keys by user.",
+        "Response hygiene: throwing kills the whole document; returning null + an errors array masks just that field — choose deliberately."
+      ]
+    },
+    {
+      "title": "Object-Level AuthZ & BOLA/IDOR",
+      "points": [
+        "BOLA/IDOR defined: user A requests object(id: B's id) and gets it because the resolver only checked 'is logged in'.",
+        "It is the #1 OWASP API risk — GraphQL makes it trivial since every object is addressable through arguments.",
+        "Field checks do not cascade: securing Query.post does not protect post.author or post.comments — each type needs rules.",
+        "Ownership check pattern: fetch object → assert object.ownerId === ctx.user.id → else throw; cheap and explicit.",
+        "Better: scope the data source — WHERE owner_id = $user in SQL/Prisma so unauthorized rows are never fetched at all.",
+        "Postgres Row-Level Security: set the user id on the connection (set_config) and let the database enforce tenant isolation — defense in depth.",
+        "Centralize decisions as can(user, action, object) in a policy layer (CASL, Oso, custom) so rules do not scatter across 50 resolvers.",
+        "RBAC is coarse (roles), ABAC is contextual (owner, state, tenant) — most real APIs need both combined.",
+        "Existence leaks: 'forbidden' confirms the object exists; returning 'not found' hides it — pick per threat model.",
+        "Test adversarially: automated suite where user A requests every ID belonging to user B; run in CI on every schema change.",
+        "Log every denied access with user id + resource id — spikes signal scraping or probing.",
+        "Watch mutations too: updatePost(id:) with no ownership check is BOLA with write access — worse than a read."
+      ]
+    },
+    {
+      "title": "Introspection: Reconnaissance & Control",
+      "points": [
+        "__schema{types{...}} returns every type, field, argument, description and deprecation reason — a complete API blueprint.",
+        "Why attackers love it: instant discovery of admin mutations, internal types and still-live deprecated fields.",
+        "Turn it off in prod: Apollo Server introspection:false, GraphQL Yoga config flag, Graphene disable_introspection.",
+        "Naive blockers get bypassed: GET requests, multipart smuggling and extension tricks have snuck __schema past regex filters — test the real endpoint.",
+        "Field suggestions leak too: 'Did you mean secrets?' validates guesses — disable suggestion lists in prod.",
+        "Clairvoyance-style tools reconstruct schemas from suggestion leaks even with introspection 'disabled'.",
+        "Introspection is not a vulnerability itself — it is an information multiplier for authZ gaps and forgotten fields.",
+        "Cost of disabling: breaks GraphiQL, codegen and internal tooling — solve with environments, not by leaving it open.",
+        "Adaptive pattern: gate introspection on an auth header, admin role or internal network instead of a hard global off.",
+        "Schema registry alternative: publish SDL to an internal registry so teams keep tooling without runtime introspection.",
+        "Descriptions can leak: TODO notes and internal hostnames in field descriptions ship through introspection — audit them.",
+        "Verify, do not assume: run an actual __schema query after deploy and confirm the rejection shape."
+      ]
+    },
+    {
+      "title": "Query Depth Limits",
+      "points": [
+        "The attack: deeply nested selections (user→friends→friends→...) make resolver calls grow multiplicatively across levels.",
+        "Depth = the longest chain of fields from root to leaf; fragments count where they are spread.",
+        "Standard tool: the graphql-depth-limit validation rule — depthLimit(10) rejects documents past the cap before execution.",
+        "Calibrate to your schema: find the deepest legitimate operation (profile→orders→items→product) and set the limit just above it.",
+        "Aliases repeat subtrees within one document — depth counting must cover aliased branches, not only unique paths.",
+        "Know your library's semantics: how skip/include, fragments and interfaces are counted differs between implementations.",
+        "Depth is structural only: a shallow query with 500 aliased expensive fields sails past a depth cap — that is cost analysis' job.",
+        "Reject with a clean GraphQL validation error (fast, pre-execution) — never a 500 with a stack trace.",
+        "Cheap first line: cap document byte length (e.g., 2–10 KB) before parsing — kills the giant-document vector instantly.",
+        "Managed platforms differ: Hasura has native depth limits; AWS AppSync does not — approximate with WAF rules or pipeline resolvers.",
+        "Pair with execution timeouts and resolver invocation budgets so one unexpectedly slow field cannot hang the server.",
+        "Log rejected deep queries — legit clients tripping the limit means the cap is wrong, not the client."
+      ]
+    },
+    {
+      "title": "Query Cost & Complexity Analysis",
+      "points": [
+        "Idea: give each field a weight, multiply by list multipliers, sum the document, reject anything over budget before executing.",
+        "Multipliers make pagination sane: friends(first: 100) costs 100 × field weight — attackers cannot hide scale.",
+        "Compute cost after variable substitution: a static check on {first: $n} misses the attacker setting n = 100000.",
+        "Tools: graphql-cost-analysis (per-field costs in SDL), graphql-validation-complexity, Apollo's query complexity plugin.",
+        "Calibrate weights from reality: profile resolver latency — a 40 ms search field earns a far higher weight than a scalar.",
+        "Budgeting: start around 1000 points, log every rejection, and tune — rejected power-queries are your calibration data.",
+        "Cost vs depth: cost models volume and expensive fields; depth models nesting — they catch different attacks, use both.",
+        "Fragments must be expanded before scoring, or attackers hide costs inside named fragments.",
+        "Reject at the validation phase: the attacker pays parse cost only — no resolver execution, no database hits.",
+        "Rate-limit by cost, not request count: a token bucket where each request spends its computed cost — heavy queries drain it faster.",
+        "Reactive safety nets that still work: execution timeout plus a max-resolvers-per-query cap for anything your model missed.",
+        "Do not echo remaining budget in errors or extensions — fine-grained feedback helps attackers tune just under the cap."
+      ]
+    },
+    {
+      "title": "Persisted Queries",
+      "points": [
+        "Definition: operations are stored server-side by hash; the client sends only extensions.persistedQuery {version, sha256Hash} + variables.",
+        "APQ flow (Apollo): send hash → PersistedQueryNotFound → resend full document → server caches hash→document → hash only thereafter.",
+        "Hardened mode: whitelist-only — the server accepts only hashes present in the deployed manifest; unknown hashes are rejected.",
+        "Security payoff: attackers cannot invent new queries at all — depth/cost bypass attempts die at the door.",
+        "Manual persisted queries: generate the manifest at build time from frontend code and deploy it with the server — versions move together.",
+        "APQ vs manifest: APQ is convenient but registers whatever the client sends first; a manifest is strict but needs CI/CD discipline.",
+        "Client support: Apollo's persistedQueryLink, Relay (compiled queries by design), urql persisted-query exchanges.",
+        "Bonus: smaller payloads and no query text in URLs or logs — less sensitive information leaves the client.",
+        "Rollback discipline: keep old hashes alive until every shipped client version has migrated, or old apps break.",
+        "CI contract test: fail the build if any operation the shipped app uses is missing from the manifest.",
+        "Public-API fallback where you cannot whitelist: APQ + cost limits + depth limits + auth still beats nothing.",
+        "Cache safety: a hash is derived from the document content, so the hash→document mapping is immutable and cannot be poisoned."
+      ]
+    },
+    {
+      "title": "Comparing Controls: Defense in Depth",
+      "points": [
+        "Control matrix: token authN = who; resolver authZ = what data; introspection gating = recon; depth/cost = resource abuse; persisted queries = arbitrary ops.",
+        "Depth vs cost shapes: deep-narrow queries fail depth but pass cost; wide-shallow queries with expensive fields fail cost but pass depth.",
+        "Whitelist vs budget: persisted queries forbid everything unknown; cost limits allow anything within budget — first-party apps favor whitelists, public APIs favor budgets.",
+        "REST mapping: per-route rate limits and scoped tokens map roughly to per-operation cost limits; REST's fixed URLs make authz audits easy — GraphQL needs field-level rules instead.",
+        "Evaluation order: authenticate → parse → byte-size cap → whitelist check → depth → cost → resolvers with authZ.",
+        "Batching is a bypass: 50 cheap operations in one batch equals one expensive request — cap batch size and sum costs across it.",
+        "WAF reality: generic WAFs see one opaque POST — use GraphQL-aware rules (Cloudflare/AWS WAF) for depth and token counting, never as the only layer.",
+        "Fail closed on the whitelist (unknown = reject), fail monitored on cost heuristics (log + tune) — a buggy validator should not take the API down.",
+        "Stack rate limits: per-IP (coarse), per-user (fair), per-operation-cost (precise).",
+        "Observability: log operation name/hash, computed cost, user id and rejection flag; alert on new hashes once whitelisting.",
+        "Tooling conflict: introspection off means codegen needs a registry — plan the registry before flipping the flag.",
+        "Principle: every layer is bypassable alone; stacked layers raise attacker effort exponentially."
+      ]
+    },
+    {
+      "title": "Common Mistakes & Real Gotchas",
+      "points": [
+        "'We have JWTs, we are safe' — authentication is not authorization; a logged-in user scraping others' data passes authN perfectly.",
+        "AuthZ on queries only: the deletePost mutation shipped with no ownership check — mutations need the same or stricter rules.",
+        "Depth limit left at a library default like 100 — that equals no limit; set it to your schema's real maximum plus margin.",
+        "Introspection disabled on the public domain but left on and reachable on staging/preview deployments.",
+        "Cost analysis trusted without variable clamping: first: 999999 turned a cheap-looking query into a table scan.",
+        "APQ deployed in 'allow any query' fallback mode in prod — zero whitelist benefit, all of the complexity paid.",
+        "Regex introspection blocker bypassed via GET or multipart smuggling — always verify with real adversarial tools.",
+        "DataLoader cache shared across users served one tenant another tenant's records — scope cache keys by user.",
+        "GraphQL over GET enabled with a cookie session = CSRF-able state changes; require POST plus SameSite/CSRF tokens.",
+        "Verbose prod errors leaked stack traces and resolver paths — disable stack traces and mask internal errors.",
+        "A shared API key extracted from the mobile app let attackers hit the API directly — pin certificates, whitelist queries, watch anomalies.",
+        "Meta-mistake: merging new fields without an authZ review — new schema surface is new attack surface; require a security check in schema PRs."
+      ]
+    },
+    {
+      "title": "Hardening Cheat Sheet — Ship It",
+      "points": [
+        "Order of operations: authN at context → deny-by-default authZ per field/object → size cap → depth → cost → whitelist → execute.",
+        "AuthZ minimum: every sensitive field has an explicit rule; prefer ownership-scoped data queries over post-fetch filtering.",
+        "Introspection: off or role-gated in prod, field suggestions off, SDL distributed via an internal registry, descriptions audited.",
+        "Depth limit: set from your schema's deepest legitimate query (commonly 7–12); reject with a validation error.",
+        "Cost limit: weights × pagination multipliers computed after variables; start near 1000 points and tune with rejection logs.",
+        "Persisted queries: CI-generated manifest for first-party apps; APQ + limits as the public-API fallback; keep old hashes through rollouts.",
+        "Also cap: batch size, document bytes, execution timeout, resolver invocations per query.",
+        "Monitoring: log cost, hash, user and rejections; alert on novel query shapes and spikes of denied authorization.",
+        "Testing: adversarial BOLA suite, introspection-bypass probes, and oversized/deep query fixtures running in CI.",
+        "Three questions for every new field: who can read this, who can write this, and what would an attacker do with it?",
+        "Posture scales with attacker cost: each stacked control multiplies their effort while a registry and docs keep developer velocity."
+      ]
+    }
+  ]
+}

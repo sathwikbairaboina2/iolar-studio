@@ -1,0 +1,297 @@
+{
+  "title": "Kafka Performance Handbook: Batching, Fetching, ISR & the Throughput-Latency Trade",
+  "summary": "A dense study-notes series covering how Kafka producers batch and compress, how consumers tune fetches, how ISR and acks shape durability, and how every setting trades throughput against latency.",
+  "chapters": [
+    {
+      "title": "1. Why Kafka Is Fast: The Mental Model",
+      "points": [
+        "Kafka's speed comes from sequential disk I/O, an append-only log, and zero-copy transfer (sendfile) — not from avoiding disk",
+        "Log is partitioned; parallelism unit = partition count, so a 12-partition topic can serve 12 consumers in one group",
+        "Producer/consumer are the tunable ends; broker does almost no per-message work (no in-flight transformation)",
+        "Page cache: Kafka relies on OS page cache, not JVM heap, so warm cache ≫ bigger heap for broker tuning",
+        "Two competing goals: throughput (msgs/sec, MB/sec) vs latency (p99 end-to-end ms) — most configs move one at the expense of the other",
+        "The three knobs we'll tune: batching+compression (producer side), fetch behavior (consumer side), acks+ISR (durability side)",
+        "Benchmark honestly: measure with your payload size and partition count; defaults are tuned for durability, not speed",
+        "latency budget example: linger.ms 0 → p99 ~5ms but 80k msg/s; linger.ms 10 → p99 ~25ms but 400k msg/s on same hardware"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Why Kafka Is Fast"
+        },
+        {
+          "type": "bullets",
+          "note": "sequential IO, zero-copy, page cache points"
+        },
+        {
+          "type": "diagram",
+          "note": "producer → partition log → consumer, with knobs labeled at each end"
+        },
+        {
+          "type": "sidebox",
+          "note": "throughput vs latency example numbers"
+        }
+      ]
+    },
+    {
+      "title": "2. Producer Batching Mechanics",
+      "points": [
+        "Producer groups records per partition into a ProducerBatch held in the RecordAccumulator; one batch = one network request per partition",
+        "batch.size (default 16KB): a batch is sent when full — bigger batches = fewer requests, better compression ratio",
+        "linger.ms (default 0): max time a half-full batch waits before being sent; this is the deliberate latency tax",
+        "Batch closes when EITHER batch.size OR linger.ms hits first — set both together, e.g. 64KB / 5-10ms",
+        "buffer.memory (default 32MB): total memory for unsent batches; producers block (or error, per max.block.ms) when full — a backpressure signal your consumers/producers are outpacing",
+        "Each partition has its own batch queue: many partitions dilute batching (a 64KB batch filled by 1 msg/partition wastes memory)",
+        "enable.idempotence=true changes defaults to acks=all, retries=Integer.MAX_VALUE — batching still applies on top",
+        "Rule of thumb: throughput workload → linger.ms 5-20ms; latency-sensitive → linger.ms 0-1ms and accept smaller batches",
+        "Watch batch-size-avg metric: if it's much smaller than batch.size, you're paying request overhead for nothing"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Producer Batching Mechanics"
+        },
+        {
+          "type": "diagram",
+          "note": "records → per-partition accumulator queues → batches → broker"
+        },
+        {
+          "type": "bullets",
+          "note": "batch.size, linger.ms, buffer.memory points"
+        },
+        {
+          "type": "callout",
+          "note": "batch closes on EITHER limit first"
+        },
+        {
+          "type": "sidebox",
+          "note": "throughput vs latency rule of thumb"
+        }
+      ]
+    },
+    {
+      "title": "3. Compression: Which Codec and When",
+      "points": [
+        "compression.type is set on the PRODUCER (gzip, snappy, lz4, zstd, none); batches are compressed whole, so batching directly improves compression ratio",
+        "Trade-off per codec: none (no CPU, big), lz4/snappy (fast, mild ratio), gzip (small, CPU-heavy), zstd (best ratio/speed balance, Kafka ≥2.1)",
+        "Compression saves network + broker disk; costs producer CPU — brokers store batches as-is unless broker-side recompression is configured",
+        "Broker compression.type=producer (default) means no recompression — keep it that way or you burn broker CPU twice",
+        "Measure end-to-end: producer CPU ↑, but consumer fetch CPU ↑ too (decompression) while network ↓ — benchmark with real payloads",
+        "JSON payloads compress 5-10x; already-compressed data (avro w/ compression, images) → don't recompress",
+        "compression works per-batch: linger.ms=0 + tiny batches = barely any compression benefit",
+        "Recommendation: default lz4; zstd when bandwidth/disk dominates and you can spare producer CPU"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Compression"
+        },
+        {
+          "type": "table",
+          "note": "codec comparison: speed, ratio, CPU, when to use"
+        },
+        {
+          "type": "bullets",
+          "note": "per-batch compression, broker passthrough points"
+        },
+        {
+          "type": "callout",
+          "note": "no compression without batching"
+        }
+      ]
+    },
+    {
+      "title": "4. Consumer Fetch Tuning",
+      "points": [
+        "Consumers pull (long-poll fetch), they aren't pushed — fetch.min.bytes (default 1) = broker waits to accumulate data before responding",
+        "fetch.max.wait.ms (default 500ms): how long broker holds a fetch when min.bytes isn't met — this is the consumer-side latency cap",
+        "Throughput recipe: fetch.min.bytes=64KB+ with fetch.max.wait.ms=100-500 → fewer, bigger requests, higher latency for empty topics",
+        "max.partition.fetch.bytes (default 1MB): max per-partition data per fetch; must exceed largest single message or the consumer stalls forever",
+        "fetch.max.bytes (default 50MB): total cap per fetch — an upper bound, not a target",
+        "max.poll.records (default 500): records returned per poll() — bounds processing batch size and memory in your app",
+        "Latency recipe: fetch.min.bytes=1 (default) → responds as soon as any data exists; tune max.poll.interval.ms to exceed your worst processing time or you get a rebalance",
+        "Session/heartbeat: heartbeat.interval.ms and session.timeout.ms affect rebalance speed, not fetch throughput — don't confuse the two",
+        "Gotcha: a single oversized message larger than max.partition.fetch.bytes throws and blocks the partition forever — validate producer-side max size"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Consumer Fetch Tuning"
+        },
+        {
+          "type": "diagram",
+          "note": "consumer long-poll: fetch request, broker waits for min.bytes or max.wait"
+        },
+        {
+          "type": "bullets",
+          "note": "fetch.min.bytes, max.wait.ms, max.partition.fetch.bytes points"
+        },
+        {
+          "type": "sidebox",
+          "note": "throughput recipe vs latency recipe"
+        },
+        {
+          "type": "callout",
+          "note": "oversized message stall gotcha"
+        }
+      ]
+    },
+    {
+      "title": "5. Replication, ISR and acks=all",
+      "points": [
+        "Each partition has 1 leader + N follower replicas; followers fetch from the leader exactly like consumers",
+        "ISR (In-Sync Replicas) = followers fully caught up within replica.lag.time.max.ms (default 30s); lagging followers get kicked out",
+        "acks=0: fire-and-forget, no broker ack — max throughput, data lost on any failure",
+        "acks=1: leader acks after writing to its own log — lost if leader dies before followers replicate (the classic data-loss window)",
+        "acks=all (with min.insync.replicas≥2): ack only after all ISR replicas have the record — durable, highest latency",
+        "min.insync.replicas (broker/topic, default 1): minimum ISR required to accept writes; with acks=all and ISR shrunk below it, producers get NOT_ENOUGH_REPLICAS errors (a feature, not a bug)",
+        "Safe config: replication.factor=3, min.insync.replicas=2, acks=all → survives 1 broker failure with zero loss",
+        "unclean.leader.election.enable=false (default): never let a lagging replica become leader — availability dropped for consistency",
+        "Latency cost of acks=all ≈ one extra network hop + fsync on follower, typically single-digit ms, not 10x"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "ISR & acks"
+        },
+        {
+          "type": "diagram",
+          "note": "leader + 2 followers, ack path for acks=0/1/all"
+        },
+        {
+          "type": "table",
+          "note": "acks=0 vs 1 vs all: latency, throughput, loss risk"
+        },
+        {
+          "type": "callout",
+          "note": "the safe trio: rf=3, min.isr=2, acks=all"
+        }
+      ]
+    },
+    {
+      "title": "6. Durability on the Consumer Side",
+      "points": [
+        "At-least-once: commit AFTER processing; crash → redelivery (need idempotent consumers), the safe default",
+        "At-most-once: commit BEFORE processing; crash → message dropped, only OK when loss is tolerable (metrics, telemetry)",
+        "Exactly-once = idempotent producer + transactions + read_committed consumers — mostly matters for consume-process-produce pipelines (Kafka Streams)",
+        "enable.auto.commit=true (default) commits every auto.commit.interval.ms (5s) on the next poll — can commit offsets for records never processed on crash → duplicates or loss",
+        "Manual commit: commitSync (blocks, reliable) vs commitAsync (non-blocking, may commit stale offsets — pair with a final commitSync on shutdown)",
+        "Commit per batch/partition, not per record: per-record commits serialize against the broker and crush throughput",
+        "Rebalance loses in-flight work: commit (or checkpoint) inside ConsumerRebalanceListener.onPartitionsRevoked",
+        "Duplicate handling is cheap: idempotent writes keyed by event ID or dedupe window — design for at-least-once + dedupe"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Consumer Durability & Offsets"
+        },
+        {
+          "type": "table",
+          "note": "at-most-once vs at-least-once vs exactly-once"
+        },
+        {
+          "type": "bullets",
+          "note": "auto.commit trap, sync vs async commit points"
+        },
+        {
+          "type": "callout",
+          "note": "at-least-once + idempotent consumer = pragmatic EOS"
+        }
+      ]
+    },
+    {
+      "title": "7. Throughput vs Latency: The Trade-off Map",
+      "points": [
+        "Core pattern: everything that waits-and-amortizes (linger, fetch.min.bytes, big batches) buys throughput with latency; everything that sends immediately buys latency with overhead",
+        "Producer axis: linger.ms & batch.size ↑ = fewer requests/sec, better compression, higher p99",
+        "Consumer axis: fetch.min.bytes ↑ = broker-side batching, but cold topics feel it (capped by fetch.max.wait.ms)",
+        "Durability axis: acks 0→1→all trades latency+loss-risk for safety; compression trades CPU for network/disk",
+        "Latency is tail latency: one batch delay + one rebalance + one GC pause dominates p99 — measure p99/p999, never the average",
+        "Queueing math intuition: at ~70% utilization, queuing delays explode; headroom matters more than micro-tuning",
+        "Workload archetypes: telemetry/log shipping → maximize throughput (linger 10ms, lz4, acks=1 maybe, fetch.min.bytes 100KB); payments/orders → minimize latency+loss (linger 0-1ms, acks=all, min.isr=2, fetch.min.bytes=1)",
+        "You can't optimize both at once — pick per-topic configs: Kafka allows topic-level overrides for min.isr, cleanup policy, etc."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "The Trade-off Map"
+        },
+        {
+          "type": "diagram",
+          "note": "seesaw: throughput knob lifts latency, per axis (producer/consumer/durability)"
+        },
+        {
+          "type": "table",
+          "note": "telemetry workload vs payments workload config presets"
+        },
+        {
+          "type": "callout",
+          "note": "measure p99, not the average"
+        }
+      ]
+    },
+    {
+      "title": "8. Common Mistakes & Smells",
+      "points": [
+        "Raising partition count to fix consumer lag when the real problem is max.poll.interval.ms exceeded → rebalance storm → more lag (vicious cycle)",
+        "buffer.memory exhausted / 'exhausted' logs: batching too big for buffer or downstream slow — back off linger.ms or add buffer, but really fix the sink",
+        "min.insync.replicas=1 + acks=all = false security: you're paying acks=all latency for acks=1 durability",
+        "Setting batch.size huge (1MB) with linger.ms=0: batches rarely fill, you just waste accumulator memory",
+        "Compression misconfiguration: broker compression.type ≠ producer → double compression work on every message",
+        "Committing every record with commitSync in the loop: 10x throughput loss for no durability gain vs per-batch commits",
+        "Ignoring producer retries + idempotence: retries without enable.idempotence can duplicate on retry — duplicates land in consumer dedupe budget",
+        "Tiny fetch.max.wait.ms (e.g. 10ms) + high fetch.min.bytes: broker busy-loops on polls, CPU burn on both ends",
+        "Benchmarking with default 1KB payloads: real JSON of 2-5KB changes batching, compression, and fetch math entirely"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Mistakes & Smells"
+        },
+        {
+          "type": "bullets",
+          "note": "the anti-pattern list, one line each"
+        },
+        {
+          "type": "callout",
+          "note": "min.isr=1 + acks=all trap"
+        },
+        {
+          "type": "sidebox",
+          "note": "rebalance storm death spiral sketch"
+        }
+      ]
+    },
+    {
+      "title": "9. Tuning Cheat Sheet & Summary",
+      "points": [
+        "Producer defaults-to-fast template: linger.ms=5-10, batch.size=64KB, compression=lz4, buffer.memory=64MB, enable.idempotence=true, acks=all",
+        "Producer latency-first template: linger.ms=0-1, batch.size=16KB, compression=none or lz4, acks=all + min.isr=2",
+        "Consumer throughput template: fetch.min.bytes=65536, fetch.max.wait.ms=250, max.poll.records=1000, max.partition.fetch.bytes=4MB",
+        "Consumer latency-first template: fetch.min.bytes=1, max.poll.records=100-500, manual commitSync per batch",
+        "Broker durability template: replication.factor=3, min.insync.replicas=2, unclean.leader.election.enable=false, broker compression.type=producer",
+        "Metrics to watch: producer batch-size-avg & record-queue-time, request-latency-avg; consumer fetch-manager fetch-size-avg & poll idle time; broker under-replicated-partitions (>0 = act now)",
+        "Load-test order: fix consumer lag first (it backs up everything), then producer batching, then compression, then durability knobs last",
+        "One-sentence summary: batch to amortize, compress to shrink, fetch bigger to pull cheaper, ack on ISR to not lose — every knob just picks your spot on the throughput-latency curve"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Cheat Sheet & Summary"
+        },
+        {
+          "type": "table",
+          "note": "4 config templates side by side"
+        },
+        {
+          "type": "bullets",
+          "note": "metrics & load-test order"
+        },
+        {
+          "type": "callout",
+          "note": "closing one-sentence summary"
+        }
+      ]
+    }
+  ]
+}

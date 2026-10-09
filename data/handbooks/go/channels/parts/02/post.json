@@ -1,0 +1,583 @@
+{
+  "brand": "iolar",
+  "template": "margin-qa",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "GO CHANNELS: FIELD NOTES — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Fan-Out: Spreading Work",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "One In, N Workers",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fan-out: one input channel, N goroutines receiving",
+            "The runtime load-balances; a free worker takes next",
+            "Fast workers naturally take more, with no extra code"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for i := 0; i < n; i++ {",
+            "\tgo worker(jobs, results) // one chan",
+            "}",
+            "close(jobs) // all N range loops exit"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One `close(jobs)` terminates all N workers",
+            "A close broadcasts to every blocked receiver at once"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Picking N",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Work Kind",
+            "N"
+          ],
+          "rows": [
+            [
+              "CPU-bound",
+              "`runtime.NumCPU()`"
+            ],
+            [
+              "I/O-bound",
+              "much higher"
+            ],
+            [
+              "downstream limit",
+              "its pool size"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`errgroup.Group` with `g.SetLimit(n)` is the modern shape",
+            "It bounds the fan-out and propagates the first error",
+            "Alternative: one goroutine per job gated by a size-N semaphore"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Ordering Is Gone",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Results arrive in completion order, not submission order",
+            "Need order? Attach the input index to each result",
+            "Sort by that index at the consumer, never in a worker"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keeping It Alive",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "select {",
+            "case results <- r: // normal path",
+            "case <-ctx.Done(): return // no leak",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The results reader must keep up with the workers",
+            "A stalled reader blocks their sends and stalls the fan-out",
+            "Buffer `jobs` at N so the dispatcher stays a round ahead"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "type res struct {",
+            "\tval T",
+            "\terr error // one chan, sane ordering",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Anti-Pattern",
+          "text": "An unbounded `go` per item over a large input: thousands of goroutines all hitting one database is a self-inflicted outage."
+        }
+      ]
+    },
+    {
+      "page_title": "Fan-In: Merging N Channels",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "N In, One Out",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fan-in: N input channels merged into one output",
+            "A single consumer reads the merged stream",
+            "A naive select handles a fixed two or three inputs",
+            "It does not generalise to a slice of channels"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "generator",
+              "fan-out workers",
+              "fan-in merge",
+              "consumer"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The General Merge",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var wg sync.WaitGroup",
+            "wg.Add(len(cs))",
+            "out := make(chan T, len(cs)) // one slot each"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The `wg.Wait()` closer goroutine is mandatory",
+            "Capture the loop variable or all goroutines share one",
+            "Output order is nondeterministic and interleaved",
+            "Fan-in gives you completion order, nothing more"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Dynamic Selection",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Merging is a select over a changing set of channels",
+            "`reflect.Select` does that selection at runtime",
+            "It is slow and reflective, so rarely worth it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pipeline Contract",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each stage closes its own output channel",
+            "Each stage stops sending when `done` or `ctx` closes",
+            "Stages chain by channels alone, nothing shared"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Famous Leak",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The consumer returns early and stops reading `out`",
+            "Every merge goroutine blocks forever on `out <- v`",
+            "One leaked goroutine per input channel, until exit"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "select {",
+            "case out <- v: // consumer still reading",
+            "case <-ctx.Done(): return // early exit",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Fan-In: Merging N Channels (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Loop Var Trap",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for _, c := range cs {",
+            "\tgo func(c <-chan T) { // pass it in",
+            "\t\tfor v := range c { out <- v }",
+            "\t}(c)",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pre-Go 1.22 the goroutines all shared one `c`",
+            "Every merge goroutine then drained the same input",
+            "Passing the channel as a parameter fixes it"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Size And Rate",
+          "text": "Buffer `out` at `len(cs)` so each producer can place one item without waiting. Rate-limit at the fan-in point with one ticker, not N throttled producers."
+        },
+        {
+          "type": "heading",
+          "text": "The Two Leaks",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Leak 1: a sender blocked forever, receiver returned early",
+            "Always pair a send with a `ctx.Done()` case",
+            "Leak 2: `for range ch` on a channel nobody closes",
+            "That goroutine parks until the process exits"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`go.uber.org/goleak` in tests catches strays",
+            "Or assert `runtime.NumGoroutine()` before and after",
+            "Run with `-race`: it catches misuse of sent pointers",
+            "It does not check the channel operations themselves"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Silent Deadlock",
+          "text": "`fatal error: all goroutines are asleep - deadlock!` fires only when every goroutine is blocked. A partial deadlock is completely silent."
+        },
+        {
+          "type": "heading",
+          "text": "Panic And Block Table",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Op",
+            "On Closed",
+            "On nil"
+          ],
+          "rows": [
+            [
+              "send",
+              "panic",
+              "blocks forever"
+            ],
+            [
+              "receive",
+              "zero value",
+              "blocks forever"
+            ],
+            [
+              "close",
+              "panic",
+              "panic"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`v, ok := <-ch` and `for range ch` observe a close",
+            "They are the only two correct ways from the receive side",
+            "A bare receive cannot tell zero value from closed"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Leaks, Closing & Panic Rules",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Who Closes",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "THE RULE: only a sender closes, and only if it is solo",
+            "Never let a receiver close a channel it reads",
+            "Many senders? Never close from inside one of them",
+            "Use a `done` channel, `sync.Once`, or a closer goroutine"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "go func() {",
+            "\twg.Wait()",
+            "\tclose(out) // after N producers finish",
+            "}()"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Buffered values survive a close; receivers drain first",
+            "Closing wakes every goroutine blocked on receive",
+            "That broadcast is how one `done` cancels N workers"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Worked Example",
+          "text": "Call `close(results)` before the workers finish and the next `results <- r` gives `panic: send on closed channel`, taking the whole process down."
+        },
+        {
+          "type": "heading",
+          "text": "Channel Or Mutex",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Primitive",
+            "Rough Cost"
+          ],
+          "rows": [
+            [
+              "`sync.Mutex`",
+              "~20ns uncontended"
+            ],
+            [
+              "buffered op",
+              "~50-100ns"
+            ],
+            [
+              "unbuffered handoff",
+              "~100-300ns"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "reach for a channel",
+              "items": [
+                "transferring ownership",
+                "distributing work",
+                "async results"
+              ]
+            },
+            "right": {
+              "title": "reach for a mutex",
+              "items": [
+                "guarding shared state",
+                "a shared counter",
+                "hot read path"
+              ]
+            }
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Channels are not always the answer",
+            "A counter wants `sync/atomic`; state wants `sync.Mutex`",
+            "Signal-only channels should be `chan struct{}`",
+            "Zero allocation and the intent is unmistakable"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "select In One Screen",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "select waits on many channel operations at once",
+            "Several ready? It picks one uniformly at random",
+            "`default:` makes the whole select non-blocking"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "select {",
+            "case v := <-ch: use(v)",
+            "default: // nothing ready, move on",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Gotchas And The Cheat Sheet",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Timer Leak",
+          "text": "`case <-time.After(2*time.Second)` leaks its timer until it fires. In a hot loop use `time.NewTimer` with `defer t.Stop()` instead."
+        },
+        {
+          "type": "heading",
+          "text": "nil Is An Off Switch",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "State",
+            "In select"
+          ],
+          "rows": [
+            [
+              "nil",
+              "never chosen"
+            ],
+            [
+              "closed",
+              "always ready"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A closed input stays ready and busy-spins the loop",
+            "Nil the variable and select drops that case for good"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "if !ok { a = nil; continue }",
+            "// loop while a != nil || b != nil"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Ownership",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Do not park a channel in a struct field casually",
+            "Only when that struct owns its whole lifecycle",
+            "Ambiguous ownership is what causes double closes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Decision Guide",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "You Need",
+            "Reach For"
+          ],
+          "rows": [
+            [
+              "one-shot signal",
+              "close a `done` chan"
+            ],
+            [
+              "N results",
+              "buffered chan of N"
+            ],
+            [
+              "unknown count",
+              "`WaitGroup` + closer"
+            ],
+            [
+              "cancellation",
+              "`context`, not hand-rolled"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Whole Handbook",
+          "text": "Unbuffered is synchronization, buffered is queueing with a ceiling, close is a broadcast, nil is an off switch, and select composes them all."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of GO CHANNELS: FIELD NOTES. Most Go concurrency bugs are not race conditions — they are one goroutine parked forever on a send nobody will ever receive. These ten pages are the whole channel model: unbuffered rendezvous, buffer sizing that is a memory ceiling rather than a perf knob, the hchan fast path, the three ways close panics, and the nil-channel trick that turns select into a switchboard. Save it for the next time a worker pool quietly stops.",
+    "hashtags": [
+      "#golang",
+      "#goprogramming",
+      "#concurrency",
+      "#gochannels",
+      "#backenddevelopment",
+      "#softwareengineering",
+      "#systemsprogramming",
+      "#codenotes",
+      "#devnotes",
+      "#learntocode",
+      "#programmingtips",
+      "#100daysofcode"
+    ]
+  }
+}

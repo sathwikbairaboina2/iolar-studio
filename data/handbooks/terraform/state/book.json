@@ -1,0 +1,206 @@
+{
+  "title": "Terraform State: The Complete Field Notes",
+  "summary": "A dense, practical handbook on Terraform state — what the state file actually stores, how remote backends and locking work, how drift happens and gets reconciled, and how to safely move, import, and recover state. Covers internals, commands, trade-offs, and the mistakes that destroy real infrastructure.",
+  "chapters": [
+    {
+      "title": "What State Is and Why It Exists",
+      "points": [
+        "Definition: Terraform state is a JSON mapping from configuration resource addresses (aws_instance.web) to real-world object IDs (i-0abc123) plus a cached copy of that object's attributes.",
+        "Core problem it solves: cloud APIs have no way to answer 'which of these 400 instances did my config create?' — the provider has no ownership tag standard, so Terraform records the binding itself.",
+        "Four jobs of state: (1) identity mapping config↔real resource, (2) attribute cache to avoid N API reads on every plan, (3) dependency ordering metadata for correct destroy order, (4) storage for output values consumed by other configs.",
+        "Terraform is declarative but not stateless: without state, `terraform apply` on an unchanged config would recreate everything, because nothing links config to reality.",
+        "Why the dependency graph is stored, not recomputed: on destroy, resources may already be deleted from config, so Terraform needs the old graph to know that the subnet must die after the instance in it.",
+        "State as a performance cache: `terraform plan` can run with cached attributes; `-refresh=false` skips provider reads entirely and plans purely against stored values.",
+        "State is the source of truth for what Terraform *believes* exists; reality is the source of truth for what *does* exist — the gap between them is drift.",
+        "Default file: `terraform.tfstate` in the working directory; previous version auto-saved as `terraform.tfstate.backup` on each write.",
+        "Workspaces: `terraform workspace new staging` creates a separate state under `terraform.tfstate.d/staging/` (local) or a keyed path (remote) — same config, isolated state.",
+        "State is per-configuration-root, not per-provider: one root module = one state = one lock = one blast radius.",
+        "Never edit terraform.tfstate by hand — the `serial` and `lineage` fields plus attribute schemas must stay consistent; use `terraform state` subcommands instead.",
+        "Common misconception: state is NOT a backup of your infrastructure. Losing state loses the mapping, not the resources — the resources keep running, orphaned.",
+        "Example of the mapping in practice: rename `aws_instance.web` to `aws_instance.api` in config with no state change, and Terraform plans destroy+create because the address is the key.",
+        "State size grows with resource count; 5,000-resource states make plans slow (minutes) — a signal to split root modules."
+      ]
+    },
+    {
+      "title": "Anatomy of the State File",
+      "points": [
+        "Top-level fields: `version` (state format, currently 4), `terraform_version`, `serial`, `lineage`, `outputs`, `resources`, `check_results`.",
+        "`serial`: monotonically incrementing integer bumped on every state write; remote backends use it to reject stale writes.",
+        "`lineage`: a UUID generated when state is first created; two states with different lineage are unrelated, and Terraform refuses to overwrite across lineages without `-force`.",
+        "`version` 4 is the on-disk format version — distinct from `terraform_version`, which records the binary that last wrote it. Older binaries refuse newer state; state format upgrades are one-way.",
+        "`resources[]` entries carry `mode` (\"managed\" or \"data\"), `type`, `name`, `provider` (full provider address), and `instances[]`.",
+        "`instances[]` holds `schema_version`, `attributes` (the full flattened resource attributes as provider-schema JSON), `dependencies`, and `private` (opaque provider blob, base64).",
+        "`index_key` distinguishes instances of `count` (integer index) from `for_each` (string key) — this is why converting count→for_each forces address changes.",
+        "`attributes` contains every attribute including computed ones (ARNs, generated IDs, DNS names) — this is what other resources interpolate without an API call.",
+        "`private` field: provider-internal data such as resource timeouts and Terraform's create-before-destroy bookkeeping; never meaningful to read.",
+        "`dependencies` array records resolved addresses at apply time so destroy ordering survives config deletion.",
+        "`outputs` block stores root module outputs with `value` and `sensitive` flag; `terraform_remote_state` data source reads exactly this section.",
+        "Deposed objects: when create_before_destroy fails midway, the old object is recorded under a `deposed` key with a random ID; `terraform state rm` needs `-force`/deposed handling to clear.",
+        "Inspect without editing: `terraform show -json | jq '.values.root_module.resources[].address'` gives a machine-readable dump; `terraform state list` gives addresses; `terraform state show aws_instance.web` gives one resource's attributes.",
+        "State is JSON but not a stable public API — the documented interface is `terraform show -json`, whose format has its own version number.",
+        "Sensitive values are stored in plaintext in state regardless of `sensitive = true` in config; sensitivity only masks CLI output."
+      ]
+    },
+    {
+      "title": "Refresh, Plan, Apply: How State Drives the Cycle",
+      "points": [
+        "The three inputs to a plan: configuration (desired), state (last known), and real infrastructure (actual). Plan = diff over all three.",
+        "Refresh step: for each managed resource in state, Terraform calls the provider's ReadResource with the stored ID and replaces the cached attributes with what the API returns.",
+        "Since Terraform 0.15.4, refresh happens in-memory during `terraform plan` and is reflected in the plan output; `terraform refresh` alone is deprecated in favour of `terraform apply -refresh-only`.",
+        "`-refresh-only` plan: proposes updating state to match reality without changing any infrastructure — the correct tool for accepting benign drift.",
+        "`-refresh=false`: skip all provider reads; fast plans in huge states and useful when an API is rate-limiting, but the plan may be built on stale attributes.",
+        "Four diff outcomes per resource: no-op, update in place, replace (destroy/create), and destroy. Replacement is forced by `ForceNew` attributes in the provider schema.",
+        "If refresh returns null (resource deleted out-of-band), Terraform removes it from state and the plan shows it as needing creation.",
+        "`-target=aws_instance.web` narrows the graph to one resource and its dependencies — an escape hatch for recovering broken state, not a routine workflow; targeted applies leave the rest unrefreshed.",
+        "`-replace=aws_instance.web` (Terraform 0.15.2+) marks one resource for forced recreation; replaces the old `terraform taint` command, which mutated state directly.",
+        "Saved plan files: `terraform plan -out=tf.plan` then `terraform apply tf.plan` guarantees the applied changes are exactly what was reviewed; the plan file embeds the state serial and fails if state moved on.",
+        "Apply writes state incrementally — after each resource completes, not only at the end — so an interrupted apply still records what was created.",
+        "Ctrl-C during apply sends a graceful shutdown: Terraform finishes in-flight operations and persists state. A second Ctrl-C kills hard and can orphan resources.",
+        "Data sources are also stored in state (mode: \"data\") and re-read every plan; they never generate create/destroy actions.",
+        "Failed apply with a partially created resource: provider returns the ID plus an error, Terraform stores the object and marks it tainted so the next plan replaces it.",
+        "Example read of plan symbols: `+` create, `-` destroy, `~` update in place, `-/+` replace, `+/-` replace with create-before-destroy, `<=` read (data source)."
+      ]
+    },
+    {
+      "title": "Local State vs Remote Backends",
+      "points": [
+        "Local backend: state on the operator's disk. Zero setup, but no sharing, no locking, no history, and a laptop failure loses the mapping.",
+        "Remote backend responsibilities: durable storage, concurrency control (locking), and optionally encryption at rest and versioning.",
+        "Committing terraform.tfstate to Git is an anti-pattern: plaintext secrets in history, merge conflicts in JSON that cannot be resolved by hand, and no locking against concurrent applies.",
+        "Backend block lives in `terraform { backend \"s3\" { ... } }` and cannot use variables or interpolation — it is evaluated before the rest of the language.",
+        "Partial configuration: put only static keys in the backend block and pass the rest at init: `terraform init -backend-config=prod.hcl` or `-backend-config=\"key=prod/terraform.tfstate\"`.",
+        "S3 backend: `bucket`, `key`, `region`, plus `encrypt = true`; enable S3 bucket versioning so every state write is a recoverable snapshot.",
+        "Locking on S3: historically a DynamoDB table via `dynamodb_table` (LockID as hash key); modern Terraform/OpenTofu also support S3-native conditional-write locking via `use_lockfile = true`.",
+        "azurerm backend uses a Storage Account container blob and gets locking free from native blob leases; gcs backend uses a Cloud Storage bucket with object-generation-based locking.",
+        "HTTP backend: any REST endpoint implementing GET/POST/LOCK/UNLOCK — used by GitLab's managed Terraform state.",
+        "Consul, Kubernetes (secret-backed), Postgres, and OSS backends exist; Postgres backend uses advisory locks and is a good choice when a database already exists.",
+        "`cloud` block (HCP Terraform / Terraform Enterprise) replaces the `remote` backend: adds remote plan/apply execution, run history, policy enforcement, and a UI on top of storage plus locking.",
+        "Backend state is never sent to HashiCorp with object backends like S3 — the CLI reads and writes directly; only HCP Terraform stores state on their servers.",
+        "Chicken-and-egg problem: the bucket/table holding state must itself be created first — bootstrap with local state, then migrate, or create it out-of-band with a script.",
+        "Comparison row — local: free, no lock, no audit. S3+DynamoDB: cheap, locked, versioned, self-managed. HCP Terraform: locked, audited, RBAC, remote execution, costs money.",
+        "Cross-config reads: `data \"terraform_remote_state\" \"net\" { backend = \"s3\" config = {...} }` exposes only the *outputs* of another state — a deliberately narrow interface."
+      ]
+    },
+    {
+      "title": "Backend Mechanics: Init, Migration, and Multi-Environment",
+      "points": [
+        "`terraform init` is what configures the backend; changing the backend block without re-running init produces \"Backend initialization required\".",
+        "Backend migration prompt: when the backend changes, Terraform offers to copy existing state to the new location — answer yes once, and confirm the new location before destroying the old.",
+        "`terraform init -migrate-state` explicitly accepts the copy; `-reconfigure` deliberately *discards* the association and starts with the new backend's existing state — mixing them up silently abandons state.",
+        "Always back up before migrating: `terraform state pull > backup.tfstate` writes the current state to stdout as JSON.",
+        "`terraform state push backup.tfstate` writes a state back; it refuses on lineage mismatch or lower serial unless `-force` is given.",
+        "Backend credentials come from the normal provider credential chain (environment variables, shared config, instance roles) — but resolved separately from the provider block, so a provider `assume_role` does not apply to the backend.",
+        "Environment separation option 1 — workspaces: one backend, key prefixed per workspace, `terraform workspace select prod`. Cheap, but one backend config and easy to apply to the wrong workspace.",
+        "Environment separation option 2 — separate root directories with separate backend keys (envs/prod/backend.hcl). More files, but different credentials, different buckets, and true blast-radius isolation.",
+        "Recommendation: workspaces for short-lived, structurally identical copies (per-developer sandboxes); directory-per-environment when prod needs different permissions or different resources.",
+        "`terraform_remote_state` couples states at read time; passing values through a config store (SSM Parameter Store, Consul) decouples them but loses type checking.",
+        "State file naming convention that scales: `<team>/<service>/<env>/terraform.tfstate` as the S3 key, so IAM policies can grant per-prefix access.",
+        "Restrict who can read state via bucket policy — read access to state is effectively read access to every secret the config touched.",
+        "`terraform init -backend=false` initializes modules and providers without touching the backend, useful in CI for `terraform validate` where no credentials exist.",
+        "Provider lock file `.terraform.lock.hcl` is separate from state and must be committed; `.terraform/` directory holds the cached backend config and must not be.",
+        "Gotcha: the backend `key` is not templated per workspace automatically in the S3 backend — the workspace name is inserted via `workspace_key_prefix`, defaulting to `env:`."
+      ]
+    },
+    {
+      "title": "Locking and Concurrency",
+      "points": [
+        "Why locking exists: two concurrent applies read the same state, each creates resources, and the second write overwrites the first — resources exist that state has never heard of.",
+        "Lock acquisition happens before any operation that writes state: apply, destroy, state mv/rm/push, and by default plan when the backend requires refresh writes.",
+        "Lock info recorded: ID (UUID), operation, who (user@host), version, created timestamp, and the state path — printed when a lock is contended.",
+        "DynamoDB lock mechanics: a conditional PutItem on a LockID item equal to `<bucket>/<key>`; the condition fails if the item exists, which is the mutual exclusion primitive.",
+        "S3 native locking (`use_lockfile = true`) uses a `.tflock` object with an If-None-Match conditional write, removing the DynamoDB dependency.",
+        "Azure blob leases and GCS generation preconditions provide the same guarantee with backend-native primitives — no side table needed.",
+        "`-lock-timeout=5m` makes Terraform retry acquisition instead of failing immediately — essential in CI where pipelines queue.",
+        "`-lock=false` disables locking entirely. Never use it to get past a stuck lock in a shared environment; it is for single-user backends that do not support locking.",
+        "Stuck locks come from crashed runs, killed CI jobs, and network partitions — the process died before releasing.",
+        "`terraform force-unlock <LOCK_ID>` releases a lock; verify the holder is truly dead first, because force-unlocking a running apply reintroduces the exact race locking prevents.",
+        "Locks protect state writes, not the cloud API: two applies targeting the same resource through different states will still fight, and locking cannot help.",
+        "DynamoDB table needs only a `LockID` string partition key; on-demand billing costs pennies, and the table also stores a state digest for consistency checking.",
+        "S3 read-after-write consistency (strongly consistent since Dec 2020) removed the old class of bugs where a fresh state read returned the previous version.",
+        "CI pattern: serialize applies per state with a pipeline concurrency group, so the Terraform lock is a safety net rather than the primary scheduler.",
+        "Symptom to recognize: \"Error acquiring the state lock ... Lock Info: ID: 8c2f...\" — read the `Who` and `Created` fields before reaching for force-unlock."
+      ]
+    },
+    {
+      "title": "Drift: Causes, Detection, Reconciliation",
+      "points": [
+        "Definition: drift is any difference between the real infrastructure and what state records, caused by changes made outside Terraform.",
+        "Common causes: console hotfixes during incidents, auto-scaling and other controllers mutating tags, cloud provider defaults being applied, and other IaC tools touching the same resource.",
+        "Detection command: `terraform plan -refresh-only` shows what refresh would change in state; `terraform plan -detailed-exitcode` returns 0 (no changes), 1 (error), 2 (changes) — the CI-friendly drift check.",
+        "Scheduled drift detection: run a refresh-only plan nightly and alert on exit code 2; HCP Terraform has this built in as Drift Detection.",
+        "Two responses to drift: accept reality by applying a refresh-only plan (state moves to match the world), or reassert config with a normal apply (world moves to match config).",
+        "Refresh-only apply never changes infrastructure — it is the safe way to absorb out-of-band changes you have decided to keep.",
+        "Perpetual diff: a plan that shows the same change on every run and never converges — the plan applies but reality does not match afterwards.",
+        "Causes of perpetual diffs: provider normalizing a value (uppercase ARNs, JSON key order in IAM policies), a mutating webhook or controller rewriting the field, or a genuine provider bug.",
+        "Fixes for perpetual diffs: `lifecycle { ignore_changes = [tags[\"LastModified\"]] }` for externally managed fields, or normalize input with `jsonencode`/`jsondecode` round-tripping for policy documents.",
+        "`ignore_changes = all` freezes an entire resource against config updates — use sparingly and document, because it silently disables the whole point of Terraform for that resource.",
+        "Deleted-out-of-band resources vanish from state on refresh and reappear as creates in the plan — no error, so read plan diffs carefully rather than skimming the summary count.",
+        "Drift in computed attributes (a rotated password, a regenerated certificate) can cascade: dependent resources interpolating that attribute will show updates too.",
+        "Prevention beats detection: deny console write access in production IAM, and require changes through the pipeline; `prevent_destroy = true` guards the highest-value resources.",
+        "Trade-off: refresh makes plans slow and API-heavy for large states, but disabling refresh makes drift invisible — split large states rather than turning refresh off permanently.",
+        "Distinguish drift (world changed) from config change (repo changed) — the same `~` symbol shows both, and only `-refresh-only` isolates the former."
+      ]
+    },
+    {
+      "title": "Moving State: Refactoring Without Destroying",
+      "points": [
+        "The rule: state is keyed by resource address, so renaming a resource or moving it into a module is a destroy+create unless you also move it in state.",
+        "`terraform state mv aws_instance.web aws_instance.api` rewrites the address in place; state serial bumps, no infrastructure is touched.",
+        "Moving into a module: `terraform state mv aws_instance.web module.compute.aws_instance.web`; moving a whole module: `terraform state mv module.old module.new`.",
+        "Index handling: `terraform state mv 'aws_instance.web[0]' 'aws_instance.web[\"a\"]'` converts a count instance to a for_each instance — quote the address so the shell does not eat the brackets.",
+        "Cross-state move: `terraform state mv -state-out=../other/terraform.tfstate aws_instance.web aws_instance.web` extracts a resource into another state file; run `state pull`/`push` around it for remote backends.",
+        "`moved` blocks (Terraform 1.1+) declare refactors in code: `moved { from = aws_instance.web  to = aws_instance.api }` — version-controlled, reviewable, and applied automatically for every operator and CI run.",
+        "Why moved blocks beat `state mv`: `state mv` is an imperative act on one machine's copy of state; moved blocks travel with the repo, so module consumers get the refactor for free.",
+        "Keep moved blocks for at least one release cycle after the rename, then delete them once every consumer has applied.",
+        "`removed` blocks (Terraform 1.7+) drop a resource from state while keeping the real object: `removed { from = aws_instance.legacy  lifecycle { destroy = false } }` — the declarative form of `state rm`.",
+        "`terraform state rm aws_instance.web` forgets a resource without deleting it — the standard way to hand ownership to another state or to an operator.",
+        "Danger of `state rm`: the resource becomes an orphan that nothing manages and nothing will clean up. Note its ID before removing so you can import it back.",
+        "`terraform state replace-provider registry.terraform.io/-/aws registry.terraform.io/hashicorp/aws` rewrites provider addresses after a provider namespace change or a fork.",
+        "Always `terraform state pull > pre-move.tfstate` before any surgery, and run `terraform plan` after — the correct outcome is 'No changes'.",
+        "A non-empty plan after a move means the move was wrong: either the address does not match config or an attribute genuinely differs. Restore the backup rather than applying.",
+        "Splitting a monolithic state: move resources out with `-state-out`, push both halves, then delete the code from the old root — order matters, code deletion last."
+      ]
+    },
+    {
+      "title": "Import: Adopting Existing Infrastructure",
+      "points": [
+        "Import binds an existing real resource to a Terraform address; it writes state only and never creates or modifies infrastructure.",
+        "CLI form: `terraform import aws_instance.web i-0abc123def456` — the second argument is a provider-specific import ID, not always the resource's obvious ID.",
+        "Import IDs vary widely: an S3 bucket imports by name, an IAM role by name, an aws_security_group_rule by a composite string like `sgrule-id_type_proto_from_to_source` — check the provider docs per resource.",
+        "Precondition: the config block must already exist. `terraform import` into an address with no matching resource block errors out.",
+        "Post-import workflow: run `terraform plan` and expect a diff, then edit config until the plan is empty. An empty plan is the proof that config matches reality.",
+        "`import` blocks (Terraform 1.5+) are the declarative form: `import { to = aws_instance.web  id = \"i-0abc123\" }` — reviewable in a PR and applied by `terraform apply`.",
+        "Config generation: `terraform plan -generate-config-out=generated.tf` with import blocks writes candidate HCL for the imported resources — a starting point that still needs hand cleanup.",
+        "Import blocks work with `for_each`, so a list of IDs can be adopted in one apply; CLI `terraform import` handles exactly one resource per invocation.",
+        "Import blocks are one-shot: delete them after the apply succeeds, or leave them (they become no-ops) — but stale import blocks make plans noisy.",
+        "Import does not import dependencies. Importing an EC2 instance leaves its security group, subnet, and EBS volumes unmanaged; each needs its own import.",
+        "Modules complicate imports: the address must be the full path, `terraform import 'module.vpc.aws_subnet.public[0]' subnet-abc123`.",
+        "Bulk import tooling: Terraformer and former2 generate config plus state for whole accounts — useful for brownfield adoption, but the generated HCL is verbose and needs refactoring.",
+        "Failure mode: importing the same object into two different states makes both configs believe they own it, and they will fight on every apply.",
+        "Verification habit: after import, `terraform state show <address>` and compare the key attributes against the console before trusting the empty plan.",
+        "Import is also the recovery tool — after an accidental `state rm` or a lost state file, re-import each resource by ID to rebuild the mapping."
+      ]
+    },
+    {
+      "title": "Security, Disasters, and the Rules That Save You",
+      "points": [
+        "State stores secrets in plaintext: RDS master passwords, generated private keys, and any `sensitive` variable that reaches a resource attribute all land in the JSON.",
+        "Mitigations: encrypt at rest (`encrypt = true` on S3 plus KMS), restrict bucket read access by IAM, never commit state, and prefer resources that reference a secret store over resources that generate secrets.",
+        "OpenTofu offers client-side state encryption; Terraform relies on backend-level encryption, so anyone who can read the object can read the secrets.",
+        "Recovery from a lost state file: enable S3 versioning first — restoring a previous object version is a one-command fix and the reason versioning is non-negotiable.",
+        "Recovery without a backup: rebuild by importing every resource, one by one, using IDs read from the cloud console — slow, error-prone, and entirely avoidable.",
+        "Corrupted state after a partial write: `terraform state pull` the current copy, restore the prior S3 version, and confirm `serial` and `lineage` before pushing.",
+        "Mistake — running apply from a laptop with local state on a shared project: no lock, no history, and the state dies with the machine.",
+        "Mistake — `terraform destroy` in the wrong workspace: prevent with directory-per-environment, `prevent_destroy` on stateful resources, and a required approval step in CI.",
+        "Mistake — hand-editing state JSON: breaks serial/lineage or attribute schemas and produces plans that make no sense; use `state` subcommands or push a fully-formed file.",
+        "Mistake — `terraform state rm` used to 'fix' a bad plan: the resource keeps costing money and nothing manages it.",
+        "Mistake — two configs managing one resource, usually after a copy-pasted module: each apply reverts the other's changes, producing a flip-flopping perpetual diff.",
+        "Mistake — sharing one giant state for the whole company: every plan is slow, one lock blocks every team, and the blast radius of a bad apply is total.",
+        "Right-sizing states: split by lifecycle and ownership (network, data, compute per service) so each state is small, fast, and owned by one team.",
+        "CI checklist: plan on PR with `-detailed-exitcode`, apply saved plan files only, `-lock-timeout` set, credentials scoped per environment, state bucket versioned and encrypted.",
+        "Summary of the mental model: state maps config addresses to real IDs; the backend makes that map shared, durable, and locked; drift is the map diverging from the world; `moved`/`removed`/`import` blocks edit the map declaratively while `state mv`/`rm`/`import` do it imperatively.",
+        "Final rule: back up state before touching it (`terraform state pull > backup.tfstate`), and treat 'No changes' after surgery as the only acceptable proof of success."
+      ]
+    }
+  ]
+}

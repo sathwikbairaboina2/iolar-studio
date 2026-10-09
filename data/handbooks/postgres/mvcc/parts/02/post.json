@@ -1,0 +1,537 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES INTERNALS — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Autovacuum: Tuning the Cleanup Loop",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Rows",
+            "Dead needed",
+            "Verdict"
+          ],
+          "rows": [
+            [
+              "10k",
+              "~2k",
+              "fine"
+            ],
+            [
+              "1M",
+              "~200k",
+              "late"
+            ],
+            [
+              "100M",
+              "~20M",
+              "far too late"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fix Big Tables Per Table"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "ALTER TABLE big SET (",
+            "  autovacuum_vacuum_scale_factor = 0.01,",
+            "  autovacuum_vacuum_threshold = 10000);",
+            "-- table overrides beat any global tuning"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Set aggressive values only on the few hot tables",
+            "PG13+ adds `autovacuum_vacuum_insert_threshold`",
+            "That gets append-only tables frozen and vm-updated",
+            "ANALYZE has its own separate trigger pair"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cost-Based Throttling"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Default"
+          ],
+          "rows": [
+            [
+              "`vacuum_cost_limit`",
+              "200 credits"
+            ],
+            [
+              "`autovacuum_vacuum_cost_delay`",
+              "2ms (PG12+)"
+            ],
+            [
+              "`vacuum_cost_page_hit`",
+              "1"
+            ],
+            [
+              "`vacuum_cost_page_miss`",
+              "2 (10 pre-PG14)"
+            ],
+            [
+              "`vacuum_cost_page_dirty`",
+              "20"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "On SSD",
+          "text": "The default limit is far too conservative. Raising `vacuum_cost_limit` to 1000-2000 is routine."
+        },
+        {
+          "type": "heading",
+          "text": "Yielding, And Not"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Autovacuum cancels itself when DDL takes a conflicting lock",
+            "Exception: wraparound-prevention mode never yields",
+            "Never set `autovacuum = off`",
+            "Outcome is unbounded bloat, then a forced wraparound shutdown"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pid, query, backend_start FROM pg_stat_activity",
+            "WHERE query LIKE 'autovacuum%';",
+            "-- and in postgresql.conf:",
+            "log_autovacuum_min_duration = 0  -- log every run"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Best Single Setting",
+          "items": [
+            "`log_autovacuum_min_duration = 0`",
+            "Gives every run, its pages, its timing",
+            "Most useful vacuum observability knob there is"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "A Circular Counter",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "32 bits = about 4.2 billion xids",
+            "'Past' and 'future' are decided modulo-2^32",
+            "~2 billion values behind you look past",
+            "~2 billion ahead look future"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The Failure",
+          "text": "If the counter laps a tuple's xmin, that row looks like it is from the future and VANISHES. That is wraparound data loss."
+        }
+      ]
+    },
+    {
+      "page_title": "Wraparound and Freezing",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Freezing Prevents It"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Mark a tuple's xmin frozen: unconditionally visible, forever",
+            "Counter position stops mattering for that row",
+            "Modern Postgres sets an infomask frozen bit",
+            "It no longer writes xid 2, so xmin survives for forensics"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Three Ages"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Default",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`vacuum_freeze_min_age`",
+              "50M",
+              "freeze old tuples on scanned pages"
+            ],
+            [
+              "`vacuum_freeze_table_age`",
+              "150M",
+              "aggressive scan of all-visible pages"
+            ],
+            [
+              "`autovacuum_freeze_max_age`",
+              "200M",
+              "anti-wraparound run, even if autovacuum off"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Anti-wraparound vacuum does NOT yield to lock conflicts",
+            "That is why a DDL-heavy table can suddenly block",
+            "At ~40M xids left, Postgres logs warnings",
+            "At ~3M it refuses writes: single-user mode VACUUM only"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Monitor Constantly"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT datname, age(datfrozenxid)",
+            "FROM pg_database ORDER BY 2 DESC;",
+            "SELECT relname, age(relfrozenxid) FROM pg_class",
+            "WHERE relkind='r' ORDER BY 2 DESC LIMIT 20;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Second Counter"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "MultiXactIds have their own 32-bit counter, `pg_multixact`",
+            "Own knob: `autovacuum_multixact_freeze_max_age`",
+            "Own wraparound risk — monitor it too"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Blocks Freezing"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "frozen horizon stuck",
+            "branches": [
+              {
+                "label": "long txn",
+                "children": [
+                  "idle in transaction"
+                ]
+              },
+              {
+                "label": "replication",
+                "children": [
+                  "abandoned slot",
+                  "hot_standby_feedback"
+                ]
+              },
+              {
+                "label": "2PC",
+                "children": [
+                  "unresolved prepared txn"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Wraparound and Freezing (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Emergency Gears",
+          "items": [
+            "PG14 failsafe: past `vacuum_failsafe_age` drop cost delays",
+            "It also skips index cleanup to finish freezing fast",
+            "PG17 TID store and PG18 async I/O cut the scan's wall clock"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Horizon Holders",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "1. Idle-in-transaction connection blocks ALL cleanup database-wide",
+            "Fix: `idle_in_transaction_session_timeout`",
+            "2. Unused replication slot pins xmin forever — drop dead slots",
+            "3. `hot_standby_feedback = on` lets a slow replica hold the primary back",
+            "4. A forgotten `pg_prepared_xacts` entry freezes the horizon"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pid, state, xact_start,",
+            "       now() - xact_start AS age",
+            "FROM pg_stat_activity WHERE state <> 'idle'",
+            "ORDER BY xact_start;  -- oldest culprit first"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Operational Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "5. A churning queue table with no per-table tuning bloats 100x",
+            "6. VACUUM FULL on production in business hours — use `pg_repack`",
+            "7. Batch DELETE of millions, no follow-up VACUUM: file stays at peak",
+            "8. `SELECT count(*)` is slow — MVCC checks visibility per row"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "No Free Row Count",
+          "text": "No engine-level count exists, because no single row count is true for all snapshots at once."
+        },
+        {
+          "type": "heading",
+          "text": "Trade-off Table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Engine",
+            "Wins",
+            "Pays"
+          ],
+          "rows": [
+            [
+              "Postgres in-heap",
+              "free rollback, no undo contention",
+              "bloat, mandatory vacuum"
+            ],
+            [
+              "InnoDB undo log",
+              "compact tables",
+              "rollback scales with work"
+            ],
+            [
+              "Oracle rollback seg",
+              "compact tables",
+              "'snapshot too old'"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Postgres readers never fail with 'snapshot too old'",
+            "The undo log itself can grow unbounded too",
+            "Every design pays somewhere — pick which somewhere"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Vacuum Is A Feature"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A fresh visibility map is what enables index-only scans",
+            "Vacuum is a performance feature, not just cleanup",
+            "Tune it like you tune indexes"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Mistakes, Trade-offs, Whole Picture",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Whole Chain"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "xmin/xmax + snapshot",
+              "visibility",
+              "horizon + time",
+              "dead tuples",
+              "no vacuum",
+              "bloat + wraparound"
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Daily Health Set",
+          "items": [
+            "`n_dead_tup` / `n_live_tup` ratio",
+            "`age(datfrozenxid)` per database",
+            "Oldest `xact_start` in `pg_stat_activity`",
+            "`last_autovacuum` per hot table"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Worked Example: Queue Table"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Symptom: 2M live rows, 40 GB on disk",
+            "Cause: default 0.2 scale factor, so cleanup waits",
+            "Second cause: an index on `status`, so no HOT updates",
+            "Fix 1: per-table scale factor at 0.01",
+            "Fix 2: `fillfactor = 85` to keep updates on-page",
+            "Fix 3: move `status` churn out of the indexed path"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT relname, n_dead_tup, n_live_tup,",
+            "       last_autovacuum",
+            "FROM pg_stat_user_tables",
+            "ORDER BY n_dead_tup DESC;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Find The Horizon Holder"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Suspect",
+            "Where to look"
+          ],
+          "rows": [
+            [
+              "idle txn",
+              "`pg_stat_activity`"
+            ],
+            [
+              "dead slot",
+              "`pg_replication_slots`"
+            ],
+            [
+              "prepared txn",
+              "`pg_prepared_xacts`"
+            ],
+            [
+              "replica feedback",
+              "`hot_standby_feedback`"
+            ],
+            [
+              "frozen age",
+              "`pg_database`"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Measure Exactly",
+          "text": "`pg_stat_user_tables` estimates. `SELECT * FROM pgstattuple('big_table');` gives exact bloat, but scans the whole table."
+        },
+        {
+          "type": "heading",
+          "text": "Repair Menu"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Locks",
+            "Frees to OS"
+          ],
+          "rows": [
+            [
+              "`VACUUM`",
+              "none",
+              "no"
+            ],
+            [
+              "`VACUUM FULL`",
+              "exclusive",
+              "yes"
+            ],
+            [
+              "`pg_repack`",
+              "brief",
+              "yes"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Plain VACUUM only makes space reusable in the file",
+            "It truncates only fully empty trailing pages",
+            "`pg_stat_progress_vacuum` shows a run that is stuck"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "One Line",
+          "text": "Postgres never overwrites a row, so every read is cheap and every write leaves garbage someone must sweep."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of POSTGRES INTERNALS. Your UPDATE didn't change that row — it wrote a whole new copy and left the old one on disk. That one design choice explains free rollbacks, table bloat, autovacuum, and the 4.2-billion transaction cliff, all at once. 10 pages on tuple headers, snapshots, HOT updates, and the monitoring queries that catch a frozen horizon before it stops your writes.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#mvcc",
+      "#databases",
+      "#sql",
+      "#backendengineering",
+      "#dba",
+      "#systemdesign",
+      "#databaseinternals",
+      "#devnotes",
+      "#softwareengineering"
+    ]
+  }
+}

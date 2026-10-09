@@ -1,0 +1,173 @@
+{
+  "title": "Dockerfile Notes: Build Small, Cache Smart",
+  "summary": "A dense 10-page study series on writing production-grade Dockerfiles: how layers and the build cache actually work, instruction-order playbooks, multi-stage builds, slim base image trade-offs, .dockerignore, and BuildKit superpowers — ending with common mistakes and a production checklist.",
+  "chapters": [
+    {
+      "title": "Dockerfile Fundamentals",
+      "points": [
+        "Definition: a Dockerfile is a plain-text script of instructions executed top-to-bottom by the builder to produce an image.",
+        "Image vs container: the image is an immutable layered template; a container is a running instance with one writable layer on top.",
+        "FROM is mandatory and first (ARG may precede it only to parameterize the base): FROM node:20-slim.",
+        "COPY copies files from the build context into the image; ADD also auto-extracts tars and fetches URLs — usually avoid it.",
+        "WORKDIR /app sets the working directory for all later instructions; prefer it over RUN cd chains.",
+        "RUN executes commands at build time and commits the result as a layer: RUN apt-get update && apt-get install -y curl.",
+        "CMD gives the default command; exec form CMD [\"node\",\"index.js\"] is preferred over shell form for signal handling.",
+        "ENTRYPOINT pins the executable, CMD supplies default args: ENTRYPOINT [\"python\"] + CMD [\"app.py\"].",
+        "ENV persists into runtime (ENV NODE_ENV=production); ARG exists only during the build.",
+        "EXPOSE is documentation only — it publishes nothing; publish with docker run -p 8080:80.",
+        "Minimal worked example: FROM node:20-slim / WORKDIR /app / COPY . . / RUN npm ci / CMD [\"node\",\"index.js\"].",
+        "Build flow: docker build -t app:1 . ships the context to the daemon, executes instructions into layers, tags the result."
+      ]
+    },
+    {
+      "title": "Layer Mechanics: What a Dockerfile Actually Builds",
+      "points": [
+        "Each filesystem instruction (RUN, COPY, ADD) creates one read-only layer stacked via union filesystem; containers add one writable layer on top.",
+        "Layers are immutable and additive: deleting a file in a later layer hides it but the old layer still ships — rm in a later RUN never shrinks the image.",
+        "Only RUN, COPY, ADD create filesystem layers; FROM, WORKDIR, ENV, ARG, EXPOSE are metadata-only (no size cost).",
+        "Build steps run as throwaway intermediate containers: start from current stack, run command, snapshot the diff, remove container.",
+        "docker history --no-trunc app:1 maps every instruction to its layer and size — first tool for shrinking images.",
+        "dive goes deeper: per-layer disk diff, efficiency score, and wasted-space breakdown.",
+        "Image = config JSON (Env, Cmd, layer diffIDs) + ordered layer tarballs; digests are content-addressed so identical layers dedupe on disk and in registries.",
+        "Base layers are shared: 10 services on node:20-slim store the base once and pull only your delta.",
+        "Apt cache gone wrong: apt-get update in one RUN and cleanup in another leaves ~100MB of /var/lib/apt/lists baked in forever.",
+        "CoW in practice: writes copy up from lower layers, so repeatedly rewriting a large file adds new layers each build.",
+        "Multi-stage exists because of layers: build tools leak into the shipped stack unless you copy artifacts out (next chapters).",
+        "Mental model to keep: Dockerfile = recipe, layers = commits, image = frozen commit history."
+      ]
+    },
+    {
+      "title": "Build Cache: Invalidation Rules",
+      "points": [
+        "Cache rule: an instruction reruns if the parent layer changed or the instruction itself changed; a miss invalidates everything below it — the 'cache cliff'.",
+        "COPY/ADD compare content checksums of the copied files — not timestamps — so identical files still hit cache.",
+        "RUN compares only the command string; Docker cannot know apt-get install would resolve new versions, so it may serve stale packages.",
+        "ENV, ARG, LABEL values participate in the cache key: changing ENV NODE_ENV busts cache from that line down.",
+        "Diagnostic: docker build twice — second run should be all CACHED; then edit one file and read which lines re-ran.",
+        "docker builder prune clears dangling cache; --no-cache forces a full rebuild when diagnosing.",
+        "Manifest-first pattern: COPY package*.json ./, RUN npm ci, THEN COPY . . — code edits never reinstall dependencies.",
+        "Template: FROM base → system packages → dependency manifests + install → source COPY → build step → metadata (USER, EXPOSE, CMD).",
+        "Hermetic installs (lockfiles, pinned versions) make cache hits meaningful — a lockfile change is a deliberate invalidation signal.",
+        "BuildKit cache mounts (RUN --mount=type=cache,target=/root/.npm) persist downloads across builds without baking them into layers.",
+        "CI cache sharing: --cache-from / --cache-to with a registry or GHA backend lets fresh runners reuse layers from previous builds.",
+        "Rule of thumb: sort instructions by change frequency — least volatile at the top, source code near the bottom."
+      ]
+    },
+    {
+      "title": "Instruction Order Playbook: Keeping Cache Warm",
+      "points": [
+        "Anti-pattern: COPY . . at the top — every source edit invalidates dependency install and all later steps; fix by copying only manifests first.",
+        "Copy explicit paths, not the world: COPY src/ ./src plus package*.json beats a blanket COPY . . for cache stability.",
+        "Layer hygiene: one logical unit per RUN, chained with &&, with cleanup in the SAME layer: apt-get update && apt-get install -y --no-install-recommends pkg && rm -rf /var/lib/apt/lists/*.",
+        "Use RUN set -eux; ... so chained commands fail fast and log every step instead of masking errors mid-chain.",
+        "Layering by volatility: system deps (rarely change) → language deps (change with lockfile) → app code (changes every commit).",
+        "Code example — bad: COPY . . then RUN pip install -r requirements.txt; good: COPY requirements.txt first, install, then COPY app code.",
+        "Use ARG for intentional knobs (version pins, feature flags) so cache busts are deliberate, not accidental.",
+        "Watch the transfer line: 'transferring context: 900MB' in build output means .dockerignore is broken (next chapter).",
+        "Symptom drill: 'build got slow after adding tests' — test deps were installed in the main path; split into a test target stage instead.",
+        "Verify ordering: docker build twice, edit one source file, rebuild — everything above the source COPY should say CACHED.",
+        "Heredoc RUN (RUN <<EOF ... EOF) keeps long multi-step RUNs readable without fragile && line continuations."
+      ]
+    },
+    {
+      "title": "Multi-Stage Builds",
+      "points": [
+        "Problem: compilers, SDKs, and dev tooling can be 10x the size of your artifact and widen the CVE surface in production images.",
+        "Mechanic: multiple FROM blocks in one Dockerfile; each stage has an isolated filesystem; only the final stage ships by default.",
+        "Name stages and copy across them: FROM node:20 AS builder, then COPY --from=builder /app/dist ./dist in the final stage.",
+        "Stages can also be referenced by index (COPY --from=0) or by an external image: COPY --from=nginx:1.25 /etc/nginx/nginx.conf /.",
+        "Archetype: builder stage installs all deps and compiles; final stage copies only dist/, node_modules (prod-only), or the compiled binary.",
+        "Go extreme: build in golang:1.22 with CGO_ENABLED=0 GOOS=linux, then run from scratch — 1GB+ down to ~15MB.",
+        "JS pattern: builder runs npm ci + build; runtime uses node:20-slim, copies package*.json + node_modules + dist, and sets CMD.",
+        "Use --target dev / test / prod targets in one Dockerfile: dev target carries dev deps and shell; default target is the lean prod image.",
+        "Gotcha: garbage in the FINAL stage still ships — a COPY of the whole build dir drags tests, sources, and caches into prod.",
+        "Final-stage install still matters: runtime libs and CA certificates must be installed in the last stage, not assumed from the builder.",
+        "Trade-off: more stages = slightly more complex file, but smaller images, faster pulls, faster cold starts, smaller attack surface.",
+        "Check the win: docker images before/after — expect order-of-magnitude drops; if not, inspect which layer is still fat."
+      ]
+    },
+    {
+      "title": "Base Images: Slim, Alpine, Distroless, Scratch",
+      "points": [
+        "Your FROM choice dominates final size and CVE count: node:20 ~1GB vs node:20-slim ~75MB vs alpine-based ~130MB vs distroless ~120MB vs scratch ~0.",
+        "Slim variants (Debian-based, e.g. python:3.12-slim) keep glibc and shell — the safe default for dynamic languages.",
+        "Alpine uses musl libc: tiny, but native modules compiled against glibc (some npm binaries, older wheels) can break or misbehave.",
+        "Distroless (gcr.io/distroless) ships only runtime + libs — no shell, no package manager; huge security win, debugging needs the :debug variant.",
+        "scratch is a truly empty image: only for static binaries or runtimes that need zero OS support; you bring /etc/ssl certs and users yourself.",
+        "Decision guide — slim: dynamic runtimes wanting glibc; alpine: pure builds where size wins; distroless: locked-down prod; scratch: static Go/Rust binaries.",
+        "Pin the base: FROM node:20.18.1-slim, and ideally pin digest @sha256:... for reproducible, supply-chain-safe builds.",
+        "Never ship :latest or floating tags — behavior drifts under you and two builds of the same Dockerfile diverge.",
+        "Run as non-root: add a USER line (distroless gives you nonroot, uid 65532); most stock images default to root.",
+        "Keep the base fresh: CVEs live in base layers, so rebuild regularly on a bumped FROM digest; automate bumps with Dependabot/Renovate.",
+        "Check size and layers: docker images, docker history, dive — set a size budget per service and alert on regressions.",
+        "Gotcha: switching alpine → slim changes libc; native wheels/binaries must be rebuilt, so pick the base before pinning your lockfile."
+      ]
+    },
+    {
+      "title": ".dockerignore: The Cheap Win Everyone Skips",
+      "points": [
+        "Build context = the folder you pass to docker build; the whole directory is tarred and sent to the daemon before the first instruction runs.",
+        ".dockerignore filters the context before upload — smaller context means faster builds and fewer spurious COPY checksum changes.",
+        "Security payoff: with COPY . ., any file in the context (.env, .git, cloud credentials, db dumps) is one COPY away from being baked into a layer.",
+        "Syntax mirrors .gitignore: line patterns, globs (**/node_modules), leading / anchors to context root; later lines override earlier ones, and ! negates.",
+        "Starter file: .git, .env*, node_modules, dist, coverage, tests, *.md, .git, .github, Dockerfile*, .dockerignore, *.log, .vscode.",
+        "Golden rule: always ignore .env and any credentials file — Docker's leak path #1 is a build context that quietly contains secrets.",
+        "Complement, not substitute: .dockerignore is defense-in-depth; still COPY explicit paths and never rely on it as your only secret control.",
+        "Measure what you send: watch 'transferring context: XXmb' in build output — a monorepo without ignores can transfer gigabytes per build.",
+        "Gotcha: .dockerignore is NOT .gitignore — .env is commonly listed in .gitignore but absent from .dockerignore, so it silently rides along.",
+        "Dockerfile-specific patterns: ignore Dockerfile* and .dockerignore itself so future edits don't needlessly invalidate checksums for COPY . . steps.",
+        "Monorepo tip: build from the service subdirectory with -f, or scope ignore rules so COPY . . checksums track only that service's files."
+      ]
+    },
+    {
+      "title": "BuildKit & Modern Builds",
+      "points": [
+        "BuildKit is the modern build engine — the default since Docker 23.0; enable on older setups with DOCKER_BUILDKIT=1 or migrate to buildx.",
+        "Core wins: parallel execution of independent stages, skipped unused stages (with --target), better cache keys, and mount features.",
+        "Syntax directive unlocks features safely: # syntax=docker/dockerfile:1 as line 1 pins a stable front-end even on old daemons.",
+        "RUN --mount=type=cache,target=/root/.npm (or pip/go caches): downloads persist across builds but never bake into image layers.",
+        "RUN --mount=type=secret,id=npm_token: read /run/secrets/npm_token at build time — nothing lands in layers, history, or cache; pair with a registry token for private packages.",
+        "RUN --mount=type=ssh forwards the host's SSH agent so the builder can clone private repos without copying keys into the image.",
+        "Heredoc syntax: RUN <<EOF / apt-get update && ... / EOF — replaces fragile one-liner chains; use COPY <<EOF for inline config files too.",
+        "buildx: extended CLI for multi-platform builds — docker buildx build --platform linux/amd64,linux/arm64 -t app --push, driven by QEMU or native runners.",
+        "Cache backends: --cache-to type=gha / type=registry,mode=max exports ALL stage caches so CI machines reuse layers across runs and machines.",
+        "Parallelism example: lint, test, and compile stages run concurrently since they share only the deps layer; prod target depends just on build.",
+        "Gotcha: mounts and secrets are BuildKit features — scripts depending on them fail on legacy builders; require BuildKit in CI (or use docker/build-push-action).",
+        "Command cheat sheet: docker buildx ls (list builders), docker buildx ls --builder, docker builder prune (reclaim cache), docker buildx du (cache usage)."
+      ]
+    },
+    {
+      "title": "Common Mistakes & How to Fix Them",
+      "points": [
+        "Mistake: COPY . . first line → every edit rebuilds dependency installs. Fix: manifests-first ordering plus targeted COPY paths.",
+        "Mistake: secrets via ENV or ARG (ARG TOKEN) — both end up in image history (docker history shows it). Fix: BuildKit secret mounts or runtime env.",
+        "Mistake: ADD with a remote URL — bypasses caching and tangles fetch logic into the layer; use COPY for local files and RUN curl for downloads.",
+        "Mistake: FROM with :latest or floating tags → builds that drift and break weeks later. Fix: pin tag (ideally digest) and bump deliberately.",
+        "Mistake: running as root with no USER line. Fix: USER app (create it if needed) and COPY --chown for app-owned files.",
+        "Mistake: shipping dev/test deps and toolchains in the prod image. Fix: multi-stage with a lean final stage.",
+        "Mistake: rm -rf of a file added in an EARLIER layer to 'shrink' the image — data still lives in the old layer; clean up inside the same RUN.",
+        "Mistake: shell-form CMD (CMD node server.js) wraps your app in /bin/sh — SIGTERM never reaches the process; use exec form for correct signal handling.",
+        "Mistake: ENTRYPOINT + CMD confusion: docker run image args replaces CMD, not ENTRYPOINT — know which one your override hits.",
+        "Mistake: no .dockerignore in a repo with node_modules/.git — gigabyte contexts, constant COPY cache busts, occasional secret leaks.",
+        "Mistake: apt-get update in one RUN and install in another → index cache-busts out from under you and stale lists bloat the image.",
+        "Automate the catches: hadolint lints Dockerfiles; trivy/grype scan image CVEs; add both to CI before push, not after an incident."
+      ]
+    },
+    {
+      "title": "Summary: The Production Dockerfile Checklist",
+      "points": [
+        "Recap the model: Dockerfile = ordered recipe, image = layer stack, cache = replay of unchanged layers — design every line around those three.",
+        "Checklist — structure: multi-stage build, slim/distroless base pinned by digest, non-root USER, exec-form CMD for signal handling.",
+        "Checklist: order instructions least→most volatile; dependency manifests copied and installed before source; cleanup rm in the SAME RUN.",
+        "Checklist: explicit COPY paths plus a real .dockerignore (always include .git, .env*, node_modules, dist, tests).",
+        "Checklist: BuildKit everywhere — cache mounts for package managers, secret/ssh mounts for credentials, heredocs for readable RUNs.",
+        "Checklist: CI hygiene — hadolint on the Dockerfile, trivy/grype scan on the image, fail on critical CVEs, pin base bumps on a schedule.",
+        "Size budget rule: Go static <20MB, typical dynamic-language service <300MB; a regression means a layer is smuggling junk — check docker history and dive.",
+        "Reproducibility = pinned base + lockfile deps: two builds on two machines must produce identical artifacts; schedule FROM digest bumps like any dependency.",
+        "Debug recipe: no shell in prod? docker run --entrypoint sh -it image on slim, or use the :debug distroless tag; inspect layers with dive.",
+        "Iteration habit: after every edit, rebuild twice — the second run's CACHED lines tell you exactly what your ordering bought you.",
+        "One-line takeaway: pinned slim base, multi-stage, cache-aware ordering, ignored context, BuildKit mounts = a Dockerfile that is small, fast, and safe."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,396 @@
+{
+  "title": "Git Hooks: From pre-commit to pre-push",
+  "summary": "A dense study-notes carousel covering how Git hooks work internally, the everyday client-side hooks (pre-commit, commit-msg, pre-push), the client-vs-server split, and the modern tooling ecosystem (commitlint, lint-staged, husky) for enforcing quality at commit time.",
+  "chapters": [
+    {
+      "title": "What Are Git Hooks?",
+      "points": [
+        "Definition: hooks are executable scripts Git runs automatically at fixed lifecycle points (before/after commit, push, merge, rebase).",
+        "Location: stored in .git/hooks/; every repo gets sample files (*.sample) on git init — rename them (drop .sample) to activate.",
+        "No extension requirement: hooks can be bash, Python, Node, Perl — anything executable; Git just runs them and reads the exit code.",
+        "Contract: exit 0 = proceed; non-zero = abort the operation; error text printed to stdout goes to the user's terminal.",
+        "Hooks are NOT versioned: .git/ is never committed, so a fresh clone starts with zero active hooks — the core sharing problem (later chapters).",
+        "Naming is fixed by Git: you cannot invent new hook names; only the documented set fires.",
+        "Two families: client-side (run on YOUR machine, per-operation) vs server-side (run on the remote, on receive).",
+        "Use cases: lint, format, run tests, validate commit messages, reject large files, block merges to protected branches.",
+        "Quick demo: a minimal pre-commit script with #!/bin/sh and 'exit 1' shows Git aborting every commit.",
+        "Callout: hooks only fire on Git CLI operations run in that repo — GUI clients and git wrapper tools usually honor them, but bare scripts bypassing git may not.",
+        "git init template dir: hooks can be seeded via `git config init.templateDir` or system templates — one sharing mechanism.",
+        "Summary line: hooks = local quality gates with zero dependencies, but weak guarantees because they are opt-out."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "What Are Git Hooks?"
+        },
+        {
+          "type": "bullets",
+          "note": "definition, location, exit-code contract, families"
+        },
+        {
+          "type": "code",
+          "note": "minimal pre-commit abort example"
+        },
+        {
+          "type": "sidebox",
+          "note": "hooks are not versioned — the sharing gotcha"
+        },
+        {
+          "type": "callout",
+          "note": "exit 0 proceed / non-zero abort"
+        }
+      ]
+    },
+    {
+      "title": "Hook Mechanics & Internals",
+      "points": [
+        "core.hooksPath config: overrides .git/hooks globally or per-repo — the basis of husky and most sharing tools (`git config core.hooksPath .githooks`).",
+        "Execution detail: Git runs hooks with the repo root as cwd (for most hooks), no arguments unless the hook type supplies them.",
+        "stdin matters: some hooks receive input — commit-msg gets the message file path as $1; pre-push gets remote name + URL, then ref lines on stdin.",
+        "Environment: hooks inherit your shell environment plus GIT_DIR etc.; PATH differences can make a hook work on your machine and fail in CI.",
+        "Shebang discipline: #!/bin/sh vs #!/usr/bin/env bash — portability depends on it; missing shebang silently fails on some systems.",
+        "Aborting behavior per hook: pre-commit aborts before the commit object exists; commit-msg aborts after object creation but before the ref moves.",
+        "Hook failure output: stderr/stdout shown to user — print a helpful message and exit 1, don't fail silently.",
+        "Skipping hooks: `git commit --no-verify` (or -n) bypasses pre-commit AND commit-msg — anyone can skip them, so hooks are advisory, not enforcement.",
+        "Server-side hooks are the real enforcement layer because the client cannot bypass them.",
+        "Performance rule: keep hooks fast (<a few seconds); slow pre-commit hooks train developers to use --no-verify.",
+        "Debug technique: run the hook manually (.git/hooks/pre-commit) or `sh -x` it to see exactly what fails.",
+        "Diagram: timeline — `git commit` → pre-commit → (snapshot) → commit-msg → commit created → post-commit; abort points marked."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Hook Mechanics & Internals"
+        },
+        {
+          "type": "diagram",
+          "note": "commit timeline with pre-commit / commit-msg gates"
+        },
+        {
+          "type": "code",
+          "note": "git config core.hooksPath"
+        },
+        {
+          "type": "bullets",
+          "note": "arguments, stdin, shebangs, --no-verify"
+        },
+        {
+          "type": "callout",
+          "note": "hooks are advisory; server hooks enforce"
+        }
+      ]
+    },
+    {
+      "title": "pre-commit Hook: Gating the Commit",
+      "points": [
+        "Fires before the commit message editor and before the commit object is created — the earliest client gate.",
+        "No arguments passed; inspect the staged changes yourself with `git diff --cached --name-only`.",
+        "Classic pattern: run the linter only on staged files — fast and focused (`git diff --cached --name-only | grep '\\.js$' | xargs eslint`).",
+        "Gotcha: if your hook auto-fixes files (prettier --write), the fixes are NOT staged — must `git add` them back inside the hook, or commit proceeds with unfixed content.",
+        "That auto-fix/staging mismatch is exactly the problem lint-staged solves (later chapter).",
+        "A failed pre-commit aborts, but your working tree changes are untouched — safe to fix and re-commit.",
+        "Common uses: eslint/stylelint, format check, block debugger/console.log, secret scanning (gitleaks), run fast unit tests.",
+        "Do NOT run slow integration suites in pre-commit — that belongs in pre-push or CI.",
+        "Race with partial staging: developer stages only some hunks; `git stash --keep-index` inside the hook lets you test exactly the staged snapshot.",
+        "Example skeleton: check for TODO in staged files, echo error, exit 1.",
+        "Pre-commit framework (Python tool): .pre-commit-config.yaml declares per-file hook sets, manages venvs, `pre-commit run --all-files`.",
+        "Rule of thumb: pre-commit = seconds, deterministic, fix-forward errors only."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "pre-commit: Gating the Commit"
+        },
+        {
+          "type": "bullets",
+          "note": "timing, staged-file inspection, use cases"
+        },
+        {
+          "type": "code",
+          "note": "git diff --cached --name-only | xargs eslint"
+        },
+        {
+          "type": "sidebox",
+          "note": "auto-fix isn't staged — lint-staged exists for this"
+        },
+        {
+          "type": "callout",
+          "note": "keep it under a few seconds or users skip it"
+        }
+      ]
+    },
+    {
+      "title": "commit-msg Hook: Enforcing Message Standards",
+      "points": [
+        "Fires after pre-commit with one argument: path to a temp file containing the proposed message ($1).",
+        "Validate by reading that file; exit non-zero to reject the commit with your error message.",
+        "Conventional Commits standard: `type(scope): description` — e.g. feat(auth): add OAuth login; enables semantic versioning and changelog automation.",
+        "commitlint: `npm i -D @commitlint/cli @commitlint/config-conventional` + commitlint.config.js `{ extends: ['@commitlint/config-conventional'] }`.",
+        "Wire it up with a one-line commit-msg hook: `npx --no-install commitlint --edit $1`.",
+        "Useful rules: type-enum (whitelist types), subject-case, subject-empty, header-max-length (usually 72–100 chars).",
+        "Local test without committing: `echo 'foo' | commitlint` prints which rule failed — great for debugging config.",
+        "Gotcha: squash-merges and merge commits can bypass your rules; configure types like 'Merge' or relax rules for merge commits.",
+        "Template alternative: `git commit --template` / commit.template gives a skeleton but doesn't enforce — hook enforcement is the point.",
+        " Benefits cascade: commitlint + standard-version/release-please generate CHANGELOGs and version bumps from history automatically.",
+        "post-commit fires after the ref moves — too late to reject; only useful for notifications or metrics.",
+        "prepare-commit-msg runs BEFORE the editor: use it to inject issue numbers or squash hints into the default message."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "commit-msg: Enforcing Message Standards"
+        },
+        {
+          "type": "bullets",
+          "note": "$1 file, Conventional Commits, commitlint rules"
+        },
+        {
+          "type": "code",
+          "note": "commit-msg hook: npx commitlint --edit $1"
+        },
+        {
+          "type": "table",
+          "note": "prepare-commit-msg vs commit-msg vs post-commit timing"
+        },
+        {
+          "type": "callout",
+          "note": "merge/squash commits may bypass rules"
+        }
+      ]
+    },
+    {
+      "title": "pre-push Hook: The Last Client Line",
+      "points": [
+        "Fires after `git push` creates local objects but BEFORE the remote accepts anything — the last client-side chance to stop.",
+        "Arguments: $1 = remote name, $2 = remote URL; stdin receives lines like `local_ref local_sha remote_ref remote_sha`.",
+        "Because it runs before transfer, a failing pre-push saves bandwidth AND rejects the whole push.",
+        "Classic use: run the full test suite before pushing (`npm test`), so broken code never reaches CI or teammates.",
+        "Gotcha: deleting a branch sends remote_sha of all zeros (0000...) — handle it or your `git show $sha` calls crash.",
+        "New branches also have zero remote_sha; local_sha may be all zeros on deletes — always guard for zero SHAs.",
+        "Read stdin in a loop: `while read local_ref local_sha remote_ref remote_sha; do ... done` — never assume one branch.",
+        "Trade-off: full test suite can take minutes → developers run `git push --no-verify` under deadline pressure; keep pre-push focused on integration-critical checks.",
+        "Diff range trick: `git diff --stat $remote_sha..$local_sha` shows exactly what this push delivers, for targeted checks.",
+        "Also used for: pre-push lint of all commits (`git log --format=%s remote_sha..local_sha` piped to commitlint), large-file detection.",
+        "pre-receive (server) can do the same checks but pre-push fails faster and keeps the developer in flow.",
+        "Rule: pre-commit = fast/local, pre-push = slower/integration, CI = authoritative."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "pre-push: The Last Client Line"
+        },
+        {
+          "type": "bullets",
+          "note": "args, stdin format, zero-SHA gotchas"
+        },
+        {
+          "type": "code",
+          "note": "while read local_ref local_sha ... done"
+        },
+        {
+          "type": "sidebox",
+          "note": "slow pre-push trains --no-verify habits"
+        },
+        {
+          "type": "table",
+          "note": "pre-commit vs pre-push vs CI responsibility split"
+        }
+      ]
+    },
+    {
+      "title": "Server-Side Hooks: Real Enforcement",
+      "points": [
+        "Server hooks live in the bare repo's hooks/ dir on the remote (e.g. /srv/git/project.git/hooks/) and run on push events.",
+        "The three: pre-receive (once per push, all refs, aborts everything on exit≠0), update (per-ref, per-ref decision), post-receive (after refs move — notifications).",
+        "pre-receive reads ref updates from stdin: `old_sha new_sha refname` per line — one rejection rejects the WHOLE push.",
+        "update hook takes three args ($1 old, $2 new, $3 refname) — reject one branch while allowing others; preferred for per-branch policies.",
+        "Real enforcement: clients cannot --no-verify past server hooks — this is where branch protection actually happens.",
+        "Policies to implement: forbid pushes to main, reject non-ff pushes, block large files (`find . -size +100M` on new objects), required commit-message checks.",
+        "Zero-SHA again: new_sha = 0000... means delete; old_sha = 0000... means new branch — branch-deletion protection hooks rely on this.",
+        "Requires server access: on GitHub.com you cannot install arbitrary hooks — use the API/branch protection or GitHub Apps instead.",
+        "Self-hosted GitLab/Gitea/Gitolite support server hooks; GitLab calls them 'push rules' in paid tiers plus custom hooks dirs.",
+        "post-receive patterns: deploy triggers, chat notifications, CI kick-off — must never exit non-zero to reject (too late anyway).",
+        "Keep server hooks fast and crash-proof: a hanging pre-receive blocks ALL pushes to that repo for everyone.",
+        "Split of trust: client hooks = convenience/feedback, server hooks = policy/enforcement."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Server-Side Hooks: Real Enforcement"
+        },
+        {
+          "type": "table",
+          "note": "pre-receive vs update vs post-receive"
+        },
+        {
+          "type": "bullets",
+          "note": "stdin format, zero-SHA meanings, policies"
+        },
+        {
+          "type": "sidebox",
+          "note": "GitHub.com: no raw server hooks — use apps/API"
+        },
+        {
+          "type": "callout",
+          "note": "client hooks advise; server hooks enforce"
+        }
+      ]
+    },
+    {
+      "title": "Client vs Server: Comparison & Threat Model",
+      "points": [
+        "Trigger point: client hooks run before the operation completes locally; server hooks run during receive-pack on the remote.",
+        "Bypass: client hooks avoidable via --no-verify or by simply never installing them; server hooks unavoidable for push traffic.",
+        "Audience: client hooks protect the individual developer (fast feedback in flow); server hooks protect the team (guaranteed policy).",
+        "Latency tolerance: client hooks must be < seconds; server hooks get a bit more budget but still block everyone while running.",
+        "Environment determinism: client hooks run on unpredictable dev machines; server hooks run in one controlled environment — easier to keep dependencies working.",
+        "Mistake pattern: putting critical checks ONLY in pre-commit = zero actual enforcement; duplicate the check in CI + server.",
+        "Defense-in-depth stack: pre-commit (instant) → pre-push (thorough) → server hook (policy) → CI (authoritative, async).",
+        "CI is not a hook but serves the same role async: it can run minutes-long suites and reverts via revert-merge, not rejection.",
+        "post-* hooks can't veto: post-commit, post-receive, post-merge fire after the fact — only observe, never enforce.",
+        "Table of all major hooks: pre-commit / prepare-commit-msg / commit-msg / pre-rebase / pre-push | pre-receive / update / post-receive, with timing and veto power.",
+        "pre-rebase gotcha: default samples guard against rebasing already-pushed commits — rewriting shared history is the risk it flags.",
+        "Rule: pick the latest (closest to truth) and cheapest hook that catches the error class you care about."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Client vs Server: Comparison"
+        },
+        {
+          "type": "table",
+          "note": "full hook inventory: timing × veto power"
+        },
+        {
+          "type": "bullets",
+          "note": "bypass, determinism, defense-in-depth stack"
+        },
+        {
+          "type": "diagram",
+          "note": "dev machine → push → server → CI flow"
+        },
+        {
+          "type": "callout",
+          "note": "never rely on client hooks alone"
+        }
+      ]
+    },
+    {
+      "title": "Sharing Hooks Across a Team",
+      "points": [
+        "The problem restated: .git/hooks is untracked, so `git clone` delivers zero hooks — every teammate would hand-install.",
+        "Option 1 — commit hooks in a tracked dir (.githooks/) + `git config core.hooksPath .githooks`; simple, but each dev must run the config command once.",
+        "Option 2 — husky: npm package that sets core.hooksPath to .husky/ and is auto-configured by an `npm install` lifecycle script; de facto JS standard.",
+        "husky v8 usage: `npx husky init`, then add commands like `npx lint-staged` to .husky/pre-commit; supports all client hook types.",
+        "Option 3 — pre-commit framework (Python): committed YAML config, auto-installs hook environments on first run; language-agnostic hooks.",
+        "Option 4 — git template dir: `git config init.templateDir` seeds hooks on every future clone/init (not retroactive for existing clones).",
+        "Bootstrap script pattern: a setup.sh that runs `git config core.hooksPath` — commit it and document in README.",
+        "Versioning win: when hooks live in the repo, hook changes ship through code review like any other change.",
+        "Gotcha: core.hooksPath is relative to the repo root when set locally, but must be absolute-ish in some tool setups — test after cloning.",
+        "Security: hooks in a tracked repo execute arbitrary code on contributors' machines — review hook changes with the same rigor as CI config.",
+        "Monorepo/multi-language: prefer pre-commit framework or plain core.hooksPath over husky if not a Node project.",
+        "Verify step: `git config core.hooksPath` should print your dir; if it prints nothing, hooks in .githooks/ are dead."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Sharing Hooks Across a Team"
+        },
+        {
+          "type": "table",
+          "note": "core.hooksPath vs husky vs pre-commit vs templates"
+        },
+        {
+          "type": "code",
+          "note": "git config core.hooksPath .githooks"
+        },
+        {
+          "type": "sidebox",
+          "note": "hooks = code review target (security)"
+        },
+        {
+          "type": "callout",
+          "note": "verify with git config core.hooksPath"
+        }
+      ]
+    },
+    {
+      "title": "commitlint + lint-staged Patterns",
+      "points": [
+        "lint-staged concept: run linters/formatters ONLY on staged files — full-repo linting on every commit wastes time and flags others' WIP.",
+        "Setup: `npm i -D lint-staged husky`, then wire .husky/pre-commit to `npx lint-staged`.",
+        "Config (package.json or lint-staged.config.js): `\"*.{js,ts}\": [\"eslint --fix\", \"prettier --write\"]` — glob → command list.",
+        "lint-staged auto-re-stages fixes: it adds the modified files back before the commit proceeds — solves the pre-commit auto-fix gotcha.",
+        "Command rules: each command must exit 0 on success; if any fail, lint-staged aborts the commit and restores state via automatic backup.",
+        "Chaining pattern: `\"*.{css,scss}\": [\"stylelint --fix\"]`, `\"*.{json,md}\": [\"prettier --write\"]`, `\"*.py\": [\"black\", \"flake8\"]`.",
+        "Use `--no-error-on-unmatched-pattern` for sparse repos; use `--relative` for tools that need paths relative to cwd.",
+        "Full stack recipe: husky → pre-commit runs lint-staged → commit-msg runs commitlint → pre-push runs tests; all configured in one npm install.",
+        "commitlint config deep-dive: rules array format `[level, applied, value]` e.g. `['error', 'type-enum', ['feat','fix','chore','docs']]`.",
+        "Scope enforcement for monorepos: `scope-enum` rule listing package names keeps history filterable per workspace.",
+        "Common mistakes: forgetting to install peer config packages; commitlint.config.js in wrong dir; hooks silently inert because core.hooksPath still points at .husky from an old install.",
+        "CI double-check: run `commitlint --from origin/main --to HEAD` in CI so merges/squashes that bypassed local hooks still get validated."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "commitlint + lint-staged Patterns"
+        },
+        {
+          "type": "code",
+          "note": "lint-staged config: glob → [eslint --fix, prettier --write]"
+        },
+        {
+          "type": "bullets",
+          "note": "auto re-stage, backup/restore, chaining"
+        },
+        {
+          "type": "code",
+          "note": "commitlint rule triple + scope-enum"
+        },
+        {
+          "type": "callout",
+          "note": "re-validate in CI: commitlint --from origin/main"
+        }
+      ]
+    },
+    {
+      "title": "Pitfalls, Trade-offs & Closing Summary",
+      "points": [
+        "Mistake 1: slow hooks (30s+ test suites in pre-commit) → team-wide --no-verify habit → zero enforcement. Budget: seconds for pre-commit, minutes for CI.",
+        "Mistake 2: auto-fixing without re-staging → commit contains the broken version even though the hook 'ran prettier'. Fix: lint-staged or `git add -u` in hook.",
+        "Mistake 3: hooks not installed on teammates' clones because core.hooksPath was never configured — always add a bootstrap step to onboarding docs.",
+        "Mistake 4: relying on client hooks for critical policy — one --no-verify defeats them; mirror the check server-side or in CI.",
+        "Mistake 5: hooks breaking on other environments — hardcode bash paths, assume macOS-only tools; test on Linux, use /usr/bin/env, pin tool versions.",
+        "Mistake 6: non-zero-SHA crashes in pre-push/pre-receive on branch create/delete — always check for 0000... SHAs.",
+        "Mistake 7: rejecting with no message — always print WHY the hook failed and HOW to fix it; silent exit 1 wastes everyone's time.",
+        "Trade-off table: friction vs safety, instant feedback vs CI authority, per-file speed vs full-repo certainty.",
+        "When to skip hooks entirely: throwaway repos, solo experiments, or when CI+branch protection already covers the risk cheaply.",
+        "Evolution path: hand-written sh hooks → husky/lint-staged (Node) or pre-commit framework (polyglot) → server rules as the team grows.",
+        "Closing summary: hooks are Git's extension points at every lifecycle moment; pre-commit guards content, commit-msg guards history quality, pre-push guards the remote boundary, server hooks enforce for real.",
+        "Final checklist: hooks versioned & bootstrapped ✓ fast ✓ good error messages ✓ duplicated in CI ✓ server-side policy for the rules that truly matter."
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Pitfalls, Trade-offs & Summary"
+        },
+        {
+          "type": "bullets",
+          "note": "the seven classic mistakes"
+        },
+        {
+          "type": "table",
+          "note": "friction vs safety trade-offs"
+        },
+        {
+          "type": "diagram",
+          "note": "hook decision path: local → push → CI"
+        },
+        {
+          "type": "callout",
+          "note": "final checklist"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,204 @@
+{
+  "title": "Kafka Topics & Partitions: The Field Notes",
+  "summary": "A dense, practical handbook on how Kafka topics and partitions actually work — from log mechanics and ordering guarantees to keys, partitioners, replication factor, ISR, and the durability trade-offs behind acks and min.insync.replicas.",
+  "chapters": [
+    {
+      "title": "1. Topics, Partitions & the Log",
+      "points": [
+        "Topic = named logical stream of records; a category, not a queue with a single tail.",
+        "Partition = the real unit of storage and parallelism; a topic is just a set of N partitions.",
+        "Each partition is an append-only, immutable, ordered commit log — writes only ever go to the end.",
+        "Offset = monotonically increasing 64-bit integer, unique WITHIN a partition, assigned by the leader on append.",
+        "Offsets are NOT unique across a topic: partition 0 and partition 1 both have an offset 42.",
+        "Record anatomy: key (nullable), value (nullable), timestamp, headers, partition, offset.",
+        "Reads are non-destructive: consuming does not delete the record; N consumer groups read the same bytes independently.",
+        "Consumer position is just a stored integer (offset) per (group, topic, partition) in the __consumer_offsets topic.",
+        "Partitions map to directories on the broker: /kafka-logs/orders-3/ holds segment files for topic `orders`, partition 3.",
+        "Segments: each partition splits into segment files (default 1 GB or 7 days), named by base offset — 00000000000000012345.log.",
+        "Index files (.index by offset, .timeindex by timestamp) let a broker seek to a byte position without scanning the log.",
+        "Only the active (newest) segment is written; older segments are immutable and eligible for retention/compaction.",
+        "Retention is time- or size-based (retention.ms, retention.bytes) and deletes whole segments, never individual records.",
+        "Log end offset (LEO) = next offset to be written; high watermark (HW) = highest offset replicated to all ISR.",
+        "Consumers can only read up to the high watermark — uncommitted records are invisible, so a lost leader cannot un-deliver data."
+      ]
+    },
+    {
+      "title": "2. Ordering Guarantees: What Kafka Really Promises",
+      "points": [
+        "The core promise: total order WITHIN a partition. Nothing more.",
+        "There is NO global ordering across partitions of a topic — ever, at any config.",
+        "Two records written to different partitions have no defined relative order, even if written microseconds apart.",
+        "Corollary: order is preserved only for records that share a partition, which in practice means share a key.",
+        "A single consumer reading one partition sees records in exactly the offset order they were appended.",
+        "Ordering survives replication: followers replicate the leader's log byte-for-byte in order.",
+        "Ordering is per-partition per-producer-session for a plain producer; retries can reorder without idempotence (see ch. 6).",
+        "Design rule: choose the key so that everything that must be ordered together shares it (e.g. key = accountId for a ledger).",
+        "Partition count changes break historical ordering: adding partitions re-maps keys, so old and new records for one key can sit in different partitions.",
+        "Ordering ≠ delivery timing: consumer lag differs per partition, so partition 5 may be minutes behind partition 2.",
+        "Multi-topic ordering is undefined — a `payments` event and an `orders` event have no cross-topic sequence.",
+        "Timestamps do not restore order: log-append time is monotonic per partition, create time is client-supplied and can go backwards.",
+        "Consumer-side parallelism (thread pool per record) destroys ordering even when Kafka preserved it — use a key-hash executor.",
+        "Comparison row: RabbitMQ per-queue FIFO vs Kafka per-partition FIFO — Kafka trades global order for horizontal scale."
+      ]
+    },
+    {
+      "title": "3. Keys & Partitioners: How a Record Picks Its Home",
+      "points": [
+        "The producer, not the broker, decides the partition — assignment happens client-side before the network call.",
+        "Default rule with a key: partition = murmur2(keyBytes) % numPartitions (Kafka's own murmur2, not Java hashCode).",
+        "Same key + same partition count = same partition, forever, across producers, languages, and restarts.",
+        "Null key, modern clients (2.4+): sticky partitioner — fill one partition's batch, then switch. Better batching, fewer requests.",
+        "Null key, old clients (<2.4): plain round-robin per record, which produced many tiny batches.",
+        "Explicit partition in ProducerRecord overrides everything — the escape hatch, and the easiest way to create skew.",
+        "Code: `new ProducerRecord<>(\"orders\", order.customerId(), payload)` — key is the second arg, not a header.",
+        "Custom partitioner: implement `Partitioner.partition(topic, key, keyBytes, value, valueBytes, cluster)`, set `partitioner.class`.",
+        "Use a custom partitioner for tenant isolation, geo-affinity, or pinning a hot key to a dedicated partition.",
+        "Key cardinality must exceed partition count by a wide margin, or partitions sit empty: 3 keys over 12 partitions uses 3.",
+        "Hot key = one key with a huge share of traffic — it pins to one partition and that partition becomes the bottleneck.",
+        "Hot key fixes: composite key (`userId#bucket`), key salting, or a two-stage aggregate; each costs you strict per-user order.",
+        "Keys also drive log compaction: compaction retains the latest value per key, so a null key makes a record uncompactable.",
+        "Tombstone = record with a key and a null VALUE — signals delete-this-key to a compacted topic.",
+        "Gotcha: key serializer must be stable. Changing from String to Avro key encoding re-partitions every key silently."
+      ]
+    },
+    {
+      "title": "4. Partition Count: Parallelism, Sizing & Regret",
+      "points": [
+        "Partition count is the parallelism ceiling: at most one consumer per partition within a consumer group.",
+        "20 partitions + 30 consumers in one group = 10 idle consumers, permanently.",
+        "Adding consumers past the partition count buys zero throughput — add partitions or split the work downstream.",
+        "Multiple groups scale independently: each group gets its own full assignment of all partitions.",
+        "Rough sizing: partitions = max(target_throughput / per_partition_producer_rate, target / per_partition_consumer_rate).",
+        "Per-partition throughput is commonly 10 MB/s+, but consumer processing cost usually binds first.",
+        "Partitions can only be INCREASED, never decreased — `kafka-topics.sh --alter --partitions 24` is one-way.",
+        "Increasing partitions re-maps the hash space: existing keys move, breaking per-key order and compaction history.",
+        "Never increase partitions on a compacted topic in place — the same key can then exist in two partitions.",
+        "Per-partition cost on brokers: open file handles, memory for index buffers, and one replication fetch stream per follower.",
+        "Cluster-wide cost: leader election and metadata propagation time scale with total partition count — a controller failover concern.",
+        "KRaft removes the old ZooKeeper metadata bottleneck; clusters handle far more partitions, but per-broker file/memory cost stays.",
+        "Producer memory: `batch.size` is allocated per partition per producer, so 1000 partitions × 32 KB = 32 MB of buffer pressure.",
+        "Practical guidance: start with a partition count you can live with for a year; over-provisioning modestly beats resharding.",
+        "Trade-off row: few partitions = tighter ordering, cheaper metadata, weak parallelism. Many = high parallelism, more rebalance/latency cost."
+      ]
+    },
+    {
+      "title": "5. Replication Factor, Leaders & Followers",
+      "points": [
+        "Replication factor (RF) = number of copies of each partition, placed on distinct brokers.",
+        "Every partition has exactly one leader and RF−1 followers, assigned per-partition, not per-topic.",
+        "All produces and (by default) all consumes go through the leader; followers are pure replicas.",
+        "Followers replicate by issuing normal fetch requests to the leader — the same protocol consumers use.",
+        "Leadership is spread across brokers so a 3-broker cluster with 6 partitions gives each broker 2 leaderships.",
+        "RF=1 means zero redundancy: a single broker loss loses the data permanently. Only for scratch/dev topics.",
+        "RF=3 is the production default: tolerates one broker down while still allowing writes with min.insync.replicas=2.",
+        "Fault tolerance = RF − 1 broker failures survivable for availability; durability limits are tighter (see acks/ISR).",
+        "RF is set at creation (`--replication-factor 3`) and changed later only via `kafka-reassign-partitions.sh` with a JSON plan.",
+        "Reassignment copies whole partitions over the network — throttle it (`--throttle`) or it starves live traffic.",
+        "Rack awareness (`broker.rack`) spreads replicas across racks/AZs so one AZ loss does not take all copies.",
+        "Preferred leader = first replica in the assignment list; auto.leader.rebalance.enable restores it after recovery to avoid leader skew.",
+        "Storage math: RF multiplies disk. 1 TB of topic data at RF=3 is 3 TB of cluster disk plus retention headroom.",
+        "Follower fetching (KIP-392) lets consumers read from a nearby replica to cut cross-AZ transfer cost, trading a little staleness.",
+        "Unclean leader election (`unclean.leader.election.enable=true`) lets an out-of-sync replica take over — availability bought with silent data loss."
+      ]
+    },
+    {
+      "title": "6. In-Sync Replicas (ISR) & the Durability Contract",
+      "points": [
+        "ISR = the set of replicas (leader included) fully caught up with the leader's log.",
+        "\"Caught up\" means the follower fetched within `replica.lag.time.max.ms` (default 30s) — time-based, not message-count-based.",
+        "Old `replica.lag.max.messages` was removed because a legitimate traffic burst falsely evicted healthy followers.",
+        "A lagging follower is removed from ISR; when it catches up to the leader's LEO it is added back.",
+        "High watermark = min LEO across the ISR; only records at or below the HW are committed and visible to consumers.",
+        "`acks=0`: fire and forget, no ack, records lost on any failure. Highest throughput, no durability.",
+        "`acks=1`: leader writes to its log and acks. Lost if the leader dies before followers replicate.",
+        "`acks=all` (`acks=-1`): leader acks only after every ISR member has replicated the record.",
+        "`acks=all` alone is NOT enough — if ISR shrinks to just the leader, \"all\" means one replica.",
+        "`min.insync.replicas` (broker/topic config) is the guard: if ISR size < it, produces with acks=all fail with NotEnoughReplicasException.",
+        "The production triple: RF=3, min.insync.replicas=2, acks=all — survives one broker loss, still refuses to write below 2 copies.",
+        "RF=3 with min.insync.replicas=3 has no failure headroom: one broker down and the topic stops accepting writes.",
+        "Availability/durability trade-off: raising min.insync.replicas increases durability and decreases write availability. Always.",
+        "Idempotent producer (`enable.idempotence=true`, default in 3.0+) adds producer id + sequence number so retries do not duplicate or reorder.",
+        "Idempotence requires `max.in.flight.requests.per.connection` ≤ 5; without idempotence, in-flight > 1 plus retries can reorder a partition."
+      ]
+    },
+    {
+      "title": "7. Consumer Groups, Assignment & Rebalancing",
+      "points": [
+        "Consumer group = set of consumers sharing a group.id; the group collectively owns every partition exactly once.",
+        "Group coordinator (a broker) tracks membership; the group leader (a consumer) computes the assignment.",
+        "Rebalance triggers: member joins, member leaves, member times out, or topic metadata changes (new partitions).",
+        "Range assignor: per-topic contiguous ranges — simple, but skews when partition count is not divisible by consumer count.",
+        "RoundRobin assignor: balances across all subscribed topics, but reshuffles almost everything on each rebalance.",
+        "Sticky / CooperativeSticky assignor: preserves prior assignments where possible, moving the minimum set of partitions.",
+        "Eager rebalancing (old): every consumer revokes everything, stop-the-world pause across the group.",
+        "Cooperative incremental rebalancing (KIP-429): only the partitions that actually move are revoked; the rest keep processing.",
+        "Static membership (`group.instance.id`) skips a rebalance entirely on a short restart within session.timeout.ms.",
+        "`session.timeout.ms` covers heartbeat liveness; `max.poll.interval.ms` covers slow processing — a long poll gap kicks the consumer out.",
+        "Classic bug: slow per-record processing exceeds max.poll.interval.ms, consumer is evicted mid-batch, work is reprocessed, lag grows further.",
+        "Manual assign() (no group) pins partitions explicitly: no rebalance, no automatic failover — you own the assignment.",
+        "Offset commit semantics: auto-commit (at-most/at-least-once depending on failure point) vs commitSync after processing (at-least-once).",
+        "Exactly-once needs the transactional producer (`transactional.id`) plus consumer `isolation.level=read_committed`.",
+        "Consumer lag per partition (end offset − committed offset) is THE health metric — watch max lag, not average."
+      ]
+    },
+    {
+      "title": "8. Retention, Compaction & Partition Data Lifecycle",
+      "points": [
+        "`cleanup.policy=delete` (default): whole segments dropped once older than retention.ms or the partition exceeds retention.bytes.",
+        "`cleanup.policy=compact`: retain at least the latest value for every key, forever — the log becomes a changelog/table.",
+        "`cleanup.policy=compact,delete`: compact, and still age out very old data — common for Streams changelogs with bounded history.",
+        "Compaction runs per partition and never touches the active segment, so the newest records are always uncompacted.",
+        "Because compaction is per-partition and keyed, changing partition count splits a key's history across partitions and corrupts the table view.",
+        "Tombstone (key, null value) marks a delete; retained for `delete.retention.ms` (default 24h) so consumers can observe it.",
+        "`min.cleanable.dirty.ratio` (default 0.5) controls how dirty a log must be before the cleaner touches it.",
+        "retention.bytes is PER PARTITION, not per topic — a 10 GB setting on 12 partitions permits 120 GB per replica set copy.",
+        "Common mistake: sizing disk with retention.bytes as a topic total, then filling the disk 12× over.",
+        "Time retention keys off the record timestamp, so a backfill with old create-times can be deleted immediately on arrival.",
+        "Segment roll settings (segment.bytes, segment.ms) determine deletion granularity — huge segments delay reclaiming space.",
+        "Tiered storage (KIP-405) moves cold segments to object storage so a partition's retention exceeds local disk.",
+        "Comparison: delete-policy topic = event stream (facts over time); compacted topic = latest-state table (materializable).",
+        "Reprocessing depends on retention: seekToBeginning() only replays what retention still holds."
+      ]
+    },
+    {
+      "title": "9. Failure Modes, Gotchas & Anti-Patterns",
+      "points": [
+        "Skewed partitions from a hot key: one partition at 90% of traffic while eleven idle. Check per-partition byte rate, not topic rate.",
+        "Null keys where order mattered: sticky partitioning scattered a user's events across partitions and broke sequencing.",
+        "Increasing partitions on a live keyed topic: same key now hashes elsewhere, so ordering and compaction history both break.",
+        "acks=all with min.insync.replicas=1: durability theatre — a single-replica ISR still satisfies \"all\".",
+        "unclean.leader.election.enable=true: cluster stays available by promoting a stale replica and silently truncating committed records.",
+        "Retries without idempotence and in-flight > 1: a retried batch lands after a later batch, reordering the partition.",
+        "auto.offset.reset=latest on a new group: silently skips the entire existing backlog on first start.",
+        "auto.offset.reset=earliest after retention expiry: reprocesses everything still on disk, flooding downstream systems.",
+        "Consumer thread pool per record: Kafka's ordering guarantee held, the application discarded it. Shard by key-hash instead.",
+        "Too many partitions: slow controller failover, heavy producer memory, and long rebalances that look like a broker outage.",
+        "Too few partitions: consumers cannot scale out, and the fix (adding partitions) is the destructive operation above.",
+        "Rebalance storms from max.poll.interval.ms too low relative to processing time — each eviction causes more lag, causing more evictions.",
+        "Assuming cross-partition order in a join or aggregation: correct only if both sides are co-partitioned on the same key with the same partition count.",
+        "Assuming a consumer read is durable-forever: it reads up to the high watermark, but retention may delete it before a replay.",
+        "Monitoring gaps to close: UnderReplicatedPartitions, OfflinePartitionsCount, IsrShrinksPerSec, max consumer lag, per-partition byte rate."
+      ]
+    },
+    {
+      "title": "10. Cheat Sheet & Decision Rules",
+      "points": [
+        "Ordering: guaranteed per partition. Want ordering for an entity? Give it a stable key.",
+        "Parallelism: bounded by partition count per group. Want more consumers? More partitions first.",
+        "Partition formula (keyed): murmur2(key) % numPartitions. Unkeyed: sticky batching, partition undefined.",
+        "Durability default: RF=3, min.insync.replicas=2, acks=all, enable.idempotence=true.",
+        "Availability tuning: min.insync.replicas=1 for uptime-first pipelines; accept possible loss on leader failure.",
+        "Never enable unclean leader election unless availability strictly outranks correctness, and document that choice.",
+        "Sizing rule of thumb: target throughput ÷ per-partition consumer throughput, then round up for headroom.",
+        "Key design rule: cardinality ≫ partition count, and the entity that needs order must be the key.",
+        "Compacted topic rule: pick the partition count once, never change it, always key every record.",
+        "retention.bytes is per partition — multiply by partitions × RF to get real disk.",
+        "acks table: 0 = no wait / can lose everything; 1 = leader only / loses on leader failure; all = full ISR / bounded by min.insync.replicas.",
+        "ISR table: in ISR = counted for acks=all and the high watermark; out of ISR = ignored, cannot be a clean leader.",
+        "Debug order: partition skew → consumer lag per partition → ISR shrink events → rebalance frequency → disk/retention.",
+        "Useful commands: `kafka-topics.sh --describe` (leaders, replicas, ISR), `kafka-consumer-groups.sh --describe` (lag), `kafka-configs.sh --describe` (topic overrides).",
+        "The one-line summary: Kafka gives ordered, replicated, per-partition logs — the key chooses the partition, the partition count caps parallelism, and ISR plus acks decides what \"written\" really means."
+      ]
+    }
+  ]
+}

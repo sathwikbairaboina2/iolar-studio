@@ -1,0 +1,373 @@
+{
+  "title": "GraphQL Client Caching — Handwritten Deep Dive",
+  "summary": "A 10-page dense-notes carousel on how GraphQL clients cache data: normalized store internals, Apollo Client and urql patterns, fragments, and cache updates after mutations.",
+  "chapters": [
+    {
+      "title": "Why GraphQL Caching Is Different",
+      "points": [
+        "REST caches live at the URL level; GraphQL sends everything to one endpoint, so HTTP caching fails by default",
+        "A GraphQL response is a graph — the same object can appear at multiple paths (e.g. viewer and post.author)",
+        "Without normalization, two copies of one entity drift apart when one is updated",
+        "Document caching (full responses keyed by query+variables) vs normalized caching (entities keyed by id)",
+        "Client cache is the single source of truth for the UI: components read from cache, not raw fetch responses",
+        "Three jobs of a client cache: store results, deduplicate entities, serve/refresh on re-render",
+        "Trade-off: normalization buys consistency and reuse, costs implementation complexity",
+        "Cache hits skip the network entirely — the biggest perceived-performance win",
+        "GraphQL spec itself defines no caching; it's entirely the client's job",
+        "Tools in this handbook: Apollo Client 3 and urql 3+ (both normalized or near-normalized)",
+        "Cost model: naive caching = O(responses); normalized = O(entities), usually far fewer objects",
+        "Rule of thumb: cache per-entity, not per-query"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Chapter title + one-line 'why this matters'"
+        },
+        {
+          "type": "paragraph",
+          "note": "REST endpoint caching vs GraphQL single-endpoint problem"
+        },
+        {
+          "type": "diagram",
+          "note": "one response graph with viewer and post.author pointing to the same User node"
+        },
+        {
+          "type": "table",
+          "note": "document cache vs normalized cache rows"
+        },
+        {
+          "type": "bullets",
+          "note": "three jobs of the cache"
+        },
+        {
+          "type": "callout",
+          "note": "GraphQL spec defines no caching — clients own it"
+        }
+      ]
+    },
+    {
+      "title": "Normalization Internals",
+      "points": [
+        "Normalization: flatten the response graph into a map of entities keyed by `TypeName:id`",
+        "Example: { \"User:1\": { id: 1, name: \"Ada\" } } — references stored as { __ref: \"User:1\" }",
+        "Default ID computation: `__typename + id`, or `__typename + _id`; composite keys for types lacking unique ids",
+        "Response walker: client traverses result objects, replaces embedded objects with references, writes into store",
+        "Repeating entities across queries merge into one entity via field-by-field shallow merge — no delete of missing fields",
+        "Reading: query is re-walked against the store, references dereferenced back into a tree",
+        "Cache misses on a field while reading → the read fails or returns partial data depending on policy",
+        "Memory shape: two top-level maps — entities (data) and root/query results metadata",
+        "Why shallow merge matters: a list query returning partial user fields won't erase fields written by a fuller query",
+        "Complexity: write O(fields in response), read O(fields in query) — independent of how many times the entity appears",
+        "Garbage collection: Apollo's `gc()` removes entities unreachable from active roots; `retain()/release()` pin objects",
+        "Key gotcha: two different server types sharing an id (e.g. Comment:1 vs User:1) are safe — typename is in the key"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Normalization: flattening the graph"
+        },
+        {
+          "type": "code",
+          "note": "raw nested response → normalized store map with __ref entries"
+        },
+        {
+          "type": "diagram",
+          "note": "response walker: write path and read path arrows"
+        },
+        {
+          "type": "bullets",
+          "note": "ID computation rules and shallow-merge semantics"
+        },
+        {
+          "type": "sidebox",
+          "note": "gc() / retain() / release() memory notes"
+        },
+        {
+          "type": "callout",
+          "note": "gotcha: missing unique ids break deduplication"
+        }
+      ]
+    },
+    {
+      "title": "Apollo Client Setup & Data Sources",
+      "points": [
+        "Core pieces: ApolloClient + InMemoryCache + HttpLink; create once, pass via ApolloProvider",
+        "`new InMemoryCache({ typePolicies })` is the central config surface",
+        "useQuery returns { data, loading, error }; refetch, fetchMore, startPolling, subscribeToMore",
+        "Fetch policies: cache-first (default), cache-and-network, network-only, no-cache, cache-only",
+        "Fetch policy is per-query and overridable — `nextFetchPolicy` switches after first fetch",
+        "useLazyQuery for on-demand execution; useMutation returns a tuple [mutate, result]",
+        "useReactiveQuery/useFragment for surgical reads — read one entity without subscribing to a whole query",
+        "Client-only fields via @client directive and local resolvers: cache doubles as local state store",
+        "Identifiers in setup: `new InMemoryCache({ dataIdFromObject })` as legacy alternative to typePolicies.keyFields",
+        "DevTools: Apollo Client Devtools shows cache contents, query history, mutation writes",
+        "Suspense mode and `skip` for conditional queries",
+        "Common mistake: creating the client inside a component → cache recreated every render"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Apollo Client: the moving parts"
+        },
+        {
+          "type": "code",
+          "note": "client + InMemoryCache + ApolloProvider setup"
+        },
+        {
+          "type": "table",
+          "note": "fetch policies and when each fires network requests"
+        },
+        {
+          "type": "bullets",
+          "note": "useQuery / useMutation / useFragment API notes"
+        },
+        {
+          "type": "callout",
+          "note": "mistake: instantiating client in render"
+        }
+      ]
+    },
+    {
+      "title": "Type Policies & Custom Keys",
+      "points": [
+        "typePolicies: per-__typename config for keys, fields, and relationships",
+        "keyFields: ['id'] default; composite `keyFields: ['id', 'slug']`; keyFields: false disables normalization for a type",
+        "Nested key fields: `keyFields: ['author', ['id']]` when the key lives inside a nested object",
+        "When the server id isn't the cache key: keyFields with a function or custom read for the field",
+        "fields map configures caching behavior of individual fields",
+        "merge functions: `merge(existing, incoming)` control how field values combine on repeated writes",
+        "Classic use: pagination fields — merge concat pages in order, dedupe by cursor",
+        "Pagination helpers: `keyArgs` (which args make distinct cache entries) + offset/relay-style merge recipes",
+        "read functions: compute field values on the fly (e.g. derived fullName) without storing them",
+        "read/write pairs enable client-side schema extensions",
+        "Risk: custom merge fns must be pure and return new values — mutating `existing` corrupts the cache",
+        "Mistake: forgetting keyArgs → different filter args overwrite each other's results"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "typePolicies: keys, merges, computed reads"
+        },
+        {
+          "type": "code",
+          "note": "typePolicies object: keyFields + fields.merge pagination example"
+        },
+        {
+          "type": "bullets",
+          "note": "keyArgs explanation and pagination recipes"
+        },
+        {
+          "type": "sidebox",
+          "note": "read/write fn signatures"
+        },
+        {
+          "type": "callout",
+          "note": "gotchas: impure merges, missing keyArgs"
+        }
+      ]
+    },
+    {
+      "title": "Fragments: Reuse & Cache Colocation",
+      "points": [
+        "Fragment = named, reusable selection set spread into queries/mutations with `...FragmentName`",
+        "Colocation pattern: each component owns its fragment; parent queries spread children's fragments",
+        "Cache payoff: a component's data needs are declared once and shared across every query that uses it",
+        "useFragment(cacheId, fragment) reads and live-subscribes to exactly one entity's fields",
+        "Inline fragments + type conditions for unions/interfaces: `... on Admin { permissions }`",
+        "Cache reads of interfaces return concrete __typename — cache stores the concrete entity",
+        "Fragment matching with @defer / streamed partial results: cache fills in as chunks arrive",
+        "Apollo fragment registry tools (graphql-codegen `documents`, fragment masking in newer versions)",
+        "Fragment masking: components see only their fragment's fields — improves type safety, hides query shape",
+        "Pitfall: fragments never requested by any query are never cached",
+        "Pitfall: fragment on an interface without type conditions may fetch fields the server rejects",
+        "Rule: fetch with queries, think in fragments"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Fragments & colocation"
+        },
+        {
+          "type": "code",
+          "note": "component fragment + parent query spreading it"
+        },
+        {
+          "type": "code",
+          "note": "useFragment(entityRef, fragment) live read"
+        },
+        {
+          "type": "diagram",
+          "note": "component tree with each node owning a fragment"
+        },
+        {
+          "type": "bullets",
+          "note": "unions/interfaces + fragment masking"
+        },
+        {
+          "type": "callout",
+          "note": "pitfalls: orphan fragments, interface mismatches"
+        }
+      ]
+    },
+    {
+      "title": "Mutation Cache Updates",
+      "points": [
+        "Four update strategies: (1) automatic normalization update, (2) refetchQueries, (3) update() manual write, (4) cache.modify",
+        "Automatic: if the mutation returns an entity with __typename+id, merged fields just appear — prefer designing mutations to return affected entities",
+        "refetchQueries: string names or documents; runs after mutation resolves; simple but costs extra round trips",
+        "awaitRefetchQueries + optimisticResponse interplay: optimistic result visible before refetch completes",
+        "update(cache, { data }) reads the mutation result and writes derived changes with cache.writeQuery / writeFragment",
+        "Pattern: read the list with a fragment, insert/update/delete the entity, write back",
+        "Typical delete: read parent's list fragment, filter out the id, write back — plus consider orphans left in cache",
+        "cache.evict({ id, fieldName }) removes entity/field; cache.gc() then sweeps unreferenced entities",
+        "cache.modify reads raw store values (with toReference/readField) for surgical field edits without refetch",
+        "Rules of update(): never throw on missing data (partial cache), keep it idempotent",
+        "Anti-pattern: manually mirroring server-computed values — write operations that shift state, not compute it",
+        "Choosing: normalized auto-update first, evict for deletes, update() for lists/aggregates, refetch as safety net"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "After the mutation: four ways to sync"
+        },
+        {
+          "type": "table",
+          "note": "strategy vs cost vs reliability comparison"
+        },
+        {
+          "type": "code",
+          "note": "useMutation with update(): read-modify-write list fragment"
+        },
+        {
+          "type": "code",
+          "note": "cache.evict + cache.gc delete flow"
+        },
+        {
+          "type": "bullets",
+          "note": "decision order for picking a strategy"
+        },
+        {
+          "type": "callout",
+          "note": "anti-pattern: duplicating server logic in update()"
+        }
+      ]
+    },
+    {
+      "title": "Optimistic UI",
+      "points": [
+        "optimisticResponse: fake mutation result applied to cache immediately, replaced by server truth later",
+        "Must match the mutation's shape exactly, including __typename and id, or the optimistic write lands nowhere",
+        "Works with update(): update() runs once per optimistic layer and again with real data",
+        "Apollo implements this as a cache layer: optimistic layers stack, `rollback` pops them on error",
+        "onQueryUpdated(cacheObj, diff) — react to entities the mutation touched (e.g. auto-evict stale ones)",
+        "Failure path: layer removed → cache reverts automatically; UI must handle the error state (toast/rollback)",
+        "Concurrent mutations: multiple optimistic layers order-stacked; interleaved reads see combined state",
+        "urql equivalent: no built-in optimistic layer — use optimistic updates via custom exchange or manual write in updaters",
+        "Use for likes/votes/toggles; avoid for payments or anything needing server validation before UI commitment",
+        "Keep optimistic payloads minimal — only fields the UI immediately renders",
+        "Gotcha: server-computed fields (createdAt, ids) must be faked plausibly or UI flickers when replaced",
+        "Testing: simulate mutation rejection to verify rollback UX"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Optimistic updates: instant UI, real data later"
+        },
+        {
+          "type": "code",
+          "note": "useMutation with optimisticResponse + update"
+        },
+        {
+          "type": "diagram",
+          "note": "optimistic layer stack: apply → confirm/rollback"
+        },
+        {
+          "type": "bullets",
+          "note": "when to use / when not to use"
+        },
+        {
+          "type": "callout",
+          "note": "gotcha: faked server fields cause flicker"
+        }
+      ]
+    },
+    {
+      "title": "urql Patterns",
+      "points": [
+        "urql core: Client + exchanges (composable middleware for operations) — fetching, dedup, caching are all exchanges",
+        "Default document cache: hashes query+variables as key, stores whole responses — fast, no normalization",
+        "Document cache invalidation by typing: any mutation result containing a typename invalidates all queries touching that typename",
+        "Simple but coarse: one mutation on User invalidates every User query → frequent refetches",
+        "@urql/exchange-graphcache adds full normalization: same keys as Apollo (`id`/`_id` default, configurable schema keys)",
+        "graphcache config: updates (mutation handlers), resolvers (read-time computed), keys, optimistic (sync fn per mutation)",
+        "updates.For Mutation type: `Mutation.addTodo(result, args, cache, info)` writes via cache.link/writeFragment",
+        "Optimistic in graphcache: `optimistic: { addTodo(...) }` returns a fake result synchronously",
+        "Suspense mode, request policies (cache-first/cache-and-network) mirror Apollo's policies with different names",
+        "Comparison: urql lighter (~smaller bundle, simpler mental model), Apollo richer tooling + ecosystem",
+        "When to pick urql: smaller apps or document cache suffices; Apollo: large normalized apps, codegen, devtools",
+        "Both share the same mental model — learn one, transfer to the other"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "urql: exchanges all the way down"
+        },
+        {
+          "type": "diagram",
+          "note": "exchange pipeline: fetch → dedup → cache"
+        },
+        {
+          "type": "table",
+          "note": "document cache vs graphcache vs Apollo InMemoryCache"
+        },
+        {
+          "type": "code",
+          "note": "graphcache updates + optimistic handler"
+        },
+        {
+          "type": "callout",
+          "note": "choosing between urql and Apollo"
+        }
+      ]
+    },
+    {
+      "title": "Trade-offs, Pitfalls & Review",
+      "points": [
+        "Consistency risk: manual update() bugs create phantom state — prefer server-truth responses and evict+gc",
+        "Cache staleness is invisible: Apollo has no TTL by default; use cache-and-network or refetch on focus (refetchOnWindowFocus patterns, urql staleness flag)",
+        "Memory growth: long sessions accumulate entities — schedule gc(), retain pinned objects deliberately",
+        "Debugging toolkit: inspect normalized store (not the response) — the cache is the UI's data source",
+        "Common bug #1: types missing unique id → every object cached separately, dedup silently broken",
+        "Common bug #2: mutation returns nothing normalized → UI 'doesn't update' though mutation succeeded",
+        "Common bug #3: pagination merges colliding across different args (missing keyArgs)",
+        "Common bug #4: update() reading a query never fetched → cache.readQuery returns null, crashes the update",
+        "Performance note: cache reads are synchronous & cheap; re-renders come from query subscriptions, use useFragment/useMemo to scope them",
+        "SSR/hydration: serialize cache (extract()) to the client and restore to avoid double fetches",
+        "Checklist: keyFields correct? mutations return entities? deletes evict? lists have merges+keyArgs? optimistic rollback tested?",
+        "Mental model to keep: normalized entity map + references; every read/write walks that map"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Trade-offs, top bugs, final checklist"
+        },
+        {
+          "type": "table",
+          "note": "bug → symptom → fix cheat sheet"
+        },
+        {
+          "type": "bullets",
+          "note": "staleness, memory, SSR notes"
+        },
+        {
+          "type": "sidebox",
+          "note": "pre-ship checklist"
+        },
+        {
+          "type": "callout",
+          "note": "closing mental model: entity map + refs"
+        }
+      ]
+    }
+  ]
+}

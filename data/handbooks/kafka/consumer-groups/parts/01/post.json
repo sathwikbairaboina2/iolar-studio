@@ -1,0 +1,976 @@
+{
+  "brand": "iolar",
+  "template": "blackboard",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "KAFKA CONSUMER GROUPS",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Consumer Groups Exist",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What A Group Is",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Group = consumers sharing one `group.id`",
+            "They split a topic's partitions cooperatively",
+            "Invariant: one partition, one consumer, never two",
+            "One consumer may own many partitions",
+            "Change `group.id` and it is a brand-new group"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Parallelism Ceiling"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Max useful consumers = partition count",
+            "Extras sit idle with zero assignment",
+            "Adding partitions raises the ceiling",
+            "Partitions can never be removed from a topic"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "6 partitions, 8 consumers",
+            "cells": [
+              "p0 c0",
+              "p1 c1",
+              "p2 c2",
+              "p3 c3",
+              "p4 c4",
+              "p5 c5",
+              "idle c6",
+              "idle c7"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Fan-Out vs Queue"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Same `group.id`",
+              "items": [
+                "Work is split",
+                "Queue semantics",
+                "Each record once"
+              ]
+            },
+            "right": {
+              "title": "Other `group.id`",
+              "items": [
+                "Full copy of stream",
+                "Topic semantics",
+                "pub/sub fan-out"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Ordering Rules"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ordering is guaranteed per partition only",
+            "No total order across a topic",
+            "Keyed records hash to a fixed partition",
+            "So one key stays ordered under one consumer"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Coordinator + Health"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Coordinator = broker owning the group's `__consumer_offsets` partition",
+            "Chosen by `hash(group.id) % partitions`",
+            "States: Empty, PreparingRebalance, CompletingRebalance",
+            "Then Stable, and Dead when gone"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-consumer-groups.sh \\",
+            "  --bootstrap-server b:9092 \\",
+            "  --describe --group orders",
+            "# members, offsets, lag"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Means"
+          ],
+          "rows": [
+            [
+              "CURRENT-OFFSET",
+              "committed"
+            ],
+            [
+              "LOG-END-OFFSET",
+              "tip of partition"
+            ],
+            [
+              "LAG",
+              "end minus current"
+            ],
+            [
+              "CONSUMER-ID",
+              "member owning it"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "consumer.commitSync(Map.of(tp,",
+            "  new OffsetAndMetadata(",
+            "    lastOffset + 1)));",
+            "// explicit, per-partition, mid-batch"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Why Consumer Groups Exist (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Lag is the metric",
+          "text": "Lag = log-end offset minus committed offset. Track it before CPU, before memory."
+        },
+        {
+          "type": "sidebox",
+          "title": "Scaling myth",
+          "items": [
+            "12 consumers on 6 partitions = 6 idle",
+            "Throughput does not double",
+            "Repartition, or shrink the fleet"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Join Dance",
+          "ink": "accent"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "FindCoordinator",
+              "JoinGroup",
+              "leader assigns",
+              "SyncGroup",
+              "Heartbeat"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "FindCoordinator: ask any broker who owns the group",
+            "JoinGroup: send strategies plus subscription",
+            "Coordinator names one member group leader",
+            "SyncGroup: leader uploads the full assignment map",
+            "Coordinator fans out each member's slice"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Who Computes What"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The leader is a consumer, not a broker",
+            "Assignment logic runs client-side",
+            "Leader sees the whole subscription picture",
+            "So custom assignors can be rack- or load-aware"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Heartbeats + Fencing"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Background thread pings the coordinator to prove liveness",
+            "It is also how a consumer learns a rebalance started",
+            "`member.id` is coordinator-assigned per session",
+            "Restart gets a new one, unless static membership"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "JoinGroup #1 -> MEMBER_ID_REQUIRED",
+            "JoinGroup #2 (carries member.id) -> ok",
+            "# forced registration blocks join storms"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`generation.id` increments on every rebalance",
+            "Stale-generation requests are rejected outright",
+            "That is how zombie consumers get fenced"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Membership: Join, Sync, Heartbeat",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Coordinator Failover"
+        },
+        {
+          "type": "paragraph",
+          "text": "A dead coordinator triggers a rebalance too. It fires once the `__consumer_offsets` partition leader moves to a new broker."
+        },
+        {
+          "type": "heading",
+          "text": "KIP-848 + Metrics"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "KIP-848 moves assignment onto the broker",
+            "No client-side leader, no stop-the-world sync",
+            "Watch `rebalance-rate-per-hour`",
+            "Watch `rebalance-latency-avg`"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Two joins that hurt",
+          "items": [
+            "Members sharing no common assignment strategy fail the join",
+            "Different topics under one `group.id`",
+            "Mixed subscriptions rebalance together and thrash"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What A Rebalance Is",
+          "ink": "accent"
+        },
+        {
+          "type": "paragraph",
+          "text": "The group re-deciding who owns which partition. Correctness-safe, availability-hostile."
+        },
+        {
+          "type": "heading",
+          "text": "Five Triggers"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Trigger",
+            "Detected by"
+          ],
+          "rows": [
+            [
+              "New member joins",
+              "JoinGroup"
+            ],
+            [
+              "Graceful `close()`",
+              "LeaveGroup"
+            ],
+            [
+              "Heartbeat gap",
+              "`session.timeout.ms`"
+            ],
+            [
+              "Processing gap",
+              "`max.poll.interval.ms`"
+            ],
+            [
+              "Partition count change",
+              "metadata refresh"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Scale-up, restart and deploy all count as joins",
+            "A regex subscription matching a new topic also fires",
+            "Trigger 5 needs no member change at all"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Eager = Stop The World"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every member revokes every partition",
+            "The whole group re-joins, consumption fully stalls",
+            "Stall = detect + join wait + assign + state restore",
+            "Stateful apps measure that in minutes"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "revoke all",
+              "re-join",
+              "assign",
+              "restore state",
+              "resume"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Rebalancing: Triggers and Cost",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Listener Contract"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Callback",
+            "What to do"
+          ],
+          "rows": [
+            [
+              "`onPartitionsRevoked`",
+              "commit offsets here"
+            ],
+            [
+              "`onPartitionsAssigned`",
+              "seek, restore state"
+            ],
+            [
+              "`onPartitionsLost`",
+              "do NOT commit"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`onPartitionsLost` fires when fenced or timed out",
+            "Ownership is already gone there",
+            "A commit would clobber the new owner's progress",
+            "Commit on revoke or duplicates are guaranteed"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Storms"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Rolling restart of N consumers: up to N rebalances",
+            "Eager churn scales worse than linear",
+            "Cascading: slow member times out mid-rebalance, re-joins, repeats",
+            "`group.initial.rebalance.delay.ms` (default 3000) batches startup joins"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Minimize count, not duration",
+          "text": "Rebalances never lose correctness, they lose availability. Design so they rarely happen."
+        },
+        {
+          "type": "heading",
+          "text": "Picking An Assignor",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`partition.assignment.strategy` is an ordered class list",
+            "The group picks the highest strategy common to all",
+            "Kafka 4.x default: `[RangeAssignor, CooperativeStickyAssignor]`",
+            "Set cooperative-sticky explicitly to actually get it"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "p.put(\"partition.assignment.strategy\",",
+            "  CooperativeStickyAssignor.class",
+            "    .getName());  // opt in",
+            "// modern default choice"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Range"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per topic, sorts partitions and consumers",
+            "Hands out contiguous ranges",
+            "3 partitions, 2 consumers: consumer-0 gets the extra",
+            "Skew compounds across every subscribed topic",
+            "Upside: `topic-A-p0` and `topic-B-p0` land together"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "Range, 3p per topic",
+            "cells": [
+              "A-p0 c0",
+              "A-p1 c0",
+              "A-p2 c1",
+              "B-p0 c0",
+              "B-p1 c0",
+              "B-p2 c1"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Assignment Strategies Compared",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "RoundRobin + Sticky"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "RoundRobin flattens all partitions of all topics",
+            "Deals them one by one: best raw balance",
+            "Flaw: any membership change reshuffles nearly everything",
+            "Sticky balances the same but keeps prior owners",
+            "CooperativeSticky = sticky plus incremental protocol"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Side By Side"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Range",
+            "RoundRobin",
+            "Coop-Sticky"
+          ],
+          "rows": [
+            [
+              "Balance",
+              "worst",
+              "best",
+              "best"
+            ],
+            [
+              "Movement",
+              "high",
+              "high",
+              "low"
+            ],
+            [
+              "Co-partition",
+              "yes",
+              "no",
+              "no"
+            ],
+            [
+              "Blocking",
+              "yes",
+              "yes",
+              "no"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Balance quality",
+          "text": "RoundRobin, Sticky and CooperativeSticky tie; Range trails. Range only wins on co-partitioned local joins."
+        },
+        {
+          "type": "heading",
+          "text": "Escape Hatches"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Custom: extend `AbstractPartitionAssignor`",
+            "Rack-aware, weighted or cost-based placement",
+            "`assign()` bypasses groups: no rebalance, no coordinator",
+            "With `assign()` you own placement and failover"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Switching strategies live",
+          "items": [
+            "Never flip a whole fleet in one deploy",
+            "Two-phase rolling deploy only",
+            "Members must always share one strategy"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Goal",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stop the world only for partitions that actually move",
+            "Protocol version bumps EAGER to COOPERATIVE",
+            "Switch is `CooperativeStickyAssignor`"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Incremental Cooperative Rebalancing",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Two Rounds"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "rejoin, keep all",
+              "leader targets",
+              "revoke deltas",
+              "second rebalance",
+              "new owners"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Round 1: everyone rejoins holding their partitions",
+            "Leader computes the target, revokes only deltas",
+            "Round 2 follows at once, handing them over",
+            "Two rebalances per change, no full stall",
+            "Untouched partitions keep polling throughout"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Streams gains most",
+          "text": "Long state-restore apps stop rebuilding every state store on every scale event."
+        },
+        {
+          "type": "heading",
+          "text": "Migration Is Strict"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Deploy",
+            "Strategy list"
+          ],
+          "rows": [
+            [
+              "1",
+              "`[CooperativeSticky, Eager]`"
+            ],
+            [
+              "2",
+              "`[CooperativeSticky]`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Skipping phase 1 mixes protocols in one group",
+            "Result: `IllegalStateException` or broken assignments",
+            "Both rolls must complete before the next change"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Callbacks Change"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`onPartitionsRevoked` gets only the moved partitions",
+            "Not the full set, the way eager did",
+            "`onPartitionsLost` finally becomes meaningful",
+            "It separates clean handoff from fencing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Static Membership"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`group.instance.id` gives a pod a stable identity",
+            "Restart inside `session.timeout.ms` causes NO rebalance",
+            "Complementary to cooperative mode, not a substitute",
+            "Set the timeout above pod restart time, 45s to 5min",
+            "Too high and real failure detection lags"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-consumer-groups.sh \\",
+            "  --delete-offsets --group orders",
+            "# or admin removeMembersFrom",
+            "#   ConsumerGroup for scale-down"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Incremental Cooperative Rebalancing (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Duplicate instance id",
+          "items": [
+            "Two live pods, one `group.instance.id`",
+            "One is fenced with FencedInstanceIdException",
+            "Derive it from the StatefulSet ordinal"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What An Offset Is",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per-partition, monotonically increasing message index",
+            "Not a timestamp, not global",
+            "Committed offset = the NEXT offset to read",
+            "That is last processed + 1"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "long last = record.offset();  // 41",
+            "commit(tp, new OffsetAndMetadata(",
+            "  last + 1));                 // 42",
+            "// off-by-one here replays forever"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Where They Live"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Internal compacted topic `__consumer_offsets`",
+            "50 partitions by default",
+            "Keyed by (group, topic, partition)",
+            "Compaction keeps only the latest value per key",
+            "So the offsets topic stays bounded"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Four Numbers"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Number",
+            "Means"
+          ],
+          "rows": [
+            [
+              "`position()`",
+              "next record read"
+            ],
+            [
+              "`committed()`",
+              "last durably stored"
+            ],
+            [
+              "log-end offset",
+              "tip of partition"
+            ],
+            [
+              "high watermark",
+              "on all in-sync replicas"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`position()` and `committed()` diverge in flight",
+            "Consumers can only read below the high watermark",
+            "Commits are per-partition maps",
+            "So a partial commit is possible and normal"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Moving On Purpose"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`seek(tp, offset)`, `seekToBeginning()`, `seekToEnd()`",
+            "Valid only once an assignment exists",
+            "`offsetsForTimes()` maps wall clock to first offset at or after",
+            "That is the basis for time-travel replay"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "kafka-consumer-groups.sh --reset-offsets \\",
+            "  --to-earliest --group g --topic t \\",
+            "  --execute   # group must be inactive"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Retention Traps"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`offsets.retention.minutes` defaults to 7 days",
+            "A fully inactive group loses its offsets",
+            "Then `auto.offset.reset` decides everything"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "`auto.offset.reset`",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`earliest`",
+              "replay from start"
+            ],
+            [
+              "`latest`",
+              "skip all before now"
+            ],
+            [
+              "`none`",
+              "NoOffsetForPartition"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Offsets are per group",
+          "text": "A typo in `group.id` silently gives a full replay or a full skip. Nothing errors."
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Committing: Auto, Sync, Async",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Auto-Commit",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`enable.auto.commit=true` is the default",
+            "Commits the last poll's offsets on a timer inside `poll()`",
+            "`auto.commit.interval.ms` defaults to 5000",
+            "It commits what poll RETURNED, not what you PROCESSED",
+            "A crash mid-batch loses those records"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Feels safe, is at-most-once",
+          "text": "Relative to processing, auto-commit gives at-most-once. The default is the risky setting."
+        },
+        {
+          "type": "heading",
+          "text": "Sync vs Async"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "`commitSync()`",
+              "items": [
+                "Blocks",
+                "Retries retriable errors",
+                "Throws on failure",
+                "End of batch, shutdown"
+              ]
+            },
+            "right": {
+              "title": "`commitAsync()`",
+              "items": [
+                "Fire and forget",
+                "Optional callback",
+                "No retry",
+                "Higher throughput"
+              ]
+            }
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`commitAsync()` takes an `OffsetCommitCallback`",
+            "Never blindly retry it",
+            "A late retry of an old offset overwrites a newer commit",
+            "Consequence: silent replay"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Canonical Pattern"
+        },
+        {
+          "type": "code",
+          "lang": "java",
+          "lines": [
+            "while (running) {",
+            "  process(consumer.poll(D));",
+            "  consumer.commitAsync();  // hot loop",
+            "}",
+            "// finally: commitSync(); close();"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Delivery Semantics"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Want",
+            "Do"
+          ],
+          "rows": [
+            [
+              "At-most-once",
+              "commit before processing"
+            ],
+            [
+              "At-least-once",
+              "commit after processing"
+            ],
+            [
+              "Exactly-once",
+              "transactions or DB offsets"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "At-least-once is the practical default",
+            "Assume duplicates, make consumers idempotent",
+            "Dedupe key, upsert, or an idempotency table"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Exactly-Once Wiring"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Producer `sendOffsetsToTransaction()` binds writes and offsets",
+            "Consumer needs `isolation.level=read_committed`",
+            "Such a consumer cannot read past the Last Stable Offset",
+            "An open transaction stalls that partition's reads",
+            "Kafka to SQL: store offsets in your own DB transaction"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your consumer group is not slow because Kafka is slow — it is slow because it keeps rebalancing. 10 pages on how partitions get assigned, why the poll loop is really a heartbeat, what a committed offset actually means (last processed + 1), and the exact configs that turn a 45-second stall into an instant handoff. Save it for the next CommitFailedException.",
+    "hashtags": [
+      "#kafka",
+      "#apachekafka",
+      "#consumergroups",
+      "#distributedsystems",
+      "#backendengineering",
+      "#dataengineering",
+      "#eventdriven",
+      "#systemdesign",
+      "#streamprocessing",
+      "#softwareengineering",
+      "#devnotes",
+      "#iolar"
+    ]
+  }
+}

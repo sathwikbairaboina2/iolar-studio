@@ -1,0 +1,559 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "GO SLICES & MAPS: THE FIELD MANUAL — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Map Internals: Buckets, Growth, Swiss Tables",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Go 1.24: Swiss Tables",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Groups of 8 slots plus a SIMD-scannable control word",
+            "The control word holds 7-bit hash fragments, scanned in one shot",
+            "Measurably faster lookups and less memory on large maps",
+            "Internal layout changed; language semantics did not"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Randomly seeded hashing",
+          "text": "The per-process seed defeats hash-flooding denial of service — and is the direct cause of unordered iteration."
+        },
+        {
+          "type": "heading",
+          "text": "Maps Never Shrink"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "clear(m)      // entries gone, buckets stay",
+            "m = make(map[K]V) // the real reclaim",
+            "// old table is now garbage-collectable"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A map that held 1M entries keeps that memory at `len(m) == 0`",
+            "Delete never gives bucket count back",
+            "Build a fresh map and drop the old one to reclaim"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Big Values Go Indirect"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Above a size threshold, keys or values are stored as pointers to heap",
+            "So choose `map[K]*BigStruct` deliberately, not by accident",
+            "Growth relocates entries, so `&m[k]` cannot exist",
+            "That relocation IS the reason for the non-addressability rule"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Randomized On Purpose",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The runtime picks a random start bucket AND a random offset inside it",
+            "Two ranges over the SAME unmodified map can differ",
+            "It stops code depending on an order the runtime may change"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "`fmt` lies to you",
+          "text": "`fmt` prints maps in sorted key order, which convinces people iteration is ordered. It is not — that sort is only for printing."
+        },
+        {
+          "type": "heading",
+          "text": "Getting Determinism Back",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "keys := slices.Sorted(maps.Keys(m))",
+            "for _, k := range keys {",
+            "    fmt.Println(k, m[k]) // stable output",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Never assert map range order in a test",
+            "It passes locally and fails in CI — the seed differs",
+            "`maps.Keys`/`maps.Values` (Go 1.23+) return iterators",
+            "Materialize with `slices.Collect` or `slices.Sorted`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Mutating While Ranging",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "action",
+            "spec says"
+          ],
+          "rows": [
+            [
+              "delete unreached key",
+              "will NOT be produced"
+            ],
+            [
+              "delete current key",
+              "fully defined"
+            ],
+            [
+              "add a key",
+              "unspecified"
+            ],
+            [
+              "add repeatedly",
+              "may never terminate"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for k, v := range m {",
+            "    if stale(v) { delete(m, k) } // safe idiom",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Map Iteration Order & Deleting During Range",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Deleting the current key is the standard filter idiom",
+            "A new entry may or may not be visited in the same loop",
+            "To add, build a second map or collect keys first"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Concurrency Is A Different Beast",
+          "ink": "red"
+        },
+        {
+          "type": "qa",
+          "q": "Two goroutines write the same map — what happens?",
+          "a_bullets": [
+            "`fatal error: concurrent map writes` — the process dies",
+            "It is not a panic; `recover` cannot save you",
+            "The detector is best-effort, not a guarantee",
+            "Use `-race` to catch it reliably in tests"
+          ],
+          "example_code": [
+            "go func() { m[\"a\"] = 1 }()",
+            "go func() { m[\"b\"] = 2 }() // fatal"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "map access",
+            "branches": [
+              {
+                "label": "reads only",
+                "children": [
+                  "no sync needed"
+                ]
+              },
+              {
+                "label": "any writer",
+                "children": [
+                  "`sync.RWMutex`",
+                  "`sync.Map`"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "When sync.Map fits",
+          "items": [
+            "Append-only caches, written once, read many",
+            "Disjoint key sets per goroutine",
+            "Otherwise a plain map behind `RWMutex` wins"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Shapes, Two Costs",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "slice",
+              "items": [
+                "ordered",
+                "index-addressable",
+                "contiguous, cache-friendly",
+                "O(n) search"
+              ]
+            },
+            "right": {
+              "title": "map",
+              "items": [
+                "unordered",
+                "key-addressable",
+                "scattered, pointer-chasing",
+                "O(1) average lookup"
+              ]
+            }
+          }
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Small n flips the answer",
+          "text": "Under roughly 8-16 elements, a linear scan of a slice often BEATS a map — cache locality plus the hashing cost you skipped."
+        },
+        {
+          "type": "heading",
+          "text": "Memory Footprint"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "structure",
+            "pays for"
+          ],
+          "rows": [
+            [
+              "slice",
+              "`cap * sizeof(T)`"
+            ],
+            [
+              "map",
+              "buckets + tophashes"
+            ],
+            [
+              "map slack",
+              "~2x from load factor"
+            ],
+            [
+              "map growth",
+              "old + new during evacuation"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Operation By Operation",
+          "ink": "accent"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "op",
+            "slice",
+            "map"
+          ],
+          "rows": [
+            [
+              "insert at end",
+              "O(1) amort., no hash",
+              "O(1) avg"
+            ],
+            [
+              "insert middle",
+              "O(n) shift",
+              "no position"
+            ],
+            [
+              "delete",
+              "O(n) / O(1) swap",
+              "O(1), no reorder"
+            ],
+            [
+              "iterate",
+              "in order, memory speed",
+              "random bucket walk"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Duplicates And Order"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Slices allow duplicates; maps collapse them by key",
+            "Fastest dedupe: `map[T]struct{}` plus an output slice for order",
+            "Slices give stable order for free; maps need an explicit sort"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Slice vs Map: Choosing and Trading Off",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "seen := map[string]struct{}{}",
+            "for _, v := range in {",
+            "    if _, ok := seen[v]; ok { continue }",
+            "    seen[v] = struct{}{}",
+            "    out = append(out, v) // order kept",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Serialization And Zero Values"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "aspect",
+            "slice",
+            "map"
+          ],
+          "rows": [
+            [
+              "JSON",
+              "array, order kept",
+              "object, keys sorted"
+            ],
+            [
+              "zero value",
+              "nil, appendable",
+              "nil, write panics"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`encoding/json` emits Go map keys sorted, so JSON output is stable",
+            "The nil asymmetry is worth memorising: nil slice usable, nil map read-only"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Ordered-Map Hybrid",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "slice for order",
+              "`map[K]int` index",
+              "keep in sync",
+              "hide behind a type"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The map holds positions into the slice",
+            "Delete is the hard part — every later index shifts",
+            "So encapsulate both, never expose them raw"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Deciding in one line",
+          "text": "Order or small n: slice. Keyed lookup at scale: map. Both: keep both, wrapped in a type that owns the invariant."
+        },
+        {
+          "type": "heading",
+          "text": "The append Family",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Ignoring append's return value — the mutation goes nowhere; `go vet` catches it",
+            "`make([]T,n)` when you meant `make([]T,0,n)` — n zeros, then your data",
+            "Forgetting `s[i:j:j]` when handing a slice to code that appends"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "p := &s[i]",
+            "s = append(s, x) // may reallocate",
+            "*p = 7           // writes to the dead array"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Buffers That Escape",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Returning a sub-slice of a buffer you will reuse",
+            "Holding a small slice of a huge read and pinning the whole array",
+            "Not nil-ing removed pointer elements when the slice outlives the removal"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Top Mistakes & Field-Tested Rules",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Not optional",
+          "text": "If the slice outlives the delete, the tail slot still references the object. Nil it, or the leak is permanent."
+        },
+        {
+          "type": "heading",
+          "text": "The Map Set",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "mistake",
+            "correction"
+          ],
+          "rows": [
+            [
+              "write to nil map",
+              "build in constructor"
+            ],
+            [
+              "trust range order",
+              "sort keys first"
+            ],
+            [
+              "zero as real data",
+              "use comma-ok"
+            ],
+            [
+              "`clear(m)` frees RAM",
+              "it empties, not shrinks"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "m[k].field = x // compile error",
+            "// don't reach for reflection —",
+            "// store map[K]*V and mutate through it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Assuming range order is stable, especially in golden-file tests",
+            "Concurrent writes with no lock — a fatal crash, not a recoverable one",
+            "Lazy map construction at the call site instead of in the constructor"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Model To Keep",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "a slice is a WINDOW onto an array",
+            "cells": [
+              "ptr",
+              "len",
+              "cap",
+              "-> [ a | b | c | _ ]"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "One sentence",
+          "text": "append either writes through the window or silently cuts a new one — and capacity alone decides which."
+        },
+        {
+          "type": "heading",
+          "text": "Pre-Ship Checklist"
+        },
+        {
+          "type": "sidebox",
+          "title": "Run before merge",
+          "items": [
+            "`go vet` for discarded appends",
+            "tests with `-race`",
+            "presize with `make(..., 0, n)` where n is known",
+            "clone at every API boundary that stores or returns a slice",
+            "sort keys wherever map output is user-visible"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of GO SLICES & MAPS: THE FIELD MANUAL. A Go slice is a 24-byte window onto an array you cannot see — and append either writes through that window or silently cuts a new one, depending on capacity nobody at the call site knows about. 10 pages on backing arrays, three-index slicing, the 1.18 growth rule, Swiss-table maps in 1.24, why range order is randomized on purpose, and the aliasing bugs that only show up in production. Save it for the next code review where somebody returns `sc.Bytes()`.",
+    "hashtags": [
+      "#golang",
+      "#go",
+      "#slices",
+      "#hashmap",
+      "#datastructures",
+      "#backendengineering",
+      "#systemsprogramming",
+      "#codenotes",
+      "#programmingtips",
+      "#softwareengineering",
+      "#learntocode",
+      "#devnotes"
+    ]
+  }
+}

@@ -1,0 +1,206 @@
+{
+  "title": "MongoDB Aggregation Pipeline: A Field Handbook",
+  "summary": "A dense, stage-by-stage guide to the MongoDB aggregation framework — $match, $group, $project, $lookup, $unwind and friends — covering how documents stream through a pipeline, what each stage costs, how stage order decides whether an index is used, and the mistakes that silently turn a fast query into a collection scan.",
+  "chapters": [
+    {
+      "title": "1. What a Pipeline Actually Is",
+      "points": [
+        "Definition: an aggregation pipeline is an ordered array of stage documents; each stage takes a stream of documents in and emits a stream out, feeding the next stage.",
+        "Basic call shape: db.orders.aggregate([{ $match: {...} }, { $group: {...} }], { allowDiskUse: true }).",
+        "Every stage is a single-key document: { $stageName: <spec> }. Two keys in one stage object is an error ('A pipeline stage specification object must contain exactly one field').",
+        "Stages are not set operations — they are streaming transforms. The same stage name may appear many times in one pipeline ($match early, $match again after $group).",
+        "Input to stage 1 is the whole collection (or an index scan of it); input to stage N is the output of stage N-1, not the collection.",
+        "Documents in the pipeline are ordinary BSON documents but need not resemble the stored schema — after $group the shape is whatever you built.",
+        "Contrast with find(): find() = filter + projection + sort + limit only. Aggregation adds grouping, joins, reshaping, unwinding, faceting, computed fields.",
+        "Contrast with map-reduce: mapReduce is deprecated since MongoDB 5.0; aggregation is faster (native C++ vs JS interpreter) and the recommended replacement.",
+        "Streaming vs blocking stages: $match, $project, $unwind, $limit, $skip, $addFields stream document-by-document; $group, $sort, $bucket, $facet, $setWindowFields must accumulate input before emitting.",
+        "Cursor semantics: aggregate() returns a cursor, not an array. Nothing executes until you iterate it (except explain).",
+        "16 MB limit applies to each document in the pipeline and to each result document — not to the total result set, which streams via the cursor.",
+        "100 MB memory limit per blocking stage; exceeded stages error with 'Sort exceeded memory limit' / 'Exceeded memory limit for $group' unless allowDiskUse:true (default true for $sort/$group spill since 6.0).",
+        "Worked mental model: pipeline = Unix shell pipe. `grep | sort | uniq -c` is `$match | $sort | $group`.",
+        "Order matters and is not reordered by you — but the query planner may reorder some stages for you (covered in the optimization chapter)."
+      ]
+    },
+    {
+      "title": "2. $match — Filtering and the Index Gate",
+      "points": [
+        "Syntax: { $match: { status: 'A', qty: { $gt: 10 } } } — takes exactly the same query language as find(), including $and/$or/$in/$regex/$exists.",
+        "The single most important rule in the whole handbook: a $match at the very front of the pipeline can use an index; a $match anywhere after a $group, $unwind or reshaping $project usually cannot.",
+        "Why: indexes describe the stored collection. Once a stage invents new fields or new documents, there is no index on that derived stream.",
+        "$match cannot use aggregation expressions directly — { $match: { $expr: { $gt: ['$qty', '$reorderLevel'] } } } is required to compare two fields of the same document.",
+        "$expr in $match blocks index use for most operators (limited $eq/$lt/$gt index support exists but is fragile) — prefer storing a precomputed field.",
+        "Cannot use $where or $text inside $match except $text as the FIRST stage of the pipeline.",
+        "Push filters as early and as narrow as possible: filtering 10M documents down to 5k before $group changes the cost by three orders of magnitude.",
+        "Split a compound filter: put the index-friendly equality predicates in stage 1, and the expensive/derived predicates in a later $match.",
+        "Equality first, then range, then sort — the ESR rule — governs which compound index a leading $match can use.",
+        "Example: [{$match:{shipDate:{$gte:ISODate('2026-01-01')}}}, {$group:{_id:'$region', total:{$sum:'$amount'}}}] uses an index on shipDate.",
+        "Anti-example: [{$group:{...}}, {$match:{total:{$gt:1000}}}] — the second $match is a post-aggregation HAVING clause; it is correct but scans every group.",
+        "$match with an empty spec {} is legal and a no-op — but it can block the planner from merging stages; delete it.",
+        "Counting: prefer { $match } then { $count: 'n' } over pulling documents; $count is sugar for $group + $project.",
+        "Gotcha: $match on a field that does not exist matches documents where the field is missing when you write { field: null } — use { field: { $ne: null, $exists: true } } if you mean 'present'."
+      ]
+    },
+    {
+      "title": "3. $group — Accumulators and Cardinality",
+      "points": [
+        "Syntax: { $group: { _id: <expression>, <field>: { <accumulator>: <expression> } } }. The _id key is mandatory.",
+        "_id: null groups every input document into one bucket — the way to compute a grand total.",
+        "_id can be a document for a composite key: _id: { region: '$region', year: { $year: '$date' } } — output _id is then a subdocument.",
+        "Core accumulators: $sum, $avg, $min, $max, $first, $last, $push, $addToSet, $count, $stdDevPop, $stdDevSamp, $mergeObjects, $top/$bottom/$topN/$bottomN (5.2+).",
+        "$sum: 1 is the idiomatic row counter; $count: {} (5.0+) is the newer equivalent inside $group.",
+        "$first/$last are only meaningful after an explicit $sort — otherwise the order is undefined.",
+        "$push builds an array of every value in the group; $addToSet deduplicates. Both are unbounded — a high-cardinality group can blow the 16 MB document limit.",
+        "$group is a blocking stage: no output until the last input document is consumed. It buys memory proportional to the NUMBER OF DISTINCT GROUPS, not the number of input documents.",
+        "Memory rule of thumb: grouping 100M documents by day (365 groups) is cheap; grouping them by userId (80M groups) is not.",
+        "Output document field order and the surviving fields: everything not in _id or an accumulator is dropped. $group is destructive.",
+        "$group can use an index in the DISTINCT_SCAN case: a $group on the leading field of an index with only $first/$last accumulators can skip-scan instead of full-scan.",
+        "$sortByCount: '$tag' is shorthand for $group by tag with $sum:1 then $sort descending on count.",
+        "Post-group filtering is SQL's HAVING: { $group } then { $match: { total: { $gte: 100 } } }.",
+        "Worked example: revenue per customer, top 5 — [{$match:{status:'paid'}},{$group:{_id:'$custId',total:{$sum:'$amount'}}},{$sort:{total:-1}},{$limit:5}].",
+        "Gotcha: $avg and $sum silently ignore non-numeric values rather than erroring — a string '42' contributes nothing and skews the average."
+      ]
+    },
+    {
+      "title": "4. $project, $addFields and Reshaping",
+      "points": [
+        "$project is inclusion-or-exclusion, not both: { a: 1, b: 1 } keeps only a, b, _id; { a: 0 } drops a and keeps everything else. Mixing them errors — except that _id: 0 may be combined with an inclusion.",
+        "_id is included by default and is the only field you must exclude explicitly.",
+        "Computed fields: { $project: { total: { $multiply: ['$price', '$qty'] } } } — any aggregation expression is allowed on the right-hand side.",
+        "$addFields (alias $set, 4.2+) adds/overwrites fields while keeping everything else — use it whenever you are not trying to shrink the document.",
+        "$unset (alias for $project exclusion) removes fields: { $unset: ['tmp', 'debug.trace'] }.",
+        "Field paths use a leading $: '$price'. A literal string starting with $ needs { $literal: '$price' }.",
+        "Dotted paths reach into subdocuments and into arrays element-wise: '$items.sku' over an array of items yields an array of skus.",
+        "$replaceRoot / $replaceWith promotes a subdocument to the top level: { $replaceWith: '$profile' }.",
+        "Common expression operators worth memorizing: $cond, $ifNull, $switch, $concat, $toUpper, $dateToString, $arrayElemAt, $size, $filter, $map, $reduce, $let.",
+        "Type conversion: $toInt/$toString/$toDate/$toObjectId, and $convert with an onError/onNull escape hatch.",
+        "Performance: $project that reduces the document to a few fields BEFORE a $sort or $group shrinks the bytes that must be buffered — a real win on wide documents.",
+        "Covered pipeline: if a leading $match plus a $project touch only fields present in one index, the pipeline never reads documents from disk. Requires _id: 0.",
+        "Anti-pattern: a giant $project early that renames every field — it destroys index-eligible field names for later stages and reads harder than $addFields.",
+        "Gotcha: projecting a non-existent field creates nothing (the field is simply absent), it does not create null.",
+        "Order note: $addFields does not block, so it is nearly free per document, but it grows document size and therefore the memory that a following $sort/$group must hold."
+      ]
+    },
+    {
+      "title": "5. $unwind — Flattening Arrays",
+      "points": [
+        "Definition: $unwind: '$items' emits ONE OUTPUT DOCUMENT PER ARRAY ELEMENT, with the array field replaced by that single element.",
+        "It is a fan-out stage: N documents each with a 10-element array become 10N documents. This is where pipelines go quadratic.",
+        "Long form: { $unwind: { path: '$items', includeArrayIndex: 'idx', preserveNullAndEmptyArrays: true } }.",
+        "Default behavior DROPS documents where the field is missing, null, or an empty array — a silent data-loss trap. preserveNullAndEmptyArrays: true keeps them with the field unset.",
+        "A non-array, non-missing value is treated as a one-element array — $unwind on a scalar passes the document through unchanged.",
+        "includeArrayIndex adds the original zero-based position, useful for reconstructing order later.",
+        "The classic pattern: $unwind then $group back to re-aggregate per element — e.g. revenue per line-item SKU across orders.",
+        "The classic anti-pattern: $unwind then $match on a top-level field — do the $match BEFORE the unwind so you fan out fewer documents.",
+        "Double $unwind of nested arrays multiplies: unwinding a 10-element array inside a 10-element array yields 100 documents per input.",
+        "Often avoidable: $filter, $map, $reduce, $size, $sum over an array, and $arrayElemAt do element-wise work WITHOUT fanning out. Prefer them.",
+        "$unwind cannot use an index; it operates on the streamed documents. Any index use must come from stages before it.",
+        "Since 3.2 the planner can push a $match that follows $unwind back before it when the predicate is on a field independent of the unwound path.",
+        "Memory: $unwind itself is streaming and cheap, but it multiplies the input to the next blocking stage — the cost shows up in $group/$sort.",
+        "Worked example: tags histogram — [{$unwind:'$tags'},{$sortByCount:'$tags'}].",
+        "Reverse operation: to rebuild the array after processing, $group by the original _id with { items: { $push: '$items' } }."
+      ]
+    },
+    {
+      "title": "6. $lookup — Joins and Their Real Cost",
+      "points": [
+        "Basic form: { $lookup: { from: 'items', localField: 'sku', foreignField: 'sku', as: 'itemDocs' } } — a LEFT OUTER JOIN.",
+        "The 'as' field is always an ARRAY of matched documents, empty [] when nothing matched. Almost always followed by $unwind or $arrayElemAt.",
+        "Index rule: the FOREIGN collection's foreignField must be indexed. Without it, MongoDB runs a collection scan per input document — an O(N×M) nested loop.",
+        "The local side gets no help from an index for the join itself; filter the local side with a leading $match first.",
+        "Pipeline form (3.6+): { $lookup: { from, let: { id: '$_id' }, pipeline: [ { $match: { $expr: { $eq: ['$orderId','$$id'] } } }, { $project:{...} } ], as: 'x' } } — lets you filter and project the joined side.",
+        "let/$$var: outer fields must be bound in `let` and referenced with a double-dollar inside the sub-pipeline; a plain '$field' there refers to the FOREIGN document.",
+        "Concise correlated form (5.0+) allows localField/foreignField AND a pipeline together.",
+        "$lookup can target a sharded collection (5.1+); earlier versions could not. The `from` collection must be in the same database.",
+        "16 MB limit applies to the JOINED result: joining a hot key with 100k children overflows the parent document. Filter or $limit inside the lookup pipeline.",
+        "Alternative for one-to-few: embed the data at write time. Aggregation joins are for reporting, not for hot request paths.",
+        "$graphLookup does recursive self-joins (org charts, category trees) with maxDepth, depthField and connectFromField/connectToField.",
+        "$unionWith (4.4+) is the UNION ALL counterpart — concatenates another collection's documents (optionally piped) into the current stream.",
+        "Cost model: with an index on the foreign key, roughly N index lookups. Without, N full scans of M documents. Check explain for COLLSCAN under the lookup.",
+        "Gotcha: localField/foreignField matching uses exact BSON equality including type — an ObjectId will never match its string form. Convert with $toObjectId first.",
+        "Worked example: orders enriched with customer name — $match on date, $lookup customers by custId, $unwind the single-element result, $project the fields you need."
+      ]
+    },
+    {
+      "title": "7. Sorting, Paging and Index Use",
+      "points": [
+        "$sort spec: { field: 1 } ascending, { field: -1 } descending; multiple keys sort left to right.",
+        "A $sort as the first stage — or first after an index-eligible $match — can be satisfied by an index and costs nothing extra (SORT_MERGE / no blocking SORT stage in explain).",
+        "A $sort after $group, $unwind or a computed $project must run in memory: it is blocking and capped at 100 MB unless it spills to disk.",
+        "$sort + $limit is special-cased: the server keeps only the top-N in a bounded heap instead of sorting everything. Always pair them.",
+        "Because of that optimization, moving $limit next to $sort is one of the highest-leverage rewrites available.",
+        "$skip is O(skip) — skip 100000 still walks 100000 documents. Deep pagination via $skip degrades linearly.",
+        "Range pagination beats skip: $match on { _id: { $gt: lastSeenId } } then $sort + $limit uses the index and is O(limit).",
+        "Sort stability: MongoDB's sort is not stable for equal keys; add a tiebreaker like _id to get deterministic paging.",
+        "ESR rule for a compound index serving $match + $sort: Equality fields first, then Sort fields, then Range fields. Getting S and R backwards forces an in-memory sort.",
+        "Sort direction must be consistent with the index or exactly the reverse of it across all keys — mixed directions need a matching mixed-direction index.",
+        "$sortByCount = $group + $sort, and is always blocking.",
+        "$setWindowFields (5.0+) gives running totals, ranks and moving averages without self-joins: partitionBy, sortBy, and an output window spec.",
+        "$densify and $fill (5.1/5.3) close gaps in time series before windowing.",
+        "Collation affects sort order for strings; an index built with a different collation cannot serve the sort.",
+        "Gotcha: sorting on an array field sorts by the array's minimum (ascending) or maximum (descending) element, not by the array as a whole."
+      ]
+    },
+    {
+      "title": "8. Pipeline Order, the Optimizer and explain()",
+      "points": [
+        "Golden order heuristic: filter → project down → join → unwind → group → sort → limit. Every deviation should be deliberate.",
+        "Rule 1: $match first, always, and as selective as possible — it is the only stage that can hand work to an index.",
+        "Rule 2: $project/$unset early to shrink documents before any blocking stage buffers them.",
+        "Rule 3: $limit as early as correctness allows; move it above $lookup and $unwind when the semantics permit.",
+        "Rule 4: $unwind as late as possible — every stage after it processes the multiplied stream.",
+        "The optimizer does some of this for you: $match coalescing (adjacent $match merge into one), $sort+$limit coalescing, $limit+$limit, $skip+$limit swap, and $match pushdown before $unwind/$project when provably safe.",
+        "It will NOT push a $match past a $group on a field the group invented — that reordering would change results.",
+        "explain: db.c.aggregate(pipeline, { explain: true }) or db.c.explain('executionStats').aggregate(pipeline).",
+        "Read explain for: the winningPlan stage (IXSCAN vs COLLSCAN), totalDocsExamined vs nReturned, and whether a blocking SORT stage appears.",
+        "Healthy ratio: totalDocsExamined ≈ nReturned. A ratio of 1000:1 means the leading $match is not using an index.",
+        "The `$cursor` entry at the head of the explained pipeline shows the find() the server derived from your leading stages — that is the part indexes apply to.",
+        "'executionTimeMillisEstimate' per stage tells you which stage is the bottleneck; do not guess.",
+        "allowDiskUse: true lets blocking stages spill to _tmp; it prevents errors but is far slower than fitting in memory.",
+        "$facet runs several sub-pipelines over the same input in one pass — but each sub-pipeline sees the faceted input, and only the stages BEFORE $facet can use an index.",
+        "$merge / $out write pipeline results to a collection; $out replaces, $merge upserts incrementally — the basis of materialized views and on-demand rollups.",
+        "Hint: aggregate(pipeline, { hint: 'idx_name' }) forces an index when the planner picks badly."
+      ]
+    },
+    {
+      "title": "9. Common Mistakes and Their Fixes",
+      "points": [
+        "Mistake: $match placed after $group when it could have run first. Fix: split the predicate; filter raw fields early, derived fields late.",
+        "Mistake: $unwind before $match, fanning out documents that get thrown away. Fix: filter first, unwind second.",
+        "Mistake: $lookup with no index on foreignField. Symptom: COLLSCAN inside the lookup's plan, latency proportional to foreign collection size. Fix: createIndex on the foreign key.",
+        "Mistake: $unwind without preserveNullAndEmptyArrays, silently deleting documents with empty arrays. Fix: set it to true whenever a missing array is meaningful.",
+        "Mistake: $push on a high-cardinality group, blowing the 16 MB document cap ('BSONObjectTooLarge'). Fix: $push only the fields you need, or $limit/$topN.",
+        "Mistake: $skip-based deep pagination. Fix: range pagination on an indexed, unique-ish sort key.",
+        "Mistake: $sort without a following $limit when you only need the top few. Fix: pair them so the top-N optimization applies.",
+        "Mistake: $expr comparisons in a leading $match, defeating the index. Fix: denormalize the compared value into a stored field at write time.",
+        "Mistake: ObjectId-vs-string type mismatch in a join key, producing silently empty results. Fix: normalize types, or $toObjectId in the lookup pipeline.",
+        "Mistake: assuming $group preserves order. It does not — $first/$last are meaningless without a prior $sort.",
+        "Mistake: computing over an array with $unwind + $group when $filter/$reduce/$sum would do it in place with no fan-out.",
+        "Mistake: relying on allowDiskUse to paper over an unindexed pipeline — it converts an error into a slow query, not into a fast one.",
+        "Mistake: leaving a wide $project of all fields in place; it costs BSON serialization for data you discard downstream.",
+        "Mistake: $regex on an unanchored pattern in a leading $match — only left-anchored /^abc/ patterns can use an index prefix.",
+        "Mistake: running the same expensive aggregation per request. Fix: $merge into a rollup collection on a schedule and query that.",
+        "Diagnostic habit: for any slow pipeline, first check totalDocsExamined, then look for a blocking SORT, then look inside $lookup."
+      ]
+    },
+    {
+      "title": "10. Cheat Sheet and Summary",
+      "points": [
+        "Stage table — $match: filter, streaming, index-eligible only at the front.",
+        "$project / $addFields / $set / $unset: reshape, streaming, no index use, shrinks or grows document size.",
+        "$group: aggregate, BLOCKING, memory ∝ distinct group count, drops all unnamed fields.",
+        "$sort: order, blocking unless index-served, 100 MB cap, top-N optimized when followed by $limit.",
+        "$limit / $skip: bound the stream; skip is O(skip), limit is the cheapest optimization you own.",
+        "$unwind: fan out one document per array element, streaming but multiplies downstream work.",
+        "$lookup: left outer join, needs an index on the foreign field, result is always an array.",
+        "$facet / $bucket / $bucketAuto: multiple aggregations or histograms in a single pass over the input.",
+        "$out / $merge: write results to a collection; must be the last stage.",
+        "SQL mapping: WHERE = $match, GROUP BY = $group._id, HAVING = $match after $group, SELECT = $project, JOIN = $lookup, ORDER BY = $sort, LIMIT = $limit, UNION ALL = $unionWith.",
+        "Memory limits to memorize: 16 MB per document, 100 MB per blocking stage, allowDiskUse to spill.",
+        "The one-line rule: everything an index can do for you happens in the stages before the first stage that changes the shape or the count of the documents.",
+        "Checklist before shipping a pipeline: leading $match indexed? $limit as early as legal? $unwind as late as legal? foreignField indexed? explain shows no unexpected COLLSCAN or SORT?",
+        "Full worked pipeline: [{$match:{status:'paid', date:{$gte:start}}}, {$project:{custId:1, items:1}}, {$unwind:'$items'}, {$lookup:{from:'products', localField:'items.sku', foreignField:'sku', as:'p'}}, {$unwind:{path:'$p', preserveNullAndEmptyArrays:true}}, {$group:{_id:'$p.category', revenue:{$sum:{$multiply:['$items.qty','$items.price']}}}}, {$sort:{revenue:-1}}, {$limit:10}].",
+        "Where to go next: $setWindowFields for time series, $graphLookup for hierarchies, change streams for incremental rollups, and the Atlas $search stage for text relevance."
+      ]
+    }
+  ]
+}

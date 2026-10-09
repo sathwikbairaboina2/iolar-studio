@@ -1,0 +1,470 @@
+{
+  "brand": "iolar",
+  "template": "margin-qa",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES FIELD HANDBOOK — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Failover & High Availability",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Split Brain"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two nodes both accepting writes after a partition.",
+            "Worse than downtime; the merge is manual and lossy.",
+            "Fencing or STONITH prevents it. Nothing repairs it cleanly.",
+            "Quorum defends: odd voting members plus a witness.",
+            "A minority partition must demote itself, never promote."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Who Decides"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Postgres ships no automatic failover at all.",
+            "Patroni on etcd or Consul is the de-facto standard.",
+            "repmgr or a cloud control plane are the alternatives.",
+            "Each node holds a DCS leader key with a TTL.",
+            "Lose the key: demote. Hold it: renew. The DCS arbitrates."
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "node health",
+              "DCS leader key",
+              "TTL expires",
+              "promote",
+              "clients re-route"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Rejoining The Old Primary"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "pg_rewind --target-pgdata=/data \\",
+            "  --source-server='host=newleader'",
+            "# needs wal_log_hints=on or data checksums",
+            "# and a clean shutdown of the target node"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Never just restart an old primary; fence it first.",
+            "`pg_rewind` resyncs a diverged node without a base backup.",
+            "Surviving standbys: re-point `primary_conninfo` at the leader.",
+            "PG12+ can follow across a timeline switch on restart."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Client re-routing options",
+          "items": [
+            "VIP handover, or HAProxy checking `pg_is_in_recovery()`.",
+            "A service DNS record with a short TTL.",
+            "libpq multi-host with `target_session_attrs`."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rehearse on a schedule",
+          "text": "The failover you have never tested is the failover that discovers your `pg_hba.conf` has no line for the new node."
+        },
+        {
+          "type": "heading",
+          "text": "One-Line Verdicts",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choice",
+            "The take"
+          ],
+          "rows": [
+            [
+              "Physical",
+              "byte-exact, whole cluster, cheap"
+            ],
+            [
+              "Logical",
+              "selective, cross-version, CPU"
+            ],
+            [
+              "Sync",
+              "RPO 0, one RTT per commit"
+            ],
+            [
+              "Async",
+              "low latency, loss window"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Trade-offs, Tuning & Comparisons",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Slots guarantee retention and risk a full disk.",
+            "`wal_keep_size` is best-effort and risks a broken replica.",
+            "`max_slot_wal_keep_size` is the middle ground.",
+            "Streaming is low-latency; archive recovery is the batch fallback."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cutting WAL Volume"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fewer, larger checkpoints, and `wal_compression` on FPIs.",
+            "UNLOGGED tables for scratch data: no WAL at all.",
+            "Avoid blanket UPDATEs of unchanged columns.",
+            "Lower `fillfactor` to earn HOT updates."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "UNLOGGED is a trapdoor",
+          "text": "Fast because nothing is logged: truncated on crash and never present on any replica. Scratch data only."
+        },
+        {
+          "type": "heading",
+          "text": "Sizing pg_wal"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`max_wal_size` + `wal_keep_size` + slot slack + archive backlog.",
+            "Give it its own volume when I/O actually matters.",
+            "`wal_level = minimal` unlocks COPY tricks, forbids replication and PITR.",
+            "Almost never worth it on a production cluster."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What Costs What"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each walsender is a process plus a network stream.",
+            "Beyond a handful of replicas, cascade instead of fanning out.",
+            "An async replica is a full hardware copy for zero write gain.",
+            "Justify it with reads, DR, or backup offload."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Latency Stack"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "local fsync",
+              "network RTT",
+              "standby fsync",
+              "standby replay"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Measure each with `write_lag`, `flush_lag`, `replay_lag`.",
+            "Blame the network only once the numbers say so.",
+            "One 50 GB DELETE spikes WAL and stalls logical decoding.",
+            "Batch big transactions or every replica lags behind them."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Trade-offs, Tuning & Comparisons (cont.)",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Write scaling is elsewhere",
+          "items": [
+            "Streaming replication scales reads, full stop.",
+            "Citus, BDR, pglogical for sharding or multi-master.",
+            "Picking one is a product decision, not a GUC."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Consistency model",
+          "text": "Single primary plus physical replication: strong on the primary, eventual on replicas, monotonic within any one replica."
+        },
+        {
+          "type": "heading",
+          "text": "Storage Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stale slot after decommissioning a replica: `pg_wal` fills, primary PANICs.",
+            "`archive_command` returning 0 on failure: PITR silently impossible.",
+            "No alert on `wal_status = 'lost'`: that consumer needs a rebuild.",
+            "`pg_basebackup` with no `-X stream` and no slot on a busy primary."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Availability Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One sync standby under `FIRST 1`: its reboot hangs every commit.",
+            "Assuming a replica is caught up before you promote it.",
+            "Restarting an old primary after failover: split brain. Fence first.",
+            "`max_standby_streaming_delay = -1`: one analyst stalls DR replay."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Logical Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A table with no primary key: replica-identity error on UPDATE.",
+            "DDL applied only on the publisher: the apply worker stalls.",
+            "`hot_standby_feedback` plus idle-in-transaction: bloat and wraparound."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Check before you promote",
+          "text": "Compare `pg_last_wal_replay_lsn()` on the standby against the primary's `pg_current_wal_lsn()`. Bytes behind is the data you are about to lose."
+        },
+        {
+          "type": "heading",
+          "text": "Checklist Query One: Lag"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT application_name, state, sync_state,",
+            "  pg_wal_lsn_diff(pg_current_wal_lsn(),",
+            "                  replay_lsn) AS bytes",
+            "FROM pg_stat_replication;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Checklist Query Two: Slots"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT slot_name, active, wal_status,",
+            "  pg_size_pretty(pg_wal_lsn_diff(",
+            "    pg_current_wal_lsn(), restart_lsn))",
+            "FROM pg_replication_slots;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Checklist Query Three: Disk"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pg_size_pretty(sum(size))",
+            "FROM pg_ls_waldir();",
+            "-- alert long before the volume fills"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Segments are 16 MB, so file count times 16 is the size.",
+            "Alert on a threshold, never on 100% full.",
+            "`pg_wal` growth is the signal that precedes the PANIC."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Common Mistakes & Field Checklist",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Alert set to ship day one",
+          "items": [
+            "Replica lag, in bytes and in seconds.",
+            "Slot retained WAL plus `wal_status`.",
+            "`pg_stat_archiver` failure count.",
+            "`pg_wal` directory size on disk."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Checkpoint Health"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT checkpoints_timed, checkpoints_req",
+            "FROM pg_stat_checkpointer;  -- PG17+",
+            "-- pg_stat_bgwriter on older versions"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A high requested ratio means `max_wal_size` is too small.",
+            "Raising `checkpoint_timeout` cuts full-page-write volume.",
+            "`checkpoint_completion_target` spreads the flush, not the work."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Symptom To Suspect",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "First suspect"
+          ],
+          "rows": [
+            [
+              "pg_wal growing",
+              "inactive slot"
+            ],
+            [
+              "PITR impossible",
+              "archive_command"
+            ],
+            [
+              "commits hang",
+              "sync standby"
+            ],
+            [
+              "apply stalled",
+              "missing DDL"
+            ],
+            [
+              "UPDATE fails",
+              "replica identity"
+            ],
+            [
+              "replica lags",
+              "single-threaded replay"
+            ]
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Disk at 98%, pg_wal enormous, primary about to die?",
+          "a_bullets": [
+            "Check `pg_replication_slots` for an inactive slot first.",
+            "Drop it if that consumer is truly gone; space frees at checkpoint.",
+            "Then check `pg_stat_archiver.failed_count` for a broken archive."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Common Mistakes & Field Checklist (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Worked Example: Slot Triage"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT slot_name FROM pg_replication_slots",
+            "  WHERE NOT active;",
+            "-- old_replica2",
+            "SELECT pg_drop_replication_slot('old_replica2');",
+            "CHECKPOINT;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An active slot cannot be dropped: stop the consumer first.",
+            "Space returns only after the next checkpoint recycles segments.",
+            "Set `max_slot_wal_keep_size` so the next one caps itself."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Tip: bound the blast radius",
+          "text": "`max_slot_wal_keep_size` turns an unbounded outage into a bounded loss: the slot is invalidated as `wal_status = 'lost'` and that consumer rebuilds."
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The whole handbook in one line",
+          "text": "WAL is the ledger: fsync it before the page, stream it to somebody else, and never let a forgotten slot or a broken archive fill the disk."
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of POSTGRES FIELD HANDBOOK. Most Postgres outages are not the query planner — they are a forgotten replication slot quietly eating the disk until the primary PANICs. This handbook walks the whole durability path: WAL records and LSNs, checkpoints and full-page writes, streaming replicas, the five synchronous_commit levels, slots, logical decoding, recovery conflicts, and failover without split brain. Ten pages of field notes, including the three checklist queries worth pinning above your monitor.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#database",
+      "#replication",
+      "#backend",
+      "#sre",
+      "#devops",
+      "#dataengineering",
+      "#systemdesign",
+      "#sql",
+      "#highavailability",
+      "#databaseadministration"
+    ]
+  }
+}

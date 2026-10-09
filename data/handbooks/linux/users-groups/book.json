@@ -1,0 +1,176 @@
+{
+  "title": "Linux Identity: Users, Groups, sudo & PAM — The Dense-Notes Handbook",
+  "summary": "A page-by-page deep dive into how Linux represents and controls identity: UID/GID internals, /etc/passwd and /etc/shadow anatomy, the user and group lifecycle commands, file ownership mechanics, sudoers policy writing, and how PAM actually authenticates you — with the gotchas and hardening habits a sysadmin needs.",
+  "chapters": [
+    {
+      "title": "Identity Fundamentals: UIDs Before Usernames",
+      "points": [
+        "A Linux 'user' is a numeric UID the kernel tracks per process; usernames are only human-readable labels mapped back via NSS (getent)",
+        "Every process inherits a UID + GID set from its parent; login programs (sshd, getty) are the trust root that assigns identity at session start",
+        "UID 0 = root, the only true superuser: kernel permission checks short-circuit for UID 0 (CAP_DAC_OVERRIDE and friends)",
+        "Real UID vs effective UID vs saved set-UID: euid is what permission checks use, ruid is who launched the process",
+        "SUID bit on a binary (e.g. /usr/bin/passwd) sets euid = file owner at exec — this is how passwd edits /etc/shadow as root",
+        "System accounts: UIDs 1-999, shell /usr/sbin/nologin or /bin/false, own daemons and their files, never log in interactively",
+        "Regular users: UID >= 1000 by default; the boundary is configurable via UID_MIN / UID_MAX in /etc/login.defs",
+        "A group is a GID; each user gets one primary group plus any number of supplementary groups, resolved at login time",
+        "Files store numeric uid/gid in the inode — displayed names are a lookup; when no matching entry exists ls prints bare numbers",
+        "Deleting a user never touches their files: orphans keep the old UID until the UID is reused and the new owner silently inherits them",
+        "Why identity matters: file permissions, kill signals, disk quotas, and audit logs all key off UID/GID, not names",
+        "Quick probes: id (uid, gid, groups), whoami (effective user name), getent passwd <name> (NSS-aware lookup)"
+      ]
+    },
+    {
+      "title": "/etc/passwd Field by Field",
+      "points": [
+        "Format: 7 colon-separated fields — name:x:UID:GID:GECOS:home:shell; annotate a real line as the worked example",
+        "Field 2 is 'x': a pointer meaning the password hash lives in /etc/shadow; a * or ! here means no password login is possible",
+        "GECOS field: comma-separated comment (Full Name, Room, Work phone, Home phone), edited with chfn, shown by finger-style tools",
+        "Home directory is only a default cwd, not enforced by the kernel; useradd -m is what actually creates it by copying /etc/skel",
+        "Shell field decides login behavior: /bin/bash (normal), /usr/sbin/nologin (refuses with a message), /bin/false (silent failure) — nologin is friendlier for debugging",
+        "UID conventions: 0 = root, 1-99 static system, 100-999 dynamic system, 1000+ humans (distro-dependent — check login.defs)",
+        "passwd must stay world-readable (644): glibc/NSS needs it to map UID to name for ls, ps, etc. — exactly why the hash was split out to shadow",
+        "Usernames should be unique; UIDs may legally repeat (alias accounts) but it wrecks auditing and chown — avoid it",
+        "getent passwd reads NSS, not the file: with SSSD or LDAP, accounts exist that grep /etc/passwd will never show",
+        "/etc/nsswitch.conf passwd: line orders the sources (files, systemd, ldap, sss); first match wins for each lookup",
+        "Never hand-edit with a plain editor: use vipw (takes a lock, sanity-checks) or usermod",
+        "A corrupted /etc/passwd breaks all local login: keep a backup and a root shell open before bulk changes"
+      ]
+    },
+    {
+      "title": "/etc/shadow & Password Hashes",
+      "points": [
+        "Permissions are 000 or 0400, root-only — it holds password material, unlike world-readable /etc/passwd",
+        "9 fields: name:$hash:lastchg:min:max:warn:inactive:expire: (trailing reserved field); annotate a real entry as the example",
+        "Hash format $id$salt$hash where id 1 = MD5, 5 = SHA-256, 6 = SHA-512, y = yescrypt, 2b = bcrypt — prefer yescrypt or SHA-512 today",
+        "The salt is a random per-password value mixed into the hash so identical passwords hash differently — this kills rainbow-table attacks",
+        "lastchg = days since 1970-01-01 of the last password change; setting it to 0 forces a change at next login",
+        "Aging fields: min (days between changes), max (password validity), warn (warning window), inactive (grace before lock), expire (absolute account kill date)",
+        "chage -l user prints the whole policy; chage -d 0 user forces a reset; chage -M 90 -W 7 sets a 90-day password with 7-day warning",
+        "An empty hash field means passwordless login — catastrophic on any account with a real shell",
+        "! prefix = account locked (passwd -l, usermod -L); a bare * means no password can ever match — standard for system accounts",
+        "passwd -S user gives one-line status: P (password set), L (locked), NP (no password)",
+        "Hash cost is deliberately slow: yescrypt / SHA-512 round counts tune brute-force expense — the trade-off is slightly slower logins too",
+        "Algorithm migrations (e.g. to yescrypt) leave old hashes valid until each user next changes their password — no forced cutover"
+      ]
+    },
+    {
+      "title": "Groups: Primary vs Supplementary",
+      "points": [
+        "/etc/group format: 4 fields — name:x:GID:comma-separated member list; the x points to /etc/gshadow",
+        "Primary group comes from /etc/passwd field 4: it is the default owning group of newly created files and shows as gid= in id",
+        "Supplementary groups come from the member lists in /etc/group (or the user's -G list): extra access rights, shown in groups= of id",
+        "Membership is snapshotted at login: usermod -aG docker alice does nothing for her current session — she must re-login or use newgrp",
+        "usermod -aG appends; forgetting -a replaces ALL supplementary groups with the one listed — the classic footgun",
+        "newgrp docker opens a subshell with docker as primary group — lets you test group access without logging out and back in",
+        "SGID bit on a shared directory makes new files inherit the directory's group — the standard team-workspace pattern",
+        "wheel (RHEL/Fedora) and sudo (Debian/Ubuntu) are the conventional 'may run sudo' groups — which one is honored is decided in sudoers, not the name",
+        "/etc/gshadow holds group password, admins and members; a group password would let outsiders newgrp in — normally left disabled",
+        "gpasswd -a / -d manage members; groupmod -n renames keeping the GID; groupdel refuses while the group is anyone's primary",
+        "Files keep the numeric GID forever: rename or delete a group and files keep working; ls only shows raw numbers when no name matches",
+        "Inspect real memberships with getent group <name> and id -Gn user — both are NSS-aware, unlike grepping the raw file"
+      ]
+    },
+    {
+      "title": "User Lifecycle: useradd, usermod, userdel",
+      "points": [
+        "useradd is the low-level, portable tool; adduser on Debian is an interactive wrapper — on RHEL adduser is just a symlink to useradd",
+        "useradd pulls defaults from /etc/default/useradd (shell, home base, skel) and /etc/login.defs (UID ranges, password aging)",
+        "Full-options example: useradd -m -s /bin/bash -c 'Ann' -G wheel,docker -e 2026-12-31 ann",
+        "-m copies /etc/skel (.bashrc, .profile) into the new home; without it you get a homeless user and a broken-looking prompt",
+        "useradd -r creates a system account: low UID, no password aging, no home by default — use it for service identities, not people",
+        "usermod essentials: -s shell, -L / -U lock and unlock, -d /new/home -m moves the home with contents, -l renames the account (not the directory!)",
+        "userdel removes passwd/shadow/group entries; -r also deletes home and mail spool — without -r, everything lingers behind",
+        "UID reuse trap: after userdel, a newly created user with that UID inherits all the old orphaned files — audit with find before reusing",
+        "Root sets any password with passwd alice; passwd -e alice expires it so the user must change it at first login",
+        "Offboarding options compared: lock (reversible), nologin shell (blocks interactive only), userdel (destructive) — prefer lock plus archive",
+        "Verify every change: id ann, getent passwd ann, ls -ld /home/ann, lastlog ann",
+        "In scripts, check proposed UIDs with getent passwd <uid> before useradd -u to dodge collisions on systems sharing LDAP/NIS"
+      ]
+    },
+    {
+      "title": "chown, chgrp & Owning Files as a Group",
+      "points": [
+        "ls -l resolves the inode's uid/gid to names only at display time; chown user:group file sets owner, group, or both",
+        "Variants: chown alice f (owner), chown :devs f (group), chown alice:devs f (both), chown 1001:1002 f (numeric — bypasses name lookup)",
+        "chgrp devs f works on your own files only if devs is one of your groups; changing the owner to someone else requires root",
+        "Why only root can give files away: chown would otherwise dodge quotas and forge audit attribution — a deliberate kernel-level restriction",
+        "chown and chgrp silently clear SUID/SGID bits on the target — a security feature; re-set them deliberately if truly needed",
+        "Recursive ownership: chown -R alice:devs /srv/project — verify the path first; -h affects symlinks themselves, -H / -L control traversal",
+        "Shared-dir recipe: mkdir /srv/team && chgrp devs /srv/team && chmod 2770 /srv/team — SGID (2) plus group rwx, nothing for others",
+        "Sticky bit (chmod +t) on shared dirs: users can delete only their own files — this is why /tmp is mode 1777",
+        "Orphan hunting: find / -nouser -o -nogroup lists files whose uid/gid match no account — the debris of deleted users",
+        "mv preserves ownership (inode rename within a filesystem); cp creates a new file owned by the copier — the source of most 'permission surprise' bugs",
+        "umask 022 vs 002: Debian's 002 (group-writable) pairs with per-user private primary groups (userprivategroups scheme) to stay safe",
+        "Debug with numbers: ls -ln and stat -c '%U %G %u %g %n' f — trust stat when name resolution is confusing you"
+      ]
+    },
+    {
+      "title": "sudoers: Granting Precise Root Powers",
+      "points": [
+        "sudo runs a command as another user per policy defined in /etc/sudoers plus drop-ins in /etc/sudoers.d/ (included via @includedir)",
+        "Edit only through visudo: it locks the file, writes atomically, and parses before saving — a bare-editor typo locks every admin out",
+        "Entry grammar: who where=(as_whom) what — e.g. alice ALL=(ALL:ALL) /usr/bin/systemctl restart nginx",
+        "%group targets a Unix group (%wheel), +name a netgroup; User_Alias, Host_Alias, Cmnd_Alias bundle reusable chunks",
+        "Tags: NOPASSWD: (skip password prompt), NOEXEC: (block exec from within), SETENV:; example: %devs ALL=(root) NOPASSWD: /usr/bin/journalctl",
+        "Commands match as exact strings: /usr/bin/systemctl restart nginx is not systemctl restart nginx.service and not bare systemctl — users must type it precisely",
+        "Wildcards are dangerous: a Cmnd_Alias like /usr/bin/find * lets args such as -exec /bin/sh escape — review every wildcard adversarially",
+        "Order matters: later matching lines win, so put specific grants AFTER broad ones — an early !negation is silently overridden by a later ALL",
+        "Hardening Defaults: env_reset, secure_path, timestamp_timeout=15, passwd_timeout, !visiblepw",
+        "sudo -l lists your effective grants; sudo -u www-data cmd targets a non-root user; sudo -i is a root login shell, -s a plain root shell",
+        "sudoers.d etiquette: one drop-in per role (e.g. 10-devops), never edit the base file — package upgrades may overwrite it",
+        "Every sudo invocation is logged with user, tty, and command line to journal/syslog — the audit trail is the entire point over shared root",
+        "Lockout recovery: keep a root shell open while editing; rescue by booting with init=/bin/bash and validating with visudo -cf /etc/sudoers"
+      ]
+    },
+    {
+      "title": "sudo vs su: Picking Your Escalation Model",
+      "points": [
+        "su switches the whole identity to a target (usually root) after typing the target's password — you get an unrestricted shell, not a command",
+        "sudo asks for your own password and runs one whitelisted command — root's password stays known only to root",
+        "Accountability: su logs only that someone su'd; sudo logs alice -> root -> exact command with timestamp — audits point at people",
+        "Least privilege: grant /usr/bin/systemctl restart nginx rather than ALL — the blast radius of a hijacked session shrinks accordingly",
+        "sudo -i vs su -: both spawn login shells, but sudo still records who ran it and applies env_reset + secure_path for a predictable root PATH",
+        "%wheel ALL=(ALL:ALL) ALL vs per-user lines: group membership means less file churn; individual entries give finer revocation and audit",
+        "Shell-escape trap: sudo vim/less/find/awk all can spawn a root shell (:!sh, !command), so any such grant equals ALL — use sudoedit and NOEXEC",
+        "sudoedit (sudo -e) copies the file to a temp, edits as you, then checks it back in as root — the safe substitute for sudo vim /etc/ssh/sshd_config",
+        "setuid binaries are implicit sudo: find / -perm -4000 -type f audits every fixed escalation path baked into the box",
+        "polkit vs sudo: polkit authorizes per-action desktop/systemd requests over D-Bus; sudo authorizes shell commands — they complement, not compete",
+        "The trade-off dial: NOPASSWD convenience vs compromise risk (stolen unlocked session = instant root); timestamp caching trims prompts without removing them"
+      ]
+    },
+    {
+      "title": "PAM: How Login Actually Checks You",
+      "points": [
+        "PAM = Pluggable Authentication Modules: apps (sshd, sudo, login, passwd) ask 'authenticate this user' without knowing the mechanism",
+        "Per-service config: /etc/pam.d/sshd, /etc/pam.d/sudo, ... — each line is module type + control flag + module path + args, and order is execution order",
+        "Four module types: auth (prove identity: passwords, OTP), account (is the account usable: expiry, time of day), password (change credentials), session (setup/teardown: limits, env, logging)",
+        "Control flags: required (must pass but stack continues), requisite (fail = stop immediately), sufficient (pass = enough if no required failure so far), optional (advisory only)",
+        "include pulls another file's stack wholesale (common-auth); substack does the same but isolates error codes and result handling",
+        "The verdict is the aggregate of the whole stack: one required failure dooms the login even if every later line succeeds",
+        "pam_unix does the classic /etc/passwd + /etc/shadow check (nullok permits empty passwords — usually a bad idea); pam_pwquality enforces strength on change",
+        "pam_faillock (successor to pam_tally2): lock an account after N failures — deny=5 unlock_time=900 in /etc/security/faillock.conf",
+        "Supporting cast: pam_limits applies ulimits from /etc/security/limits.conf (nofile, nproc); pam_env injects variables; pam_systemd registers the logind session",
+        "Two-factor pattern: stack pam_unix required + pam_google_authenticator required = password AND OTP both mandatory",
+        "pam_nologin: if /etc/nologin exists only root may log in — the standard maintenance-mode switch",
+        "PAM edits can lock out every user at once: always keep a second session open, test with su - user, and on Debian configure via pam-auth-update profiles"
+      ]
+    },
+    {
+      "title": "Common Mistakes, Hardening & The Mental Model",
+      "points": [
+        "Editing /etc/passwd or /etc/shadow in a plain editor: one stray colon bricks local login — vipw and vigr only, always",
+        "usermod -G devs alice without -a silently erases every other supplementary group — follow with id alice to confirm",
+        "Broad 'ALL + NOPASSWD' granted 'just temporarily' becoming permanent: write the narrow Cmnd_Alias from day one instead",
+        "Sudoers path and wildcard mistakes: allowing /tmp/* scripts, relative command names, or !negations that later ALL lines override — absolute paths always",
+        "Expecting group changes in an active session: re-login or newgrp — scripts passing on your shell can fail in CI and cron where groups differ",
+        "UID reuse after userdel: the next user inherits the old files — archive the home and run find / -nouser before reusing a UID",
+        "/etc/shadow left group- or world-readable after a restore: ls -l /etc/shadow must show -rw------- or stricter — check after every backup restore",
+        "Offboarding by deletion destroys audit history: lock the account, set chage -E 0, archive the home — do not userdel leavers",
+        "Hardening kit: pam_pwquality minlen/rules, pam_faillock thresholds, chage max days, short sudo timestamp_timeout, wheel-only sudo, periodic sudo log review",
+        "Commands to memorize: id, getent passwd/group, sudo -l, chage -l, find / -perm -4000, find / -nouser -o -nogroup",
+        "The whole chain in one line: NSS maps names to IDs, files and inodes store raw uid+gid, PAM authenticates, sudo authorizes — and the kernel only ever compares numbers",
+        "Closing checklist: new user = useradd -m + passwd -e + -aG groups; shared dir = chgrp + chmod 2770; new grant = sudoers.d drop-in via visudo; leaver = lock + archive"
+      ]
+    }
+  ]
+}

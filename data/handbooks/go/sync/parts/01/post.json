@@ -1,0 +1,1610 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "GO SYNC UNLOCKED",
+  "date": "14/09/2026",
+  "slides": [
+    {
+      "page_title": "Goroutines, Shared State & Data Races",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Default Hazard",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Goroutines cost ~2 KB of stack; the scheduler multiplexes many onto a few OS threads. Concurrent access to shared memory is the default hazard."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "go f()",
+              "run queue",
+              "OS threads",
+              "shared var"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var counter int",
+            "for i := 0; i < 1000; i++ {",
+            "    go func() { counter++ }()",
+            "}",
+            "// final < 1000, varies per run"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Race = same address, concurrent",
+            "At least one access is a write",
+            "No synchronization orders them",
+            "Result: undefined behavior"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Torn & Lost",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "counter++ interleaves",
+            "cells": [
+              "G1: load 998",
+              "G1: add +1",
+              "G2: store 998",
+              "G1: store 999"
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "UB Symptoms",
+          "items": [
+            "torn reads",
+            "lost updates",
+            "corrupted maps",
+            "crashes — or code that looks right"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Critical Sections",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Critical section = code touching shared state",
+            "Mutual exclusion: ≤1 goroutine inside",
+            "Races happen even at GOMAXPROCS=1"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "cure the race",
+            "branches": [
+              {
+                "label": "sync.Mutex",
+                "children": [
+                  "exclusion"
+                ]
+              },
+              {
+                "label": "sync/atomic",
+                "children": [
+                  "one word"
+                ]
+              },
+              {
+                "label": "channel",
+                "children": [
+                  "ownership"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Happens-Before Teaser",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`go f()` happens before f runs",
+            "A goroutine's exit creates NO edge",
+            "Others can't see results without sync"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Who Catches Races?",
+          "items": [
+            "compiler: no",
+            "`go vet`: no",
+            "`-race`: yes",
+            "executed paths only"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One owner goroutine: no locks needed",
+            "Shared? Choose a primitive deliberately",
+            "Every shared access needs one cure"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Vocabulary",
+          "text": "Mutual exclusion, critical section, happens-before, torn read, lost update — know these cold."
+        },
+        {
+          "type": "heading",
+          "text": "Zero Value Works",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Lock()` acquires, `Unlock()` releases",
+            "Zero value: unlocked, ready to use",
+            "No constructor, no init call"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "func (c *Cache) Set(k string, v Entry) {",
+            "    c.mu.Lock() // exclusive",
+            "    defer c.mu.Unlock()",
+            "    c.m[k] = v",
+            "}"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "sync.Mutex — The Workhorse Lock",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var mu sync.Mutex // zero = ready",
+            "mu.Lock()",
+            "defer mu.Unlock() // panic-safe",
+            "// tiny critical section"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Idiom: `mu.Lock(); defer mu.Unlock()`",
+            "Defer survives early returns + panics",
+            "Tiny overhead — almost always worth it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Under the Hood",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Part",
+            "Behavior"
+          ],
+          "rows": [
+            [
+              "fast path",
+              "one atomic CAS"
+            ],
+            [
+              "slow path",
+              "park on sema"
+            ],
+            [
+              "uncontended",
+              "tens of ns"
+            ],
+            [
+              "starvation mode",
+              "1 ms fairness"
+            ],
+            [
+              "contended",
+              "parking dominates"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fields: `state int32` + `sema uint32`",
+            "Starvation mode (Go 1.9+): oldest waiter wins",
+            "Throughput traded for bounded latency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keep It Tiny",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "Lock",
+              "copy data",
+              "Unlock",
+              "process"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Never hold across I/O",
+            "Never across channel sends",
+            "Snapshot under lock, work outside"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Traps",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Result"
+          ],
+          "rows": [
+            [
+              "double `Lock`",
+              "self-deadlock"
+            ],
+            [
+              "`Unlock` unlocked",
+              "fatal, unrecoverable"
+            ],
+            [
+              "copy used Mutex",
+              "stale lock state"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Copylocks",
+          "items": [
+            "pass `*T`, not `T`",
+            "value receivers copy too",
+            "`go vet` copylocks catches it"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`TryLock` (Go 1.18): returns bool",
+            "Gives up instead of blocking",
+            "Docs discourage — rare best-effort probes"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "func (a *Acc) Deposit(n int) {",
+            "    a.mu.Lock()",
+            "    defer a.mu.Unlock()",
+            "    a.balance += n // no lost update",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Document Guards",
+          "text": "`mu sync.Mutex // guards balance, history` — group fields under one mutex and name the guard."
+        },
+        {
+          "type": "heading",
+          "text": "Two Halves",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Read half",
+              "items": [
+                "N parallel readers",
+                "`RLock` / `RUnlock`",
+                "cheap path"
+              ]
+            },
+            "right": {
+              "title": "Write half",
+              "items": [
+                "one writer only",
+                "`Lock` / `Unlock`",
+                "blocks all readers"
+              ]
+            }
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`RLock`/`RUnlock` for reads",
+            "`Lock`/`Unlock` for writes",
+            "`RLocker()` → read side as `sync.Locker`"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "sync.RWMutex — Many Readers, One Writer",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Writer-First Internals",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Writer flips `readerCount` negative",
+            "New RLocks queue behind it",
+            "Writers are not starved"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Scenario",
+            "Outcome"
+          ],
+          "rows": [
+            [
+              "`Lock` inside `RLock`",
+              "self-deadlock"
+            ],
+            [
+              "nested RLock + writer",
+              "deadlock"
+            ],
+            [
+              "callback takes Lock",
+              "instant deadlock"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No upgrade, no downgrade",
+            "Release first, then reacquire",
+            "Nested helper that RLocks = classic trap"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Trust Boundary",
+          "text": "Never call code you don't control while holding RLock — a callback that takes the write lock deadlocks instantly."
+        },
+        {
+          "type": "sidebox",
+          "title": "RWMutex Wins",
+          "items": [
+            "read-mostly data",
+            "caches, config, routing tables",
+            "many reads per rare write"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "It Loses",
+          "items": [
+            "tiny sections",
+            "write-heavy load",
+            "extra atomic bookkeeping — benchmark first"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Readers serialize behind an active writer",
+            "Slow write spikes read latency",
+            "Watch your tail latencies"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Worked Cache",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "func (c *Cache) Get(k string) Entry {",
+            "    c.mu.RLock()",
+            "    defer c.mu.RUnlock()",
+            "    return c.m[k] // parallel reads",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Copying hazard like Mutex — `copylocks` applies",
+            "Struct copies corrupt state",
+            "Measure: `go test -bench` + `benchstat`",
+            "Find your read:write crossover ratio"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Counter + Sema",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Call",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`Add(n)`",
+              "counter += n"
+            ],
+            [
+              "`Done()`",
+              "counter -= 1"
+            ],
+            [
+              "`Wait()`",
+              "blocks to zero"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "64-bit state: counter + waiter count",
+            "Plus a semaphore",
+            "`Done` wakes a parked waiter at exactly zero"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for _, u := range urls {",
+            "    wg.Add(1) // BEFORE go",
+            "    go fetch(u, &wg) // share ptr",
+            "}",
+            "wg.Wait() // unblocks at zero"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Ordering Bug",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Correct",
+              "items": [
+                "`wg.Add(1)` first",
+                "then `go`",
+                "`Wait` sees all"
+              ]
+            },
+            "right": {
+              "title": "Buggy",
+              "items": [
+                "`go` first",
+                "`Add` inside goroutine",
+                "`Wait` returns early"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "sync.WaitGroup — Waiting for Goroutines",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`Add(1)` inside the goroutine races Wait",
+            "Wait may observe zero and return",
+            "Always Add before `go`"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Share by pointer: `&wg`",
+            "Copying copies the counter",
+            "`Done` mutates a useless duplicate — vet flags"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Panic Armor",
+          "text": "`defer wg.Done()` as first statement — a panicking goroutine otherwise leaks a count and Wait hangs forever."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Add` below zero panics",
+            "`negative WaitGroup counter`",
+            "Positive Adds happen before zero",
+            "Never Add during same-generation Wait"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Worker Pool",
+          "ink": "black"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "jobs chan",
+              "N workers",
+              "wg.Wait",
+              "close results"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for w := 1; w <= N; w++ {",
+            "    go worker(jobs, &wg)",
+            "}",
+            "wg.Wait()",
+            "close(results) // safe now"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "No Timeout",
+          "items": [
+            "wrap Wait in a goroutine",
+            "`select` on `ctx.Done()`",
+            "or `errgroup.WithContext`"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "errgroup = WaitGroup shape plus:",
+            "first-error capture + propagation",
+            "ctx cancellation for the whole group"
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Worked example: fetch 20 URLs concurrently, append results under a mutex, `wg.Wait`, then print — this book's recurring skeleton."
+        },
+        {
+          "type": "heading",
+          "text": "Exactly Once",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Do(f)`: f runs exactly once",
+            "Every caller returns after f finished",
+            "Zero value ready — no init"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var once sync.Once",
+            "var db *DB // zero value ready",
+            "once.Do(func() { db = open() })",
+            "return db // all callers waited"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Zero value ready to use",
+            "Separate instances are independent",
+            "One Once is bound to one function"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Inside Once",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fast path: atomic load of `done`",
+            "Slow path: under a mutex",
+            "Textbook double-checked locking, done right"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Point",
+          "text": "Concurrent first callers WAIT for initialization — no racing nil check, no double build."
+        },
+        {
+          "type": "heading",
+          "text": "Lazy Singleton",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cost paid on first use",
+            "vs package `init()`: paid at startup",
+            "Ideal for expensive shared objects"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "sync.Once — Run Exactly Once",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var clientOnce sync.Once",
+            "var client *http.Client",
+            "clientOnce.Do(func() { // 1st req",
+            "    client = newPooledClient()",
+            "})"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Panic Semantics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "f panics → still counted as done",
+            "Later callers skip f entirely",
+            "Only `OnceFunc`/`OnceValue` (1.21) re-panic"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "load := sync.OnceValue(func() Cfg {",
+            "    return readCfg() // panic replay",
+            "})",
+            "c := load() // one real call"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Limits & Traps",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Case",
+            "Result"
+          ],
+          "rows": [
+            [
+              "f re-enters `Do`",
+              "deadlock"
+            ],
+            [
+              "f waits on this Once",
+              "deadlock"
+            ],
+            [
+              "reset a Once",
+              "impossible"
+            ],
+            [
+              "hot-reload config",
+              "`atomic.Value`"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "sync.Once",
+              "items": [
+                "f runs exactly once",
+                "callers block till done"
+              ]
+            },
+            "right": {
+              "title": "atomic.Bool",
+              "items": [
+                "check-then-set races",
+                "needs a CAS loop"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Hardware Ops",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Single indivisible CPU instructions",
+            "`LOCK` prefix (x86), `LDAR/STLR` (arm64)",
+            "No scheduler, no parking"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Op",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "Load",
+              "read atomically"
+            ],
+            [
+              "Store",
+              "write atomically"
+            ],
+            [
+              "Add",
+              "fetch-and-add"
+            ],
+            [
+              "Swap",
+              "replace, return old"
+            ],
+            [
+              "CAS",
+              "swap only if old"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Go 1.19: `atomic.Int64`, `.Bool`, `.Pointer[T]`",
+            "Typed wrappers, safer APIs",
+            "Auto alignment, no raw `&var` misuse"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "CAS: The Atom",
+          "ink": "black"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "for { // optimistic retry",
+            "    o := c.Load()",
+            "    if c.CompareAndSwap(o, o+1) { break }",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Writes `new` only if value == `old`",
+            "Reports success as bool",
+            "Retry loop = optimistic concurrency"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "atomic",
+              "items": [
+                "non-blocking",
+                "one word only",
+                "no waiting semantics"
+              ]
+            },
+            "right": {
+              "title": "Mutex",
+              "items": [
+                "blocks",
+                "any section size",
+                "parks goroutines"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Snapshot Swaps",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var cfg atomic.Pointer[Config]",
+            "cfg.Store(readConfig()) // writer",
+            "c := cfg.Load() // full snapshot"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Hot-Reload",
+          "text": "Swap whole immutable snapshots — readers just `Load`. The canonical config hot-reload pattern."
+        }
+      ]
+    },
+    {
+      "page_title": "sync/atomic — Lock-Free Single Words",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Traps & Costs",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "32-bit: `int64` needs 8-byte alignment",
+            "Bad field order crashes",
+            "Typed wrappers, or put `int64` first"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "type T struct {",
+            "    n atomic.Int64 // aligned",
+            "    b bool // any order safe",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Atomics fix ONE word — invariants need Mutex",
+            "Atomic store → observing load: an edge",
+            "Sequential consistency promised (1.19)",
+            "Uncontended ≈ mutex fast path",
+            "Contended: one cache-line fight — mutex may win"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Spot Check",
+          "items": [
+            "sweet: counters, flags, seqs, ptr swaps",
+            "wrong: multi-field invariants",
+            "wrong: waiting logic",
+            "mixing atomic + plain = still a race"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "One Question",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "When is a write in goroutine A visible to a read in goroutine B? Only when a happens-before edge exists."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "HB = transitive ordering guarantee",
+            "No edge: compiler + CPU may reorder",
+            "Caches may serve stale values"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Edge Catalog",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Event",
+            "Edge"
+          ],
+          "rows": [
+            [
+              "channel send",
+              "before receive ✓"
+            ],
+            [
+              "`mu.Unlock`",
+              "before next `Lock` ✓"
+            ],
+            [
+              "`go f()`",
+              "before f runs ✓"
+            ],
+            [
+              "`wg.Done`",
+              "before `Wait` ✓"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Close → zero-value receive ✓",
+            "`once.Do` return → other Do returns ✓",
+            "Goroutine exit → NO edge"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "a.Store(42) // edge established",
+            "x := a.Load() // sees 42",
+            "// sequential consistency (1.19)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Classic Bug",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "var done bool // plain, shared",
+            "for !done { // load may be hoisted",
+            "} // spins forever"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compiler may hoist the load",
+            "Loop spins forever",
+            "Fix: `atomic.Bool` or a channel"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The Fix",
+          "text": "Races are fixed by an edge — lock, atomic, or channel. Never `time.Sleep`, never luck."
+        },
+        {
+          "type": "heading",
+          "text": "Safe Publish",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "build struct",
+              "send ptr",
+              "receive",
+              "read fields"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "ch := make(chan *Res)",
+            "go func() { ch <- build() }() // writes",
+            "r := <-ch // edge: see ALL fields"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Send edge covers ALL builder writes",
+            "`wg.Done` happens before `Wait` returns",
+            "Results readable after Wait — safe"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "The Go Memory Model & Happens-Before",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "CPU Reality",
+          "items": [
+            "x86 strong model hides bugs",
+            "arm64 exposes them",
+            "code correct per the model",
+            "source: `go.dev/ref/mem`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Turn It On",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "go test -race ./...",
+            "go run -race counter.go",
+            "go build -race # CI only, never prod"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Embeds ThreadSanitizer v2",
+            "Shadow memory + vector clocks",
+            "Every access checked for a missing edge"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reading a Report",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "WARNING: DATA RACE",
+            "  Read at 0x00c0.. by goroutine 7",
+            "  Write at 0x00c0.. by goroutine 8"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two stacks: read vs write",
+            "Plus the shared variable",
+            "Fix BOTH sites, not just the first"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Property",
+            "Truth"
+          ],
+          "rows": [
+            [
+              "false positives",
+              "zero"
+            ],
+            [
+              "false negatives",
+              "many"
+            ],
+            [
+              "coverage",
+              "executed paths only"
+            ],
+            [
+              "overhead",
+              "5–10x mem, 2–20x CPU"
+            ],
+            [
+              "production",
+              "never"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Amplify",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`go test -race -count=100`",
+            "Parallel tests",
+            "Real `GOMAXPROCS`",
+            "Stress the interleavings tests miss"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Won't Find",
+          "items": [
+            "deadlocks",
+            "goroutine leaks",
+            "wrong logic",
+            "`-race` clean can still hang"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "First Finds",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Concurrent map read/write",
+            "`counter++` on a shared int",
+            "Lazy init without Once",
+            "WaitGroup Add/Done misuse",
+            "Unsynchronized bool flags"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Fatal Anyway",
+          "text": "`fatal error: concurrent map writes` kills the program even with `-race` off — the detector also catches subtler near-misses."
+        },
+        {
+          "type": "heading",
+          "text": "Report to Fix",
+          "ink": "black"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "race report",
+              "find shared var",
+              "pick primitive",
+              "re-run -race",
+              "commit"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`-race` sets a build tag",
+            "Gate race-only setup: `//go:build race`",
+            "One run pins both stacks + line numbers"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Choosing the Right Primitive",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Decision Map",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Reach for"
+          ],
+          "rows": [
+            [
+              "multi-field invariant",
+              "Mutex"
+            ],
+            [
+              "read-mostly map",
+              "RWMutex"
+            ],
+            [
+              "one counter/flag",
+              "atomic"
+            ],
+            [
+              "one-time init",
+              "Once"
+            ],
+            [
+              "ownership handoff",
+              "channel"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cost Grid",
+          "ink": "black"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Primitive",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Mutex",
+              "blocks; tens of ns"
+            ],
+            [
+              "atomic",
+              "non-blocking; 1 word"
+            ],
+            [
+              "RWMutex",
+              "readers parallel; overhead"
+            ],
+            [
+              "channel",
+              "~50–100 ns + allocs"
+            ],
+            [
+              "`sync.Map`",
+              "niche only"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Go Philosophy",
+          "text": "'Share memory by communicating' — channels hand ownership between goroutines, so no lock is needed."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Channels aren't free",
+            "Hot path: mutex ring buffer may win",
+            "Benchmark `go test -bench -benchmem`"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`sync.Map` niche: append-only caches",
+            "Or disjoint key sets",
+            "Else `map` + RWMutex: faster, clearer"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sharding",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "key % N",
+            "branches": [
+              {
+                "label": "shard 0",
+                "children": [
+                  "Mutex"
+                ]
+              },
+              {
+                "label": "shard 1",
+                "children": [
+                  "Mutex"
+                ]
+              },
+              {
+                "label": "shard N-1",
+                "children": [
+                  "Mutex"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "N shards, each with its own Mutex",
+            "`key % N` picks the shard",
+            "One global lock → N parallel locks"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Lock Discipline",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Lock across an HTTP call serializes all",
+            "Snapshot under lock, work outside",
+            "Fixed global lock order, or no nesting",
+            "`TryLock`: escape hatch, not design"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Contention Math",
+          "items": [
+            "Mutex latency grows with holders",
+            "Atomics stay parallel across words",
+            "RWMutex readers scale till next writer"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "go",
+          "lines": [
+            "sem := make(chan struct{}, N)",
+            "for _, j := range jobs {",
+            "    sem <- struct{}{} // acquire",
+            "    go func() { work(j); <-sem }()",
+            "}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "qa",
+          "q": "Where do I start?",
+          "a_bullets": [
+            "Simplest correct thing: a Mutex",
+            "Profile with `go test -bench`",
+            "Escalate to atomics/shards only with evidence"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Top-8 Bug Table",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Bug",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "copied lock",
+              "`*T` + `go vet`"
+            ],
+            [
+              "`Add` in goroutine",
+              "`Add` before `go`"
+            ],
+            [
+              "double `Lock`",
+              "restructure code"
+            ],
+            [
+              "unlock unlocked",
+              "fatal — audit paths"
+            ],
+            [
+              "recursive RLock",
+              "release first"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "unaligned `int64` → typed wrapper",
+            "plain-bool spin → `atomic.Bool`",
+            "missing `Done` → defer first line"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Common Mistakes & Closing Summary",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Copied-Lock Deep Dive",
+          "ink": "black"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Value receivers duplicate mutex state",
+            "So does passing the struct by value",
+            "Pointer receivers + `go vet` copylocks"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Panic Leaks",
+          "text": "Defer both, always — one panic skipping `Done` freezes `Wait`; one skipping `Unlock` wedges the lock."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two mutexes guarding one field = race",
+            "One field with no guard = race",
+            "Every shared field: exactly one named guard"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "CI Discipline",
+          "items": [
+            "`-race` clean ≠ correct",
+            "only executed interleavings checked",
+            "`-count=100`, parallel, randomized",
+            "keep them in CI"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "RWMutex-by-default: usually wrong",
+            "No benchmark → plain Mutex is faster",
+            "Don't `recover()` fatal lock errors — fix logic"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Review Checklist",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every shared field names its guard",
+            "Every lock graph is acyclic",
+            "Every goroutine exit observed (Wait/channel)",
+            "Every init is Once or eager"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "go sync",
+            "branches": [
+              {
+                "label": "Mutex / RWMutex",
+                "children": [
+                  "exclusion"
+                ]
+              },
+              {
+                "label": "WaitGroup",
+                "children": [
+                  "lifecycle"
+                ]
+              },
+              {
+                "label": "Once",
+                "children": [
+                  "one-time init"
+                ]
+              },
+              {
+                "label": "atomic",
+                "children": [
+                  "single word"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "All primitives: O(1) per op",
+            "Real cost axis = contention",
+            "Mutex: serialization · atomic: cache line",
+            "RWMutex: readers scale till writer",
+            "Memory model = rules; `-race` = verifier"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Where Next",
+          "items": [
+            "`x/sync`: errgroup, singleflight, semaphore",
+            "`sync.Pool` for alloc reuse",
+            "`sync.Cond` for state waits",
+            "`context` for cancellation"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Final Rule",
+          "text": "Correctness first, measure second, optimize third — and let the race detector watch your back on every commit."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "1000 goroutines, and the counter lands at 987 — this handbook shows why, then fixes it six different ways. Mutex, RWMutex, WaitGroup, Once, atomics, the memory model and `-race`, all in 10 dense handwritten pages. Save it before your next data race.",
+    "hashtags": [
+      "golang",
+      "golangdeveloper",
+      "concurrency",
+      "syncpackage",
+      "mutex",
+      "goroutines",
+      "memorymodel",
+      "racedetector",
+      "atomicoperations",
+      "codingnotes",
+      "studygram",
+      "softwareengineering"
+    ]
+  }
+}

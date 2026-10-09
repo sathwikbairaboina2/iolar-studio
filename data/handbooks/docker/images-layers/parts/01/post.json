@@ -1,0 +1,1150 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "DOCKER IMAGES: LAYERS, CACHE, LEAN BUILDS",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "What an Image Actually Is",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Image = Layers + Config",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "An image is an ordered stack of read-only layers plus a JSON config (env, entrypoint, cmd, workdir, user) and a manifest tying them together. It is addressed by content hash, not by name."
+        },
+        {
+          "type": "heading",
+          "text": "2. The Stack, Bottom Up"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "debian rootfs",
+              "+apt packages",
+              "+app deps",
+              "+app code",
+              "writable layer (CoW)"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Layer Mechanics"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Layer = tar of *changes*, not a full snapshot",
+            "overlay2 merges the stack into one view",
+            "Upper layer shadows lower at the same path",
+            "Delete writes `.wh.<name>`; bytes stay forever",
+            "Same sha256 = stored once, shared across images"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Where Containers Fit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Container = image layers + 1 thin writable layer",
+            "`docker rm` discards only that writable layer",
+            "Copy-on-write: 1-byte edit of a 2GB file copies 2GB up"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Which Hash Is Which"
+        },
+        {
+          "type": "sidebox",
+          "title": "IDs vs Digests",
+          "items": [
+            "Image ID = sha256 of the config JSON",
+            "RepoDigest = sha256 of the pushed manifest",
+            "Tags are mutable: `node:20` today ≠ next week",
+            "Pin `node:20@sha256:...` for reproducibility"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "6. Inspect The Layers"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker history nginx      # size per layer",
+            "docker image inspect nginx \\",
+            "  --format '{{json .RootFS.Layers}}'",
+            "# [\"sha256:9853...\",\"sha256:5f70...\"]"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Deleted ≠ Gone",
+          "text": "`rm` in a later layer only writes a whiteout marker. The original bytes still download with every pull."
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM python:3.12-slim",
+            "COPY --from=build /opt/venv /opt/venv",
+            "ENV PATH=/opt/venv/bin:$PATH",
+            "CMD [\"python\",\"-m\",\"app\"]"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "How the Dockerfile Builds Layers",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. One Instruction, One Layer",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Instruction",
+            "Layer?",
+            "Note"
+          ],
+          "rows": [
+            [
+              "FROM",
+              "parent",
+              "sets base stack"
+            ],
+            [
+              "RUN",
+              "yes",
+              "fresh container"
+            ],
+            [
+              "COPY",
+              "yes",
+              "from context"
+            ],
+            [
+              "ADD",
+              "yes",
+              "auto-untars"
+            ],
+            [
+              "ENV/CMD/WORKDIR",
+              "no",
+              "config only"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Ordering Is Semantic"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`FROM scratch` = empty filesystem, zero layers",
+            "Each step runs against the previous result",
+            "ENV, LABEL, USER, EXPOSE, ARG: metadata only",
+            "Metadata instructions produce zero-byte layers"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. No Shell State Survives"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN cd /app   # dies with the container",
+            "RUN make      # runs in / ✗",
+            "WORKDIR /app  # persisted in config",
+            "RUN make      # runs in /app ✓"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Chain What Depends"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN apt-get update            # ✗ stale",
+            "RUN apt-get install -y curl",
+            "RUN apt-get update && \\",
+            "    apt-get install -y curl  # ✓"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "5. COPY vs ADD"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Prefer COPY; ADD untars locals and fetches URLs",
+            "`COPY --chown=app:app` skips an extra chmod layer",
+            "A later chmod duplicates every file it touches",
+            "Layer count is cheap — the 127-layer limit is gone"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Context Ships First"
+        },
+        {
+          "type": "sidebox",
+          "title": "Build Context",
+          "items": [
+            "Whole dir tarred and sent to the daemon pre-build",
+            "3GB context = 3GB upload even for one COPY",
+            "Context size and image size are separate costs",
+            "BuildKit: DAG, parallel stages, skips unused ones"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Bytes, Not Steps",
+          "text": "Layer count costs nothing meaningful at runtime. Layer content costs everything. Optimize what lands, not how many lines."
+        },
+        {
+          "type": "heading",
+          "text": "1. How The Key Is Built",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Cache key = parent layer digest + this instruction's own key. A miss on one step invalidates every step below it."
+        }
+      ]
+    },
+    {
+      "page_title": "The Build Cache: How It Decides to Reuse",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "2. Key Basis Per Instruction"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Instruction",
+            "Cache key",
+            "Trap"
+          ],
+          "rows": [
+            [
+              "RUN",
+              "literal text",
+              "never re-resolves"
+            ],
+            [
+              "COPY/ADD",
+              "content checksum",
+              "mode + owner count"
+            ],
+            [
+              "ARG/ENV",
+              "value at use",
+              "early ARG, full miss"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Two Consequences"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`RUN apt-get install -y curl` caches forever — stale software",
+            "One source edit rebuilds everything after `COPY . .`",
+            "mtime alone does not bust COPY; content does",
+            "Golden rule: rarest changes first, source last",
+            "Declare a changing ARG just before its use"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. The Manifest Split"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20-alpine",
+            "WORKDIR /app",
+            "COPY package*.json ./  # rare change",
+            "RUN npm ci             # stays cached",
+            "COPY . .               # hot layer, last"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "5. Same Trick, Any Stack"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Stack",
+            "Copy first",
+            "Then run"
+          ],
+          "rows": [
+            [
+              "pip",
+              "requirements.txt",
+              "pip install"
+            ],
+            [
+              "go",
+              "go.mod go.sum",
+              "go mod download"
+            ],
+            [
+              "cargo",
+              "Cargo.toml/.lock",
+              "cargo fetch"
+            ],
+            [
+              "maven",
+              "pom.xml",
+              "dependency:go-offline"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Where The Miss Starts"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "FROM (hit)",
+              "COPY manifest (hit)",
+              "RUN npm ci (hit)",
+              "COPY . . (MISS)",
+              "build + CMD rebuild"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "The Build Cache: How It Decides to Reuse (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "7. Persist Across Builds"
+        },
+        {
+          "type": "sidebox",
+          "title": "BuildKit + CI",
+          "items": [
+            "`RUN --mount=type=cache,target=/root/.npm npm ci`",
+            "Cache mount ships zero bytes into the image",
+            "CI has no local cache — pass `--cache-from` a registry image",
+            "`--cache-to type=registry,mode=max` exports intermediates"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Cache Hit ≠ Fresh",
+          "text": "`--no-cache` rebuilds everything; `--pull` re-fetches a moved base tag. Schedule both so security patches actually land."
+        },
+        {
+          "type": "heading",
+          "text": "1. Many FROMs, One File",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each FROM starts a fresh stage with its own stack",
+            "Name it: `FROM golang:1.22 AS builder`",
+            "Only the final stage's layers ship to the registry",
+            "Compilers, headers, source, build caches: discarded"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Artifact Handoff"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "builder: toolchain + src (900MB)",
+              "go build -o /app",
+              "COPY --from=builder /app",
+              "runtime: distroless (6MB)"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Go Builder Stage"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM golang:1.22 AS builder",
+            "WORKDIR /src",
+            "COPY go.mod go.sum ./",
+            "RUN go mod download",
+            "COPY . ."
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Go Final Stage"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN CGO_ENABLED=0 go build -o /app",
+            "FROM gcr.io/distroless/static",
+            "COPY --from=builder /app /app",
+            "ENTRYPOINT [\"/app\"]  # a few MB total"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "5. Node Split + Targets"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "builder: `npm ci && npm run build`",
+            "runtime: `npm ci --omit=dev`, copy only `dist/`",
+            "Copy from external images: `--from=nginx:alpine`",
+            "`--target=builder` builds up to one named stage",
+            "BuildKit builds only needed stages, in parallel"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Multi-Stage Builds",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Common Stage Layout"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "base",
+              "deps",
+              "builder",
+              "test (CI only)",
+              "runtime"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "7. Why rm Cannot Help"
+        },
+        {
+          "type": "sidebox",
+          "title": "Earlier Layers Are Immutable",
+          "items": [
+            "`RUN make && rm -rf /build-deps` shrinks nothing",
+            "Deps still sit in the layer that created them",
+            "Only a new stage truly drops those bytes",
+            "runtime need not depend on the test stage"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Files, Not Environment",
+          "text": "`COPY --from` carries no ENV, WORKDIR, USER or system packages. A dynamically linked binary in scratch fails 'no such file or directory' — the missing thing is the loader, not your binary."
+        },
+        {
+          "type": "heading",
+          "text": "1. Filter Before Upload",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "The CLI tars the context and ships it to the daemon before instruction one runs. `.dockerignore` decides what enters that tar."
+        },
+        {
+          "type": "heading",
+          "text": "2. What Actually Gets Sent"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "project dir",
+              "strip .git .env node_modules",
+              "context tar",
+              "daemon",
+              "COPY . ."
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Where It Lives, How It Parses"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sits at the context root, not beside the Dockerfile",
+            "BuildKit also honors `<dockerfile-name>.dockerignore`",
+            "Go filepath.Match rules, not gitignore rules",
+            "`*` does not cross `/`; `**` matches any depth",
+            "`#` comments; `!pattern` re-includes; last match wins"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Pattern Reference"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Pattern",
+            "Matches"
+          ],
+          "rows": [
+            [
+              "node_modules",
+              "top level only"
+            ],
+            [
+              "**/node_modules",
+              "any depth"
+            ],
+            [
+              "*.log",
+              "top-level logs"
+            ],
+            [
+              "!keep.log",
+              "re-includes it"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Starter File"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "# secrets + junk, one per line",
+            ".git",
+            "**/node_modules",
+            ".env*",
+            "*.log"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": ".dockerignore and the Build Context",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "6. Allowlist Inversion"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "*                  # deny everything",
+            "!src/",
+            "!package.json",
+            "!package-lock.json # new junk excluded"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "7. Three Separate Wins"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Smaller, faster context upload",
+            "No cache bust from `.git/` or a stray local log",
+            "No `.env`, `*.pem`, `id_rsa`, `.aws/`, `.npmrc` in a layer",
+            "Also drop: dist, build, target, __pycache__, .venv, coverage",
+            "Verify size: `docker build --progress=plain .`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "node_modules Gotcha",
+          "text": "Ignore it and `RUN npm ci` inside the image instead — host-built native modules are the wrong architecture anyway."
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Layers Are Public",
+          "text": "`COPY . .` with no ignore file ships `.git` history and `.env` into a layer. Anyone who pulls can extract them; deleting later does not help."
+        },
+        {
+          "type": "heading",
+          "text": "1. Measure Before Cutting",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker images` for the headline totals",
+            "`docker history --no-trunc <img>` for per-layer size",
+            "`dive <img>` shows wasted bytes and file diffs",
+            "Registry pull cost is what users actually feel"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Base Image Dominates"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Base",
+            "Size",
+            "Use when"
+          ],
+          "rows": [
+            [
+              "scratch",
+              "0MB",
+              "static binary"
+            ],
+            [
+              "distroless",
+              "~2MB",
+              "prod, no shell"
+            ],
+            [
+              "alpine",
+              "~7MB",
+              "musl is fine"
+            ],
+            [
+              "debian-slim",
+              "~75MB",
+              "glibc needed"
+            ],
+            [
+              "debian",
+              "~120MB",
+              "full tooling"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Clean In The Same RUN"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN apt-get update && apt-get install -y \\",
+            "      --no-install-recommends curl \\",
+            " && rm -rf /var/lib/apt/lists/*  # same RUN"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Per-Tool No-Cache Flags"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Flag"
+          ],
+          "rows": [
+            [
+              "apt",
+              "--no-install-recommends"
+            ],
+            [
+              "apk",
+              "--no-cache"
+            ],
+            [
+              "pip",
+              "--no-cache-dir"
+            ],
+            [
+              "npm",
+              "ci --omit=dev"
+            ],
+            [
+              "go",
+              "clean -modcache"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Shrinking Image Size",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Slim, Strip, Stage"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`python:3.12-slim` drops docs and dev tooling, keeps glibc",
+            "Multi-stage is the biggest lever for compiled languages",
+            "`go build -ldflags=\"-s -w\"`, `strip`, CGO disabled",
+            "Do not cram one mega-RUN — cache granularity dies",
+            "`--platform` mismatch silently pulls an emulated image"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Squash Trade-Off"
+        },
+        {
+          "type": "sidebox",
+          "title": "--squash",
+          "items": [
+            "Collapses every layer into one",
+            "Smaller image, but full re-transfer on each rebuild",
+            "Loses cross-image base layer sharing",
+            "5 images on 1 base cost far less than their sum"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "7. Worked Comparison"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "node:20 + COPY . . + npm install = 1.1GB",
+              "alpine base",
+              "manifest split + multi-stage",
+              "--omit=dev = 150MB"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Clean Where You Dirty",
+          "text": "`rm -rf` in a later RUN removes nothing from the image. The bytes live in the layer that created them — clean there, or use a stage."
+        },
+        {
+          "type": "heading",
+          "text": "1. The Four Final Bases",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Base",
+            "libc",
+            "Shell",
+            "Size"
+          ],
+          "rows": [
+            [
+              "alpine",
+              "musl",
+              "busybox sh",
+              "~7MB"
+            ],
+            [
+              "debian-slim",
+              "glibc",
+              "bash",
+              "~75MB"
+            ],
+            [
+              "distroless",
+              "glibc",
+              "none",
+              "2-50MB"
+            ],
+            [
+              "scratch",
+              "none",
+              "none",
+              "0MB"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. The Alpine Trap"
+        },
+        {
+          "type": "paragraph",
+          "text": "Alpine ships musl and BusyBox, not glibc and GNU coreutils — nearly every incompatibility traces to that one fact. manylinux wheels are glibc-only, so pip compiles C extensions from source."
+        }
+      ]
+    },
+    {
+      "page_title": "Alpine vs Slim vs Distroless vs Scratch",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "3. What Alpine Costs"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Python builds run 5-10x slower and pull in gcc",
+            "End image often *larger* than the slim equivalent",
+            "musl DNS: no `search` domains, TCP fallback edge cases",
+            "Smaller default thread stack overflows some runtimes",
+            "Historic malloc gaps under heavy multithreading"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Slim: The Boring Default"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "glibc present, apt available, prebuilt wheels work",
+            "~75MB — the correct answer when you are unsure",
+            "Right for Python, Ruby and Node runtimes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Distroless"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Your app plus runtime deps and CA certs. Nothing else",
+            "No shell, no package manager, no busybox",
+            "Runtime-stage only — `RUN` cannot work in that stage",
+            "Tiny package surface, almost nothing for a scanner to flag"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "6. Scratch Survival Kit"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "COPY --from=builder \\",
+            "  /etc/ssl/certs/ca-certificates.crt \\",
+            "  /etc/ssl/certs/   # else HTTPS fails",
+            "USER 65532:65532    # no /etc/passwd"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No `/tmp`, no timezone database, no passwd file",
+            "Copy `/usr/share/zoneinfo` if you need local time",
+            "Only fully static: Go CGO_ENABLED=0, Rust musl target"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Alpine vs Slim vs Distroless vs Scratch (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "7. Picking One"
+        },
+        {
+          "type": "qa",
+          "q": "Why does `docker exec -it app sh` fail on my distroless image?",
+          "a_bullets": [
+            "There is no shell in the image at all",
+            "Use the `:debug` variant or `docker debug`",
+            "Static compiled binary → scratch or distroless-static",
+            "JVM, Node, Python needing glibc → distroless-* or slim",
+            "Need an ops shell in production → alpine or slim"
+          ],
+          "example_code": [
+            "docker run --rm -it app:debug sh"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Compare On Four Axes",
+          "text": "Size, build time, CVE surface, debuggability. And this is all about the final stage — the builder should stay fat and full of tools."
+        },
+        {
+          "type": "heading",
+          "text": "1. The Big Five",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Anti-pattern",
+            "Why it hurts",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "COPY . . first",
+              "reinstalls deps",
+              "split manifest"
+            ],
+            [
+              "split apt update",
+              "stale index",
+              "chain &&"
+            ],
+            [
+              "rm in later RUN",
+              "no size win",
+              "same RUN or stage"
+            ],
+            [
+              "ARG secret",
+              "in docker history",
+              "--mount=secret"
+            ],
+            [
+              "FROM latest",
+              "not reproducible",
+              "pin digest"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Secrets Done Right"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "ARG NPM_TOKEN  # ✗ readable in history",
+            "RUN --mount=type=secret,id=npmrc,\\",
+            "    target=/root/.npmrc npm ci",
+            "# ✓ never lands in any layer"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Downloads With Proof"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "ADD https://x/f.tgz /   # ✗ no checksum",
+            "RUN curl -fsSL -o f.tgz https://x/f.tgz \\",
+            " && echo \"$SHA f.tgz\" | sha256sum -c"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Pin And Refresh"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`node:latest` means surprise major-version breakage",
+            "Pin `node:20.11.1-alpine` or a full digest",
+            "CI reusing a `latest` cache without `--pull` misses patches",
+            "The base tag moved upstream; you kept the old bits"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Common Mistakes and Anti-Patterns",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Never Ship As Root"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN adduser --system app",
+            "USER app        # or USER 65532:65532",
+            "# default USER is root: escape = root"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "6. Surface And Churn"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "curl, vim, netcat, build-essential in prod: size and attack surface",
+            "No `.dockerignore`: huge context, cache churn, leaked secrets",
+            "`.git` drags hundreds of MB and changes every commit",
+            "One giant RUN: great size, rebuilds the toolchain on any change"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "History Is Readable",
+          "text": "`docker history <img>` prints every build arg and command. Anything you passed as ARG belongs to whoever pulls the image."
+        },
+        {
+          "type": "heading",
+          "text": "1. Node: Build Stage",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20-alpine AS build",
+            "WORKDIR /app",
+            "COPY package*.json ./",
+            "RUN npm ci && npm run build"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "2. Node: Runtime Stage"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20-alpine",
+            "WORKDIR /app",
+            "COPY package*.json ./",
+            "RUN npm ci --omit=dev",
+            "COPY --from=build /app/dist ./dist"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "3. Ship It Safely"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "USER node",
+            "CMD [\"node\",\"dist/main.js\"]  # exec form",
+            "HEALTHCHECK --interval=30s \\",
+            "  CMD [\"node\",\"health.js\"]",
+            "LABEL org.opencontainers.image.source=$REPO"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "4. Python: slim + venv"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM python:3.12-slim AS build",
+            "RUN python -m venv /opt/venv",
+            "COPY requirements.txt .",
+            "RUN /opt/venv/bin/pip install \\",
+            "  --no-cache-dir -r requirements.txt"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "5. Go Recipe"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`go mod download` before `COPY . .`",
+            "`CGO_ENABLED=0 go build -ldflags=\"-s -w\"`",
+            "Final base: `gcr.io/distroless/static:nonroot`",
+            "Shell-form CMD wraps in `/bin/sh -c` and swallows SIGTERM"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your 1.1GB Node image and your cache miss on every single push are the same bug: you put the thing that changes most at the bottom of the stack. This handbook walks the actual mechanics — union filesystem layers, whiteout files that keep deleted bytes shipping forever, what really goes into a cache key, and why `rm -rf` in a later RUN saves you exactly zero megabytes. Ten pages, ending at 150MB with a non-root user and pinned digests.",
+    "hashtags": [
+      "#docker",
+      "#devops",
+      "#dockerfile",
+      "#containers",
+      "#buildkit",
+      "#platformengineering",
+      "#backend",
+      "#cloudnative",
+      "#kubernetes",
+      "#softwareengineering",
+      "#codenotes",
+      "#techhandbook"
+    ]
+  }
+}

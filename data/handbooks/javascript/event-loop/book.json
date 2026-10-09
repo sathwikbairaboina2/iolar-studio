@@ -1,0 +1,243 @@
+{
+  "title": "The JavaScript Event Loop: A Field Handbook",
+  "summary": "A dense study-notes handbook on how JavaScript actually runs asynchronous code: the call stack, the task and microtask queues, promise semantics, rendering, timers, and the starvation failure modes that come from getting the ordering wrong. Covers browser and Node.js, with execution-order drills, comparisons, and real-world debugging patterns.",
+  "chapters": [
+    {
+      "title": "Why an Event Loop Exists",
+      "points": [
+        "JavaScript is single-threaded: one call stack, one thread of execution, one thing running at a time.",
+        "Run-to-completion semantics: once a function starts, it runs to the end before any other JS runs — no preemption mid-function.",
+        "Consequence: no data races on shared variables, but also no way to interrupt slow code.",
+        "The engine (V8/SpiderMonkey/JSC) only executes JS; it has no timers, no network, no DOM — those live in the host environment (browser or Node).",
+        "The host provides Web APIs / libuv: setTimeout, fetch, DOM events, file I/O. These run outside the JS thread.",
+        "The event loop is the coordinator: it decides what JS the engine runs next, and when.",
+        "Concurrency vs parallelism: JS gets concurrency (interleaved progress on many tasks) not parallelism (simultaneous execution) — parallelism needs Workers.",
+        "Blocking the thread blocks everything: rendering, input, timers, network callbacks all wait behind your code.",
+        "Mental model to reject: 'async means it runs in the background in JS.' Your callback never runs in parallel with other JS.",
+        "Definition: 'asynchronous' in JS means 'scheduled to run later on this same thread', not 'run at the same time'."
+      ]
+    },
+    {
+      "title": "The Call Stack",
+      "points": [
+        "Call stack: LIFO stack of execution contexts (frames), one per in-flight function call.",
+        "A frame holds arguments, local variables, and the return address; pushed on call, popped on return.",
+        "The bottom frame is the currently executing script or the module/global evaluation.",
+        "Trace: function a(){b()}; function b(){c()}; function c(){throw new Error()} — stack at throw is c → b → a → global, which is exactly what the stack trace prints (top frame first).",
+        "'Maximum call stack size exceeded' = RangeError from unbounded recursion; the engine stack is a fixed-size region (roughly 10k–15k frames in V8, not a spec value).",
+        "Recursion depth is the limit, not loop count: a 10-million-iteration for-loop never overflows the stack but does block the thread.",
+        "The heap is separate: objects live on the heap, the stack holds frames and references.",
+        "The event loop only ever runs a callback when the stack is empty — this single rule explains almost every ordering surprise in this handbook.",
+        "Debugger consequence: pausing on a breakpoint freezes the loop; queued tasks pile up and flush on resume.",
+        "Stack traces across async boundaries are broken by default because each task starts on a fresh empty stack; async stack traces in DevTools are reconstructed, not real frames."
+      ]
+    },
+    {
+      "title": "Anatomy of the Event Loop",
+      "points": [
+        "The loop, in pseudocode: while(true){ task = taskQueue.dequeue(); run(task); drainMicrotasks(); maybeRender(); }",
+        "One iteration = one tick. Exactly one macrotask per tick (not the whole queue).",
+        "Task (macrotask) sources: script evaluation, setTimeout/setInterval callbacks, DOM event callbacks, network response callbacks, postMessage, MessageChannel.",
+        "There are multiple task queues, not one — the spec lets the browser pick which source to service next (e.g. prioritize input over timers). Ordering is guaranteed only within a single source.",
+        "Microtask queue: exactly one per agent (per event loop), always fully drained, always before the loop yields.",
+        "Key invariant: after every macrotask, the microtask queue is drained to empty before rendering or the next macrotask.",
+        "Microtasks queued by microtasks are appended to the same drain — the drain is not a snapshot.",
+        "Rendering is not a macrotask; it is a separate 'update the rendering' step the loop may run between tasks, typically capped at display refresh rate (~60Hz).",
+        "requestAnimationFrame callbacks run inside the rendering step, before style/layout/paint — not in the task queue.",
+        "The initial <script> block is itself a task: top-level synchronous code runs first, microtasks it queued run second.",
+        "Diagram to memorize: Stack ← (Event Loop) ← [Microtask Queue drained fully] ← [Task Queue one item] plus Render step."
+      ]
+    },
+    {
+      "title": "Macrotasks: Timers, Events, and I/O",
+      "points": [
+        "setTimeout(fn, ms) does not run fn after ms — it enqueues fn as a task no earlier than ms.",
+        "setTimeout(fn, 0) is clamped to 4ms after 5 nested timer levels (HTML spec); the first few zero-timeouts can be near-0.",
+        "Timer drift: setInterval enqueues on a fixed schedule and drops ticks if the thread is busy; it does not catch up by running twice back-to-back except in edge cases.",
+        "Self-scheduling setTimeout is the safer interval: run work, then schedule next — guarantees a gap between executions.",
+        "Background/inactive tabs throttle timers to ≥1000ms (and browsers may freeze them entirely after minutes).",
+        "DOM events are dispatched as tasks; a click handler is a task, so microtasks queued inside it drain before the next event.",
+        "Exception: multiple events dispatched synchronously (e.g. element.click() in a loop) run within the current task, so microtasks drain between listener invocations differently than user-initiated clicks.",
+        "MessageChannel/postMessage gives a ~0ms macrotask with no 4ms clamp — the classic 'yield to the loop fast' trick.",
+        "setImmediate is Node-only (and old IE); it is not a browser API — do not ship it to the web without a polyfill.",
+        "Example: console.log(1); setTimeout(()=>console.log(3),0); console.log(2) prints 1, 2, 3.",
+        "Ordering between two setTimeout(…,0) calls is FIFO by insertion; between setTimeout(…,0) and setTimeout(…,1) it is implementation-dependent in practice."
+      ]
+    },
+    {
+      "title": "Microtasks and the Drain Rule",
+      "points": [
+        "Microtask sources: promise reactions (.then/.catch/.finally), await continuations, queueMicrotask(), MutationObserver callbacks, and (in Node) process.nextTick with its own higher-priority queue.",
+        "queueMicrotask(fn) is the direct API; prefer it over Promise.resolve().then(fn) because it does not swallow errors into a rejected promise.",
+        "Errors thrown in a microtask surface as an uncaught exception on the global (window.onerror), not as a rejection.",
+        "The drain runs after each macrotask AND after each callback when the stack empties — including between individual DOM event listeners in some dispatch paths.",
+        "MutationObserver batches DOM mutations and delivers them as one microtask — that's why observers see a coalesced record list, not one callback per mutation.",
+        "Microtasks always run before rendering, so DOM writes made in a microtask are painted in the same frame as the task that queued them.",
+        "Example: Promise.resolve().then(()=>console.log('micro')); setTimeout(()=>console.log('macro'),0) — 'micro' always wins, regardless of code order.",
+        "Nested microtasks: queueMicrotask(()=>queueMicrotask(()=>log('b'))) runs 'b' in the same drain, before any timer.",
+        "This is the starvation mechanism: an infinitely self-queueing microtask hangs the page permanently with no timer ever firing again.",
+        "Rule of thumb: microtask = 'finish the current logical operation'; macrotask = 'start a new logical operation'."
+      ]
+    },
+    {
+      "title": "Promises Under the Hood",
+      "points": [
+        "A promise is a state machine: pending → fulfilled(value) or pending → rejected(reason). Settled states are immutable.",
+        "The executor function passed to new Promise runs synchronously, immediately — a common surprise.",
+        "Example: new Promise(r=>{console.log('A'); r()}).then(()=>console.log('C')); console.log('B') prints A, B, C.",
+        ".then does not run the callback; it registers a reaction job. When the promise settles, that job is enqueued as a microtask.",
+        "Attaching .then to an already-settled promise still queues a microtask — the callback never runs synchronously.",
+        "Each .then in a chain is one microtask, so a 3-link chain needs 3 drain steps; two independent chains interleave link-by-link.",
+        "Resolving a promise with another thenable costs extra microtask ticks (the spec calls the thenable's .then in a job), which is why return promise inside .then is 'slower' by ~2 ticks than returning a value.",
+        "Promise.resolve(p) returns p itself when p is a native promise (no wrapping, no extra tick); Promise.resolve(thenable) wraps and costs ticks.",
+        ".finally passes the settlement through unchanged, but a throw or rejected promise inside it does override the outcome.",
+        "Unhandled rejection detection is event-loop-based: the host fires unhandledrejection at the end of the microtask checkpoint if no handler was attached by then — attaching a .catch in a later setTimeout is too late.",
+        "Combinators and their settling rules: Promise.all (first rejection, else all values), allSettled (never rejects), race (first settlement either way), any (first fulfillment, else AggregateError)."
+      ]
+    },
+    {
+      "title": "async/await Is Microtasks in Disguise",
+      "points": [
+        "An async function returns a promise and runs synchronously until the first await.",
+        "await X suspends the function, schedules the continuation as a microtask, and returns control to the caller immediately.",
+        "The code after await is the .then callback — same queue, same timing, different syntax.",
+        "await on a non-promise value (await 1) still yields to the microtask queue for one tick; it is not free.",
+        "Since ES2019 optimization, await nativePromise costs 1 tick, not 3 — older engines and transpiled output may still cost 3, which changes interleaving order.",
+        "Example to trace: async function f(){console.log(1); await null; console.log(3)}; f(); console.log(2) prints 1, 2, 3.",
+        "Sequential awaits in a loop serialize network calls; collect promises and await Promise.all to parallelize.",
+        "Fire the promises before awaiting: const a=fetchA(), b=fetchB(); await a; await b runs them concurrently, while await fetchA(); await fetchB() does not.",
+        "try/catch around await works because the rejection is rethrown at the resumption point — but only for the awaited promise, not for un-awaited ones.",
+        "An async function that throws before its first await still returns a rejected promise, not a synchronous throw.",
+        "Top-level await in ES modules blocks that module's evaluation and any importer's, but does not block the event loop itself.",
+        "for await...of consumes an async iterator, awaiting each item — one microtask checkpoint per iteration."
+      ]
+    },
+    {
+      "title": "Rendering, Frames, and the 16ms Budget",
+      "points": [
+        "Browser frame pipeline: task → microtask drain → requestAnimationFrame callbacks → style → layout → paint → composite.",
+        "At 60Hz you have ~16.7ms per frame; JS, style, and layout all share that budget.",
+        "requestAnimationFrame fires before paint, so it is the correct place for visual updates; setTimeout(…,16) is not frame-aligned and causes jank.",
+        "rAF callbacks are batched: all callbacks registered for a frame run in one step, and one registered during the callback runs next frame.",
+        "requestIdleCallback runs in leftover time at frame end with a deadline object — good for non-urgent work, not guaranteed to run.",
+        "Layout thrashing: read (offsetHeight) → write (style) → read forces synchronous reflow each cycle; batch all reads, then all writes.",
+        "Long Task = any task blocking ≥50ms; it's the standard metric behind INP/responsiveness scoring.",
+        "Rendering is skipped entirely for offscreen/background documents, so rAF loops pause in inactive tabs (unlike a microtask loop).",
+        "scheduler.postTask() and scheduler.yield() are the modern APIs for prioritized scheduling and explicit yielding.",
+        "Practical yield idiom: await new Promise(r => setTimeout(r, 0)) inside a long loop to let a frame render.",
+        "Microtasks queued in a rAF callback drain before paint — so they can still block the frame."
+      ]
+    },
+    {
+      "title": "The Node.js Event Loop: Phases",
+      "points": [
+        "Node's loop is libuv-based and has ordered phases, unlike the browser's single-task-per-tick model.",
+        "Phases in order: timers → pending callbacks → idle/prepare → poll → check → close callbacks.",
+        "timers phase runs expired setTimeout/setInterval callbacks; check phase runs setImmediate callbacks.",
+        "poll phase waits for I/O and executes I/O callbacks; it is where the loop blocks when idle.",
+        "setImmediate always runs before timers when scheduled from inside an I/O callback — a reliable ordering guarantee.",
+        "setTimeout(fn,0) vs setImmediate(fn) at the top level is nondeterministic — depends on process startup timing.",
+        "process.nextTick has its own queue drained before the promise microtask queue, and drained between every phase — higher priority than promises.",
+        "Recursive process.nextTick starves the loop entirely; the same recursion with setImmediate does not.",
+        "Browser vs Node difference: Node drains nextTick + microtasks between each callback in a phase (since Node 11), matching browser behavior more closely than older versions.",
+        "Worker threads and the thread pool (default 4, UV_THREADPOOL_SIZE) handle fs, dns, crypto, zlib — network I/O uses the OS event notifier instead, not the pool.",
+        "Blocking the loop in Node blocks all connections in the process — measure with the event loop delay histogram (perf_hooks.monitorEventLoopDelay)."
+      ]
+    },
+    {
+      "title": "Execution Order Drills",
+      "points": [
+        "Drill 1: log('start'); setTimeout(()=>log('timeout'),0); Promise.resolve().then(()=>log('promise')); log('end') → start, end, promise, timeout.",
+        "Drill 2: async function a(){log('a1'); await b(); log('a2')} async function b(){log('b1')} a(); Promise.resolve().then(()=>log('p')); log('sync') → a1, b1, sync, a2, p.",
+        "Drill 3: setTimeout(()=>{log('t1'); Promise.resolve().then(()=>log('m1'))},0); setTimeout(()=>log('t2'),0) → t1, m1, t2 (microtasks drain between macrotasks).",
+        "Drill 4: two chains — Promise.resolve().then(()=>log(1)).then(()=>log(3)); Promise.resolve().then(()=>log(2)).then(()=>log(4)) → 1, 2, 3, 4 (interleaved by tick, not by chain).",
+        "Drill 5: new Promise(r=>{log('exec'); r(log('res'))}).then(()=>log('then')) → exec, res, then — executor and its arguments are synchronous.",
+        "Drill 6: element.click() dispatched twice synchronously vs two real user clicks — microtask timing differs because real clicks are separate tasks.",
+        "Drill 7: await inside a rAF callback pushes the rest of the work past the paint boundary — a common animation bug.",
+        "Method for solving any of these: write four columns — sync, microtask, rAF, macrotask — fill top to bottom, then read columns left to right per tick.",
+        "Verify predictions in DevTools Performance panel: tasks appear as gray blocks with microtasks nested inside them.",
+        "Trap to watch for: console.log of a mutable object shows the object's later state, which can make ordering look wrong when it isn't."
+      ]
+    },
+    {
+      "title": "Starvation and Blocking",
+      "points": [
+        "Two distinct failure modes: blocking (one long synchronous task) and starvation (a queue that never empties so lower-priority work never runs).",
+        "Microtask starvation: function loop(){queueMicrotask(loop)} — the drain never completes, so no timers, no rendering, no input. Tab must be killed.",
+        "Contrast: function loop(){setTimeout(loop,0)} is harmless-ish — each iteration is one task, and rendering and input still get their turn.",
+        "The self-resolving promise recursion is the same bug wearing a nicer suit: async function loop(){await null; loop()}.",
+        "Node equivalent: recursive process.nextTick blocks the phase advance; recursive setImmediate yields correctly.",
+        "Blocking example: a 500ms JSON.parse of a large payload freezes input for 500ms; the parse is synchronous and un-yieldable.",
+        "Symptoms: unresponsive clicks, frozen animations, 'Page unresponsive' dialog, INP regressions, Node health check timeouts.",
+        "Fix 1 — chunk work: process N items, then yield with setTimeout/MessageChannel/scheduler.yield, then continue.",
+        "Fix 2 — move it off-thread: Web Worker (browser) or worker_threads (Node) for CPU-bound work.",
+        "Fix 3 — use the right yield primitive: yielding with a microtask does not help at all, because microtasks are exactly what's starving the loop.",
+        "Detection: PerformanceObserver on 'longtask' entries in the browser; monitorEventLoopDelay or event-loop-lag metrics in Node.",
+        "Priority inversion: an important timer sits behind a flood of microtasks generated by a hot promise chain — the queue length, not the CPU, is the bottleneck."
+      ]
+    },
+    {
+      "title": "Comparisons and Trade-offs",
+      "points": [
+        "Microtask vs macrotask: microtasks run sooner, drain fully, can starve the loop, run before render; macrotasks run one per tick, allow render and input between, cannot starve.",
+        "setTimeout(0) vs queueMicrotask: ~4ms clamp and a render opportunity vs immediate and no render opportunity.",
+        "queueMicrotask vs Promise.resolve().then: same queue; the former throws to the global error handler, the latter creates an unhandled rejection and allocates a promise.",
+        "Callbacks vs promises: callbacks fire wherever the API decides (possibly synchronously — Zalgo); promises always defer to a microtask, which makes ordering deterministic.",
+        "async/await vs .then chains: identical scheduling, better stack traces and error handling with await; .then is still better for fan-out where you don't want to serialize.",
+        "Web Worker vs chunked main-thread work: workers give true parallelism but cost structured-clone serialization and have no DOM access; chunking is cheap but still competes for the main thread.",
+        "requestAnimationFrame vs setTimeout for animation: rAF is frame-synced and pauses offscreen; setTimeout drifts and burns battery in background tabs.",
+        "setImmediate vs setTimeout(0) in Node: deterministic ordering inside I/O callbacks, nondeterministic at top level.",
+        "process.nextTick vs queueMicrotask in Node: nextTick has strictly higher priority and greater starvation risk; prefer queueMicrotask for portability.",
+        "Cost table to memorize: sync call ~ns; microtask ~sub-µs enqueue; setTimeout(0) ≥ 4ms after clamping; a frame boundary ~16.7ms; a worker round-trip = clone cost + scheduling."
+      ]
+    },
+    {
+      "title": "Common Mistakes",
+      "points": [
+        "Assuming setTimeout(fn, 100) runs at exactly 100ms — it is a minimum delay, and a busy thread pushes it arbitrarily later.",
+        "Forgetting the executor runs synchronously and putting slow work inside new Promise(...) — that work blocks, promise or not.",
+        "Awaiting in a for-loop over independent requests, turning 10 parallel 100ms calls into a 1000ms sequence.",
+        "Creating promises before attaching handlers, then attaching .catch in a later task — triggers an unhandledrejection that fires before your handler exists.",
+        "Using .forEach with an async callback and expecting it to wait — forEach ignores returned promises; use for...of with await or Promise.all(map(...)).",
+        "Mixing return and await incorrectly: return await p inside try/catch is required to catch p's rejection; a bare return p escapes the try block.",
+        "Assuming try/catch catches errors from a setTimeout callback — the callback runs on a new stack in a new task, outside the try.",
+        "Reading DOM layout immediately after a style write and forcing synchronous reflow inside a loop.",
+        "Believing a Web Worker fixes a slow DOM update — workers cannot touch the DOM; only the computation moves.",
+        "Testing async ordering with sleeps instead of awaiting explicit signals, producing flaky tests.",
+        "Assuming a microtask yield (await null) gives the browser a chance to paint — it does not; only a macrotask or rAF boundary does.",
+        "Relying on cross-source task ordering (a timer vs a network callback) that the spec never guaranteed."
+      ]
+    },
+    {
+      "title": "Debugging and Instrumenting the Loop",
+      "points": [
+        "DevTools Performance panel: record, look for the main-thread flame chart; long gray 'Task' bars with red corner triangles are Long Tasks.",
+        "PerformanceObserver({entryTypes:['longtask']}) reports tasks ≥50ms with attribution to a frame/container.",
+        "INP (Interaction to Next Paint) measures input → next paint; a blocked loop shows up here directly.",
+        "'Async' checkbox in DevTools call stacks stitches together async causality chains across microtask boundaries.",
+        "console.time/timeEnd across an await measures wall time including queue waiting, not CPU time — use performance.now() deltas deliberately.",
+        "Node: perf_hooks.monitorEventLoopDelay() gives a histogram (mean/p99) of loop lag — the canonical health signal for a service.",
+        "Node: --cpu-prof or clinic.js flame graphs identify the blocking synchronous call.",
+        "Reproduce ordering questions in isolation with a tiny script rather than reasoning about a large app.",
+        "CPU throttling (4x/6x) in DevTools converts a 'fast enough on my machine' task into a visible Long Task.",
+        "Chunking checklist: measure per-item cost, choose a batch size targeting <16ms per chunk, yield with a real macrotask, and confirm with a fresh trace."
+      ]
+    },
+    {
+      "title": "Summary and Cheat Sheet",
+      "points": [
+        "One thread, one stack. Callbacks only run when the stack is empty. Everything else follows from this.",
+        "Order per tick: run one macrotask → drain the entire microtask queue → maybe render (rAF → style → layout → paint).",
+        "Microtasks: promises, await continuations, queueMicrotask, MutationObserver. Drained to empty, can starve the loop.",
+        "Macrotasks: timers, DOM events, I/O, postMessage. One per tick, always allow rendering and input in between.",
+        "Sync always beats microtask, microtask always beats macrotask — no exceptions in a single agent.",
+        "Promise executors run synchronously; every .then callback runs asynchronously, even on an already-settled promise.",
+        "async/await is promise scheduling with better syntax — the code after await is a microtask, always.",
+        "Node adds phases (timers/poll/check/close) and process.nextTick as a higher-priority queue than promises.",
+        "To keep an app responsive: keep tasks under 50ms, yield with macrotasks not microtasks, use rAF for visuals, and move CPU work to workers.",
+        "The two failure modes to name in an interview: blocking (one long task) and starvation (an endlessly refilling microtask queue).",
+        "Final drill to self-test: predict the output of a snippet mixing sync logs, setTimeout(0), Promise.then, await, and queueMicrotask — if you can order it correctly, you know the loop."
+      ]
+    }
+  ]
+}

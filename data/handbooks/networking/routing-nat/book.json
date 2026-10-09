@@ -1,0 +1,149 @@
+{
+  "title": "Routing Notes: From Tables to Traceroute",
+  "summary": "A dense handwritten-notes crash course on how packets find their way: routing tables, gateways, NAT, port forwarding, firewalls, and the tools (traceroute, mtr) used to debug the path.",
+  "chapters": [
+    {
+      "title": "Routing Fundamentals",
+      "points": [
+        "Routing = choosing the next hop for a packet toward its destination IP; routers work at L3, switches at L2",
+        "A routing table maps destination prefixes → next-hop IP + outgoing interface + metric",
+        "Longest prefix match wins: 10.0.1.0/24 beats 10.0.0.0/16 for 10.0.1.5, regardless of metric",
+        "Directly connected routes (via interface subnets) always beat learned routes",
+        "Metric breaks ties within one protocol; administrative distance breaks ties between protocols (static=1, OSPF=110, RIP=120)",
+        "Each hop decrements IP TTL by 1; TTL=0 → router drops packet and sends ICMP Time Exceeded back",
+        "TTL exists to prevent routing loops from circulating packets forever",
+        "Static routes: 'ip route 10.2.0.0 255.255.0.0 192.168.1.2' — simple, no auto-failover",
+        "Default route 0.0.0.0/0 = 'send everything I don't know elsewhere' — the gateway concept",
+        "Dynamic routing protocols (RIP, OSPF, BGP) exchange reachability info between routers automatically",
+        "Forwarding vs routing: routing builds the table (control plane), forwarding moves packets (data plane)",
+        "Linux: 'ip route show' to view table, 'ip route add' to insert a route",
+        "Gotcha: two interfaces on overlapping subnets → asymmetric or blackholed traffic"
+      ]
+    },
+    {
+      "title": "Default Gateways & Packet Walkthrough",
+      "points": [
+        "Default gateway = the router a host sends to any destination outside its own subnet",
+        "Host decides via its own subnet mask: dest IP AND mask == my network → ARP directly; else → ARP for the gateway",
+        "ARP resolves the NEXT HOP's IP to a MAC — the destination IP in the header never changes, only L2 addresses do",
+        "Full walkthrough: 192.168.1.10 → 8.8.8.8: check mask, no match, ARP gateway, send frame to gateway MAC",
+        "Router receives frame, decapsulates, decrements TTL, looks up longest prefix match, re-encapsulates toward next hop",
+        "Only the final router delivers the frame directly to the destination host's MAC",
+        "Missing/wrong gateway symptom: local traffic works, internet dead ('can ping 192.168.1.1, not 8.8.8.8')",
+        "Wrong subnet mask symptom: host tries to ARP for remote IPs directly, all outside traffic fails",
+        "DHCP option 3 (router) is how hosts learn the gateway automatically",
+        "Diagnose with: ip route (gateway set?), ping gateway, ping 8.8.8.8, then nslookup",
+        "Ping works but browsing doesn't → routing fine, check DNS instead",
+        "Multiple default routes: use metrics for failover; equal metrics = load-balance or flapping chaos",
+        "ICMP Redirect: router tells a host 'there's a better next hop on your own subnet'"
+      ]
+    },
+    {
+      "title": "NAT — Network Address Translation",
+      "points": [
+        "Problem NAT solves: IPv4 scarcity — many private IPs share few public IPs",
+        "Private ranges (RFC 1918): 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 — not routable on the internet",
+        "SNAT (source NAT / masquerade) rewrites the source IP of outbound packets to the public IP",
+        "The NAT box keeps a translation table: (inside IP:port ↔ public IP:port) so replies find their way back",
+        "Port reuse (PAT): translations are distinguished by port numbers, hence 'many-to-one' NAT",
+        "Outbound connections 'just work'; inbound ones fail — nothing maps them to an inside host",
+        "NAT breaks true end-to-end connectivity: the router must see and modify every packet",
+        "NAT simplifies IPv4 headers (no options field) → checksums recalc, TTL still decrements",
+        "NAT64 / CGNAT: same ideas scaled for IPv6 transition and carrier-grade sharing",
+        "Side effect: NAT hides internal topology — weak security through obscurity, not a firewall",
+        "Linux: iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE (plus ip_forward=1)",
+        "Gotcha: hairpin NAT — LAN client can't reach your own public IP:port from inside",
+        "NAT timeout: idle mappings expire → long-lived connections silently drop without keepalives"
+      ]
+    },
+    {
+      "title": "Port Forwarding & DNAT",
+      "points": [
+        "Port forwarding (DNAT) rewrites the DESTINATION of inbound packets: public 1.2.3.4:443 → 192.168.1.50:443",
+        "Router matches on (public IP, port, protocol), swaps destination, tracks the mapping for return traffic",
+        "Reply path: inside host answers to router, router SNATs the reply back so the client sees one conversation",
+        "Typical uses: expose a web server, game server, SSH, or home-lab service from behind NAT",
+        "iptables: iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination 192.168.1.50:443",
+        "Port translation allowed: public :8022 → internal :22 (obscures the service, not secures it)",
+        "DMZ host = forward ALL ports to one machine — maximum exposure, use only for testing",
+        "UPnP lets apps open forwards themselves — convenient, a known attack surface",
+        "Safer alternative: VPN into the network (WireGuard) instead of exposing services",
+        "Reverse tunnel alternative: ssh -R lets a machine behind NAT expose a port via a public relay",
+        "Gotcha: forwarding the port but the host firewall (or bind address 127.0.0.1) still blocks it",
+        "Gotcha: service must use the router as gateway, or replies bypass NAT and the connection breaks",
+        "Test from OUTSIDE the network (e.g. phone on LTE) — internal tests hit hairpin NAT"
+      ]
+    },
+    {
+      "title": "Firewalls",
+      "points": [
+        "Firewall filters packets by rules: source/dest IP, ports, protocol, interface, connection state",
+        "Stateful vs stateless: stateful tracks connections and auto-allows replies; stateless checks each packet in isolation",
+        "Connection states: NEW (first packet), ESTABLISHED (matches tracked flow), RELATED (e.g. FTP data), INVALID",
+        "Classic safe baseline: allow ESTABLISHED,RELATED in; allow NEW out; drop everything else inbound",
+        "Default policy matters: default DROP + explicit allows (whitelist) beats default ACCEPT",
+        "Rule order is critical — first match wins; a broad early ACCEPT shadows later rules",
+        "iptables chains: PREROUTING → INPUT (to us) / FORWARD (through us) → OUTPUT, then POSTROUTING",
+        "Drop vs reject: REJECT sends ICMP/port-unreachable (fast failure), DROP silently ignores (slow timeouts)",
+        "NAT vs firewall: NAT rewrites addresses; firewall permits/denies — different jobs, same box often",
+        "ICMP isn't the enemy: blocking it entirely breaks PMTUD and path debugging",
+        "Egress filtering matters too — limit outbound to catch malware callbacks",
+        "Debug order: rule list, counters (iptables -L -v), logs with limit rate, then the connection state",
+        "Gotcha: DNS breaks when you allow only TCP 53 — most queries are UDP"
+      ]
+    },
+    {
+      "title": "Traceroute — Reading the Path",
+      "points": [
+        "Traceroute exploits TTL: send with TTL=1,2,3… each router that hits TTL=0 replies ICMP Time Exceeded, revealing itself",
+        "Each line = one hop: hop number, round-trip times (usually 3 probes), router IP/hostname",
+        "Two implementations: UDP probes (Unix, final port unreachable = done) or ICMP echo (Windows tracert)",
+        "Last hop may not reply (filtered ICMP) → asterisks after the destination still means 'arrived'",
+        "Intermediate asterisks: router deprioritizes ICMP TTL-exceeded replies — not necessarily packet loss",
+        "Latency per line is round trip TO THAT HOP, not added per hop — compare deltas between lines",
+        "Big jump between hop N and N+1 = congestion or a long physical link (ocean cable) near hop N+1",
+        "Return path can differ (asymmetric routing) — you see only the forward path's routers",
+        "Routers may show different interfaces per probe → '?' or changing hostnames on one line",
+        "MPLS 'stars' and private IPs at hops are normal — carriers hide infrastructure",
+        "mtr = traceroute + ping combined: live stats (loss %, avg, best/worst) per hop over time",
+        "mtr report mode: run ~100 cycles; loss appearing at one hop and ALL LATER hops = real problem at that hop",
+        "Gotcha: loss only at hop N but fine after = ICMP rate-limiting on that router, ignore it"
+      ]
+    },
+    {
+      "title": "Debugging Workflow",
+      "points": [
+        "Layered ladder: link (cable/Wi-Fi) → IP (ping gateway) → routing (ping 8.8.8.8) → DNS (nslookup) → app (curl)",
+        "Step 1: 'ip addr' + 'ip route' — do I have an IP and a default route at all?",
+        "Step 2: ping the gateway — separates local segment problems from upstream problems",
+        "Step 3: ping a public IP (8.8.8.8) — works but names fail → DNS issue, not routing",
+        "Step 4: traceroute/mtr to the destination — WHERE does the path stop or degrade?",
+        "Path dies at hop 1-2: your LAN/router. Dies at your ISP's first hop: ISP-side, have the traceroute ready",
+        "'Connection refused' vs timeout: refused = host reachable, port closed (firewall REJECT or no listener); timeout = filtered/dropped",
+        "'curl -v' and 'telnet host 443' test TCP reachability when ICMP is blocked",
+        "Check both ends' firewalls and the NAT table when a service 'is running but unreachable'",
+        "tcpdump on the router confirms: are packets arriving? being forwarded? replies coming back?",
+        "Compare working vs broken hosts on the same LAN — isolates host config from network",
+        "Document the path (save mtr report) before contacting upstream support — evidence beats anecdote",
+        "Change one thing at a time and re-test; keep a rollback note for every route/firewall change"
+      ]
+    },
+    {
+      "title": "Trade-offs & Summary",
+      "points": [
+        "NAT trade-off: address reuse + topology hiding VS end-to-end reachability (need DNAT/UPnP/VPN for inbound)",
+        "Stateful firewall trade-off: smarter security + connection tracking memory VS state-table exhaustion under SYN floods",
+        "Static routing: predictable and cheap, but manual failover; dynamic protocols: auto-heal, but complexity + convergence time",
+        "DROP vs REJECT trade-off: stealth (DROP) vs fast client failure and easier debugging (REJECT)",
+        "Exposing ports vs VPN: port forwarding is instant but broad; VPN is setup cost but one authenticated door",
+        "More NAT layers (double NAT) = more breakage: gaming/voicemail NAT issues compound",
+        "Everything connects: routing table picks the hop, gateway is the first hop, NAT rewrites at the edge, firewall filters, traceroute shows the result",
+        "Golden rule: the destination IP never changes hop-to-hop; MACs change every hop, TTL decreases, NAT may rewrite ports",
+        "Memorize the 4 commands: ip route, ping, traceroute/mtr, ss/netstat — 90% of day-to-day network debugging",
+        "Design habit: know your OWN path first (your table, gateway, NAT, firewall) before blaming the internet",
+        "Common mistakes recap: wrong mask, shadowed firewall rules, testing port forwards from inside, blaming hop-N ICMP loss",
+        "Final summary: packets are forwarded by longest-prefix match, translated at NAT edges, filtered by stateful rules — trace with TTL to see it all"
+      ]
+    }
+  ]
+}

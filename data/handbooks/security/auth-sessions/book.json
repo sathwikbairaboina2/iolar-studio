@@ -1,0 +1,207 @@
+{
+  "title": "Web Auth Handbook: Sessions, JWT, Cookies, CSRF & Password Hashing",
+  "summary": "A dense, practical field guide to browser authentication: how sessions and JWTs actually work on the wire, how to set cookies safely, how CSRF and XSS break naive designs, and how to store passwords with bcrypt/argon2 plus rotate secrets, tokens, and credentials.",
+  "chapters": [
+    {
+      "title": "Auth Fundamentals: Identification, Authentication, Authorization",
+      "points": [
+        "Identification = claiming who you are (username); authentication = proving it (password/passkey); authorization = what you may do (roles/scopes) — three distinct steps, often conflated in code.",
+        "HTTP is stateless: every request is independent, so the server needs a credential attached to each request to know who is calling.",
+        "The three ways to carry that credential: cookie (browser sends automatically), Authorization header (client sends explicitly), or query string (never — leaks into logs, Referer, browser history).",
+        "Authentication factors: something you know (password), something you have (TOTP/security key), something you are (biometric); MFA = two different categories, not two passwords.",
+        "Login flow skeleton: POST credentials over TLS → server verifies against hash → server issues a session credential → browser replays it on later requests.",
+        "Bearer semantics: whoever holds the token IS the user — no proof of possession — so token theft equals full account takeover until expiry or revocation.",
+        "The two core threats this handbook fights: token theft (XSS, log leaks, network sniffing) and token misuse by a third-party site (CSRF).",
+        "Trust boundary rule: never trust anything the client can edit — user IDs in hidden form fields, `isAdmin` in localStorage, or unsigned cookie values.",
+        "TLS is a prerequisite, not a feature: without HTTPS every scheme in this handbook is trivially defeated by a network attacker.",
+        "Authentication ≠ session management: verifying a password once is easy; safely keeping the user logged in for 30 days is the actual hard problem."
+      ]
+    },
+    {
+      "title": "Server-Side Sessions: How They Actually Work",
+      "points": [
+        "Mechanic: server generates a random session ID, stores `{sid → {userId, createdAt, ...}}` server-side, and returns `Set-Cookie: sid=...`; the browser replays the cookie automatically.",
+        "The session ID must be an opaque, high-entropy random string (≥128 bits from a CSPRNG, e.g. `crypto.randomBytes(32).toString('base64url')`) — never a sequential integer or a hash of the user ID.",
+        "Session data never travels to the client; the cookie is a pointer, so the payload can hold anything (roles, impersonation state, cart) without size limits or leakage.",
+        "Storage backends: in-memory (dies on restart, breaks with >1 server), Redis (fast, TTL built-in, the common choice), SQL table (durable, needs a cleanup job).",
+        "Expiry has two layers: absolute lifetime (hard cap, e.g. 30 days) and idle timeout (sliding, e.g. 2 hours of inactivity) — implement both.",
+        "Revocation is a one-liner: `DEL session:<sid>` — instant logout everywhere, which is the single biggest advantage over stateless tokens.",
+        "Session fixation: if the attacker plants a known sid before login, they own the account after login — fix by regenerating the session ID on every privilege change (login, logout, role escalation).",
+        "Store a device/session list per user (`user:<id>:sessions`) so you can render an 'active devices' screen and support 'log out all other sessions'.",
+        "Cost: every authenticated request hits the session store — usually a sub-millisecond Redis GET, which is cheap but a hard dependency and a single point of failure.",
+        "Signed cookie sessions (e.g. Rails/Flask cookie stores) are a hybrid: state lives in the cookie, signed with a server key — same revocation problem as JWT, so treat them as tokens, not sessions."
+      ]
+    },
+    {
+      "title": "JWT Anatomy: Header, Payload, Signature",
+      "points": [
+        "A JWT is three base64url segments joined by dots: `header.payload.signature` — for example `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.<sig>`.",
+        "Header carries `alg` (HS256, RS256, EdDSA) and optionally `kid` (which key signed this) — `kid` is what makes key rotation possible.",
+        "base64url is encoding, not encryption: anyone can decode the payload. Never put secrets, PII, or password hashes in a JWT.",
+        "Registered claims: `iss` (issuer), `sub` (subject/user id), `aud` (audience), `exp` (expiry), `nbf` (not before), `iat` (issued at), `jti` (unique token id, used for denylisting).",
+        "Signature = `HMAC-SHA256(base64url(header) + '.' + base64url(payload), secret)` for HS256; for RS256 it is an RSA signature over the same input.",
+        "HS256 (symmetric) — one shared secret signs and verifies, so every verifier can also mint tokens; RS256/EdDSA (asymmetric) — private key signs, public key verifies, right choice when third parties or many services verify.",
+        "Verification order that must not be reordered: check `alg` against an allowlist → verify signature → then check `exp`/`nbf`/`iss`/`aud`. Reading claims before verifying is how bugs get in.",
+        "The `alg: none` attack: an attacker strips the signature and sets `alg` to `none`; vulnerable libraries accept it. Never let the token choose its own algorithm.",
+        "The HS/RS confusion attack: attacker takes the public RSA key, re-signs with HS256 using that public key as the HMAC secret; a library that infers the algorithm from the header verifies it. Pin the expected algorithm explicitly.",
+        "JWS (signed, readable) vs JWE (encrypted, opaque) — 'JWT' in practice almost always means JWS; use JWE only when the payload must be hidden from the client.",
+        "JWKS: publish public keys at `/.well-known/jwks.json`, keyed by `kid`; verifiers fetch and cache them, which is how OIDC providers rotate signing keys without downtime."
+      ]
+    },
+    {
+      "title": "Sessions vs JWT: The Real Trade-off",
+      "points": [
+        "Revocation: sessions revoke instantly (delete the row); JWTs stay valid until `exp` unless you add a denylist — which reintroduces the state you left sessions to avoid.",
+        "Storage: session = server holds state, cookie holds a pointer; JWT = client holds state, server holds only a key.",
+        "Request cost: session costs one store lookup per request (~0.2 ms Redis); JWT costs one signature verification (~10–50 µs HMAC, more for RSA) with zero I/O.",
+        "Size on the wire: session cookie ~32–64 bytes; JWT typically 300–800 bytes sent on every request — real bandwidth cost on chatty APIs, and it can blow past header size limits if you stuff claims in.",
+        "Horizontal scaling: JWT needs no shared store, which is the honest win for multi-region and service-to-service auth; sessions need Redis (or sticky sessions, which are worse).",
+        "Freshness: session data is read fresh each request, so a permission change takes effect immediately; JWT claims are a snapshot from issue time and go stale until the token expires.",
+        "Logout: session logout is real; JWT 'logout' only deletes the client copy — a stolen token still works, so short `exp` is the only real mitigation.",
+        "Complexity: sessions are one library and one Redis; JWT correctness requires alg pinning, key rotation, clock skew handling, refresh flows, and a revocation story.",
+        "Decision heuristic: first-party web app with one backend → sessions. Mobile/third-party API clients, or many independent services verifying without a shared DB → JWT with short-lived access tokens.",
+        "Hybrid pattern in wide use: opaque refresh token in an HttpOnly cookie (revocable, server-stored) + short-lived JWT access token in memory — revocation of sessions plus statelessness of JWT.",
+        "Anti-pattern: long-lived JWTs (7–30 days) in localStorage — combines the worst of both, unrevocable and XSS-readable."
+      ]
+    },
+    {
+      "title": "Cookie Flags: Every Attribute That Matters",
+      "points": [
+        "`HttpOnly` — hides the cookie from `document.cookie`, so an XSS payload cannot read or exfiltrate the session; mandatory on any auth cookie.",
+        "`Secure` — only sent over HTTPS, preventing plaintext leakage on downgrade or mixed-content requests; required by browsers whenever `SameSite=None`.",
+        "`SameSite=Lax` (modern default) — sent on top-level GET navigations but not on cross-site POSTs or subresource requests; blocks the classic form-POST CSRF.",
+        "`SameSite=Strict` — never sent on any cross-site request, so a link from an email lands the user logged out; good for banking, annoying elsewhere.",
+        "`SameSite=None` — sent on all cross-site requests, mandatory for embedded third-party contexts (iframes, cross-origin SPA→API), and must be paired with `Secure`.",
+        "`Domain` — omit it to get a host-only cookie. Setting `Domain=example.com` shares it with every subdomain, including a compromised `blog.example.com`.",
+        "`Path=/` — path scoping is not a security boundary; other pages on the origin can read across paths via the DOM.",
+        "`Max-Age` / `Expires` — omit both to get a session cookie that dies with the browser process; note that Chrome's session-restore keeps them alive across restarts.",
+        "Prefixes: `__Host-sid` forces Secure + Path=/ + no Domain (host-locked, immune to subdomain injection); `__Secure-sid` only forces Secure. Browsers reject non-conforming sets, so it's a free integrity check.",
+        "Canonical header: `Set-Cookie: __Host-sid=<random>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=7200`.",
+        "Cookies ignore the port and (largely) the scheme, so origin isolation for cookies is weaker than the same-origin policy you assume in JS — `http://localhost:3000` and `:4000` share cookies.",
+        "Partitioned (CHIPS) — `Partitioned` gives a third-party cookie a separate jar per top-level site, the replacement path as third-party cookies are phased out."
+      ]
+    },
+    {
+      "title": "CSRF: The Attack and Its Defenses",
+      "points": [
+        "The mechanism: the browser attaches your cookies to requests *initiated by any site*, so `evil.com` can submit a form to `bank.com/transfer` and it arrives authenticated.",
+        "Minimal exploit: an auto-submitting hidden form — `<form action=\"https://bank.com/transfer\" method=\"POST\"><input name=\"to\" value=\"attacker\"><input name=\"amt\" value=\"1000\"></form><script>document.forms[0].submit()</script>`.",
+        "CSRF is a *write* attack: the attacker cannot read the response (blocked by the same-origin policy), only trigger the side effect — which is enough for transfers, password changes, and email changes.",
+        "Only cookie-based (ambient) auth is vulnerable. An `Authorization: Bearer` header is never attached automatically, so header-token APIs are structurally CSRF-immune.",
+        "Synchronizer token pattern: server issues a random token bound to the session, embeds it in the form, and compares on POST; the attacker can't read it cross-origin.",
+        "Double-submit cookie: send the same random value as both a cookie and a form field/header and compare — stateless, but weak if any subdomain can write cookies; strengthen by signing the token against the session.",
+        "SameSite=Lax is defense-in-depth, not a complete fix: it doesn't protect state-changing GET endpoints, and older/edge-case browsers vary.",
+        "Origin/Referer checking: reject state-changing requests whose `Origin` header isn't in the allowlist — cheap, effective, but treat a missing `Origin` explicitly rather than allowing it by default.",
+        "Never make GET requests state-changing — `GET /logout` or `GET /delete?id=5` is exploitable by a bare `<img src>` tag and bypasses SameSite=Lax.",
+        "Custom-header defense for JSON APIs: require a header like `X-Requested-With`; simple cross-site requests can't set custom headers without a CORS preflight the server refuses.",
+        "CORS is not a CSRF defense: a permissive `Access-Control-Allow-Origin` makes things worse, and a restrictive one still doesn't stop the request from being *sent* and processed.",
+        "Login CSRF: an attacker logs the victim into the *attacker's* account so the victim's activity is recorded there — protect the login form with a CSRF token too."
+      ]
+    },
+    {
+      "title": "XSS, Token Storage, and Where to Put the Credential",
+      "points": [
+        "The comparison that matters: cookies are vulnerable to CSRF but protected from XSS by `HttpOnly`; localStorage is immune to CSRF but fully readable by any injected script.",
+        "localStorage: persists forever, shared across all tabs of the origin, readable by every script including third-party analytics and a compromised npm dependency.",
+        "sessionStorage: same XSS exposure, but scoped per-tab and cleared on close — slightly smaller blast radius, still not safe.",
+        "In-memory (a JS variable / React state): the best option for an access token — dies on refresh, invisible to `document.cookie` and storage-scraping payloads, and restored via a refresh call on page load.",
+        "The honest rule: if you have XSS, you have already lost — an attacker with script execution can just make authenticated requests *as* the user through the cookie, even HttpOnly ones. HttpOnly limits exfiltration, not abuse.",
+        "This is why HttpOnly still matters: exfiltrated tokens work from the attacker's machine forever; in-page abuse ends when the user closes the tab.",
+        "Content-Security-Policy is the real XSS control: `default-src 'self'; script-src 'self' 'nonce-<random>'; object-src 'none'; base-uri 'none'` blocks injected inline script.",
+        "Frontend supply chain is part of your auth surface: every dependency and every `<script src>` you include can read tokens in localStorage.",
+        "Recommended layout for an SPA + API: refresh token in a `__Host-`, HttpOnly, SameSite=Lax cookie; access token in memory only; a silent-refresh call on boot.",
+        "Never log tokens: strip `Authorization` and `Cookie` headers in request logging, error reporters, and APM traces — leaked logs are a top real-world token source.",
+        "Don't put tokens in URLs: they land in browser history, server access logs, and the `Referer` header sent to third parties."
+      ]
+    },
+    {
+      "title": "Password Hashing: Why bcrypt and argon2 Exist",
+      "points": [
+        "Never store plaintext, and never store an encrypted password — encryption is reversible, and the key sits on the same server that just got breached.",
+        "Fast hashes (MD5, SHA-1, SHA-256) are the wrong tool: a GPU computes billions of SHA-256 hashes per second, so an offline attacker cracks common passwords in minutes.",
+        "Password hashing functions are *deliberately slow* — tune cost so one verification takes ~100–300 ms on your hardware, making mass offline cracking economically infeasible.",
+        "Salt = unique random value per password, stored alongside the hash. It defeats rainbow tables and guarantees two users with the same password get different hashes.",
+        "Pepper = a secret value mixed in, stored outside the database (env var/HSM). It protects against a DB-only breach; it must be rotatable and is optional.",
+        "bcrypt: Blowfish-based, cost factor is a power of two (`cost=12` → 2^12 rounds), memory-light (~4 KB), battle-tested since 1999.",
+        "bcrypt gotchas: input is silently truncated at 72 bytes (pre-hash with SHA-256 and base64 the result if you allow long passphrases), and null bytes can truncate earlier in some implementations.",
+        "argon2: winner of the 2015 Password Hashing Competition and the current default recommendation; memory-hard, so GPU/ASIC attacks lose their advantage.",
+        "argon2 variants: `argon2i` (data-independent, side-channel resistant), `argon2d` (data-dependent, GPU-resistant), `argon2id` (hybrid — the one you should use).",
+        "argon2id parameters: `m` (memory, e.g. 19–64 MiB), `t` (iterations, e.g. 2–3), `p` (parallelism, e.g. 1–4); OWASP baseline is m=19456 KiB, t=2, p=1.",
+        "Node example: `const hash = await argon2.hash(password, { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 })` then `await argon2.verify(hash, password)`.",
+        "The stored string is self-describing — `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>` or `$2b$12$<22-char salt><31-char hash>` — so parameters travel with the hash and can change per user.",
+        "Verification must be constant-time; use the library's `verify`/`compare`, never `hash(input) === stored` with a plain string comparison on raw digests.",
+        "scrypt and PBKDF2 are acceptable fallbacks (PBKDF2 when FIPS compliance forces it, at ≥600k iterations for SHA-256), but argon2id is the default choice for new systems."
+      ]
+    },
+    {
+      "title": "Login Flow Hardening: Beyond the Hash",
+      "points": [
+        "User enumeration: return one generic message ('invalid email or password') for both unknown-user and wrong-password cases, and match the response *time* by hashing a dummy password when the user doesn't exist.",
+        "Enumeration leaks through side doors too — signup ('email already taken'), password reset, and differing HTTP status codes all reveal account existence.",
+        "Rate limiting needs two dimensions: per-account (stop targeted brute force) and per-IP/ASN (stop credential stuffing across many accounts).",
+        "Credential stuffing is the dominant real attack: attackers replay breached username/password pairs, so check candidate passwords against a breach corpus (k-anonymity range API over the SHA-1 prefix).",
+        "Password policy that actually works: minimum ~8–12 characters, block breached and trivially weak passwords, allow the full Unicode range up to 64+ characters, and drop forced periodic rotation (NIST SP 800-63B).",
+        "Normalize before hashing: Unicode NFKC, trim nothing else, and never lowercase or strip characters — silent mutation breaks verification later.",
+        "Rehash on login when parameters are outdated: after a successful `verify`, check the stored cost against your current policy and transparently re-hash with the new one — the only way to upgrade cost factors for existing users.",
+        "Password reset tokens: single-use, high-entropy, 15–60 minute expiry, stored *hashed* server-side, invalidated on use and on password change.",
+        "On a password change, invalidate all other sessions and refresh tokens — otherwise an attacker who is already in stays in.",
+        "Timing-safe comparison for any secret compared as bytes: `crypto.timingSafeEqual(a, b)` — length differences still leak, so compare fixed-length digests.",
+        "Step-up authentication: require the current password or a second factor for high-risk actions (email change, MFA disable, adding a payout account), regardless of an active session.",
+        "MFA storage details: TOTP secrets must be encrypted at rest, recovery codes stored hashed like passwords and single-use, and TOTP verification must reject a reused code within its window."
+      ]
+    },
+    {
+      "title": "Rotation: Tokens, Sessions, Keys, and Secrets",
+      "points": [
+        "Rotation is the general defense against undetected compromise: short-lived credentials plus regular replacement shrink the window a stolen secret is useful.",
+        "Access/refresh split: access token short (5–15 min, carries claims), refresh token long (days–months, opaque, stored server-side and revocable).",
+        "Refresh token rotation: every refresh call issues a *new* refresh token and invalidates the old one, so any given refresh token is single-use.",
+        "Reuse detection: if an already-consumed refresh token is presented, that means the token was stolen and replayed — revoke the entire token family for that user and force re-authentication.",
+        "Implement families with a `family_id` shared across the rotation chain plus a `used_at` marker, so one reuse event kills every descendant token.",
+        "Session ID regeneration on login is rotation too — it's the direct fix for session fixation.",
+        "Signing-key rotation for JWT: publish multiple keys with distinct `kid` values, sign with the newest, and keep verifying with the previous one for at least the longest token lifetime before retiring it.",
+        "Overlap is mandatory: retiring a key before every token signed with it has expired logs everyone out; the JWKS endpoint plus verifier cache TTL is what makes the handoff seamless.",
+        "Denylist for JWTs when you need real revocation: store `jti` (or a user-level `tokensValidAfter` timestamp) in Redis with a TTL equal to the token's remaining lifetime — bounded state, real logout.",
+        "`tokensValidAfter` is the cheap pattern: one timestamp per user; reject any token whose `iat` predates it, invalidating everything on password change or forced logout.",
+        "Application secrets (DB passwords, API keys, HMAC secrets) rotate the same way — dual-read/single-write: accept old and new during the overlap, then drop the old.",
+        "Rotate on incident, not just on schedule — after any suspected leak, a departing employee with access, or a dependency compromise.",
+        "Clock skew: allow ~30–60 s leeway on `exp`/`nbf` checks; without it, minor server drift produces intermittent, hard-to-reproduce 401s."
+      ]
+    },
+    {
+      "title": "Common Mistakes and Anti-Patterns",
+      "points": [
+        "Verifying a JWT with the algorithm named in its own header — always pin `algorithms: ['RS256']` explicitly at verification.",
+        "Decoding without verifying: `jwt.decode()` does no signature check; using it for authorization means an attacker just edits the payload.",
+        "HS256 with a weak or reused secret — the shared secret must be ≥256 bits of randomness, and it must not be the same value as any other app secret.",
+        "Storing a long-lived JWT in localStorage and calling it 'stateless auth' — unrevocable and XSS-readable at once.",
+        "Missing `HttpOnly` or `Secure` on the auth cookie; missing `SameSite` on a legacy stack that still defaults to `None`.",
+        "Sessions that never expire, and 'remember me' implemented as a session with no absolute lifetime.",
+        "No session regeneration at login — leaves the door open to session fixation even when everything else is right.",
+        "Trusting client-supplied identity: reading `userId` from a request body or an unverified header instead of from the verified session/token.",
+        "Checking authentication but forgetting authorization — the classic IDOR, where a valid session can read `/api/orders/<any-id>`.",
+        "Rolling your own crypto: hand-built HMAC session cookies, homemade password hashes, or `==` comparisons on secrets.",
+        "Logging or emailing credentials — tokens in access logs, passwords in exception reports, reset links forwarded through third-party mail analytics.",
+        "One long-lived API key with no expiry, no scope, and no rotation path — the most common backend equivalent of all of the above.",
+        "Assuming CORS or an obscure endpoint provides security; obscurity delays nothing and CORS governs reading responses, not sending requests."
+      ]
+    },
+    {
+      "title": "Putting It Together: Reference Architecture & Cheat Sheet",
+      "points": [
+        "First-party monolith recipe: server-side sessions in Redis + `__Host-sid` cookie (HttpOnly, Secure, SameSite=Lax) + synchronizer CSRF token + argon2id passwords.",
+        "SPA + separate API recipe: opaque refresh cookie (HttpOnly, Secure, SameSite=Lax or None+CORS allowlist) + 10-minute JWT access token held in memory + rotation with reuse detection.",
+        "Mobile/third-party recipe: OAuth 2.0 authorization code flow with PKCE, refresh token in the OS keychain, no cookies involved, so CSRF is out of scope.",
+        "Microservices recipe: an edge gateway validates the session or refresh token and mints short-lived RS256 JWTs for internal calls; services verify via cached JWKS.",
+        "Cookie flag cheat line: `HttpOnly; Secure; SameSite=Lax; Path=/; __Host- prefix; Max-Age set` — every auth cookie, no exceptions.",
+        "Lifetime cheat table: access token 5–15 min · refresh token 7–30 days with rotation · session idle 2 h / absolute 30 days · reset token 15–60 min · signing key overlap ≥ max token lifetime.",
+        "Password cheat line: argon2id (m=19 MiB, t=2, p=1) or bcrypt cost 12 · unique salt · rehash on login when parameters change · breach-list check · no forced expiry.",
+        "Decision rule recap: cookies → CSRF defense required; headers → CSRF-immune but XSS-exposed; sessions → revocable; JWT → scalable; hybrid → both, at the price of more moving parts.",
+        "Deployment checklist: HTTPS with HSTS everywhere, a strict CSP, security headers set, secrets from a manager rather than env files in the repo, and audit logging of auth events.",
+        "Auth telemetry to alert on: failed-login spikes, refresh-token reuse events, logins from new geographies, and sudden bursts of password resets.",
+        "The one-sentence summary: keep credentials short-lived, opaque where possible, out of reach of scripts, revocable when things go wrong, and rotate everything on a schedule you actually enforce.",
+        "What to learn next: OAuth 2.1 and OIDC, WebAuthn/passkeys as the eventual password replacement, and mTLS or DPoP for proof-of-possession tokens that survive theft."
+      ]
+    }
+  ]
+}

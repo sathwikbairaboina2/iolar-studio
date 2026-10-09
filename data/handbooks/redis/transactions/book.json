@@ -1,0 +1,204 @@
+{
+  "title": "Redis Atomicity: Pipelines, Transactions & Lua",
+  "summary": "A dense field guide to executing multiple Redis commands as one unit — pipelining for throughput, MULTI/EXEC for batching, WATCH for optimistic locking, and Lua/Functions for true server-side atomicity. Covers the mechanics, the guarantees Redis actually gives you, the trade-offs, and the mistakes that silently break correctness.",
+  "chapters": [
+    {
+      "title": "The Round-Trip Problem",
+      "points": [
+        "Redis is a single-threaded command executor with a networked request/response protocol (RESP)",
+        "Every command costs one RTT: client sends, blocks, server replies — latency dominates, not CPU",
+        "100k SET commands at 0.5ms RTT = ~50 seconds of pure waiting, even though Redis executes each in ~1µs",
+        "Throughput ceiling of naive clients ≈ 1/RTT, independent of how fast Redis is",
+        "Local socket RTT ~30-50µs; same-datacenter ~200µs-1ms; cross-region 50ms+ — the gap defines the fix",
+        "Three distinct problems people conflate: latency (pipelines), grouping (MULTI/EXEC), and read-modify-write races (WATCH or Lua)",
+        "Pipelining solves latency only — it gives no atomicity",
+        "MULTI/EXEC solves grouping and isolation — it gives no conditional logic",
+        "Lua/Functions solve read-modify-write — server-side branching on values read in the same execution",
+        "Redis is single-threaded for command execution, so every command is already atomic by itself: INCR, SETNX, LPUSH need no transaction",
+        "Redis 6+ has threaded I/O (io-threads) for socket read/write, but command execution stays on one thread",
+        "The mental model: Redis executes one command at a time from a queue; your job is deciding how commands enter that queue",
+        "Compare: `redis-cli --latency` measures RTT; `redis-benchmark -P 16` measures pipelined throughput",
+        "Rule of thumb: if you need speed reach for pipeline; if you need correctness reach for Lua"
+      ]
+    },
+    {
+      "title": "Pipelining Mechanics",
+      "points": [
+        "Pipelining = write N requests to the socket without waiting, then read N replies in order",
+        "RESP replies come back in exactly the order commands were sent — the client matches by position, not by ID",
+        "Code: `p = r.pipeline(transaction=False); p.set('a',1); p.incr('b'); p.execute()` (redis-py)",
+        "Typical speedup 5-10x; a 100k-command load can drop from ~50s to ~2s",
+        "Pipeline is a CLIENT-side technique — Redis needs no special support beyond its input buffer",
+        "Batch size matters: 100-1000 commands per flush is the sweet spot",
+        "Batching too large blows the server output buffer and spikes memory; each queued reply is held until you read",
+        "`client-output-buffer-limit normal 0 0 0` means unlimited for normal clients — a huge pipeline can OOM the server",
+        "Pipelined commands are NOT atomic: other clients' commands can interleave between them",
+        "No conditional logic: you cannot branch on reply #3 to decide command #4 — all commands are chosen before any reply arrives",
+        "Errors do not stop a pipeline: command 4 failing still runs commands 5..N; you inspect per-command replies",
+        "Pipelining works with any command mix, including reads — a pipeline of GETs is a legitimate multi-get",
+        "Cluster caveat: keys must be split per-node; client libraries shard the pipeline and merge replies",
+        "Anti-pattern: pipelining inside a loop with an execute() per iteration — that's just RTT with extra steps"
+      ]
+    },
+    {
+      "title": "MULTI / EXEC: The Transaction Block",
+      "points": [
+        "MULTI opens a transaction; subsequent commands are QUEUED not executed; EXEC runs them all",
+        "Server replies `+QUEUED` to each command inside MULTI — the reply is not the command's result",
+        "EXEC returns an array of replies, one per queued command, in order",
+        "DISCARD aborts: flushes the queue, exits MULTI state, returns +OK",
+        "Guarantee 1 — isolation: no other client's command runs between the first and last command of EXEC",
+        "Guarantee 2 — all-or-nothing queuing: if any command fails to queue, EXEC aborts everything",
+        "Redis transactions are serialized and atomic in execution, but they are NOT ACID-with-rollback",
+        "Nested MULTI is an error: `ERR MULTI calls can not be nested`",
+        "Commands inside MULTI cannot see each other's results — no branching, no reading a value to decide the next write",
+        "`redis-py`'s default `r.pipeline()` wraps in MULTI/EXEC; pass `transaction=False` for a raw pipeline",
+        "Client libraries usually pipeline the MULTI...EXEC block too, so the whole transaction is one RTT",
+        "MULTI does NOT block other clients before EXEC — the queue is per-connection, the server keeps serving everyone",
+        "A transaction of independent writes (SET a, SET b, INCR c) is the ideal use case",
+        "If you find yourself wanting an `if` inside MULTI, you actually need Lua"
+      ]
+    },
+    {
+      "title": "Errors Inside Transactions (No Rollback)",
+      "points": [
+        "Two error classes, two very different behaviors — this is the #1 misunderstanding",
+        "Class 1 — queue-time error: unknown command, wrong arity, OOM. Detected at queue time",
+        "Queue-time error makes Redis reply with an error instead of +QUEUED and flag the transaction dirty",
+        "EXEC on a dirty transaction returns `EXECABORT Transaction discarded because of previous errors.` — zero commands run",
+        "Class 2 — runtime error: correct syntax, wrong type, e.g. `LPUSH` on a string key",
+        "Runtime errors are NOT detected at queue time — the command queues fine",
+        "On EXEC, a runtime error appears as one error entry in the reply array; every OTHER command still executes and stays applied",
+        "There is NO ROLLBACK: Redis will not undo the commands that succeeded",
+        "Rationale from Redis docs: runtime errors come from programming bugs detectable in dev; rollback machinery would cost speed and simplicity",
+        "Practical consequence: you must inspect every element of the EXEC reply array, not just check that EXEC didn't throw",
+        "Redis < 2.6.5 did not even detect queue-time errors — EXEC executed the valid subset",
+        "Example: MULTI; SET k v; LPUSH k x; INCR n; EXEC → replies [OK, WRONGTYPE error, 1]; k and n are both modified",
+        "Compare to SQL: `BEGIN/ROLLBACK` undoes partial work; Redis has no undo log at all",
+        "Design defense: validate types and inputs before queueing, or move the logic into Lua where you control the flow",
+        "Lua does not give you rollback either — an error mid-script leaves earlier writes applied"
+      ]
+    },
+    {
+      "title": "WATCH and Optimistic Locking",
+      "points": [
+        "WATCH key [key ...] marks keys for check-and-set; EXEC fails if any watched key changed",
+        "Optimistic concurrency control: assume no conflict, detect it at commit, retry on failure",
+        "Failed EXEC returns a Null reply (nil), NOT an error — a missing check is a silent bug",
+        "The full loop: WATCH key → GET key (read outside MULTI) → compute in client → MULTI → SET new → EXEC → retry if nil",
+        "WATCH must come BEFORE the read, or you race between reading and watching",
+        "UNWATCH clears all watches on the connection; EXEC and DISCARD also clear them implicitly",
+        "Redis flags dirty on any modification of the key — including by the same client, expiry, or eviction",
+        "It is value-blind: SET k same-value still trips the watch (Redis ≥ 6.0.9 tracks touch not value change)",
+        "Key deletion or a DEL then re-create trips the watch; so does FLUSHALL/FLUSHDB",
+        "Worked example — atomic ZPOP: WATCH zset; element = ZRANGE zset 0 0; MULTI; ZREM zset element; EXEC; retry on nil",
+        "Worked example — INCR without INCR: WATCH k; v = GET k; MULTI; SET k v+1; EXEC",
+        "Retry loop needs a bounded attempt count plus jittered backoff or you spin forever under contention",
+        "Livelock hazard: N clients watching one hot key means most EXECs fail; throughput collapses as N grows",
+        "Optimistic (WATCH) vs pessimistic (a SET NX lock): WATCH has no lock to leak, but degrades badly under contention",
+        "WATCH is per-connection state — a connection-pooling client that hands you a different socket breaks the whole scheme",
+        "In Redis Cluster all watched keys must hash to the same slot as the transaction's keys"
+      ]
+    },
+    {
+      "title": "Lua Scripting: EVAL and the Script Cache",
+      "points": [
+        "EVAL script numkeys key [key ...] arg [arg ...] — numkeys splits KEYS from ARGV",
+        "KEYS and ARGV are 1-indexed Lua tables: KEYS[1], ARGV[1]",
+        "Always pass keys via KEYS, never hardcode them — Redis Cluster and future proxies route by declared keys",
+        "redis.call(...) raises a Lua error that aborts the script; redis.pcall(...) returns an error table you can inspect",
+        "Return with `return` — a script with no return yields nil to the client",
+        "SCRIPT LOAD returns the SHA1; EVALSHA sha numkeys ... runs the cached script with a much smaller payload",
+        "Standard client pattern: try EVALSHA, catch `NOSCRIPT`, fall back to EVAL, cache the SHA",
+        "Script cache is not persisted: it is lost on restart, on SCRIPT FLUSH, and on failover to a fresh replica",
+        "Example — atomic compare-and-delete lock release: `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end`",
+        "Example — rate limiter: `local c=redis.call('incr',KEYS[1]); if c==1 then redis.call('expire',KEYS[1],ARGV[1]) end; return c`",
+        "Type conversion Lua→Redis: number is truncated to integer (3.7 becomes 3), true→1, false→nil",
+        "Type conversion Redis→Lua: bulk string→Lua string, nil reply→false, status reply→table with `ok` field",
+        "Lua tables convert to arrays and STOP at the first nil element — a sparse table silently truncates",
+        "Return a table `{err='msg'}` to produce a client-visible error, `{ok='status'}` for a status reply",
+        "Redis 7 adds Redis Functions (FUNCTION LOAD, FCALL) — named, persisted, replicated libraries instead of ephemeral SHAs"
+      ]
+    },
+    {
+      "title": "Script Atomicity, Blocking & Determinism",
+      "points": [
+        "A script runs atomically: Redis blocks all other clients for the full duration — the strongest guarantee available",
+        "Corollary: a slow script is a server-wide stall; a loop over a million keys freezes every other client",
+        "busy-reply-threshold (formerly lua-time-limit), default 5000ms: after it, Redis replies BUSY to other clients",
+        "BUSY state accepts only SCRIPT KILL and SHUTDOWN NOSAVE",
+        "SCRIPT KILL only works if the script has not yet written; after a write the only escape is SHUTDOWN NOSAVE and data loss",
+        "Keep scripts short — target sub-millisecond; do not implement a batch job in Lua",
+        "Determinism mattered historically: pre-Redis-7 verbatim replication forbade nondeterminism, so scripts saw a fixed TIME and a seeded random",
+        "redis.replicate_commands() (Redis 3.2+) switched to effects replication; Redis 7 makes effects replication the only mode",
+        "Effects replication ships the resulting write commands to replicas and the AOF, not the script text — so nondeterminism is now safe",
+        "Legacy hazard to recognize in old code: a script using math.random or os.time under verbatim replication diverged replicas",
+        "Shebang flags (Redis 7): `#!lua name=mylib` for functions, `no-writes` to mark a script read-only so it can run on replicas",
+        "no-writes scripts are also allowed during a write-blocked state (e.g. replica-read or OOM)",
+        "Global variable writes are blocked — the sandbox errors on `x = 1`; use `local x = 1`",
+        "Available libraries: cjson, cmsgpack, bit, struct, redis.sha1hex, redis.breakpoint (debug)",
+        "redis.log(redis.LOG_WARNING, msg) writes to the Redis log for debugging",
+        "No network, no os.execute, no require — the sandbox is deliberately sealed"
+      ]
+    },
+    {
+      "title": "Choosing the Right Tool",
+      "points": [
+        "Comparison row — Pipeline: atomic NO, isolated NO, conditional NO, RTT 1, blocking none. Use for bulk throughput",
+        "Comparison row — MULTI/EXEC: atomic YES, isolated YES, conditional NO, RTT 1 (pipelined), blocking during EXEC. Use for a fixed batch of writes",
+        "Comparison row — WATCH+MULTI: atomic YES, conditional YES (client-side), RTT 2+ and retries. Use for low-contention read-modify-write",
+        "Comparison row — Lua/EVAL: atomic YES, conditional YES (server-side), RTT 1, blocking for the script's duration. Use for read-modify-write on hot keys",
+        "Decision rule: no reads involved → pipeline. Fixed writes → MULTI. Branch on a value → Lua",
+        "Prefer a single native command when one exists: INCR, SETNX, GETSET, SET k v NX EX 30, LMOVE, ZADD GT",
+        "SET key val NX EX ttl replaces the old SETNX+EXPIRE pair and its crash-between-commands bug",
+        "Lua beats WATCH under contention: no retries, no wasted RTTs, no livelock — one pass, always succeeds",
+        "WATCH beats Lua when the computation is expensive or needs data Redis doesn't have (an external API, heavy math)",
+        "Lua beats WATCH for correctness-critical paths because the check and the write cannot be separated",
+        "Cost of Lua: harder to debug, harder to test, script cache management, blocks the server",
+        "Cost of WATCH: retry loops, contention sensitivity, connection-affinity requirements",
+        "Complexity: pipeline O(N) commands with 1 RTT; WATCH loop is O(N × retries) RTTs; Lua is 1 RTT with server-side O(work)",
+        "Redis 7 Functions are the modern home for anything you'd otherwise ship as a long-lived EVALSHA"
+      ]
+    },
+    {
+      "title": "Common Mistakes",
+      "points": [
+        "Assuming MULTI rolls back on a runtime error — it does not; partial effects persist",
+        "Ignoring the nil reply from EXEC after WATCH, so a lost race silently becomes a lost update",
+        "Reading a value inside MULTI and expecting the value — you get +QUEUED, and the real reply only at EXEC",
+        "Using a connection pool with WATCH, so the WATCH and the EXEC land on different connections",
+        "Hardcoding key names in Lua instead of using KEYS — breaks Redis Cluster with CROSSSLOT",
+        "Cross-slot transactions in Cluster: all keys in one MULTI/EXEC or script must hash to one slot; use hash tags `{user:1}:name`",
+        "Long-running Lua scripts stalling the entire server, then discovering SCRIPT KILL is useless after a write",
+        "Using KEYS * inside a script — O(N) over the whole keyspace while everything else is blocked",
+        "Building a distributed lock with SETNX then EXPIRE as two commands: a crash between them leaks the lock forever",
+        "Releasing someone else's lock with a bare DEL instead of a Lua compare-and-delete on the owner token",
+        "Assuming EXEC is durable: it is atomic in memory, but not fsynced unless appendfsync always is set",
+        "Assuming replicas are consistent after EXEC — replication is asynchronous, so a failover can lose acknowledged transactions",
+        "Pipelining a million commands in one flush and OOMing the server's output buffer",
+        "Watching a key that a TTL will expire, then blaming Redis when EXEC returns nil",
+        "Relying on Lua's implicit float truncation: returning 3.7 gives the client 3",
+        "Returning a Lua table with a nil hole and losing every element after it"
+      ]
+    },
+    {
+      "title": "Guarantees, Durability & Recap",
+      "points": [
+        "What Redis atomicity means precisely: no interleaving of other clients' commands, single-threaded serial execution",
+        "What it does NOT mean: no rollback, no snapshot isolation across separate transactions, no cross-key durability barrier",
+        "Durability is orthogonal: RDB snapshots lose recent writes; AOF everysec loses up to 1s; appendfsync always is durable but slow",
+        "A successful EXEC only guarantees the commands ran in memory on the primary",
+        "Replication is asynchronous by default — an acknowledged EXEC can be lost on failover",
+        "WAIT numreplicas timeout blocks until N replicas acknowledge; it improves the odds but is not a consensus protocol",
+        "Redis Cluster gives no cross-slot atomicity at all — plan the key layout with hash tags up front",
+        "Persistence of code: EVAL scripts live in an ephemeral cache; Redis 7 Functions persist in RDB/AOF and replicate",
+        "Cheat sheet — MULTI/EXEC/DISCARD/WATCH/UNWATCH; EVAL/EVALSHA/SCRIPT LOAD/SCRIPT FLUSH/SCRIPT KILL; FUNCTION LOAD/FCALL",
+        "Testing checklist: assert on every element of an EXEC array, simulate a concurrent writer to exercise the WATCH-nil path, benchmark script duration",
+        "Observability: SLOWLOG catches slow scripts; INFO commandstats breaks down EVAL cost; LATENCY DOCTOR flags fork and script stalls",
+        "Default reach order: native single command > Lua/Function > MULTI/EXEC > WATCH loop > pipeline for throughput only",
+        "One-line summary: pipeline for speed, MULTI for grouping, WATCH for optimism, Lua for certainty",
+        "Final warning: atomic is not durable, and single-node atomic is not distributed atomic"
+      ]
+    }
+  ]
+}

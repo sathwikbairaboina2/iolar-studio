@@ -1,0 +1,356 @@
+{
+  "title": "Kubernetes RBAC: Locking Down the Cluster with Least Privilege",
+  "summary": "A dense handwritten-notes handbook on Kubernetes authorization: Roles, ClusterRoles, Bindings, ServiceAccounts, security contexts, and how to design least-privilege access that actually holds up in production.",
+  "chapters": [
+    {
+      "title": "RBAC Fundamentals & The Request Pipeline",
+      "points": [
+        "RBAC = Role-Based Access Control: the Authorization step of every API request (Authn → Authz → Admission) — k8s checks verbs, not users' identities",
+        "Every RBAC decision answers: can SUBJECT (user/group/ServiceAccount) perform VERB (get/list/create/delete...) on RESOURCE (pods, secrets...) in NAMESPACE (or cluster-wide)",
+        "RBAC is purely additive (default-allow nothing): there is no deny rule — access exists only if some binding grants it",
+        "Built-in roles to know: cluster-admin, admin, edit, view — view can't see Secrets by design; edit can (huge escalation risk)",
+        "Users/groups are NOT API objects — they come from external auth (certs, OIDC, LDAP); ServiceAccounts ARE cluster objects you create",
+        "Discovery endpoints (/api, /apis, healthz) are world-readable and not RBAC-controlled — enumerating resources is always possible"
+      ],
+      "source_page": 1,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "RBAC Fundamentals: how every request is authorized"
+        },
+        {
+          "type": "paragraph",
+          "note": "The Authn → Authz → Admission request pipeline"
+        },
+        {
+          "type": "bullets",
+          "note": "Verb + resource + namespace model, additive-only rule"
+        },
+        {
+          "type": "table",
+          "note": "Built-in roles: cluster-admin / admin / edit / view and their Secret behavior"
+        },
+        {
+          "type": "callout",
+          "note": "No deny rules — absence of grant = deny"
+        },
+        {
+          "type": "sidebox",
+          "note": "Users vs ServiceAccounts; discovery endpoints are always readable"
+        }
+      ]
+    },
+    {
+      "title": "Roles: Namespace-Scoped Permissions",
+      "points": [
+        "Role object: rules[] of apiGroups, resources, verbs, scoped to the Role's own namespace (metadata.namespace matters)",
+        "verbs cheat-sheet: get, list, watch (read); create, update, patch, delete, deletecollection (write); impersonate, bind, escalate (dangerous)",
+        "get on a collection ≠ list: 'get pods' alone can't enumerate, only fetch by known name — combine deliberately",
+        "Subresources use slash syntax: pods/log, pods/exec, pods/portforward, secrets — pods/exec is effectively 'shell on any pod'",
+        "resourceNames: restrict rules to named objects, e.g. only 'get' the configmap 'app-config' — the least-privilege lever most people forget",
+        "wildcards: apiGroups: ['*'], resources: ['*'], verbs: ['*'] = admin everything in scope — audit for them in review"
+      ],
+      "source_page": 2,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Roles: namespace-scoped permission sets"
+        },
+        {
+          "type": "code",
+          "note": "Minimal Role YAML: apiGroups, resources, verbs"
+        },
+        {
+          "type": "bullets",
+          "note": "Verb cheat-sheet grouped read/write/dangerous"
+        },
+        {
+          "type": "callout",
+          "note": "pods/exec = remote shell; treat like root"
+        },
+        {
+          "type": "sidebox",
+          "note": "resourceNames for object-level scoping"
+        },
+        {
+          "type": "qa",
+          "note": "get vs list on collections?"
+        }
+      ]
+    },
+    {
+      "title": "ClusterRoles: Cluster-Wide Power & Reuse",
+      "points": [
+        "ClusterRole: same rules schema, no namespace — grants apply cluster-wide across all namespaces",
+        "ClusterRole is reusable via aggregationLabel/aggregationRule: managed ClusterRoles auto-union rules from matching labels (how k8s extends 'view'/'edit')",
+        "The namespace-flattening trick: a ClusterRole bound with a RoleBinding grants its permissions only in that one namespace — the standard pattern for reusable role templates",
+        "Non-resource URLs: ClusterRoles can cover /healthz, /metrics, /version via nonResourceURLs — needed for scraping Prometheus",
+        "ClusterRole can also govern cluster-scoped resources: nodes, namespaces, PVs, storageclasses, customresourcedefinitions",
+        "Deleting a ClusterRole breaks all Bindings referencing it silently — permissions vanish without an error on the binding itself"
+      ],
+      "source_page": 3,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "ClusterRoles: cluster-wide scope + templates"
+        },
+        {
+          "type": "diagram",
+          "note": "ClusterRole + RoleBinding = namespaced reuse pattern"
+        },
+        {
+          "type": "bullets",
+          "note": "Aggregation rules, cluster-scoped resources, nonResourceURLs"
+        },
+        {
+          "type": "callout",
+          "note": "Deleting a ClusterRole silently orphans its bindings"
+        },
+        {
+          "type": "code",
+          "note": "aggregationRule YAML snippet"
+        }
+      ]
+    },
+    {
+      "title": "Bindings: RoleBinding vs ClusterRoleBinding",
+      "points": [
+        "Binding = grants; Role never grants anything alone. RoleBinding lives in one namespace; ClusterRoleBinding spans the cluster",
+        "subjects: kind User, Group, or ServiceAccount — namespace field required for namespaced SAs (default: <ns>:default)",
+        "Matrix: Role+RoleBinding = one ns; ClusterRole+RoleBinding = one ns (reusable template); ClusterRole+ClusterRoleBinding = everywhere",
+        "Bindings are immutable in place: change a subject and the API rejects it — delete & recreate (brief permission gap; script it atomically)",
+        "auto-mount of 'system:' groups: system:masters = god mode; authenticated = every human user — never grant these casually",
+        "Binding references don't validate at creation with full strictness — typo'd subject kind or SA namespace fails open (grants nothing) or wrong (grants to nobody)"
+      ],
+      "source_page": 4,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Bindings: where permissions actually attach"
+        },
+        {
+          "type": "table",
+          "note": "Role/ClusterRole × RoleBinding/CRB scope matrix"
+        },
+        {
+          "type": "code",
+          "note": "RoleBinding YAML with ServiceAccount subject"
+        },
+        {
+          "type": "callout",
+          "note": "Bindings immutable — delete + recreate"
+        },
+        {
+          "type": "bullets",
+          "note": "system: groups; typo failure modes"
+        }
+      ]
+    },
+    {
+      "title": "ServiceAccounts: Identity for Workloads",
+      "points": [
+        "ServiceAccount = API identity for pods; tokens prove it; defaults: namespace's 'default' SA with almost no permissions",
+        "Legacy projected token auto-mount: every pod got its SA token volume at /var/run/secrets/.../token — a stolen pod = stolen credentials",
+        "Modern fix: automountServiceAccountToken: false (pod and/or SA level), or Kubernetes ≥1.24 bound tokens (short-lived, audience-bound, expiring JWTs)",
+        "One SA per workload, not shared 'default': blast-radius isolation — compromise of one app doesn't inherit another's permissions",
+        "create SA + token: kubectl create sa app-sa; kubectl create token app-sa (short-lived) vs secret-based long-lived tokens (avoid)",
+        "Workload Identity patterns: EKS IRSA / GKE Workload Identity map SA → cloud IAM so pods touch AWS/GCP without static keys"
+      ],
+      "source_page": 5,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "ServiceAccounts: giving pods an identity"
+        },
+        {
+          "type": "bullets",
+          "note": "Token mounting, 1.24 bound tokens, automount: false"
+        },
+        {
+          "type": "code",
+          "note": "Pod spec with serviceAccountName + automount false"
+        },
+        {
+          "type": "callout",
+          "note": "Never share 'default' SA across workloads"
+        },
+        {
+          "type": "sidebox",
+          "note": "IRSA / GKE Workload Identity for cloud IAM"
+        }
+      ]
+    },
+    {
+      "title": "Security Contexts: Hardening the Pod Itself",
+      "points": [
+        "securityContext at pod and container level: runAsNonRoot: true + runAsUser: 1000 — reject root images at admission",
+        "fsGroup & supplementalGroups: fix volume file permissions for non-root containers (emptyDir, PVCs)",
+        "readOnlyRootFilesystem: true + emptyDir for /tmp — blocks malware persistence via writable container fs",
+        "allowPrivilegeEscalation: false and privileged: false; cap drop ALL then add back only NET_BIND_SERVICE etc. (capabilities ~fine-grained root)",
+        "seccompProfile: RuntimeDefault (now default since 1.24 via the Restricted profile); seLinuxOptions for MAC enforcement",
+        "Pod Security Admission replaces PSP: labels on namespace (pod-security.kubernetes.io/enforce=restricted) — 'restricted' profile ≈ all the above flags"
+      ],
+      "source_page": 6,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Security Contexts: least privilege inside the pod"
+        },
+        {
+          "type": "code",
+          "note": "Container securityContext: runAsNonRoot, caps, readOnlyRootFS"
+        },
+        {
+          "type": "bullets",
+          "note": "fsGroup, seccomp, allowPrivilegeEscalation"
+        },
+        {
+          "type": "table",
+          "note": "Pod Security Admission profiles: privileged / baseline / restricted"
+        },
+        {
+          "type": "callout",
+          "note": "Drop ALL capabilities, add back only what's needed"
+        }
+      ]
+    },
+    {
+      "title": "Least-Privilege Patterns in Practice",
+      "points": [
+        "Pattern: start with zero RBAC, watch the audit log for 403s (kubectl get events / apiserver audit), grant only the denied verbs — evidence-driven policy",
+        "Pattern: per-app namespace + per-app SA + one curated Role bound via RoleBinding to a shared ClusterRole template — consistent, auditable",
+        "Pattern: controller/operators need a ClusterRole but should filter by ownerReferences/labels in code, never wildcard-watch everything",
+        "Pattern: separate SAs per Deployment even in the same app (web vs migration job) so CI jobs can't touch runtime secrets",
+        "escalate/bind verbs: letting a user 'create RoleBindings' freely = privilege escalation — they can bind cluster-admin to themselves",
+        "Secrets are the crown jewels: read access to a Secret in a namespace ≈ full SA tokens there — Gatekeeper/OPA policies should restrict who can read secrets at all"
+      ],
+      "source_page": 7,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Least-privilege: patterns that survive audits"
+        },
+        {
+          "type": "bullets",
+          "note": "Audit-driven grants; per-namespace SA pattern; operator filtering"
+        },
+        {
+          "type": "callout",
+          "note": "bind/escalate verbs = self-service cluster-admin"
+        },
+        {
+          "type": "sidebox",
+          "note": "Secrets read ≈ SA tokens ≈ escalation path"
+        },
+        {
+          "type": "diagram",
+          "note": "App → SA → RoleBinding → ClusterRole template flow"
+        }
+      ]
+    },
+    {
+      "title": "Common Mistakes & Gotchas",
+      "points": [
+        "Mistake: ClusterRoleBinding 'just to make it work' — one forgotten CRB on 'edit' exposes every namespace forever",
+        "Mistake: verbs on collections don't imply subresources — 'get pods' does NOT grant 'get pods/log'; list each subresource explicitly",
+        "Mistake: RBAC is enforced at the API server only — kubelet exec, port-forward via API, and anything bypassing apiserver skip these checks",
+        "Gotcha: list/watch on Secrets bypasses encryption-at-rest in etcd reads and dumps tokens — even 'view' role escalation via any Secret-bearing SA",
+        "Gotcha: impersonate verb + 'system:' groups = instant cluster-admin; guard impersonate like root",
+        "Debug flow: kubectl auth can-i --list --as=system:serviceaccount:ns:sa — the ground truth of what an identity can do; kubectl auth whoami",
+        "Rancher/Auth Webhook note: external authorizers (OPA, webhooks) run in addition to RBAC — deny there doesn't remove RBAC grants"
+      ],
+      "source_page": 8,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Gotchas: where RBAC bites"
+        },
+        {
+          "type": "bullets",
+          "note": "CRB sprawl, subresource traps, kubelet bypass"
+        },
+        {
+          "type": "callout",
+          "note": "impersonate + system: groups = god mode"
+        },
+        {
+          "type": "code",
+          "note": "kubectl auth can-i --list --as=..."
+        },
+        {
+          "type": "sidebox",
+          "note": "Authz webhooks layer on top, not instead"
+        }
+      ]
+    },
+    {
+      "title": "Comparisons & Trade-offs",
+      "points": [
+        "RBAC vs ABAC: ABAC (attributes) was removed as practical option — RBAC's coarse roles are auditable; fine-grained needs OPA/Gatekeeper/Kyverno on top",
+        "RBAC vs Node authorizer vs Webhook: kubelet uses Node authorizer; custom Webhook authorizers chain after RBAC — order: RBAC → Node → Webhook",
+        "ClusterRole vs duplicated Roles: CRs centralize but any mistake scales cluster-wide — trade consistency for blast radius",
+        "Narrow verbs+resourceNames vs broad roles: precise rules = review overhead & drift; broad roles = faster shipping, bigger compromise surface",
+        "Auto-mounted tokens vs no automount + IRSA: convenience vs credential-theft blast radius",
+        "Policy-as-code tools: rbac-manager, korb, kube-apiserver audit + rbac-lookup / krew auth — pick audit tooling before you have 50 roles"
+      ],
+      "source_page": 9,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Trade-offs: choosing your strictness"
+        },
+        {
+          "type": "table",
+          "note": "RBAC vs ABAC vs Webhook authorizer"
+        },
+        {
+          "type": "bullets",
+          "note": "Centralize vs duplicate; narrow vs broad grants"
+        },
+        {
+          "type": "sidebox",
+          "note": "Tooling: rbac-lookup, audit logs, policy engines"
+        },
+        {
+          "type": "qa",
+          "note": "When is a ClusterRole the wrong call?"
+        }
+      ]
+    },
+    {
+      "title": "Summary: Your RBAC Checklist",
+      "points": [
+        "Mental model: identity (SA/user) → binding → role → rules of verb+resource(+subresource+name) — read any grant in that order",
+        "Always: one SA per workload, automount off unless needed, runAsNonRoot + drop ALL caps + readOnlyRootFilesystem",
+        "Always: namespace scoping by default; ClusterRoleBindings only for platform components (controllers, CI runners) with a named owner",
+        "Never: bind edit/cluster-admin to groups of humans casually; grant secrets list cluster-wide; use system:masters for anything routine",
+        "Verify: kubectl auth can-i --list --as=…, apiserver audit logs for 403s, periodic rbac-lookup scan for wildcard rules and orphaned bindings",
+        "Evolve: start zero → audit-driven grants → codify in Git (RBAC as code + PR review) → enforce with PSA restricted + policy engine",
+        "Remember: RBAC is additive, API-server-only, and Secrets are credentials — design assuming any pod's token will eventually be stolen"
+      ],
+      "source_page": 10,
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Wrap-up: the least-privilege checklist"
+        },
+        {
+          "type": "bullets",
+          "note": "Always / Never / Verify / Evolve lists"
+        },
+        {
+          "type": "diagram",
+          "note": "Identity → Binding → Role → Rule flow recap"
+        },
+        {
+          "type": "callout",
+          "note": "Assume pod tokens will be stolen — scope everything"
+        },
+        {
+          "type": "sidebox",
+          "note": "RBAC as code in Git with PR review"
+        }
+      ]
+    }
+  ]
+}

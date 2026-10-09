@@ -1,0 +1,199 @@
+{
+  "title": "Rust Traits: Bounds, Dispatch & Blanket Impls",
+  "summary": "A dense field guide to Rust's trait system — from defining and implementing traits through generic bounds, static vs dynamic dispatch, associated types, and blanket impls. Covers the mechanics behind monomorphization and vtables, the coherence rules that constrain you, and the mistakes that produce Rust's most infamous compiler errors.",
+  "chapters": [
+    {
+      "title": "What a Trait Is",
+      "points": [
+        "Definition: a trait is a named set of method signatures a type can implement — Rust's shared-behavior abstraction, closest to an interface but not a base class.",
+        "Declaring: `trait Summary { fn summarize(&self) -> String; }` — signature ends in `;`, no body required.",
+        "Implementing: `impl Summary for Article { fn summarize(&self) -> String { self.headline.clone() } }` — the `impl Trait for Type` form.",
+        "Traits are not types. `Summary` names a constraint; `dyn Summary` and `impl Summary` are the type-level forms.",
+        "Default method bodies: `fn summarize(&self) -> String { String::from(\"(read more...)\") }` — implementors may omit or override.",
+        "Default bodies may call other trait methods, even required ones with no default: `fn summarize(&self) -> String { format!(\"(from {})\", self.author()) }`.",
+        "Receiver forms: `&self` (borrow), `&mut self` (mutate), `self` (consume), and no receiver at all (associated function, e.g. `fn new() -> Self`).",
+        "`Self` (capital S) inside a trait means the implementing type; `self` (lowercase) is the receiver value.",
+        "Trait methods are only callable when the trait is in scope — `use std::io::Write;` before calling `.write_all()` is not decoration, it's required.",
+        "Supertraits: `trait Summary: Display` requires every implementor to also implement `Display`, and lets default bodies call `Display` methods.",
+        "Associated constants: `trait Shape { const SIDES: u32; }` — per-implementor values resolved at compile time.",
+        "Marker traits have zero methods and exist only to tag a property: `Copy`, `Send`, `Sync`, `Sized`.",
+        "Traits vs inheritance: no field inheritance, no constructors, no implicit upcasting hierarchy — composition of behavior, not of data.",
+        "`impl Type { ... }` (inherent impl) vs `impl Trait for Type { ... }`: inherent methods win on name collision, trait methods need `Trait::method(&x)` or `<X as Trait>::method(&x)` to disambiguate."
+      ]
+    },
+    {
+      "title": "The Orphan Rule & Coherence",
+      "points": [
+        "Coherence: for any (trait, type) pair the compiler must find at most one impl in the whole program — otherwise method calls would be ambiguous across crates.",
+        "Orphan rule: you may `impl Trait for Type` only if the trait is local to your crate, or the type is local to your crate.",
+        "Legal: `impl Display for MyType` (local type). Legal: `impl MyTrait for Vec<i32>` (local trait). Illegal: `impl Display for Vec<i32>` (both foreign).",
+        "Error to recognize: `error[E0117]: only traits defined in the current crate can be implemented for types defined outside of the crate`.",
+        "Why it exists: without it, two dependencies could each impl `Display for Vec<i32>` and linking them together would be unresolvable — no crate could ever add an impl without a breaking-change risk.",
+        "Newtype pattern is the standard workaround: `struct Wrapper(Vec<String>);` then `impl Display for Wrapper` — legal because `Wrapper` is local.",
+        "Newtype cost: `Wrapper` doesn't get `Vec`'s methods. Reach through with `self.0`, or `impl Deref for Wrapper { type Target = Vec<String>; }` to forward them.",
+        "Newtype is zero-cost at runtime: a single-field tuple struct has identical layout to its field.",
+        "Fundamental types (`&T`, `&mut T`, `Box<T>`) are transparent to the rule — `impl MyTrait for &Foo` is checked against `Foo`.",
+        "Generic-parameter covering rule: local type must appear before any uncovered type parameter, so `impl<T> ForeignTrait<T> for MyType` is allowed but `impl<T> ForeignTrait<MyType> for T` is not.",
+        "Overlap is rejected even when impls look disjoint to a human — Rust has no impl specialization on stable, so `impl<T> Foo for T` and `impl Foo for u8` conflict.",
+        "Error to recognize: `error[E0119]: conflicting implementations of trait`.",
+        "Practical consequence: a blanket impl in your crate permanently blocks users from writing their own impl for types it covers — treat blanket impls as a public API commitment.",
+        "Traits themselves can be private (`trait Sealed`), which is the basis of the sealed-trait pattern that stops downstream crates implementing your trait at all."
+      ]
+    },
+    {
+      "title": "Trait Bounds & Generic Functions",
+      "points": [
+        "A generic without bounds can do almost nothing: `fn largest<T>(list: &[T]) -> &T` can't compare `T` until you say `T: PartialOrd`.",
+        "Bound syntax: `fn notify<T: Summary>(item: &T)` — read as \"for any T that implements Summary\".",
+        "`impl Trait` in argument position: `fn notify(item: &impl Summary)` — sugar for the above, but the type parameter is anonymous so you can't turbofish it.",
+        "Two params, same type: `fn notify<T: Summary>(a: &T, b: &T)` forces both arguments to be the same type; `fn notify(a: &impl Summary, b: &impl Summary)` does not.",
+        "Multiple bounds with `+`: `fn notify<T: Summary + Display>(item: &T)`.",
+        "`where` clauses move bounds off the signature line: `fn f<T, U>(t: &T, u: &U) -> i32 where T: Display + Clone, U: Clone + Debug`.",
+        "`where` is strictly more expressive — it can bound arbitrary types, not just parameters: `where Vec<T>: Debug` or `where Self: Sized`.",
+        "Bounds on impl blocks: `impl<T: Display + PartialOrd> Pair<T> { fn cmp_display(&self) }` — the method exists only for `T` meeting the bound (conditional methods).",
+        "`impl Trait` in return position: `fn make_adder(x: i32) -> impl Fn(i32) -> i32 { move |y| x + y }` — names an opaque concrete type, essential for closures and iterators that have no writable name.",
+        "Return-position `impl Trait` is a single concrete type: returning either an `Article` or a `Tweet` from the same function is a compile error, needs `Box<dyn Summary>`.",
+        "The implicit `Sized` bound: every `T` means `T: Sized` unless you write `T: ?Sized` to opt out — needed to accept `str` or `dyn Trait` behind a reference.",
+        "Turbofish for explicit instantiation: `\"42\".parse::<i32>()` when inference can't pick the type.",
+        "Bounds are checked at the definition site, not the call site — a generic function must be valid for *every* type meeting the bounds, which is why the errors point at the generic body.",
+        "Compare with C++ templates: they instantiate first and error inside the template; Rust's bounds make the contract explicit up front, so callers get errors at their own call site."
+      ]
+    },
+    {
+      "title": "Static Dispatch & Monomorphization",
+      "points": [
+        "Static dispatch: the compiler knows the concrete type at compile time and emits a direct call to a specific function address.",
+        "Monomorphization: for each concrete type used, the compiler stamps out a specialized copy of the generic — `largest::<i32>` and `largest::<char>` become separate functions.",
+        "Result: generics are zero-cost. `fn add<T: Add>(a: T, b: T)` called with `i32` compiles to the same instruction as hand-written `i32` addition.",
+        "Enables inlining. Once the callee is known, LLVM can inline it and then constant-fold, vectorize, or delete it entirely — the biggest real win, larger than the saved indirect jump.",
+        "Iterator chains rely on this: `v.iter().filter(..).map(..).sum()` monomorphizes into a single loop with no closure calls left.",
+        "Cost 1 — code bloat: N types × M generic functions means N×M machine-code copies, bigger binaries, more instruction-cache pressure.",
+        "Cost 2 — compile time: monomorphization happens per codegen unit, and heavily generic crates (serde, diesel) are slow to build for exactly this reason.",
+        "Mitigation — the thin-wrapper/outlining pattern: a small generic shim converts and calls one non-generic inner function, so only the shim is duplicated.",
+        "Worked example: `fn open<P: AsRef<Path>>(p: P) { open_inner(p.as_ref()) } fn open_inner(p: &Path) { .. }` — this is how `std::fs::File::open` is written.",
+        "Monomorphization is why generic code can be in a library with no body available... it can't — generic bodies must be in crate metadata, which is why generics can't cross a C ABI or a dynamic-library boundary.",
+        "Compile-time resolution is what makes associated types, `Self`-returning methods, and generic methods work under static dispatch but not under `dyn`.",
+        "Rules of thumb: static dispatch for hot paths and small type sets; watch for bloat when a generic is instantiated with dozens of types.",
+        "Inspect it: `cargo llvm-lines` ranks functions by generated IR lines and shows exactly which generics are bloating the binary.",
+        "Static dispatch is also the default for `impl Trait` args and returns — the sugar changes syntax, not the dispatch strategy."
+      ]
+    },
+    {
+      "title": "Dynamic Dispatch & Trait Objects",
+      "points": [
+        "Trait object: `dyn Trait`, always behind a pointer — `&dyn Draw`, `Box<dyn Draw>`, `Rc<dyn Error>`. `dyn Trait` alone is unsized and can't be a bare value.",
+        "The motivating case: `Vec<Box<dyn Draw>>` holds buttons, checkboxes, and text fields together — a `Vec<T>` with a generic `T` can hold only one type.",
+        "Fat pointer layout: a `&dyn Trait` is two words — a data pointer to the value plus a vtable pointer. `size_of::<&dyn Trait>() == 2 * size_of::<&u8>()`.",
+        "The vtable is a static, per-(type, trait) table holding the destructor pointer, the size, the alignment, and then one function pointer per trait method.",
+        "Calling `obj.draw()` compiles to: load vtable pointer, load the slot at the method's fixed offset, indirect-call it with the data pointer as `self`.",
+        "Coercion is automatic and lossless in one direction only: `&Button` becomes `&dyn Draw` implicitly (unsizing coercion); going back needs downcasting.",
+        "Downcasting: `dyn Any` plus `downcast_ref::<Button>()` returns `Option<&Button>` — the only stable way to recover the concrete type, and it requires `T: 'static`.",
+        "Runtime cost 1 — the indirect call defeats inlining, which cascades into losing constant propagation and vectorization in the caller.",
+        "Runtime cost 2 — branch prediction: an indirect call is predicted through the BTB and mispredicts when the receiver type varies inside a loop.",
+        "Cost is small in absolute terms (a few ns per call); it matters in tight loops and rarely matters for I/O-bound or per-frame work.",
+        "Binary-size win: one vtable per type instead of one code copy per type — `dyn` shrinks the binary and speeds up compiles.",
+        "Trait objects are the standard answer to heterogeneous collections, plugin boundaries, and reducing generic parameters that infect every signature.",
+        "`Box<dyn Error>` in `fn main() -> Result<(), Box<dyn Error>>` is the ergonomic error type: any error implementing `Error` converts in via `?`.",
+        "`dyn Trait + Send + 'static` — auto traits and lifetimes can be added, but only one non-auto trait per object (no `dyn Read + Write`; use a supertrait `trait ReadWrite: Read + Write`)."
+      ]
+    },
+    {
+      "title": "Object Safety: Why Some Traits Can't Be `dyn`",
+      "points": [
+        "Object safety (now \"dyn compatibility\") is the set of rules a trait must satisfy before `dyn Trait` is a legal type — the vtable must be buildable without knowing the concrete type.",
+        "Rule 1 — no generic methods: `fn process<T>(&self, x: T)` would need infinitely many vtable slots, one per `T`.",
+        "Rule 2 — no method returning `Self`: `fn clone(&self) -> Self` has an unknown return size at the call site, so `Clone` is not object safe.",
+        "Rule 3 — no `Self` in argument position beyond the receiver: `fn eq(&self, other: &Self)` can't check that `other` is the same concrete type, so `PartialEq` is not object safe.",
+        "Rule 4 — no associated constants, and no associated functions without a `self` receiver (`fn new() -> Self` has no instance to dispatch on).",
+        "Rule 5 — the trait must not require `Self: Sized`; conversely adding `where Self: Sized` to a *method* excludes it from the vtable and rescues the rest of the trait.",
+        "The escape hatch in practice: `trait Shape { fn area(&self) -> f64; fn scaled(self) -> Self where Self: Sized; }` — `dyn Shape` works, `scaled` just isn't callable on it.",
+        "Error to recognize: `error[E0038]: the trait `Foo` cannot be made into an object`, with a note pointing at the exact offending method.",
+        "Supertraits propagate: `trait Draw: Clone` makes `dyn Draw` illegal because `Clone` is not object safe.",
+        "Object-safe workaround for cloning: add `fn box_clone(&self) -> Box<dyn Draw>;` and implement it as `Box::new(self.clone())` — the `dyn-clone` crate automates this.",
+        "Object-safe workaround for generic methods: take `&dyn OtherTrait` instead of `<T: OtherTrait>`, moving the erasure one level down.",
+        "`async fn` in traits historically broke object safety because the returned future's type is anonymous and `Self`-dependent; `#[async_trait]` boxes it to `Pin<Box<dyn Future>>` to restore it.",
+        "Object safety is checked when you *write* `dyn Trait`, not when you define the trait — an unsafe-for-dyn trait is perfectly fine if only used generically.",
+        "Design consequence: if you want a trait usable both ways, keep methods `&self`-receiving, non-generic, and `Self`-free in their signatures."
+      ]
+    },
+    {
+      "title": "Static vs Dynamic: The Comparison Table",
+      "points": [
+        "Resolution: static resolves at compile time (monomorphization); dynamic resolves at run time (vtable lookup).",
+        "Syntax: `fn f<T: Draw>(x: &T)` or `fn f(x: &impl Draw)` vs `fn f(x: &dyn Draw)`.",
+        "Call cost: static is a direct call, often inlined to zero; dynamic is one pointer load plus an indirect call, ~1-3 ns, never inlined.",
+        "Binary size: static grows with (types × generic functions); dynamic emits one vtable per type and one function body.",
+        "Compile time: static is slower (more codegen); dynamic is faster.",
+        "Pointer size: `&T` is one word; `&dyn Trait` is two words (data + vtable), so `Vec<Box<dyn T>>` costs an extra indirection per element too.",
+        "Heterogeneity: static requires one concrete type per instantiation; dynamic holds mixed types in one collection.",
+        "Expressiveness: static supports generic methods, `Self` returns, and associated types freely; dynamic requires object safety and forces associated types to be specified (`dyn Iterator<Item = u32>`).",
+        "Error timing: static catches misuse at compile time in full detail; dynamic erases the type, so mismatches surface as downcast `None` at run time.",
+        "API stability: adding a generic parameter is a breaking change to every caller signature; `dyn` keeps signatures fixed and localizes churn.",
+        "Choose static for: hot loops, numeric kernels, iterator adapters, library internals where the type set is small.",
+        "Choose dynamic for: heterogeneous collections, plugin/callback registries, error types, reducing compile time, keeping a public API monomorphic.",
+        "Hybrid pattern: generic public function that immediately erases to `dyn` internally — `pub fn log<W: Write>(w: &mut W) { log_dyn(w) } fn log_dyn(w: &mut dyn Write)` gets caller ergonomics with one code copy.",
+        "Benchmark before optimizing: `dyn` overhead is usually invisible next to allocation, I/O, or a cache miss — reach for it freely outside measured hot paths."
+      ]
+    },
+    {
+      "title": "Associated Types",
+      "points": [
+        "An associated type is a type placeholder chosen by the implementor, not the caller: `trait Iterator { type Item; fn next(&mut self) -> Option<Self::Item>; }`.",
+        "Implementing fixes it: `impl Iterator for Counter { type Item = u32; fn next(&mut self) -> Option<u32> { .. } }`.",
+        "Key rule: a type may implement a trait with associated types exactly once — `Counter` has one `Item`, forever.",
+        "Contrast with generic parameters: `trait Iterator<T>` would allow `impl Iterator<u32> for Counter` *and* `impl Iterator<String> for Counter`, forcing every call site to annotate which one.",
+        "Rule of thumb: use an associated type when there's one natural output type per implementor; use a generic parameter when a type should support many.",
+        "`From<T>` is the canonical generic-parameter case — one type converts from many sources, so `impl From<u8> for MyNum` and `impl From<u16> for MyNum` coexist.",
+        "`Deref::Target`, `Iterator::Item`, and `Add::Output` are the canonical associated-type cases — one answer per implementor.",
+        "`Add` shows both at once: `trait Add<Rhs = Self> { type Output; fn add(self, rhs: Rhs) -> Self::Output; }` — generic on the right operand, associated on the result.",
+        "Default type parameters: `Rhs = Self` means `impl Add for Point` needs no annotation, while `impl Add<Meters> for Millimeters` overrides it.",
+        "Referring to them: `Self::Item` inside the trait, `T::Item` in a generic function, `<T as Iterator>::Item` when disambiguation is needed.",
+        "Bounding them: `fn sum_all<I>(it: I) -> u32 where I: Iterator<Item = u32>` — equality constraints, written in angle brackets, not with `:`.",
+        "Bounding them with a trait instead: `where I: Iterator, I::Item: Display` — constrains the associated type without pinning it.",
+        "Associated types can carry their own bounds in the trait: `trait Graph { type Node: Debug + Clone; }`.",
+        "Under `dyn`, associated types must be spelled out — `Box<dyn Iterator<Item = u32>>` is required because the vtable can't leave `Item` open.",
+        "GATs (generic associated types, stable since 1.65): `type Item<'a> where Self: 'a;` enables lending iterators that yield borrows of themselves."
+      ]
+    },
+    {
+      "title": "Blanket Impls",
+      "points": [
+        "A blanket impl implements a trait for every type meeting a bound: `impl<T: Display> ToString for T { fn to_string(&self) -> String { .. } }`.",
+        "Effect: every `Display` type gets `.to_string()` for free, forever, with no per-type work — that impl in std is why `3.to_string()` works.",
+        "The other famous one: `impl<T, U> Into<U> for T where U: From<T>` — implement `From`, receive `Into` automatically. Never implement `Into` by hand.",
+        "Also blanket: `impl<T: ?Sized> Borrow<T> for T`, and the `Iterator`/`IntoIterator` bridge `impl<I: Iterator> IntoIterator for I`.",
+        "Extension-trait pattern: define a local trait and blanket-impl it to add methods to foreign types — `trait Tap { fn tap(self, f: impl FnOnce(&Self)) -> Self; } impl<T> Tap for T {}`.",
+        "This is how `itertools::Itertools` and `futures::StreamExt` add methods to every iterator/stream without touching std.",
+        "Legal under the orphan rule because the *trait* is local, even though `T` ranges over foreign types.",
+        "Blanket impls are conditional trait propagation: `impl<T: Clone> MyTrait for Vec<T>` gives `Vec<T>` the trait only when `T: Clone`.",
+        "Real cost — they block all future impls: once you write `impl<T: Display> MyTrait for T`, nobody (including you) can write `impl MyTrait for MyStruct`, since it might implement `Display`.",
+        "Error to recognize: `error[E0119]: conflicting implementations of trait `MyTrait` for type `MyStruct`` with the note `upstream crates may add a new impl`.",
+        "No specialization on stable means you can't have a general blanket impl plus a faster specific override — the `min_specialization` feature is nightly-only.",
+        "Two blanket impls with disjoint-looking bounds still conflict: `impl<T: Foo> X for T` and `impl<T: Bar> X for T` overlap because a type could implement both.",
+        "Workaround for that overlap: a marker type parameter or the wrapper/newtype trick, both of which trade ergonomics for a distinguishing type.",
+        "Design guidance: blanket-impl only traits whose behavior is fully derivable from the bound. If any implementor would want a custom version, don't blanket it.",
+        "Docs impact: blanket impls appear under \"Blanket Implementations\" on every matching type's rustdoc page — a good way to discover what a type gained for free."
+      ]
+    },
+    {
+      "title": "Common Mistakes & Summary",
+      "points": [
+        "Forgetting the `use`: a trait's methods are invisible until imported. `no method named \\`write_all\\` found` usually means a missing `use std::io::Write;`.",
+        "Returning two types from `-> impl Trait`: `error[E0308]: mismatched types ... expected because of return type`. Fix with `Box<dyn Trait>` or an enum.",
+        "Hitting E0038 (`cannot be made into an object`) because a method returns `Self` or is generic — fix with `where Self: Sized` or a boxed helper method.",
+        "Hitting E0117 (orphan rule) implementing a foreign trait on a foreign type — fix with a newtype wrapper.",
+        "Hitting E0119 (conflicting impls) from an over-broad blanket impl — narrow the bound or drop the blanket.",
+        "Missing bound in the body: `error[E0599]: no method named \\`clone\\` found for type parameter \\`T\\``. The type has the method; the generic doesn't know it. Add `T: Clone`.",
+        "Reflexive-impl trap: `impl<T> From<T> for MyType` conflicts with std's blanket `impl<T> From<T> for T` when `T = MyType`.",
+        "Overusing `Box<dyn Trait>` in hot loops — allocation plus indirection where a generic or an enum would be free.",
+        "Under-using enums: for a small closed set of types, an enum with a `match` beats `dyn` — no allocation, no vtable, exhaustiveness checking. `enum_dispatch` automates the conversion.",
+        "Unnecessary `.clone()` to dodge borrow errors in trait methods — often the real fix is `&self` instead of `self`, or a lifetime on the return.",
+        "Forgetting `?Sized` on a generic that should accept `str` or `dyn Trait`: `fn print<T: Display + ?Sized>(x: &T)`.",
+        "Object-safety vs orphan rule confusion: E0038 is about vtable construction, E0117 is about which crate owns the impl — different failures, different fixes.",
+        "Decision recap: generics for compile-time-known types and hot paths; `dyn` for heterogeneity and compile-time/binary savings; enums for a small closed set.",
+        "Design recap: associated type when one output per implementor, generic parameter when many; blanket impl only when behavior is fully derivable from the bound.",
+        "Mental model recap: trait = contract, bound = requirement on a generic, monomorphization = copy per type, vtable = runtime method table, coherence = one impl per (trait, type) in the program."
+      ]
+    }
+  ]
+}

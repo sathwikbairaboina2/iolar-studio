@@ -1,0 +1,547 @@
+{
+  "brand": "iolar",
+  "template": "legal-pad",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES TXN & LOCKING — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Deadlocks: Detection, Cause, and Cure",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Postgres does not prevent deadlocks; it detects them.",
+            "It kills one transaction as the victim.",
+            "The detector picks it: not by age, not by priority.",
+            "Your code cannot assume which side dies."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "ERROR:  deadlock detected",
+            "DETAIL:  Process 123 waits for ShareLock",
+            "  on transaction 456; blocked by",
+            "  process 789.   -- SQLSTATE 40P01"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Detection Is Lazy",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A waiter runs cycle detection only after `deadlock_timeout` (1s).",
+            "Checking the wait graph is expensive.",
+            "Lower it: faster detection, CPU burnt on every lock wait.",
+            "Raise it: deadlocks hide behind latency."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Cheapest Alarm",
+          "items": [
+            "`log_lock_waits = on`.",
+            "Logs any wait past `deadlock_timeout`.",
+            "Finds contention before it becomes a deadlock."
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "Four Causes",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Cause",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "inconsistent lock order",
+              "always lock lower id first"
+            ],
+            [
+              "lock upgrade: SELECT then UPDATE",
+              "`FOR UPDATE` on the first read"
+            ],
+            [
+              "FK / unique-index inserts",
+              "order writes by parent key"
+            ],
+            [
+              "bulk UPDATE, no order",
+              "lock rows in id order first"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT id FROM accounts WHERE id IN (1,2)",
+            "  ORDER BY id FOR UPDATE;  -- global order",
+            "UPDATE accounts SET bal=bal-100 WHERE id=1;",
+            "UPDATE accounts SET bal=bal+100 WHERE id=2;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cause 3 detail: concurrent child inserts touching one parent.",
+            "Or unique-index inserts, each waiting on the other's uncommitted row.",
+            "Cause 4 detail: physical visit order differs per session."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Deadlocks: Detection, Cause, and Cure (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Retry & Shrink The Window",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "40P01, like 40001, means roll back and run again.",
+            "Retry with jitter so the pair does not re-collide.",
+            "Keep txns short; acquire all locks up front.",
+            "Never hold a lock across an HTTP call or user think-time."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Diagnosis Workflow",
+          "text": "Read the DETAIL line for both PIDs, find both statements in the log, compare their lock acquisition order, then impose one ordering on every code path."
+        },
+        {
+          "type": "heading",
+          "text": "Locks On Numbers You Invent",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Locks on arbitrary 64-bit keys of your choosing.",
+            "Postgres enforces mutual exclusion, attaches no meaning.",
+            "Reach for them when the thing to serialize is not a row."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Typical Uses",
+          "items": [
+            "A cron job that must run once.",
+            "A migration runner.",
+            "An external API call.",
+            "Leader election across app servers."
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "Two Key Shapes",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pg_advisory_lock(42);      -- bigint",
+            "SELECT pg_advisory_lock(7, 42);   -- ns, id",
+            "SELECT pg_try_advisory_lock(42);  -- bool",
+            "-- false means someone else holds it"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two-int form is a handy namespace + id.",
+            "Stable keys: `hashtext('my-job')`.",
+            "Or `('x'||md5(name))::bit(64)::bigint`.",
+            "Beware collisions across unrelated features: namespace them."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Session vs Transaction Scope",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "pg_advisory_lock",
+              "items": [
+                "held until unlock",
+                "or session disconnects",
+                "survives COMMIT and ROLLBACK",
+                "re-entrant: 2 locks need 2 unlocks"
+              ]
+            },
+            "right": {
+              "title": "pg_advisory_xact_lock",
+              "items": [
+                "released at end of txn",
+                "cannot unlock manually",
+                "safer by default",
+                "pooler-safe"
+              ]
+            }
+          }
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Pooler Footgun",
+          "text": "With PgBouncer in transaction pooling mode, session-level advisory locks leak onto whichever backend served you. Use `pg_advisory_xact_lock` there, always."
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Advisory Locks: Application Locks, Database-Enforced",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Singleton Worker",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "IF NOT pg_try_advisory_lock(",
+            "     hashtext('nightly-report')) THEN",
+            "  RETURN;  -- another server owns it",
+            "END IF;"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Exactly one instance across every app server.",
+            "Shared variants exist: `pg_advisory_lock_shared`.",
+            "And `pg_advisory_xact_lock_shared` for many-readers-one-writer.",
+            "Session re-entrancy is a common leak source."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Inspect & Limits",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT classid, objid, pid, granted",
+            "FROM pg_locks",
+            "WHERE locktype = 'advisory';",
+            "-- classid/objid hold your key halves"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "They join the same deadlock detector as row locks.",
+            "You can deadlock an advisory lock against a row lock.",
+            "They prevent concurrent code paths, not data anomalies.",
+            "Only callers that agree to ask for the lock are constrained."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Row Or Number?",
+          "text": "`FOR UPDATE` on a real row is better whenever a row exists. Advisory locks win when the resource is abstract or spans tables."
+        },
+        {
+          "type": "heading",
+          "text": "Guardrail Timeouts",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Caps"
+          ],
+          "rows": [
+            [
+              "`lock_timeout`",
+              "wait for a lock"
+            ],
+            [
+              "`statement_timeout`",
+              "total statement time"
+            ],
+            [
+              "`idle_in_transaction_...`",
+              "abandoned txn"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SET lock_timeout = '2s';",
+            "ALTER TABLE jobs ADD COLUMN tries int;",
+            "-- blocked DDL fails fast, no queue",
+            "-- ACCESS EXCLUSIVE conflicts with all"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Advisory Locks: Application Locks, Database-Enforced (cont.)",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Migration waiting on ACCESS EXCLUSIVE queues every later query.",
+            "That is how one ALTER takes the site down.",
+            "`pg_blocking_pids(pid)` gives the blocking chain directly.",
+            "Join `pg_locks` to `pg_stat_activity` for the full picture."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Decision Tree",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "what is the invariant?",
+            "branches": [
+              {
+                "label": "single row",
+                "children": [
+                  "Read Committed",
+                  "atomic UPDATE"
+                ]
+              },
+              {
+                "label": "multi-query read",
+                "children": [
+                  "Repeatable Read"
+                ]
+              },
+              {
+                "label": "cross-row",
+                "children": [
+                  "Serializable"
+                ]
+              },
+              {
+                "label": "not a row",
+                "children": [
+                  "advisory lock"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Never default to Serializable everywhere out of fear.",
+            "Never default to Read Committed everywhere out of habit.",
+            "Choose per transaction, deliberately."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Queue Without Locks",
+          "text": "`SKIP LOCKED` skips rows another txn holds — the standard work-queue trick. `NOWAIT` errors instead of queuing, good for interactive UIs."
+        },
+        {
+          "type": "heading",
+          "text": "Retry Contract",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "SQLSTATE",
+            "Meaning",
+            "Retry?"
+          ],
+          "rows": [
+            [
+              "40001",
+              "serialization failure",
+              "yes"
+            ],
+            [
+              "40P01",
+              "deadlock",
+              "yes"
+            ],
+            [
+              "23505",
+              "unique violation",
+              "no"
+            ],
+            [
+              "23503",
+              "FK violation",
+              "no"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Both retryables mean: re-run the whole txn unchanged.",
+            "Up to ~5 attempts, exponential backoff with jitter.",
+            "Full ROLLBACK before each retry.",
+            "A metric counting retries per endpoint.",
+            "23xxx are logic errors: never retry them as transient."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Idempotence Or Nothing",
+          "text": "The retried body runs again from the top. Side effects must be idempotent or moved outside the transaction."
+        },
+        {
+          "type": "heading",
+          "text": "Transaction Hygiene",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Open late, commit early.",
+            "Never hold one across network I/O or user input.",
+            "Set `idle_in_transaction_session_timeout`.",
+            "A forgotten BEGIN otherwise pins the vacuum horizon forever."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Playbook: Choosing, Retrying, and Monitoring",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Monitoring",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pid, now()-xact_start AS age, query",
+            "FROM pg_stat_activity",
+            "WHERE xact_start IS NOT NULL",
+            "ORDER BY age DESC;  -- long transactions"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`xact_commit` vs `xact_rollback`: abort rate.",
+            "`pg_stat_database.deadlocks`: deadlock count.",
+            "`wait_event_type = 'Lock'`: who is stuck now.",
+            "`n_dead_tup` and `age(datfrozenxid)`: the bloat tax."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Level Summary",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Level",
+            "Snapshot",
+            "Retries",
+            "Allows"
+          ],
+          "rows": [
+            [
+              "Read Committed",
+              "per statement",
+              "none",
+              "lost update, write skew"
+            ],
+            [
+              "Repeatable Read",
+              "per txn",
+              "concurrent update",
+              "write skew"
+            ],
+            [
+              "Serializable",
+              "per txn + SSI",
+              "dependency cycles",
+              "nothing"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Prove It",
+          "items": [
+            "Prefer UNIQUE, CHECK, EXCLUDE, FK over txn tricks.",
+            "A constraint holds regardless of level or app bug.",
+            "Test for real: isolation tester `.spec` files.",
+            "And `pgbench` custom scripts for contention."
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Final Rule",
+          "text": "Pick the weakest isolation level that still makes the invariant impossible to break, then prove it with a concurrent test."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of POSTGRES TXN & LOCKING. Your Postgres default silently allows lost updates and write skew, and it never tells you. This 10-page field handbook walks the whole stack: MVCC internals and xmin/xmax, what each of the three real isolation levels still permits, row locks and SKIP LOCKED queues, deadlock causes with their fixes, and advisory locks for the things that aren't rows. Ends with a decision tree, a retry contract, and the monitoring queries to prove you got it right.",
+    "hashtags": [
+      "#postgres",
+      "#postgresql",
+      "#sql",
+      "#databases",
+      "#mvcc",
+      "#transactions",
+      "#backendengineering",
+      "#concurrency",
+      "#systemdesign",
+      "#devnotes",
+      "#studynotes",
+      "#softwareengineering"
+    ]
+  }
+}

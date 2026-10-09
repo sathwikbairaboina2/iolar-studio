@@ -1,0 +1,1031 @@
+{
+  "brand": "iolar",
+  "template": "sticky-wall",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "REDIS CLUSTER & SENTINEL",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Cluster Exists: Scaling Past One Node",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "One Node's Ceiling",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Command execution is one CPU core, forever",
+            "RAM is bounded by one machine's DIMM slots",
+            "One process = one point of failure"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The 512 GB Trap",
+          "text": "A 512 GB instance means 512 GB of RDB fork copy-on-write pressure and hour-long restarts. Vertical scaling ends here."
+        },
+        {
+          "type": "heading",
+          "text": "Three Problems People Conflate"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "scaling Redis",
+            "branches": [
+              {
+                "label": "sharding",
+                "children": [
+                  "capacity"
+                ]
+              },
+              {
+                "label": "replication",
+                "children": [
+                  "durability",
+                  "read scale"
+                ]
+              },
+              {
+                "label": "failover",
+                "children": [
+                  "availability"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Replication alone: full dataset on every node",
+            "So it scales reads — never writes, never memory",
+            "Only sharding splits the keyspace"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Redis Cluster",
+              "items": [
+                "sharding + replication + failover",
+                "no proxy required",
+                "cluster-aware client needed"
+              ]
+            },
+            "right": {
+              "title": "Redis Sentinel",
+              "items": [
+                "replication + failover only",
+                "dataset NOT sharded",
+                "any client + a lookup"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "What People Did Before"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Approach",
+            "Hashing",
+            "Breaks on"
+          ],
+          "rows": [
+            [
+              "client-side",
+              "in the app",
+              "adding a node"
+            ],
+            [
+              "twemproxy",
+              "in the proxy",
+              "live resharding"
+            ],
+            [
+              "Codis",
+              "in the proxy",
+              "extra hop, extra ops"
+            ],
+            [
+              "Cluster",
+              "in the server",
+              "cross-slot ops"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "Cluster is shared-nothing: each master owns a disjoint subset of the keyspace. A write needs zero cross-node coordination."
+        },
+        {
+          "type": "heading",
+          "text": "Sizing The Minimum"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "3 masters + 3 replicas = 6 nodes, minimum",
+            "3 masters alone cannot survive one failure",
+            "Failure detection needs > half the masters alive",
+            "2 masters give no majority after one dies"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "redis-cli --cluster create \\",
+            "  10.0.0.{1,2,3,4,5,6}:6379 \\",
+            "  --cluster-replicas 1   # 3 M + 3 R"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "CAP Position",
+          "text": "Cluster keeps the majority partition available and can lose acknowledged writes. It is NOT a CP store — do not treat it as one."
+        },
+        {
+          "type": "sidebox",
+          "title": "What Cluster Takes Away",
+          "items": [
+            "No multi-key ops across slots",
+            "No SELECT, database 0 only",
+            "No cross-slot transactions",
+            "Cluster-aware client mandatory"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rule Of Thumb",
+          "text": "Data fits one node? Reach for Sentinel. Only reach for Cluster when memory or write throughput forces sharding on you."
+        },
+        {
+          "type": "heading",
+          "text": "The Fixed Keyspace",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keyspace splits into exactly 16384 slots, 0..16383",
+            "`slot = CRC16(key) mod 16384`",
+            "CRC16 variant is XMODEM/CCITT",
+            "Polynomial `0x1021`, init `0x0000`"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "CLUSTER GETKEYSINSLOT 99 100",
+            "MIGRATE h p \"\" 0 5000 KEYS k1 k2",
+            "CLUSTER SETSLOT 99 NODE <dst-id>",
+            "# run SETSLOT NODE on both, then peers"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Hash Slots: The 16384 Buckets",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "slot space 0..16383",
+            "cells": [
+              "0",
+              "1",
+              "…",
+              "5460",
+              "5461",
+              "…",
+              "10922",
+              "16383"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Ownership Rule"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every master owns a set of slots — contiguous or not",
+            "Union of all owned slots must be 16384",
+            "One slot uncovered and the cluster is down"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Master",
+            "Slots",
+            "Count"
+          ],
+          "rows": [
+            [
+              "A",
+              "0-5460",
+              "5461"
+            ],
+            [
+              "B",
+              "5461-10922",
+              "5462"
+            ],
+            [
+              "C",
+              "10923-16383",
+              "5461"
+            ]
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Why slots instead of a consistent hashing ring?",
+          "a_bullets": [
+            "Slots are a small fixed integer space",
+            "Ownership fits in a 2 KB bitmap",
+            "That bitmap is gossiped in every heartbeat"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Why 16384, Not 65536",
+          "text": "The slot bitmap rides in every gossip packet. 16384 bits = 2 KB; 65536 bits = 8 KB. Redis targets ~1000 nodes max, so the bigger space buys nothing."
+        },
+        {
+          "type": "heading",
+          "text": "Migration Unit"
+        },
+        {
+          "type": "paragraph",
+          "text": "Slots are the unit of migration, not keys. You reshard by moving slot ownership, then the keys that live inside it."
+        },
+        {
+          "type": "heading",
+          "text": "Debug Toolkit"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "CLUSTER KEYSLOT mykey      # 14687",
+            "CLUSTER COUNTKEYSINSLOT 14687",
+            "CLUSTER GETKEYSINSLOT 14687 10",
+            "CLUSTER SHARDS             # 7.0+ map"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`CLUSTER SLOTS` is the legacy client-facing map",
+            "`CLUSTER SHARDS` (7.0+) also reports replica health",
+            "Each node keeps its own bitmap plus its view of everyone else's, in `clusterState`"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Eventually Consistent Map",
+          "items": [
+            "Slot-to-node view propagates by gossip",
+            "A stale view is what produces MOVED",
+            "Empty masters (zero slots) are legal",
+            "Add a node empty, then assign slots"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Gotcha",
+          "text": "Even slot distribution does not mean even key distribution. One hot slot can hold a 10 GB list while its 5460 neighbours hold nothing."
+        },
+        {
+          "type": "heading",
+          "text": "The Definition",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "If a key contains `{...}` with a non-empty substring between the first `{` and the first `}` after it, only that substring is hashed."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "user:{1000}:profile",
+              "extract `1000`",
+              "CRC16",
+              "mod 16384",
+              "slot 1649"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Hash Tags: Forcing Keys Together",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "`user:{1000}:profile` and `user:{1000}:sessions` co-locate",
+            "Both hash on `1000`, so both land in one slot",
+            "Same slot means MULTI, Lua and MGET work on them"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Parsing Edge Cases"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key",
+            "Hashed part",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`{a}{b}`",
+              "`a`",
+              "first pair wins"
+            ],
+            [
+              "`foo{}bar`",
+              "`foo{}bar`",
+              "empty tag ignored"
+            ],
+            [
+              "`foo{bar`",
+              "`foo{bar`",
+              "unclosed brace"
+            ],
+            [
+              "`{user1}x`",
+              "`user1`",
+              "normal case"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Silent Bug",
+          "text": "`{` immediately followed by `}` falls back to full-key hashing. Your templating produced an empty id and co-location quietly vanished."
+        },
+        {
+          "type": "heading",
+          "text": "Design Pattern"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Tag by tenant, user, or entity id",
+            "Pick your domain's natural transaction boundary",
+            "Tags are the ONLY supported co-location guarantee",
+            "Deliberate skew is fine for a small tenant"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Anti-Pattern"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SET {prod}:orders:1 ...   # cardinality 1",
+            "SET {prod}:orders:2 ...   # same slot",
+            "# every key on ONE node forever"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Hot Tag, No Escape",
+          "items": [
+            "One overloaded tag = one hot slot",
+            "Slots are indivisible — resharding cannot split it",
+            "Rebalance moves the problem, never fixes it",
+            "Real fix: schema change + data migration"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Check Before Shipping"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "CLUSTER KEYSLOT 'user:{1000}:profile'",
+            "CLUSTER KEYSLOT '{1000}'",
+            "# must print the same number"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Lua Depends On This",
+          "text": "Scripts must declare every touched key in `KEYS[]`, and all of them must share a slot. Hash tags are how you satisfy that rule."
+        },
+        {
+          "type": "heading",
+          "text": "Any Node, One Owner",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every node accepts every command, but serves only keys in slots it owns. Otherwise it answers with a redirect error."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Error",
+            "Meaning",
+            "Client action"
+          ],
+          "rows": [
+            [
+              "MOVED",
+              "permanent",
+              "update map, retry"
+            ],
+            [
+              "ASK",
+              "one key, once",
+              "ASKING, do NOT cache"
+            ],
+            [
+              "TRYAGAIN",
+              "keys split",
+              "backoff, retry"
+            ],
+            [
+              "CLUSTERDOWN",
+              "slot uncovered",
+              "fail the request"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "-MOVED 3999 127.0.0.1:6381",
+            "-ASK   3999 127.0.0.1:6381"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Client Redirection: MOVED, ASK, Smart Clients",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The ASK Handshake"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "GET k",
+              "-ASK 3999",
+              "ASKING",
+              "GET k on target",
+              "value"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two commands, same connection, to the target node",
+            "`ASKING` sets a one-shot flag on that node",
+            "The flag lets it serve a slot it is only IMPORTING",
+            "Never update your slot map from an ASK"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Dumb client",
+              "items": [
+                "connects to one node",
+                "follows every redirect",
+                "extra round trip most requests"
+              ]
+            },
+            "right": {
+              "title": "Smart client",
+              "items": [
+                "reads CLUSTER SHARDS at startup",
+                "keeps a slot to node table",
+                "right node on the first try"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "When To Refresh"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "On a MOVED reply",
+            "On a connection error to a known node",
+            "On a periodic timer, low frequency"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Redirect Storm",
+          "text": "A client that refetches the whole map on every single MOVED will hammer the cluster through a large reshard. Debounce it."
+        },
+        {
+          "type": "heading",
+          "text": "Reading From Replicas"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "READONLY    # serve reads here",
+            "GET user:{1000}:profile",
+            "READWRITE   # back to redirects"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`READONLY` stops a replica redirecting reads to its master",
+            "Replica data is asynchronous and may be stale",
+            "You trade consistency for read throughput, explicitly"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Check Your Library",
+          "text": "Client maturity matters more than server config. Verify yours implements ASK plus ASKING, not only MOVED — half-support breaks mid-reshard."
+        },
+        {
+          "type": "heading",
+          "text": "The One Rule",
+          "ink": "red"
+        },
+        {
+          "type": "paragraph",
+          "text": "Every key in one command must live in the same hash slot. Otherwise: `CROSSSLOT Keys in request don't hash to the same slot`."
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "MGET a b            # CROSSSLOT error",
+            "MGET {t}:a {t}:b    # fine, one slot"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Commands That Trip It",
+          "items": [
+            "`MSET`, `MGET`, multi-arg `DEL`",
+            "`SUNION`, `SINTER`, `ZUNIONSTORE`",
+            "`RENAME`, `SMOVE`, `BITOP`, `PFMERGE`"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Same Slot, Not Same Node",
+          "text": "Two slots that happen to sit on one master are still rejected. The check is on the slot number, never on the address."
+        }
+      ]
+    },
+    {
+      "page_title": "Multi-Key Limits: What Cluster Takes Away",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Scripting And Transactions"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`MULTI`/`EXEC` works only if all keys share a slot",
+            "`EVAL`: every `KEYS[i]` in one slot",
+            "Touching an undeclared key is undefined, breaks on migration",
+            "Redis 7 Functions (`FCALL`) follow the same rule"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The MGET Workaround"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "key list",
+              "group by slot",
+              "pipeline per node",
+              "merge in app"
+            ]
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Most smart clients do this fan-out for you. Check whether yours groups keys or simply throws CROSSSLOT at you."
+        },
+        {
+          "type": "heading",
+          "text": "Per-Node Commands"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Scope",
+            "Consequence"
+          ],
+          "rows": [
+            [
+              "`SCAN`",
+              "one node",
+              "cursors not portable"
+            ],
+            [
+              "`KEYS`",
+              "one node",
+              "one shard only"
+            ],
+            [
+              "`DBSIZE`",
+              "one node",
+              "wrong total"
+            ],
+            [
+              "`FLUSHALL`",
+              "one node",
+              "partial wipe"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Iterate every master to see the whole keyspace",
+            "A monitor hitting one node reports one shard",
+            "No `SELECT`: cluster mode has database 0 only",
+            "Multi-tenant DB-index tricks become key prefixes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pub/Sub And Blocking"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SSUBSCRIBE room:{42}   # 7.0 sharded",
+            "SPUBLISH  room:{42} hi # stays on shard"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pre-7.0 Pub/Sub broadcasts cluster-wide, costing every node bandwidth",
+            "Sharded Pub/Sub routes by the channel name's slot",
+            "`BLPOP` works, but only on keys in one slot",
+            "Cross-shard work queues need per-shard workers"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Design Consequence",
+          "text": "Model your atomic groups behind a shared hash tag BEFORE you migrate to Cluster. Retrofitting tags means rewriting keys under load."
+        }
+      ]
+    },
+    {
+      "page_title": "Resharding: Moving Slots Without Downtime",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What Resharding Is",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Transferring ownership of slots, and the keys inside them, from a source master to a target master while both serve live traffic."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "IMPORTING",
+              "MIGRATING",
+              "GETKEYSINSLOT",
+              "MIGRATE",
+              "SETSLOT NODE"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The Four Steps"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# target:",
+            "CLUSTER SETSLOT 99 IMPORTING <src-id>",
+            "# source:",
+            "CLUSTER SETSLOT 99 MIGRATING <dst-id>"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "During migration the source serves keys it still holds",
+            "For keys already moved it answers `-ASK`",
+            "Clients keep working the whole time"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "MIGRATE Is Atomic Per Batch",
+          "text": "DUMP-serialize, send, RESTORE on target, DELETE on source. The key exists on exactly one node at every instant — never both, never neither."
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "But It Blocks",
+          "text": "MIGRATE stalls both nodes for the batch duration. One 2 GB list freezes the server. Keep batch sizes small."
+        },
+        {
+          "type": "heading",
+          "text": "Driving It With redis-cli"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "redis-cli --cluster reshard h:6379",
+            "redis-cli --cluster rebalance h:6379 \\",
+            "  --cluster-use-empty-masters"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Task",
+            "Order"
+          ],
+          "rows": [
+            [
+              "add node",
+              "`add-node`, then reshard onto it"
+            ],
+            [
+              "remove node",
+              "reshard away, then `del-node`"
+            ],
+            [
+              "repair",
+              "`check`, then `fix`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A new node starts with zero slots and serves nothing",
+            "Deleting a node that still owns slots breaks the cluster",
+            "`--cluster-use-empty-masters` includes fresh nodes in a rebalance"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Stuck Slot",
+          "items": [
+            "Symptom: slot left MIGRATING/IMPORTING after a crash",
+            "`--cluster check` detects the open slot",
+            "`--cluster fix` clears the flag or completes the move"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "qa",
+          "q": "What does a reshard actually cost?",
+          "a_bullets": [
+            "O(keys in slot) network transfer",
+            "O(1) ownership metadata update",
+            "Throughput-limited by MIGRATE round trips"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Resharding: Moving Slots Without Downtime (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rule",
+          "text": "Never reshard during a failover or with any node in a fail state. Finish one topology change before you begin the next."
+        },
+        {
+          "type": "heading",
+          "text": "The Cluster Bus",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Nodes gossip on client port + 10000",
+            "Binary protocol, separate from the client port",
+            "Firewall both ports or the cluster never forms"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "PING timeout",
+              "PFAIL",
+              "majority agrees",
+              "FAIL broadcast",
+              "replica campaigns"
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "State",
+            "Who sets it",
+            "Scope"
+          ],
+          "rows": [
+            [
+              "PFAIL",
+              "one node",
+              "local only"
+            ],
+            [
+              "FAIL",
+              "master majority",
+              "broadcast"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "PFAIL: no PING answer within `cluster-node-timeout`",
+            "FAIL: a majority of masters independently report PFAIL",
+            "Only masters vote — replicas gossip but do not count"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Promotion Vote"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "An eligible replica requests votes from the masters",
+            "A majority must grant them before promotion",
+            "Disconnected too long? Ineligible",
+            "Cutoff is `cluster-node-timeout * cluster-replica-validity-factor`"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rank Ordering",
+          "text": "The replica with the most up-to-date replication offset waits the shortest delay before campaigning, so the freshest data usually wins the election."
+        },
+        {
+          "type": "heading",
+          "text": "configEpoch Settles Ties"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Monotonically increasing number per configuration",
+            "Highest epoch wins conflicting claims to the same slots",
+            "Old master returns, sees a higher epoch on its slots",
+            "It reconfigures itself as a replica of the winner"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Dials That Matter"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Too low",
+            "Too high"
+          ],
+          "rows": [
+            [
+              "`cluster-node-timeout`",
+              "spurious failover on GC",
+              "long outage"
+            ],
+            [
+              "`cluster-migration-barrier`",
+              "masters stripped bare",
+              "orphans stay orphaned"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "cluster-require-full-coverage no",
+            "# serve the covered slots when one",
+            "# shard is fully down (default: yes)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Manual Failover",
+          "items": [
+            "`CLUSTER FAILOVER` — planned, no data loss",
+            "`FORCE` — skips the master handshake",
+            "`TAKEOVER` — skips the vote entirely, dangerous"
+          ]
+        }
+      ],
+      "cont": true
+    }
+  ],
+  "caption": {
+    "text": "16384. Not 65536, not a consistent-hashing ring — because the slot bitmap rides inside every gossip heartbeat, and 2 KB per packet beats 8 KB. That single design choice explains MOVED, ASK, CROSSSLOT, and why a hash tag of `{prod}` will haunt you forever. Ten pages on how Redis Cluster really shards, reshards and fails over, plus where Sentinel fits and where it does not.",
+    "hashtags": [
+      "#redis",
+      "#rediscluster",
+      "#sentinel",
+      "#distributedsystems",
+      "#backenddevelopment",
+      "#systemdesign",
+      "#devops",
+      "#sre",
+      "#databases",
+      "#scalability",
+      "#softwareengineering",
+      "#techstudynotes"
+    ]
+  }
+}

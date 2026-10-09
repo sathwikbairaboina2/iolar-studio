@@ -1,0 +1,195 @@
+{
+  "title": "GraphQL Federation: A Field Guide",
+  "summary": "A dense study-notes handbook on GraphQL federation — how subgraphs, entity keys, reference resolvers, and gateway query planning combine one supergraph out of many services — with a hard-nosed comparison against schema stitching and the operational traps teams hit in production.",
+  "chapters": [
+    {
+      "title": "Why Federation Exists",
+      "points": [
+        "Monolithic GraphQL server: one schema, one team owning it, becomes a merge-conflict bottleneck as org grows",
+        "Federation = compose one client-facing schema (the supergraph) from many independently deployed services (subgraphs)",
+        "Core promise: clients see one endpoint and one type system; teams own and deploy slices independently",
+        "Contrast with REST-per-service + BFF: BFF hand-writes stitching logic, federation derives it from schema metadata",
+        "Terminology: subgraph = service + its schema; supergraph = composed schema + routing metadata; gateway/router = runtime executing it",
+        "Separation of concerns: subgraph schema is the API contract, supergraph SDL is a build artifact, never hand-written",
+        "Apollo Federation v1 (2019) → v2 (2022) added shared ownership directives (@shareable, @override, @interfaceObject)",
+        "Alternatives in the same space: Apollo Federation, GraphQL Mesh, Cosmo, Hive Gateway, Netflix DGS (federation-compatible)",
+        "Key design constraint: subgraphs must never call each other's GraphQL APIs directly — the gateway orchestrates",
+        "Federation is a spec + set of directives, not a single vendor product; multiple routers implement the same contract",
+        "Anti-goal: federation is not a general API gateway, not a caching layer, not a service mesh",
+        "When NOT to federate: one team, one deploy, <2 services — the composition overhead outweighs the ownership win",
+        "Cost of entry: composition pipeline, schema registry, CI checks, a router in the hot path of every request"
+      ]
+    },
+    {
+      "title": "Subgraphs: Anatomy of a Federated Service",
+      "points": [
+        "A subgraph is a normal GraphQL server plus federation directives and two extra root fields",
+        "`_service { sdl }`: returns the subgraph's raw SDL including directives, used by composition",
+        "`_entities(representations: [_Any!]!): [_Entity]!`: the gateway's entry point for fetching entities by key",
+        "`_Entity` is a generated union of every type in the subgraph that has an `@key`",
+        "`_Any` is a scalar: an untyped JSON blob carrying `__typename` plus key fields",
+        "Subgraph libraries (`@apollo/subgraph`, graphql-java federation, strawberry, gqlgen) generate these automatically",
+        "Each subgraph owns the *fields* it defines, not the whole type — `User.email` in accounts, `User.orders` in orders",
+        "Example: `type Product @key(fields: \"id\") { id: ID!, name: String!, price: Int! }` in the products subgraph",
+        "Example: `type Product @key(fields: \"id\") { id: ID!, reviews: [Review!]! }` in the reviews subgraph — same type, new fields",
+        "Root `Query`/`Mutation` types are implicitly shared; every subgraph may contribute root fields",
+        "Federation v2: types are contributable by default; v1 required `extend type` on non-owning subgraphs",
+        "`@link(url: \"https://specs.apollo.dev/federation/v2.3\", import: [\"@key\", \"@shareable\"])` at the top opts a schema into v2",
+        "Subgraphs should be independently runnable and testable — you should be able to query one directly in dev",
+        "Naming discipline: two subgraphs defining `User` differently (different key, different meaning) is a composition error, not a merge"
+      ]
+    },
+    {
+      "title": "Entities and @key",
+      "points": [
+        "An entity = a type identifiable across subgraph boundaries by a stable key; the unit of federation",
+        "`@key(fields: \"id\")` declares that field set uniquely identifies an instance of the type",
+        "Key field sets use a selection-set mini-language: `\"id\"`, `\"sku upc\"` (compound), `\"organization { id } email\"` (nested)",
+        "A type may declare multiple `@key`s: `@key(fields: \"id\") @key(fields: \"sku\")` — the gateway picks one the source subgraph can supply",
+        "Every subgraph that contributes fields to an entity must declare a `@key` matching one the owner exposes",
+        "`@key(fields: \"id\", resolvable: false)` — this subgraph references the entity but cannot resolve it; used for pure references",
+        "Key fields must be present and non-null in every subgraph declaring them, or resolution fails at runtime",
+        "Value types (no `@key`) are duplicated by value across subgraphs and must be structurally identical to compose",
+        "Entity vs value type decision: does it have an identity that outlives the request? Then it's an entity",
+        "Bad key smell: keys derived from mutable data (email, slug) break caching and cross-subgraph joins on update",
+        "Compound key gotcha: `@key(fields: \"a b\")` means *both* fields together identify the entity — all must travel in the representation",
+        "Nested keys require the referenced type to be reachable and its fields selectable in the referencing subgraph",
+        "`@key` on an interface (v2.3+, `@interfaceObject`) lets a subgraph add fields to all implementations at once",
+        "Design rule: the key is a permanent public contract — changing it is a breaking change for every subgraph that references the type"
+      ]
+    },
+    {
+      "title": "Reference Resolvers",
+      "points": [
+        "A reference resolver answers: \"given this key, hydrate the rest of this entity from my data\"",
+        "JS signature: `__resolveReference(reference, context, info)` where `reference` is `{ __typename, ...keyFields }`",
+        "Example: `Product: { __resolveReference: ({ id }, { dataSources }) => dataSources.products.byId(id) }`",
+        "The gateway batches keys into one `_entities(representations: [...])` call per subgraph per plan step",
+        "Representations arrive as an *array* — a naive per-key resolver produces N+1 database queries",
+        "Fix: DataLoader (or equivalent batch loader) keyed on the entity key, scoped to the request context",
+        "Return `null` from a reference resolver for a dangling reference; the field resolves to `null`, not an error",
+        "Returning a partial object is fine — remaining fields resolve through normal field resolvers",
+        "The reference resolver is not called if every requested field is already satisfiable from the key",
+        "Ordering: `_entities` MUST return results positionally matching the input representations array",
+        "Type resolution for interfaces/unions inside `_entities` uses `__typename` from the representation",
+        "Auth inside reference resolvers: they run out of the original query's context path, so re-check authorization per entity",
+        "Cost model: each hop in a plan is one network round trip plus one batch fetch — deep entity chains multiply latency",
+        "Testing tactic: call `_entities` directly with hand-written representations to unit-test a subgraph's join surface"
+      ]
+    },
+    {
+      "title": "Field-Level Directives",
+      "points": [
+        "`@external`: this field is defined in another subgraph; declared here only so local directives can reference it",
+        "`@requires(fields: \"...\")`: this resolver needs extra fields from the owning subgraph before it can run",
+        "`@requires` example: `shippingCost: Int! @requires(fields: \"weight dimensions { l w h }\")` with `weight` marked `@external`",
+        "`@provides(fields: \"...\")`: this subgraph can return a neighbor's fields inline, letting the planner skip a hop",
+        "`@provides` is an optimization only — it must be truthful or clients see stale/wrong data",
+        "`@shareable`: multiple subgraphs may resolve this field; without it, duplicate non-key fields fail composition",
+        "`@override(from: \"subgraphName\")`: migrate ownership of a field from one subgraph to another with no downtime",
+        "Progressive `@override(from: \"x\", label: \"percent(25)\")` routes a fraction of traffic to the new owner",
+        "`@inaccessible`: field exists in the supergraph for composition but is hidden from the public API schema",
+        "`@tag(name: \"...\")`: metadata for contracts/variants — build a public schema that excludes `@tag(name: \"internal\")`",
+        "`@extends`: legacy v1 marker equivalent to `extend type`, still accepted for interop",
+        "`@composeDirective`: lifts a custom directive from a subgraph into the supergraph so the router can see it",
+        "`@interfaceObject`: treat an interface as a concrete type in one subgraph and add fields to all implementers",
+        "Directive gotcha: `@requires` fields are fetched in an extra planner step — every `@requires` is a potential extra round trip"
+      ]
+    },
+    {
+      "title": "Composition: Building the Supergraph",
+      "points": [
+        "Composition takes N subgraph SDLs and produces one supergraph SDL, or a list of composition errors",
+        "The supergraph SDL carries `@join__` directives encoding which subgraph owns which field",
+        "`rover supergraph compose --config supergraph.yaml` for local builds; managed federation composes in the registry",
+        "Composition is deterministic and offline — no service needs to be running to compose",
+        "Common error: `FIELD_TYPE_MISMATCH` — same field, different types across subgraphs",
+        "Common error: `INVALID_FIELD_SHARING` — two subgraphs resolve the same non-key field without `@shareable`",
+        "Common error: `KEY_FIELDS_MISSING_EXTERNAL` / unresolvable key — subgraph declares a key it cannot satisfy",
+        "Common error: `SATISFIABILITY_ERROR` — a valid query exists that the planner has no path to execute",
+        "Satisfiability is the deep check: composition proves every possible query shape is reachable, not just that types merge",
+        "Enum merging: input-position enums intersect, output-position enums union — a mismatched enum can break composition",
+        "Schema registry (Apollo GraphOS, Hive, Cosmo) stores versions, runs checks against real traffic, and publishes the supergraph",
+        "CI schema checks compare a proposed subgraph against the registry and against operation traffic to flag breaking changes",
+        "Publish flow: subgraph CI → `rover subgraph publish` → registry composes → router hot-reloads supergraph, no restart",
+        "Rollback discipline: deploy the subgraph code before publishing the schema on additions; reverse the order on removals"
+      ]
+    },
+    {
+      "title": "The Gateway and Query Planning",
+      "points": [
+        "The router parses the client operation, builds a query plan against the supergraph, then executes it",
+        "A query plan is a tree of nodes: `Fetch` (call a subgraph), `Sequence` (ordered), `Parallel` (concurrent), `Flatten` (path into the response)",
+        "Planning is a search over possible subgraph paths, scored by number of fetches and depth — it is the expensive part",
+        "Query plan caching keys on the normalized operation; cold plans for large schemas can take tens of milliseconds",
+        "Persisted queries / safelisting let the router pre-plan and skip parsing+planning per request",
+        "Step 1 fetch hits an *entry point* subgraph — one that owns a root field in the operation",
+        "Later steps send `_entities` calls with representations extracted from earlier responses via the `Flatten` path",
+        "Sibling branches with no data dependency plan as `Parallel`; `@requires` forces `Sequence`",
+        "Response is stitched back into the client's requested shape; `__typename` is injected automatically to route entities",
+        "Apollo Router (Rust) replaced the Node `@apollo/gateway` for throughput; same planning semantics, far lower overhead",
+        "Inspect plans in dev: `?dry-run` / the `query-planner` trace in Apollo Explorer, or `ApolloServerPluginInlineTrace`",
+        "Cross-cutting concerns live in the router: auth header propagation, rate limiting, APQ, response caching, telemetry",
+        "Router does NOT retry subgraph errors by default — a partial failure surfaces as `errors` plus `null` in `data`",
+        "Deep fetch chains are the #1 federation latency bug — read the plan before blaming the database"
+      ]
+    },
+    {
+      "title": "Federation vs Schema Stitching",
+      "points": [
+        "Schema stitching: the gateway holds hand-written type merging config and delegates with `delegateToSchema`",
+        "Federation: the *subgraphs* declare their join contract via directives; the gateway derives routing automatically",
+        "Ownership of join logic — stitching: centralized in the gateway; federation: distributed to the services",
+        "Adding a cross-service field — stitching: edit the gateway repo; federation: edit only the subgraph, republish",
+        "Deploy coupling — stitching: gateway redeploy on schema change; federation: router hot-reloads the supergraph",
+        "Conflict handling — stitching: rename/transform via schema transforms; federation: composition rejects the build",
+        "Correctness — stitching: mistakes surface at runtime; federation: satisfiability is proven at composition time",
+        "Non-GraphQL sources — stitching (and Mesh) wraps REST/gRPC/OpenAPI easily; federation needs a subgraph shim",
+        "Legacy/third-party schemas you cannot modify — stitching wins outright; you cannot add `@key` to someone else's server",
+        "Ecosystem — stitching lives in `@graphql-tools`; federation has Apollo, Cosmo, Hive, Mesh (which speaks both)",
+        "Cost — stitching has no composition pipeline or registry; federation requires that build infrastructure",
+        "Choose stitching for: few schemas, no subgraph-code control, heterogeneous non-GraphQL backends",
+        "Choose federation for: many teams, real service ownership, and a need for compile-time guarantees",
+        "GraphQL Mesh can present stitched sources *as* a federated subgraph — the two are combinable, not exclusive"
+      ]
+    },
+    {
+      "title": "Trade-offs, Failure Modes, and Operations",
+      "points": [
+        "Latency math: a client query touching 3 subgraphs in a chain costs 3 serial round trips, not 1",
+        "N+1 across the boundary: 100 products × 1 reviews fetch each — only avoided by `_entities` batching + DataLoader",
+        "Partial failure semantics: one subgraph 500s, the router returns valid `data` with `null` holes plus an `errors` entry",
+        "Nullability is the blast radius — a non-null field failing propagates the null up to the nearest nullable ancestor",
+        "Timeouts and circuit breaking belong in the router; a slow subgraph otherwise pins gateway connections",
+        "Authorization: the router forwards headers, but each subgraph must independently authorize — never trust the gateway alone",
+        "Do not put the user's identity in a subgraph-only context and assume other subgraphs have it; propagate explicitly",
+        "Distributed tracing (OpenTelemetry) is non-optional — a single client query becomes N spans across N services",
+        "Query cost/depth limiting must run at the router, before planning, or a malicious query fans out across services",
+        "Caching layers: APQ (request size), query plan cache (planning cost), entity cache (subgraph fetch cost) — different problems",
+        "Anti-pattern: a \"god subgraph\" owning most entities — you rebuilt the monolith plus a network hop",
+        "Anti-pattern: chatty entity chaining, A→B→C→A, when a single subgraph could own the join",
+        "Anti-pattern: federating by technical layer (db-subgraph, cache-subgraph) instead of by business domain",
+        "Testing pyramid: subgraph unit tests → `_entities` contract tests → composition checks in CI → supergraph smoke tests"
+      ]
+    },
+    {
+      "title": "Putting It Together: A Worked Supergraph",
+      "points": [
+        "Scenario: three subgraphs — accounts (`User`), products (`Product`), reviews (`Review`) — one storefront query",
+        "accounts: `type User @key(fields: \"id\") { id: ID!, name: String! }` plus `Query.me: User`",
+        "products: `type Product @key(fields: \"upc\") { upc: String!, name: String!, price: Int! }` plus `Query.topProducts: [Product]`",
+        "reviews: `type Review { body: String!, author: User, product: Product }` with `User`/`Product` re-declared by key",
+        "reviews adds `type User @key(fields: \"id\") { id: ID! @external, reviews: [Review] }` — the cross-service join",
+        "Client query: `{ me { name reviews { body product { name price } } } }` — spans all three subgraphs",
+        "Plan: Fetch(accounts, `me{id name}`) → Flatten(me) → Fetch(reviews, `_entities` for User) → Flatten(reviews.product) → Fetch(products, `_entities` for Product)",
+        "Three round trips, but only three — every review's product resolves in one batched `_entities` call",
+        "Add `Review.product @provides(fields: \"name\")` and the products fetch disappears when only `name` is asked for",
+        "Migrating `Product.price` from products to a new pricing subgraph: add it there with `@override(from: \"products\")`, ship, then delete the old field",
+        "Local dev loop: `rover dev` runs router + subgraphs and recomposes on file change",
+        "Recap: entities are the nouns, `@key` is their identity, reference resolvers are the join implementation, the plan is the query engine",
+        "Recap: federation buys team autonomy and compile-time correctness; it costs round trips and a build pipeline",
+        "Final rule of thumb: model subgraphs on domain boundaries you would defend in a design review, not on your current service topology"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1120 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "MONGODB PERFORMANCE",
+  "date": "15/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Queries Get Slow",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Triage Order",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "query",
+              "index",
+              "doc shape",
+              "hardware"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`COLLSCAN` = every doc scanned, O(n)",
+            "`IXSCAN` = B-tree walk, O(log n)+matches",
+            "Slow categories: unindexed, unsorted, blocking sorts"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Read The Numbers",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "metric",
+            "healthy",
+            "red flag"
+          ],
+          "rows": [
+            [
+              "docsExamined:nReturned",
+              "≈1:1",
+              "1000:1"
+            ],
+            [
+              "keysExamined",
+              "≈nReturned",
+              "huge, few returns"
+            ],
+            [
+              "SORT stage",
+              "absent",
+              "spills >100MB"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fetch = index → disk doc, the costly step",
+            "Indexed query can still be slow if filter matches most docs",
+            "`keysExamined` big + returns small = non-selective index"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Workload Types",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "OLTP",
+              "items": [
+                "selective indexes",
+                "covered reads"
+              ]
+            },
+            "right": {
+              "title": "Analytics",
+              "items": [
+                "COLLSCAN ok",
+                "batch scans"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "ESR First Look",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Rule of thumb: `Equality, Sort, Range`",
+            "Measure before optimizing — slow ≠ slow for your reason"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.find({u:1}).sort({ts:-1})",
+            "// in-memory SORT spills at 100 MB",
+            "// fix: index {u:1, ts:-1}"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rule of Thumb",
+          "text": "Explain before you optimize. The bottleneck is rarely the one you assume."
+        },
+        {
+          "type": "heading",
+          "text": "B-tree Basics",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "index entry",
+            "cells": [
+              "key a",
+              "key b",
+              "RecordId"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compound sorts lexicographically: `{a:1,b:1}`",
+            "Prefix rule: `{a,b,c}` serves `a`, `ab`, `abc`",
+            "Not `b` or `c` alone"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sorts & Directions",
+          "ink": "blue"
+        },
+        {
+          "type": "qa",
+          "q": "When does index direction matter?",
+          "a_bullets": [
+            "Only for multi-field sorts",
+            "`{a:1,b:-1}` supports sort `{a:1,b:-1}` and exact reverse",
+            "Single field: planner walks either way"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Indexes Refresher",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Multikey & Special",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Multikey: one entry per array value",
+            "Compound multikey: max ONE array field",
+            "Partial > sparse — more flexible, modern pick",
+            "TTL deletes expired docs — maintenance, not perf",
+            "Text / geo / hashed: special patterns, don't compound arbitrarily"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "index",
+            "selectivity"
+          ],
+          "rows": [
+            [
+              "gender",
+              "2 values, weak"
+            ],
+            [
+              "email",
+              "strong"
+            ],
+            [
+              "status+date",
+              "good compound"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Costs",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every write updates every index",
+            "`$where`, `$nin`, `$ne` can't use indexes well",
+            "Partial index needs the filter in the query"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.createIndex(",
+            "  {status:1},{partialFilterExpression:",
+            "   {status:'A'}})",
+            "// smaller, faster, filtered only"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Gotcha",
+          "text": "Negation operators scan bounds inefficiently — restructure the predicate."
+        },
+        {
+          "type": "heading",
+          "text": "Verbosity Modes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "mode",
+            "what it does"
+          ],
+          "rows": [
+            [
+              "queryPlanner",
+              "plan only, no run"
+            ],
+            [
+              "executionStats",
+              "runs it — default pick"
+            ],
+            [
+              "allPlansExecution",
+              "compares candidates"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.find({u:1})",
+            "  .explain('executionStats')",
+            "// diagnosis default"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Read The Tree",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Winning vs rejected: picked by estimated work",
+            "Stages: `COLLSCAN` `IXSCAN` `FETCH` `SORT` `PROJECTION` `LIMIT`",
+            "Read child-first: `LIMIT` above `FETCH` above `IXSCAN`"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "LIMIT",
+            "branches": [
+              {
+                "label": "FETCH",
+                "children": [
+                  "IXSCAN",
+                  "indexBounds"
+                ]
+              },
+              {
+                "label": "PROJECTION",
+                "children": [
+                  "covered?"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "The Triple",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Minimize `totalKeysExamined` + `totalDocsExamined` + `nReturned`",
+            "`executionTimeMillis`: compare before/after on realistic data",
+            "IXSCAN but docsExamined >> returned = post-fetch filter or bad selectivity"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Where did the scan actually go?",
+          "a_bullets": [
+            "`indexBounds` shows exact key ranges",
+            "Wide bounds = broad scan",
+            "Narrow bounds + tight ratio = healthy"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Explain Plans",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Plan cache: per query shape; `planCacheClear` to reset",
+            "Explain never executes writes — explain the find part",
+            "Secondaries explain from their own snapshot"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Gotcha",
+          "text": "Explain uses sampled stats — validate on production-shaped data, never an empty collection."
+        },
+        {
+          "type": "heading",
+          "text": "ESR",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "Equality",
+              "Sort",
+              "Range"
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// filter status, sort lastModified,",
+            "// range qty > 10",
+            "db.c.createIndex(",
+            " {status:1,lastModified:-1,qty:1})"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sort before range: range breaks ordering for later fields",
+            "Equalities: most selective / most-queried first",
+            "Test: no `SORT` stage, tight range bounds in explain"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Bounds & Coverage",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Non-prefix on `{a,b,c}`: bounded scan works, but slower",
+            "Covered query preview: filter+sort+projection all in index"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Index intersection — use it?",
+          "a_bullets": [
+            "Mongo can combine two indexes",
+            "Fragile in practice",
+            "Prefer a purpose-built compound index"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Modern Options",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "feature",
+            "use"
+          ],
+          "rows": [
+            [
+              "wildcard `$**`",
+              "polymorphic schemas"
+            ],
+            [
+              "hidden index (4.4+)",
+              "safe removal test"
+            ],
+            [
+              "background build",
+              "default; watch disk I/O"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One index per query pattern: target, not law — consolidate overlap",
+            "Builds are background now, but oplog + I/O still bite"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Anti-pattern",
+          "text": "An index per field 'just in case' = write amplification with zero read benefit."
+        }
+      ]
+    },
+    {
+      "page_title": "Covered Queries",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What Coverage Is",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Filter + sort + projection all from the index alone",
+            "No `FETCH`, no disk lookup — pure B-tree walk"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.createIndex({user_id:1,status:1})",
+            "db.c.find({user_id:u},",
+            "  {status:1,_id:0})",
+            "// _id excluded or it breaks coverage"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Explain Signature",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "field",
+            "covered value"
+          ],
+          "rows": [
+            [
+              "totalDocsExamined",
+              "0"
+            ],
+            [
+              "stage",
+              "`PROJECTION_COVERED`"
+            ],
+            [
+              "FETCH",
+              "absent"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Hard Limits",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Multikey (array) fields never cover — arrays force fetch",
+            "`_id` returned by default — exclude or index it",
+            "Sharded: shard key must be in the projection path"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "filter ⊆ index",
+              "projection explicit",
+              "no arrays",
+              "_id handled",
+              "covered"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "When To Use",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Hot dashboards, count-by-status, existence checks",
+            "Read the index like a small table",
+            "Wider index covers more, but costs RAM + write time"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "It stopped being covered — why?",
+          "a_bullets": [
+            "New field added to the query silently un-covers",
+            "Verify coverage per version",
+            "Per-node index state with secondary reads"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Checklist",
+          "text": "Filter ⊆ index, explicit projection, no arrays, `_id` handled — every time."
+        },
+        {
+          "type": "heading",
+          "text": "Profiler Levels",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "level",
+            "captures"
+          ],
+          "rows": [
+            [
+              "0",
+              "off"
+            ],
+            [
+              "1",
+              "ops over `slowms`"
+            ],
+            [
+              "2",
+              "all — diagnostic only"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.setProfilingLevel(1,",
+            "  {slowms: 100})",
+            "// never run level 2 long in prod"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Data lands in capped `system.profile` (~1MB default — too small)",
+            "Small + capped = evidence silently evicted",
+            "Profiler itself adds overhead and writes to disk"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Profiler & Slow Query Hunting",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Reading system.profile",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.system.profile.find(",
+            " {op:'query',millis:{$gt:100}}",
+            ").sort({ts:-1})"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Key fields: `ns` `op` `millis` `docsExamined` `keysExamined`",
+            "`planSummary` = `IXSCAN {...}` or `COLLSCAN` — read it first"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Live Tools",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`db.currentOp(true)` — what's running right now, incl. waits",
+            "`mongostat` ops/sec, `mongotop` time per collection",
+            "Free Monitoring / Atlas Advisor: auto index suggestions",
+            "`logLevel` slow logs mirror profiler without level 2"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "profile",
+              "worst millis×freq",
+              "explain",
+              "fix index",
+              "re-measure"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Remember",
+          "text": "Profiler sees server time only — client latency adds network + driver overhead."
+        },
+        {
+          "type": "heading",
+          "text": "Cache Sizing",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default cache ≈ 50% of (RAM − 1GB), via `cacheSizeGB`",
+            "Never set it near total RAM — OS cache needs room too",
+            "Two caches: WiredTiger (data/indexes) + OS page cache"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Working Set",
+          "ink": "blue"
+        },
+        {
+          "type": "qa",
+          "q": "What is the working set?",
+          "a_bullets": [
+            "Indexes + actively-used docs in a time window",
+            "Golden target: it fits in RAM",
+            "Disk hits per read = main latency source"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "cache",
+            "cells": [
+              "hot index",
+              "hot docs",
+              "cold → disk"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Small hot index can stay fully cached even when docs don't",
+            "Index-only reads never touch document storage"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "WiredTiger & Working Set",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Symptoms & Metrics",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "symptom",
+            "signal"
+          ],
+          "rows": [
+            [
+              "latency spikes",
+              "rising iowait"
+            ],
+            [
+              "cache pressure",
+              "evictions ↑"
+            ],
+            [
+              "stuck reads",
+              "low hit ratio"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.serverStatus().wiredTiger.cache",
+            "// 'bytes currently in the cache'",
+            "// vs max + eviction counts"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Padding: growing docs move on disk — keep growth predictable",
+            "Compression (snappy/zstd/zlib): CPU for IO, usually worth it",
+            "Eviction storms: dirty data + checkpoints stall writes",
+            "Sharding shrinks per-node working set"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Anti-pattern",
+          "text": "Giant docs (16MB cap) thrash the cache — paginate big arrays or split collections."
+        },
+        {
+          "type": "heading",
+          "text": "Concurrency",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "WiredTiger: document-level locks, writers on different docs don't block",
+            "Hot doc (counter/status) serializes all writers",
+            "Fix: shard the increment or spread across docs"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Concerns & Preferences",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "setting",
+            "trade-off"
+          ],
+          "rows": [
+            [
+              "read `majority`",
+              "durable, slower"
+            ],
+            [
+              "read `local`",
+              "fast, may rollback"
+            ],
+            [
+              "`w:1` vs `majority`",
+              "speed vs durability"
+            ],
+            [
+              "secondaries",
+              "stale-read risk"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Secondaries fine for analytics, risky for read-your-writes",
+            "Per-operation choice — mix freely"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Index Triangle",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Faster reads",
+              "items": [
+                "more indexes",
+                "covered queries"
+              ]
+            },
+            "right": {
+              "title": "Costs",
+              "items": [
+                "slower writes",
+                "+RAM +disk"
+              ]
+            }
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each index = extra B-tree update per write; batches feel it most",
+            "Projections cut network + decode; covered cuts server work too"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Writes & Pipelines",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`skip/limit` is O(skip) — range-paginate on sorted `_id`",
+            "`unordered bulkWrite` ≫ per-doc inserts",
+            "Early `$match`/`$limit` with index support wins",
+            "`allowDiskUse`: big sorts spill instead of erroring"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "First Lever",
+          "text": "Nothing beats reducing data — embedding vs referencing is performance step one."
+        }
+      ]
+    },
+    {
+      "page_title": "Mistakes & Debug Playbook",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Hall of Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "mistake",
+            "fix"
+          ],
+          "rows": [
+            [
+              "`/^.*abc/` regex",
+              "anchor `/^abc/`"
+            ],
+            [
+              "mixed field types",
+              "one type per field"
+            ],
+            [
+              "`$in` 10k values",
+              "batch it"
+            ],
+            [
+              "boolean-only index",
+              "compound partner"
+            ],
+            [
+              "sort >100MB",
+              "index the sort keys"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Duplicate indexes: `{a:1}` beside `{a:1,b:1}` — pay twice",
+            "Unbounded arrays → 16MB + cache thrash",
+            "No explain evidence = guessing, not optimizing"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Collation Trap",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "db.c.createIndex({name:1},",
+            " {collation:{locale:'en',",
+            "  strength:2}})",
+            "// query must pass same collation"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "The Playbook",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "find slow ops",
+              "explain",
+              "ESR index",
+              "verify",
+              "re-measure",
+              "clean up"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Step 1: profiler / logs / Atlas finds slow ops",
+            "Step 2: `explain('executionStats')`",
+            "Step 3: apply ESR, build or adjust index"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Step 4: verify `docsExamined≈nReturned`, no `SORT`/`FETCH`",
+            "Step 5: re-measure under realistic load; watch cache + write latency",
+            "Step 6: hide old indexes, confirm no plan regression"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Quick Check",
+          "text": "Every fix should show up in the explain receipt — if the numbers didn't move, the index didn't help."
+        },
+        {
+          "type": "heading",
+          "text": "4 Pillars",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Right indexes (ESR)",
+            "Verified plans (explain)",
+            "Observability (profiler)",
+            "Enough RAM (working set)"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Cheat Sheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Cheat Cards",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "card",
+            "rule"
+          ],
+          "rows": [
+            [
+              "ESR",
+              "Equality → Sort → Range"
+            ],
+            [
+              "profiler",
+              "level 1 + slowms, `planSummary` first"
+            ],
+            [
+              "memory",
+              "working set < cache"
+            ],
+            [
+              "covered",
+              "filter+sort+proj ⊆ index, no `_id`, no arrays"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Healthy Explain",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "// winning signature",
+            "IXSCAN, tight indexBounds",
+            "docsExamined ≈ nReturned",
+            "no SORT — 0 docs if covered"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Quick Wins, Ranked",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "add index",
+              "fix projection",
+              "cover query",
+              "trim docs",
+              "shard"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Hall of Shame",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Leading-wildcard regex",
+            "`skip()` pagination",
+            "Index-per-field",
+            "Level-2 profiler in prod"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "access",
+            "cost"
+          ],
+          "rows": [
+            [
+              "COLLSCAN",
+              "O(n)"
+            ],
+            [
+              "index lookup",
+              "O(log n)"
+            ],
+            [
+              "covered query",
+              "no fetch"
+            ],
+            [
+              "indexed sort",
+              "~O(1) extra"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One-line rule: touch only the data you return",
+            "Go deeper: docs on explain, Query Optimizer, WiredTiger internals"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Performance Is A Loop",
+          "text": "Measure → change → measure → repeat under real workload. Not a fix — a habit."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your query isn't slow — your index is lying to you. 10 handwritten pages take you from COLLSCAN shame to covered queries, explain plans, ESR, and a full debug playbook. Save this one, you'll need it at 3am.",
+    "hashtags": [
+      "#mongodb",
+      "#database",
+      "#queryoptimization",
+      "#explainplan",
+      "#indexing",
+      "#backend",
+      "#devtools",
+      "#studygram",
+      "#technotes",
+      "#performance",
+      "#nosql",
+      "#programming"
+    ]
+  }
+}

@@ -1,0 +1,176 @@
+{
+  "title": "Kafka Streams: Dense Notes on Streams, Tables, Windows & Exactly-Once",
+  "summary": "A 10-page handwritten study series covering Kafka Streams end to end: the KStream/KTable duality, state stores, windowing, stream-table joins, exactly-once semantics, repartitioning internals, operations, and the mistakes that trip people up.",
+  "chapters": [
+    {
+      "title": "Kafka Streams in One Page",
+      "points": [
+        "Kafka Streams is a JVM client library for stream processing -- no separate compute cluster; your app's processes ARE the processors",
+        "Topology = DAG of nodes: source nodes read Kafka topics, sink nodes write back, others transform; print it with Topology.describe()",
+        "Two APIs: high-level DSL (StreamsBuilder, KStream/KTable) and low-level Processor API (process(), punctuators) -- they interoperate",
+        "StreamsConfig essentials: application.id, bootstrap.servers, default key/value serdes, processing.guarantee, num.stream.threads",
+        "application.id does triple duty: consumer group id + prefix for all internal topics (changelogs, repartition) -- never reuse across topologies",
+        "Unit of parallelism = StreamTask, one per partition of the max-partitioned input; num.stream.threads spreads tasks across threads",
+        "Scale out by adding instances -- the consumer group protocol reassigns tasks, and state follows via changelog restore",
+        "Hello world (word count): builder.stream(\"words\").flatMapValues(split).groupBy((k,w)->w).count(Materialized.as(\"counts\")).toStream().to(\"out\")",
+        "Under the hood: a normal consumer reads, an idempotent-capable producer writes, group coordination handles membership -- all in one JVM",
+        "Stateless ops (map/filter/flatMap) need no storage; stateful ops (count/aggregate/reduce/join/window) create state stores",
+        "Sweet spots: real-time ETL, event-driven microservices, enrichment, fraud detection, real-time analytics on Kafka data",
+        "Not this tool: it is not SQL-on-Kafka (that is ksqlDB), not a batch engine, and does not replace your sink databases"
+      ]
+    },
+    {
+      "title": "KStream vs KTable: Events vs State",
+      "points": [
+        "KStream = immutable event log: every record is a new fact, INSERT-only, nothing is ever overwritten",
+        "KTable = changelog view of a mutable dataset keyed by record key: new value for a key = UPDATE, null value = tombstone (DELETE)",
+        "Example: clicks stream (every click matters) vs users table (only the latest profile per user_id matters)",
+        "Semantics differ downstream: a KStream sees pre-delete events; a KTable only exposes the latest value per key at read time",
+        "Duality: a table is the snapshot of latest values; its changelog is the same data as an event stream -- toStream() and aggregation convert between them",
+        "Every KTable is backed by a compacted changelog topic; replaying it rebuilds the table -- this is how table state materializes",
+        "Conversions: KStream.toTable() builds a table; table.toStream() yields changelog records (deletes arrive as null values)",
+        "Null keys: legal on a KStream (rarely useful) but tables and grouped ops skip null-key records -- validate keying upstream",
+        "KGlobalKTable = table fully replicated to every instance; you trade memory and bandwidth for joins without co-partitioning",
+        "A KTable is a semantic type, not a queryable database -- to read it interactively, materialize it into a store with Materialized.as(...)",
+        "Rule of thumb: entity/profile/reference data -> KTable; continuous flow of events or metrics -> KStream",
+        "Both types partition by serialized key bytes (murmur2), so serde discipline matters identically for streams and tables"
+      ]
+    },
+    {
+      "title": "State Stores: The Engine Room",
+      "points": [
+        "Stateful operators (aggregate, reduce, count, joins, windowed ops) read and write a state store scoped to their task",
+        "Store shapes: KeyValueStore, WindowStore (key + window start), SessionStore -- built via StoreBuilder or Materialized.as(\"name\")",
+        "Engines: RocksDB (default: on-disk, off-heap, survives restarts) vs in-memory (fast, simple, capped by heap)",
+        "Durability model: every store is backed by a compacted changelog topic (application.id-name); each write goes to store + changelog",
+        "Recovery: a task that fails or moves is rebuilt by replaying the changelog with a restore consumer; standby replicas shortcut this",
+        "Changelog compaction keeps the latest value per key; windowed changelogs add segment-based TTL so expired windows are cleaned up",
+        "Record caching (statestore.cache.max.bytes, default 10 MB per task): a write-behind buffer batching changelog + downstream updates -- throughput up, freshness down",
+        "Interactive Queries: find a store by name on the local thread and read it as a ReadOnlyKeyValueStore -- your aggregates become a queryable view",
+        "IQv2 adds typed range/prefix queries; across instances you need REST endpoints + StreamsMetadata (application.server) for owner discovery",
+        "Memory gotcha: RocksDB uses OFF-heap memory (block cache, memtables, index blocks) -- JVM -Xmx says nothing about its footprint; budget container memory accordingly",
+        "Tuning knobs: state.dir on fast disk, RocksDB block cache + bloom filters, withCachingEnabled/Disabled, withLoggingEnabled(changelog configs)",
+        "Anti-pattern: treating stores as databases -- no secondary indexes, no cross-task queries; design your keys for the exact access pattern"
+      ]
+    },
+    {
+      "title": "Windowing: Bounding Infinite Time",
+      "points": [
+        "Aggregations over infinite streams need bounded scopes -- windows slice by event time, sessions slice by inactivity gap",
+        "Tumbling windows: fixed size, aligned, non-overlapping -- each record lands in exactly one window (e.g., 1-minute error counts)",
+        "Hopping windows: fixed size + advance interval; they overlap, so one record can hit multiple windows (5-min window every 1 min)",
+        "Sliding windows (first-class since 3.0, KIP-450): fixed-duration windows that follow each record -- ideal for 'X events in the last Y minutes'",
+        "Session windows: no fixed size; a session = activity until an inactivity gap, and a late event can MERGE adjacent sessions",
+        "Event time comes from record timestamps via TimestampExtractor; stream time advances to the max timestamp a task has seen (watermark-like)",
+        "A window closes when stream time passes window end + grace period; its result lives in a window store until retention expires",
+        "Grace period (default 24h for time and session windows) admits out-of-order records; data later than end+grace is DROPPED (watch the dropped-records metric)",
+        "suppress(Suppressed.untilWindowCloses(...)) emits ONE final result per window instead of an update on every record -- cleaner downstream",
+        "Retention vs grace: retention = how long window state lives; grace = how long late data is still accepted -- grace should fit inside retention",
+        "Code sketch: .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofMinutes(5), Duration.ofSeconds(30))).count()",
+        "Gotcha: windows exist per KEY -- 'per-minute counts' means per-key-per-window state, so high-cardinality keys x windows = state growth"
+      ]
+    },
+    {
+      "title": "Stream-Table Joins: Enrichment & Correlation",
+      "points": [
+        "KStream-KTable join = enrichment: each stream event is joined against the table's LATEST value for the same key (classic orders-join-users)",
+        "Asymmetric semantics: only stream records trigger output, using current table state; table updates never emit and never retro-join old events",
+        "KStream-KStream join: windowed via JoinWindows.of(...); both sides are buffered in window stores and every pair inside the window emits (inner/left/outer)",
+        "KTable-KTable join: changelog-to-changelog join producing a new KTable -- updates on either side recompute the joined row",
+        "Foreign-key join (2.4+): table-to-table join on a key derived from the VALUE, e.g. orders.product_id -> products, not the record key",
+        "KStream-GlobalKTable join: a KeyValueMapper extracts the join key per record; no co-partitioning needed because the table is fully local",
+        "All non-global joins require co-partitioning: same partition count + same partitioner on the join key, or Streams fails fast with a TopologyException",
+        "Fixing co-partitioning: re-key and repartition one side, or pre-create topics with matching partition counts -- Streams checks, it does not fix",
+        "Cost profile: stream-table is an O(1) store lookup per event; stream-stream buffers O(window size) on both sides plus constant store churn",
+        "Join windows and grace live in real state stores, so changelog traffic, restore time and disk all scale with your window size",
+        "Null handling: null join keys never match; a tombstoned table row enriches with nulls -- pick inner vs left join by business need",
+        "Code sketch (FK join): orders.join(products, order -> order.productId(), (order, product) -> enrich(order, product))"
+      ]
+    },
+    {
+      "title": "Exactly-Once Processing",
+      "points": [
+        "Guarantee menu: at-most-once (fast, may lose), at-least-once (default, may duplicate), exactly-once (atomic consume-transform-produce)",
+        "Enable EOS with processing.guarantee=exactly_once_v2 (the default EOS version since 3.0; v1 is deprecated)",
+        "One EOS cycle: begin transaction -> consume offsets -> process -> write outputs + changelog updates -> sendOffsetsToTransaction -> commit, every commit.interval.ms",
+        "Atomic unit = consumed offsets + produced records + changelog updates in ONE transaction -- a crash aborts all three, so neither duplicates nor loss appear",
+        "Downstream MUST read with isolation.level=read_committed, or consumers see aborted records and phantom lag (data before the Last Stable Offset)",
+        "commit.interval.ms defaults to 100 ms under EOS vs 30 s otherwise -- smaller = lower latency but more coordinator load; larger = better throughput",
+        "Zombie fencing is built in: the transactional producer epoch makes writes from an old (zombied) generation fail after initTransactions()",
+        "EOS v2 (KIP-447): ONE transaction per instance covering all its tasks, instead of per-task transactions -- fewer transactions, higher throughput",
+        "Recovery path: task crash -> transaction aborted -> task reassigned -> state rebuilt from changelog -> processing re-runs but output becomes visible exactly once",
+        "Hard boundary: EOS covers Kafka-to-Kafka only -- external side effects (HTTP calls, DB writes) need idempotency keys or an outbox pattern",
+        "Costs: commit-interval latency, transaction coordinator load, visible lag spikes during open transactions, throughput tax on very high-volume topologies",
+        "Pragmatic alternative: at-least-once + idempotent/upsert sinks (keyed writes) often meets business needs at lower cost -- choose deliberately"
+      ]
+    },
+    {
+      "title": "Repartitioning & Co-Partitioning Internals",
+      "points": [
+        "Rule: changing a record's key invalidates its partition assignment -- the next stateful op auto-inserts a repartition step (groupBy, re-key before join)",
+        "groupByKey reuses existing partitioning; groupBy with a new key always creates a repartition topic -- prefer groupByKey when the key is unchanged",
+        "Repartition topics are internal auto-created topics (application.id-...-repartition); tune name and partitions via Repartitioned.as(\"x\").withNumberOfPartitions(n)",
+        "Internally the topology writes to the repartition topic via a sink node and reads it back via a source node -- visible in Topology.describe()",
+        "Co-partitioning rules for joins: identical partition counts + the same partitioning function (default murmur2 over serialized key bytes) on both sides",
+        "topology.optimization=all can eliminate redundant repartition nodes (e.g., reuse source partitioning) -- set StreamsConfig.TOPOLOGY_OPTIMIZATION",
+        "Custom partitioning via StreamPartitioner / DEFAULT_PARTITIONER_CLASS -- beware breaking murmur2 compatibility with existing topic data",
+        "Skew: hot keys overload one task (lag + unbalanced state); mitigate with salting (key#shard + two-phase aggregate) or re-keying",
+        "Data locality: a task's stores hold only its partitions -- after a rebalance, stores move and must be restored; keep key-to-task mapping stable",
+        "Re-key cost checklist: extra producer+consumer traffic, extra broker storage, an extra serde round-trip per record",
+        "Never delete internal topics while the app runs; to reprocess from scratch use kafka-streams-application-reset (wipes offsets + internal topics)",
+        "Debug tip: 'not co-partitioned' errors at startup mean partition counts or partitioners mismatch -- check partition counts and serdes first"
+      ]
+    },
+    {
+      "title": "Scaling, Fault Tolerance & Operations",
+      "points": [
+        "Parallelism math: task count = partitions of the max-partitioned input; instances x threads beyond the task count just sit idle",
+        "num.stream.threads controls intra-instance parallelism; one thread runs many tasks, and each task owns one partition's stores",
+        "num.standby.replicas=1 mirrors each task's state on a second instance -- failover becomes a task switch instead of a full changelog replay (cost: 2x storage)",
+        "Failure flow: instance dies -> group rebalances -> tasks and their stores reassigned -> new owner restores from changelog -> resumes from last committed offsets",
+        "Cooperative-sticky rebalancing is supported (with a documented upgrade path) -- avoids stop-the-world rebalances that pause all tasks",
+        "Monitor: consumer lag (records-lag-max), process/commit latency, RocksDB block-cache hit rate and store size, restoration rate, dropped late records",
+        "Sizing state: state size is roughly keys x value size x retention; put state.dir on fast local SSD/NVMe and size disks for changelog restore bursts",
+        "RocksDB care: tune block cache and bloom filters, watch compaction (bytes-written rate) -- it is usually the disk I/O hog",
+        "Graceful shutdown: kafkaStreams.close(Duration) lets tasks commit, flush caches and close stores; kill -9 forces changelog restore on the next owner",
+        "Deployment: any scheduler works since state is restorable, but provision fast local or attached disk and a stable state.dir path",
+        "Testing: TopologyTestDriver runs your topology in-JVM without Kafka -- unit-test windows, joins and suppression with TestInputTopic/TestOutputTopic",
+        "Upgrades: rolling restarts are safe across patch versions, but changelog format or topology changes may need application-reset or dual-topic migration -- read release notes"
+      ]
+    },
+    {
+      "title": "Common Mistakes & Gotchas",
+      "points": [
+        "Using groupBy where groupByKey suffices -> a needless repartition topic and broker round-trip on every aggregation",
+        "Joining without co-partitioning -> the app crashes at startup; input topic partition counts must match on both sides",
+        "Relying on null keys: records with null keys silently vanish from tables and aggregations -- validate keying at the producer",
+        "Treating null values as 'empty data': in tables they are tombstones (deletes); a careless filter before aggregation changes delete semantics",
+        "Wrong or missing TimestampExtractor -> windows silently keyed by ingestion time; clock-skewed producers shift records into wrong windows",
+        "Leaving the 24h default grace period on high-cardinality keys -> a full day of window state and multi-GB stores; set grace explicitly",
+        "Setting grace to 0 for 'clean windows' -> legitimate late data is silently dropped; alert on the dropped-records metric",
+        "Deserialization errors kill threads by default (LogAndFail) -- attach a DeserializationExceptionHandler (log-and-skip or DLQ) on risky topics",
+        "Unbounded state: aggregating by ever-unique keys (session ids, uuids) with no retention -> changelog and RocksDB grow forever",
+        "Running exactly_once_v2 while downstream reads with read_uncommitted -> aborted records become visible duplicates",
+        "IQ misuse: querying a store on an instance that does not own the key returns nulls/empty -- discover owners via StreamsMetadata first",
+        "Reusing application.id across different topologies -> corrupted internal topics; and renaming the app resets all state (new changelog names)"
+      ]
+    },
+    {
+      "title": "Cheat Sheet: Decisions & Mental Model",
+      "points": [
+        "Mental model: topics are logs, KStream is facts over time, KTable is latest-value-per-key (a materialized view), state stores are its disk",
+        "Type picker: events/metrics -> KStream; entity state -> KTable; small slow dimension for joins -> KGlobalKTable",
+        "Join picker: enrichment -> stream-table; event correlation in time -> windowed stream-stream; changelog consistency -> table-table; value-derived keys -> FK join",
+        "Window picker: periodic rollups -> tumbling; smoothed trends -> hopping; threshold-in-window alerts -> sliding; user journeys -> session",
+        "Guarantee picker: Kafka-to-Kafka and correctness-critical -> exactly_once_v2; external sinks -> at-least-once + idempotent writes",
+        "Defaults to memorize: grace 24h, commit.interval 100ms (EOS) / 30s (at-least-once), record cache 10 MB/task, RocksDB engine, 0 standby replicas",
+        "Golden APIs: StreamsBuilder, KStream (map/filter/join/aggregate), KGroupedStream, TimeWindows/SessionWindows/JoinWindows, Materialized, Suppressed, Repartitioned",
+        "Performance levers, ranked: fewer repartitions > balanced partitions (no hot keys) > cache sizing > RocksDB tuning",
+        "Correctness checklist: non-null keys, matching serdes, verified co-partitioning, validated event timestamps, deliberate grace periods",
+        "Reliability checklist: sane changelog compaction/retention, standby replicas for fast failover, DLQ exception handlers, alerts on lag and restore time",
+        "Cost checklist: state size x retention fits local disk, repartition topics kept lean, transaction interval balancing latency vs coordinator load",
+        "One-liner: Kafka Streams is a partition-parallel consume-transform-produce DAG where tables are changelogs, joins are key-parallel lookups, windows bound time, and EOS makes the whole cycle atomic"
+      ]
+    }
+  ]
+}

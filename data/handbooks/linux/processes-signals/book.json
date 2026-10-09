@@ -1,0 +1,231 @@
+{
+  "title": "Linux Processes & Signals: A Handwritten Field Guide",
+  "summary": "A dense, practical handbook on how Linux creates, runs, and kills processes — fork/exec mechanics, PID lifecycles, the full signal model, zombie and orphan reaping, and shell job control. Covers internals, syscall-level examples, comparison tables, and the mistakes that produce hung daemons and stuck terminals.",
+  "chapters": [
+    {
+      "title": "What Is a Process, Really?",
+      "points": [
+        "Definition: a process is a running instance of a program — the program is bytes on disk, the process is that program plus its execution state.",
+        "Each process gets its own virtual address space: text (code), data, BSS, heap (grows up), stack (grows down), plus mmap'd regions between heap and stack.",
+        "Kernel-side, every process is a `task_struct` in the kernel's task list — holds PID, state, registers, credentials, file descriptor table, signal handlers, memory map pointer.",
+        "Process state machine: R (running/runnable), S (interruptible sleep), D (uninterruptible sleep — usually blocked on disk I/O, cannot be killed), T (stopped), Z (zombie), I (idle kernel thread).",
+        "D-state is the classic 'kill -9 doesn't work' case: the process is inside the kernel and not checking signals until the I/O returns.",
+        "Every process carries identity numbers: PID, PPID (parent), PGID (process group), SID (session), plus UID/EUID and GID/EGID for permissions.",
+        "Threads on Linux are processes that share an address space — they're tasks with the same TGID; `getpid()` returns the TGID, `gettid()` returns the real task id.",
+        "`/proc/<pid>/` is the process introspection interface: `status`, `cmdline`, `environ`, `fd/`, `maps`, `stack`.",
+        "Example: `ps -eo pid,ppid,pgid,sid,stat,comm` prints the whole identity/state picture in one shot.",
+        "The kernel schedules tasks, not programs — a 'process' is just the accounting unit around one or more schedulable tasks."
+      ]
+    },
+    {
+      "title": "PIDs, PPIDs and the Process Tree",
+      "points": [
+        "PID = process ID, a positive integer assigned at creation; PPID = the PID of the creating parent.",
+        "PID 1 is init/systemd — started by the kernel, parent of every orphan, cannot be killed by ordinary signals, and its death panics the kernel.",
+        "PID 0 is not a real userspace process: it's the swapper/idle task; in the `kill()` API, pid 0 means 'my process group'.",
+        "PIDs are allocated sequentially and wrap at `/proc/sys/kernel/pid_max` (default 32768 on many systems, up to 4194304).",
+        "PID reuse is a real hazard: after wrap, a stale PID you saved may now name a different process — never `kill` a PID you cached long ago without re-verifying.",
+        "The process tree is strictly a forest rooted at PID 1; view it with `pstree -p` or `ps -ejH`.",
+        "PID namespaces make PIDs relative: inside a container the entrypoint sees itself as PID 1 while the host sees it as e.g. 24831 — same task, two numbers.",
+        "Consequence of containers-as-PID-1: your app becomes the reaper for orphans and must handle SIGTERM itself, or the container never shuts down cleanly.",
+        "Useful lookups: `getpid()`, `getppid()`, `pgrep -f pattern`, `pidof nginx`, `ps -p <pid> -o lstart=` to check start time before killing.",
+        "Modern safe handle: pidfd (`pidfd_open`, `pidfd_send_signal`) refers to the exact process, immune to PID reuse races."
+      ]
+    },
+    {
+      "title": "fork(): Cloning a Process",
+      "points": [
+        "`pid_t fork(void)` creates a near-identical copy of the calling process; it is called once and returns twice.",
+        "Return value contract: 0 in the child, the child's PID in the parent, -1 on failure (errno EAGAIN when the process limit is hit, ENOMEM).",
+        "Canonical skeleton: `pid_t p = fork(); if (p < 0) perror(\"fork\"); else if (p == 0) { /* child */ } else { /* parent */ }`.",
+        "Child inherits: open file descriptors (and their shared file offsets), environment, cwd, umask, signal dispositions, resource limits.",
+        "Child does NOT inherit: pending signals (cleared), timers, file locks, and it gets a fresh PID with PPID = parent's PID.",
+        "Copy-on-write (COW): the address space isn't physically copied — pages are shared read-only and duplicated only when either side writes, making fork cheap.",
+        "Execution order after fork is unspecified — never write code that assumes the parent or the child runs first; synchronize explicitly if order matters.",
+        "Shared descriptor offsets bite: parent and child writing the same fd interleave output; flush stdio buffers *before* forking or you get duplicated output.",
+        "Fork bomb `:(){ :|:& };:` shows why `RLIMIT_NPROC` and cgroup `pids.max` exist — each call spawns two more until the table is exhausted.",
+        "Related calls: `vfork()` (child borrows parent's memory, must exec or _exit immediately — legacy), `clone()` (the real primitive; fork and thread creation are both clone with different flags), `posix_spawn()` (fork+exec in one, cheaper on huge processes)."
+      ]
+    },
+    {
+      "title": "exec(): Replacing the Program",
+      "points": [
+        "The exec family replaces the current process image with a new program — same PID, same PPID, brand new code, data, heap and stack.",
+        "On success exec never returns; any line after it runs only on failure, so the idiom is `execvp(...); perror(\"exec\"); _exit(127);`.",
+        "Naming key: `l` = arg list, `v` = arg vector, `p` = search $PATH, `e` = explicit environment — `execl`, `execv`, `execlp`, `execvp`, `execle`, `execve`.",
+        "`execve(path, argv, envp)` is the only actual syscall; the rest are libc wrappers around it.",
+        "`argv[0]` is a convention, not the filename — shells set it to the command name, and login shells prefix it with `-` to signal 'login shell'.",
+        "Preserved across exec: PID, PPID, open file descriptors (unless FD_CLOEXEC set), cwd, umask, process group, session, nice value.",
+        "Reset across exec: signal *handlers* revert to default (you cannot inherit a handler function into a new program), memory mappings, threads (only the calling thread survives).",
+        "Ignored signals stay ignored across exec — a common source of 'my child mysteriously can't be Ctrl-C'd' bugs when a parent SIG_IGN'd SIGINT.",
+        "`FD_CLOEXEC` / `O_CLOEXEC` closes a descriptor automatically at exec — set it on everything you don't intend to pass on, or you leak sockets into child processes.",
+        "The fork+exec pattern is why redirection works: fork, then in the child rearrange fds with `dup2(fd, STDOUT_FILENO)`, then exec — the new program sees an already-redirected stdout.",
+        "Shebang handling: exec'ing a `#!/usr/bin/env python3` script makes the kernel exec the interpreter with the script path appended as an argument."
+      ]
+    },
+    {
+      "title": "wait(), Exit Status, and Reaping",
+      "points": [
+        "A terminated process is not fully gone until its parent collects its status — that collection is called reaping.",
+        "`wait(&status)` blocks until any child terminates; `waitpid(pid, &status, options)` targets a specific child or a group.",
+        "`waitpid(-1, &st, WNOHANG)` polls without blocking, returning 0 when no child has exited — the basis of an event-loop-friendly reaper.",
+        "Status decoding macros: `WIFEXITED(st)` + `WEXITSTATUS(st)` for normal exit; `WIFSIGNALED(st)` + `WTERMSIG(st)` for signal death; `WIFSTOPPED(st)` + `WSTOPSIG(st)` for job-control stops.",
+        "Exit codes are 8 bits: 0 = success, 1–125 application-defined, 126 = found but not executable, 127 = command not found, 128+N = killed by signal N (137 = 128+9 = SIGKILL, 143 = 128+15 = SIGTERM).",
+        "`$?` in the shell holds the last exit status; in a pipeline `${PIPESTATUS[@]}` holds every stage's status.",
+        "`waitid()` is the richer modern interface — gives a `siginfo_t` and can peek at a child without reaping it (`WNOWAIT`).",
+        "SIGCHLD is delivered to the parent when a child terminates, stops, or continues; the standard reaper loop is `while (waitpid(-1, &st, WNOHANG) > 0);` inside the handler.",
+        "SIGCHLD is not queued — several children dying at once can coalesce into one delivery, which is exactly why the handler must loop until waitpid returns ≤ 0.",
+        "Setting `signal(SIGCHLD, SIG_IGN)` (or SA_NOCLDWAIT) tells the kernel to auto-reap, but then you can never retrieve any exit status.",
+        "Example: `sh -c 'exit 42'; echo $?` prints 42; `sh -c 'kill -9 $$'; echo $?` prints 137."
+      ]
+    },
+    {
+      "title": "Zombies and Orphans",
+      "points": [
+        "A zombie (state Z, shown as `<defunct>`) is a process that has exited but whose parent has not yet called wait — the kernel keeps only its exit status and accounting.",
+        "Zombies consume no memory or CPU; they consume a PID table slot, so the real failure mode is PID exhaustion, not RAM exhaustion.",
+        "You cannot kill a zombie — it is already dead. `kill -9 <zombie>` is a no-op; you must make the parent reap it or kill the parent.",
+        "Killing the parent works because the zombie is re-parented to PID 1, which waits in a loop and reaps immediately.",
+        "An orphan is the opposite case: a still-running process whose parent died. It is re-parented (to init/systemd, or to the nearest subreaper) and keeps running.",
+        "`prctl(PR_SET_CHILD_SUBREAPER, 1)` makes a process the adoptive parent for its whole descendant subtree — how systemd and container managers keep control.",
+        "Daemonizing via double-fork: fork, parent exits, child calls `setsid()`, forks again and exits the middle process — the grandchild is orphaned on purpose so init reaps it and it can never acquire a controlling terminal.",
+        "Detect zombies: `ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'` or the zombie count line in `top`.",
+        "Container gotcha: a shell or app running as PID 1 that never calls wait accumulates zombies from every subprocess — fix with `--init`, `tini`, `dumb-init`, or a real reaper loop.",
+        "Rule of thumb: many zombies = a buggy parent. Fix the parent's SIGCHLD/wait logic; don't script periodic reboots."
+      ]
+    },
+    {
+      "title": "The Signal Model",
+      "points": [
+        "A signal is an asynchronous software interrupt: a small integer delivered to a process to notify it of an event.",
+        "Lifecycle: generated (by kernel, another process, or itself) → pending → delivered → handled per its disposition.",
+        "Three possible dispositions: default action (`SIG_DFL`), ignore (`SIG_IGN`), or run a user handler function.",
+        "Default actions vary: Term (terminate), Core (terminate + dump core), Ign (discard), Stop (suspend), Cont (resume).",
+        "Standard signals 1–31 are NOT queued — if the same signal arrives twice while blocked, it's collapsed into one pending delivery.",
+        "Real-time signals SIGRTMIN..SIGRTMAX (32–64) ARE queued, delivered in order, and can carry a value via `sigqueue()`.",
+        "Signal mask: `sigprocmask()`/`pthread_sigmask()` blocks signals temporarily; blocked signals stay pending, they aren't lost.",
+        "`sigaction()` is the portable, correct API — `signal()` has historically inconsistent semantics (handler reset, restart behavior); always prefer sigaction.",
+        "`SA_RESTART` decides whether an interrupted blocking syscall auto-restarts or fails with EINTR; without it, you must handle EINTR everywhere.",
+        "Async-signal-safety: only functions on the async-signal-safe list may be called in a handler — `write()` yes, `printf()`/`malloc()` no (they can deadlock on their own locks).",
+        "Standard safe handler pattern: set a `volatile sig_atomic_t` flag (or write one byte to a self-pipe/eventfd) and do the real work back in the main loop.",
+        "Modern synchronous alternatives: `signalfd()` turns signals into readable file descriptors, `sigwaitinfo()`/`sigtimedwait()` let a dedicated thread accept them — both integrate cleanly with epoll loops."
+      ]
+    },
+    {
+      "title": "Signal Catalog: The Ones You Actually Use",
+      "points": [
+        "SIGHUP (1) — terminal hang-up or session leader death; by convention daemons repurpose it as 'reload config'.",
+        "SIGINT (2) — Ctrl-C from the terminal, polite interrupt, catchable.",
+        "SIGQUIT (3) — Ctrl-\\, terminates and dumps core; in Java it triggers a thread dump instead.",
+        "SIGKILL (9) — immediate, uncatchable, unblockable, unignorable termination.",
+        "SIGSEGV (11) — invalid memory access; SIGBUS (7) for misaligned/bad-address access; SIGFPE (8) for arithmetic faults like integer divide-by-zero.",
+        "SIGPIPE (13) — writing to a pipe/socket with no reader; default kills you, which is why servers routinely `signal(SIGPIPE, SIG_IGN)` and check `write()` for EPIPE.",
+        "SIGALRM (14) — timer expiry from `alarm()`/`setitimer()`.",
+        "SIGTERM (15) — polite, catchable termination request; the default for `kill` and the default for `docker stop` and systemd.",
+        "SIGCHLD (17) — child terminated, stopped, or continued; default action is ignore.",
+        "SIGSTOP (19) / SIGCONT (18) — suspend and resume; SIGSTOP is uncatchable like SIGKILL, SIGTSTP (20) is the catchable Ctrl-Z variant.",
+        "SIGUSR1 (10) / SIGUSR2 (12) — reserved for application meaning, e.g. nginx uses USR1 to reopen logs and USR2 for binary upgrade.",
+        "SIGWINCH (28) — terminal window resized; how TUIs know to re-layout.",
+        "Signal numbers differ across architectures — always use names, never hardcoded numbers, and check with `kill -l`."
+      ]
+    },
+    {
+      "title": "SIGTERM vs SIGKILL: Shutdown Done Right",
+      "points": [
+        "SIGTERM (15): catchable, blockable, ignorable — a request. SIGKILL (9): none of those — an order executed by the kernel.",
+        "On SIGTERM a process can flush buffers, close DB connections, finish in-flight requests, remove its PID file, deregister from a load balancer.",
+        "On SIGKILL the process is torn down instantly: no handler runs, no atexit, no destructors, no flush — open temp files, locks and shared-memory segments are left behind.",
+        "Correct sequence: send SIGTERM, wait a grace period, then escalate to SIGKILL. `kill -9` first is the mistake, not the shortcut.",
+        "Comparison row — catchable: TERM yes / KILL no. Blockable: TERM yes / KILL no. Data-safe: TERM yes / KILL no. Guaranteed: TERM no / KILL yes.",
+        "SIGKILL still cannot kill a task in uninterruptible sleep (D state) or a fully wedged kernel driver — the kill is marked pending until the task leaves the kernel.",
+        "systemd implements this exactly: `KillSignal=SIGTERM`, then `TimeoutStopSec=90s`, then `SIGKILL`. Docker: `docker stop` sends SIGTERM then SIGKILL after `-t` (default 10s). Kubernetes: preStop hook → SIGTERM → `terminationGracePeriodSeconds` (default 30) → SIGKILL.",
+        "The signal reaches PID 1 of the container only — if your entrypoint is `sh -c \"myapp\"`, the shell gets SIGTERM and your app never does. Use exec form (`CMD [\"myapp\"]`) or `exec myapp`.",
+        "Graceful handler sketch: `trap 'echo draining; kill -TERM $child; wait $child' TERM` in shell; in Go, `signal.Notify(c, syscall.SIGTERM)` then `srv.Shutdown(ctx)`.",
+        "The OOM killer sends SIGKILL — that's why OOM deaths produce no application logs and exit code 137.",
+        "Debug check: `cat /proc/<pid>/status | grep -E 'SigBlk|SigIgn|SigCgt'` shows, as hex masks, exactly which signals a process blocks, ignores and catches."
+      ]
+    },
+    {
+      "title": "Sending Signals: kill, killall, pkill and Friends",
+      "points": [
+        "`kill(pid, sig)` is the syscall; the shell `kill` is usually a builtin wrapping it. `kill -TERM 1234` = `kill -15 1234` = `kill 1234`.",
+        "Special pid arguments to `kill()`: pid > 0 one process; pid == 0 the caller's whole process group; pid == -1 every process you may signal; pid < -1 the process group `-pid`.",
+        "`kill -0 <pid>` sends no signal but performs the existence and permission check — the idiomatic 'is it still alive?' probe.",
+        "`kill -- -<pgid>` signals an entire process group — the reliable way to take down a process and all its children at once.",
+        "Permissions: you may signal a process only if your real or effective UID matches its real or saved UID, or you are root; otherwise EPERM.",
+        "`pkill -f 'pattern'` matches the full command line, `pgrep -a` previews the matches — always pgrep before you pkill.",
+        "`killall <name>` matches by exact process name; note it means something completely different on some non-Linux systems, so prefer pkill in portable scripts.",
+        "`timeout -s TERM -k 30 300 cmd` runs a command with a 300s limit, sends TERM, then KILL 30s later — grace escalation for free.",
+        "`raise(sig)` signals yourself; `abort()` raises SIGABRT to dump core deliberately.",
+        "`pidfd_send_typo`-free modern form: `int fd = pidfd_open(pid, 0); pidfd_send_signal(fd, SIGTERM, NULL, 0);` — no PID-reuse race window.",
+        "Careless `pkill -f java` in a shared environment kills every JVM on the box — scope matches with `-u`, `--ns`, or an exact cgroup instead."
+      ]
+    },
+    {
+      "title": "Process Groups, Sessions and Terminals",
+      "points": [
+        "Hierarchy: session contains one or more process groups, each group contains one or more processes — the plumbing that makes job control possible.",
+        "A process group is the unit of signal delivery for the terminal: Ctrl-C sends SIGINT to every member of the *foreground* group, not just one process.",
+        "The shell puts every pipeline into its own new process group, so `a | b | c` is three processes in one group killed or stopped together.",
+        "`setsid()` creates a new session, makes the caller session leader and process group leader, and detaches it from any controlling terminal — the core of daemonizing.",
+        "The controlling terminal has one foreground process group (`tcgetpgrp`/`tcsetpgrp`); all others are background groups.",
+        "Background processes that read from the terminal get SIGTTIN; those that write (when `stty tostop` is set) get SIGTTOU — both stop the process, which is why a background job can appear frozen.",
+        "Closing a terminal makes the kernel send SIGHUP to the session leader, which typically propagates to all jobs — how you lose long-running work over SSH.",
+        "Survive hangup with `nohup cmd &`, `setsid cmd`, `disown -h %1`, or better, run inside `tmux`/`screen`/a systemd unit.",
+        "Inspect the relationships: `ps -eo pid,pgid,sid,tty,stat,comm` — the `+` in STAT means foreground group, `s` means session leader.",
+        "TTY column shows `?` for processes with no controlling terminal — the signature of a properly daemonized process."
+      ]
+    },
+    {
+      "title": "Job Control in the Shell",
+      "points": [
+        "A job is the shell's handle on one pipeline; jobs are numbered `%1`, `%2`, and `%%`/`%+` is current, `%-` is previous.",
+        "`cmd &` starts a job in the background; `jobs -l` lists jobs with their PIDs and states.",
+        "Ctrl-Z sends SIGTSTP to the foreground group, stopping it (state T) and returning you to the prompt.",
+        "`bg %1` resumes a stopped job in the background (sends SIGCONT); `fg %1` resumes it in the foreground and hands it the terminal back.",
+        "`$!` holds the PID of the last background job; `wait` blocks for all background jobs, `wait $!` for one, and `wait -n` returns when any one finishes.",
+        "`disown %1` removes a job from the shell's table so it won't be sent SIGHUP; `disown -h` keeps it listed but marks it hangup-immune.",
+        "Ctrl-C = SIGINT, Ctrl-\\ = SIGQUIT, Ctrl-Z = SIGTSTP — all configured per-terminal and visible in `stty -a`.",
+        "`trap 'cleanup' EXIT INT TERM` installs shell-level handlers; `trap -p` lists them, and `trap '' TERM` ignores a signal outright.",
+        "A shell script does not forward signals to its children automatically — the wrapper dies and the real work keeps running; use `exec cmd` to replace the shell, or trap-and-forward with `kill -TERM $child; wait $child`.",
+        "`wait` returns immediately when a trap fires, so a graceful-shutdown script needs a second `wait $child` after forwarding the signal to actually let the child finish.",
+        "Non-interactive shells have job control off by default; that's why `fg` in a script fails with 'no job control in this shell'.",
+        "Practical: `long_task > out.log 2>&1 &` then `disown` then close the SSH session — versus just closing it and losing everything to SIGHUP."
+      ]
+    },
+    {
+      "title": "Common Mistakes and Debugging Playbook",
+      "points": [
+        "Mistake: reaching for `kill -9` first. It skips cleanup, corrupts state, and hides the real bug — always TERM, wait, then escalate.",
+        "Mistake: `printf`/`malloc` inside a signal handler. Not async-signal-safe; can deadlock. Set a flag or write to a self-pipe instead.",
+        "Mistake: forgetting to loop in a SIGCHLD handler. Standard signals coalesce, so one delivery may represent several dead children — loop with WNOHANG until it returns ≤ 0.",
+        "Mistake: not flushing stdio before fork. Buffered bytes are duplicated into both processes and printed twice; `fflush(NULL)` first.",
+        "Mistake: `CMD myapp` (shell form) in a Dockerfile. The shell is PID 1, swallows SIGTERM, and every stop takes the full 10s timeout before SIGKILL. Use exec form.",
+        "Mistake: ignoring EINTR. Without `SA_RESTART`, `read`/`accept`/`select` return -1/EINTR after any signal; retry rather than treat it as fatal.",
+        "Mistake: killing a cached PID. PID reuse means you may kill an innocent process — verify with start time (`ps -o lstart=`) or use a pidfd.",
+        "Mistake: leaking fds across exec. Sockets and log files inherited by children keep ports and files open long after the parent restarts — set O_CLOEXEC.",
+        "Diagnose which signal killed something: exit code 128+N, `dmesg` for OOM kills, `journalctl -u unit`, or `coredumpctl` for the core.",
+        "Trace signals and process syscalls live: `strace -f -e trace=%process,%signal -p <pid>`; watch state changes with `watch -n1 'ps -o pid,stat,wchan= -p <pid>'`.",
+        "Stuck in D state: read `/proc/<pid>/wchan` and `/proc/<pid>/stack` to find the blocking kernel function — the fix is on the I/O path (NFS, dead disk), not in the signal.",
+        "Reproduce safely: `sleep 300 &` then experiment with `kill -STOP`, `-CONT`, `-TERM`, `-9` and watch STAT move through S, T, S, gone."
+      ]
+    },
+    {
+      "title": "Summary: The Whole Model on One Page",
+      "points": [
+        "Creation is always fork (or clone/posix_spawn); execution of a new program is always exec. Nothing else makes processes on Linux.",
+        "fork returns twice and copies lazily via COW; exec returns never on success and keeps the PID while replacing everything else.",
+        "The full lifecycle: fork → exec → run → exit → zombie → parent waits → gone. Skip the wait and you keep a zombie.",
+        "Every process is identified by PID inside a PID namespace, parented by PPID, grouped by PGID, and sessioned by SID — signals travel along those groupings.",
+        "Signals are asynchronous notifications with three dispositions (default, ignore, handler); standard signals coalesce, real-time signals queue.",
+        "SIGTERM asks, SIGKILL takes. Ask first, wait a grace period, then take.",
+        "SIGKILL and SIGSTOP are the only two signals that cannot be caught, blocked, or ignored.",
+        "Zombies waste PIDs, not memory — fix the parent's reaping. Orphans keep running and get adopted by PID 1 or the nearest subreaper.",
+        "Job control is signals plus process groups plus a controlling terminal: Ctrl-C is SIGINT to the foreground group, Ctrl-Z is SIGTSTP, bg/fg is SIGCONT plus a terminal handoff.",
+        "Signal handlers should do almost nothing: set a flag, write a byte, return. Do the real work in the main loop, or use signalfd.",
+        "Toolkit to keep: `ps -eo pid,ppid,pgid,sid,stat,comm`, `pstree -p`, `kill -l`, `kill -0`, `pgrep -a`, `strace -f -e %signal`, `/proc/<pid>/status`, `timeout -k`.",
+        "Design rule for anything you ship: handle SIGTERM, reap your children, set CLOEXEC, never assume you are not PID 1."
+      ]
+    }
+  ]
+}

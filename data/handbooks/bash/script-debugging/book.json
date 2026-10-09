@@ -1,0 +1,158 @@
+{
+  "title": "Debugging Bash Scripts: Make the Shell Show Its Work",
+  "summary": "A dense study-notes series on finding out why bash scripts fail: static checks with bash -n and shellcheck, execution tracing with set -x and PS4, automatic post-mortems with trap ERR, strict mode with set -euo pipefail, a field guide to common silent-failure patterns, and stepping through logic with bashdb.",
+  "chapters": [
+    {
+      "title": "Why Bash Fails Silently: The Debugging Mindset",
+      "points": [
+        "Bash runs top to bottom and does not stop on errors by default: line 40 can crash after lines 1-39 already did their damage",
+        "Exit status contract: 0 is success, 1-255 is failure; $? always holds the last status — check it after critical commands",
+        "A pipeline returns only the LAST command's status by default, so failing_cmd | grep ... looks successful",
+        "Unquoted $var undergoes word splitting and globbing: filenames with spaces silently break loops and rm commands",
+        "Silent expansion horror: rm -rf $DIR/* with unset DIR becomes rm -rf /*",
+        "set -e is a seatbelt, not a debugger: it stops the script but never explains why",
+        "Standard workflow: reproduce, add visibility with set -x, isolate with bash -n and strategic echo, then fix and re-run",
+        "Send debug output to stderr with >&2 so it never pollutes stdout that gets piped or redirected",
+        "Run bash script.sh directly to rule out a bad shebang or the wrong interpreter being invoked",
+        "Version matters: associative arrays (4.0), ${var,,} (4.0), ${arr@Q} (4.4) fail oddly on old bash",
+        "Scripts often work in your terminal and fail in cron: different PATH, empty environment, no TTY — diff the environments",
+        "Golden rule: never debug by staring at code — make the shell show its work"
+      ]
+    },
+    {
+      "title": "Static Checks: bash -n and shellcheck",
+      "points": [
+        "bash -n script.sh parses the entire script and reports syntax errors WITHOUT executing a single command — the safest first check",
+        "Exit code 0 from bash -n means parseable; anything else means do not run this script",
+        "Typical report: unexpected EOF while looking for matching quote — bash tells you where it gave up, not where you erred",
+        "Missing fi, done, or esac surfaces as unexpected end of file: search upward from the reported line for the unclosed opener",
+        "Hard limit: bash -n cannot see runtime problems — wrong variable names, missing files, and bad logic all parse fine",
+        "shellcheck is a static analyzer that catches unquoted variables, useless cat, unreachable code, and quoting bugs",
+        "SC2086 (double quote to prevent globbing and word splitting) is the single most common shellcheck finding",
+        "Use shellcheck -x to follow source'd files and -S error|warning|info to set the minimum severity",
+        "Inline directives: # shellcheck disable=SC2086 silences one known-safe warning without hiding the rest",
+        "CI gate: fail the pipeline when bash -n or shellcheck -S error exits non-zero — broken syntax never reaches prod",
+        "Editor integration (vim-ale, VS Code Bash IDE) runs shellcheck on save for instant feedback",
+        "Static tools cannot know what variables HOLD at runtime — that is what tracing (set -x) is for"
+      ]
+    },
+    {
+      "title": "set -x: Watch Every Command Run",
+      "points": [
+        "set -x (xtrace) prints every command to stderr AFTER expansion, prefixed by the PS4 string, just before it runs",
+        "Mnemonic: set -x turns xtrace ON, set +x turns it OFF — the flag letters follow set's on/off convention",
+        "The trace shows post-expansion reality: variables already substituted, globs already matched — you see exactly what executed",
+        "Core technique: diff the traced line against your source line; the difference IS the bug",
+        "Scope it: place set -x around a suspicious block and set +x after it — surgical tracing in large scripts",
+        "set -v prints each input line BEFORE expansion — run set -vx to see before and after side by side",
+        "Traces propagate into subshells and command substitutions: you get nested, indented traces for free",
+        "Capture a full run: bash -x script.sh 2> trace.log keeps stdout clean for piping the script's real output",
+        "BASH_XTRACEFD=9 (after exec 9> trace.log) routes xtrace to a dedicated file descriptor",
+        "Security caveat: -x expands secrets — passwords and API keys end up verbatim in logs; never leave tracing on in prod",
+        "Performance: tracing inside a 100k-iteration loop buries the signal and slows execution; trace sections instead",
+        "Zero-edit start: run bash -x script.sh args from outside the script for a first look"
+      ]
+    },
+    {
+      "title": "PS4: Trace Output That Tells You Where",
+      "points": [
+        "PS4 is the prompt string prefixed to every xtrace line; the default is just '+ ', which tells you nothing",
+        "Set PS4='+ $BASH_SOURCE:$LINENO: ' near the top of the script to stamp every trace with file and line",
+        "$LINENO inside PS4 resolves at trace time to the line about to run — the single most useful debugging variable",
+        "Compact tag: PS4='+ L$LINENO: ' gives greppable markers like + L42: that map straight back to source",
+        "Full provenance: PS4='+ ${BASH_SOURCE}:${LINENO}: ${FUNCNAME[0]:-main}() ' shows file, line, and current function",
+        "Bash repeats the FIRST character of PS4 once per call depth — traces self-indent to reveal nesting and recursion",
+        "Timing traces: embed $EPOCHREALTIME (bash 5+) in PS4 to timestamp every line and expose slow spots",
+        "Export PS4 and SHELLOPTS=xtrace to push tracing down into scripts invoked by your script",
+        "PS4 affects only trace output, never script behavior — a debug-grade PS4 is safe to leave committed",
+        "Set a good PS4 in ~/.bashrc too, so every ad-hoc bash -x run in your terminal gets line numbers automatically",
+        "When a nested trace is unreadable, grep the PS4 line-number tag for the function name first, then read outward"
+      ]
+    },
+    {
+      "title": "trap ERR and trap DEBUG: Automatic Post-Mortems",
+      "points": [
+        "trap 'handler' ERR runs handler whenever a simple command fails — an automatic error hook for the whole script",
+        "Canonical handler: cleanup() { echo FAILED at line $1 >&2; } installed with trap 'cleanup $LINENO' ERR",
+        "$LINENO passed into the handler pinpoints the failing line — free stack-trace-like post-mortem on every crash",
+        "Backtrace trick: print ${FUNCNAME[@]} inside the ERR handler to dump the function call chain that led here",
+        "trap DEBUG fires BEFORE every command: print $LINENO there for a full execution log (too heavy for routine use)",
+        "trap cleanup EXIT runs on every exit path — success, error, Ctrl-C — for temp files, locks, and rollback",
+        "Standard pairing: trap cleanup EXIT plus trap 'err $LINENO' ERR — errors get located, cleanup still always runs",
+        "Blind spot: the ERR trap does NOT fire for commands in if/while conditions or && / || chains — failure is expected there",
+        "set -E (errtrace) makes the ERR trap fire inside functions and subshells — enable it or handlers silently skip those",
+        "Traps reset in subshells: command substitution gets no parent trap unless set -E is on",
+        "Inspect and remove: trap -p ERR prints the active handler; trap - ERR uninstalls it",
+        "Handler hygiene: keep it short, write to stderr, and avoid recursion — a failing handler inside an ERR trap is misery"
+      ]
+    },
+    {
+      "title": "Strict Mode: set -euo pipefail",
+      "points": [
+        "set -e (errexit): exit immediately when any command fails — fail fast instead of letting errors cascade",
+        "set -u (nounset): referencing an unset variable is an error — catches $OUTPT-style typos instantly",
+        "set -o pipefail: a pipeline's status is the FIRST non-zero, so failing_cmd | grep ... finally fails",
+        "Standard header for any non-trivial script: set -euo pipefail (optionally harden IFS to newline and tab only)",
+        "Documented holes: set -e ignores commands inside if/while conditions, && / || lists, and command substitution in assignments",
+        "Deliberate exemption: cmd || true continues on failure — always comment why, or you have rebuilt the silent bug",
+        "Best combo: set -euo pipefail PLUS trap ERR — -e stops the script, the trap logs exactly which line killed it",
+        "Gotcha: ((count++)) returns status 1 when count is 0 (result 0 is false) and kills -e scripts; use count=$((count+1))",
+        "Gotcha: a bare read returns non-zero at EOF — under -e a trailing read can kill the script, while-loop conditions are exempt",
+        "Arrays under set -u: bash 4.4+ handles empty arrays; older bash needs the ${arr[@]+${arr[@]}} expansion",
+        "pipefail payoff: curl -sf $url | grep pat now fails the pipeline when curl 404s instead of grep quietly passing on empty input",
+        "Trade-off: strict mode is brittle but predictable — add it to every new script from line one, retrofit legacy gradually"
+      ]
+    },
+    {
+      "title": "Field Guide: Common Silent-Failure Patterns",
+      "points": [
+        "Pattern: VAR=$(cmd) discards cmd's failure — capture status instead: if ! VAR=$(cmd); then handle; fi",
+        "Pattern: missing cd guard — write cd $DIR || exit 1, or every later command runs in the wrong directory (the classic rm * disaster)",
+        "Pattern: cron's PATH is /usr/bin:/bin only — commands that work in your shell vanish there; set PATH at the top or use absolute paths",
+        "Pattern: curl writes the error page to your output file and exits 0 on HTTP errors — use curl -f so 404/500 actually fail",
+        "Pattern: grep exits 1 on no match — that is a FAILURE under set -e; branch deliberately with if grep -q pat file; then",
+        "Pattern: rm -rf $1/* with an empty or missing $1 — force required args with : ${1:?usage: need a directory}",
+        "Pattern: cp src dest where dest is not a directory silently OVERWRITES dest; write cp src dest/ to assert it is a directory",
+        "Pattern: for f in $(ls) breaks on spaces and newlines — iterate globs (for f in *) or find -print0 | xargs -0",
+        "Pattern: [ $a = $b ] with empty vars becomes [ = b ] — a syntax error masquerading as a value mismatch; quote both sides",
+        "Pattern: running with sh instead of bash silently drops bashisms — arrays, [[ ]], and local quirks break in confusing ways",
+        "Pattern: echo debug output vanishes in cron (no TTY) — log via logger to syslog or always >&2 to a redirected stderr",
+        "Detection habit: run any flaky script under bash -x once and read the LAST trace line — it is usually the crime scene"
+      ]
+    },
+    {
+      "title": "bashdb: Stepping Through with a Real Debugger",
+      "points": [
+        "bashdb is a source-level debugger for bash: real breakpoints, stepping, and inspection — install the bashdb package",
+        "Start it with bashdb script.sh; you get a gdb-style prompt driving your script line by line",
+        "Core stepping: s steps INTO calls, n steps OVER them, c continues, finish runs to the end of the current function",
+        "Breakpoints: b 20 breaks at line 20, b funcname breaks at function entry, info breakpoints lists them all",
+        "print $var (or print ${arr[@]}) evaluates any expression at a breakpoint — inspect state without littering echo",
+        "Conditional breakpoints: cond 1 $count -gt 3 makes breakpoint 1 fire only when the condition holds",
+        "where prints the current function call stack — the true backtrace that trap ERR can only approximate",
+        "list shows surrounding source; frame up/down walks the stack; display var auto-prints after every step",
+        "run re-executes the script from the top inside the same session — edit, save, run, keep your breakpoints",
+        "Choose bashdb over set -x when you need to STOP and interrogate state; choose -x for a fast where-did-it-go-wrong",
+        "Limitations: bashdb tracks specific bash versions (mismatches misbehave) and needs WSL/MSYS on Windows",
+        "Muscle memory worth building: b, n, s, c, print, where covers 90 percent of interactive sessions"
+      ]
+    },
+    {
+      "title": "Choosing Tools, Logging in Production, and the Checklist",
+      "points": [
+        "Escalation order: bash -n and shellcheck first (free, static), then a set -x trace, then bashdb when you must stop and inspect",
+        "Toolbox map: syntax → bash -n; code smells → shellcheck; flow → set -x + PS4; failure location → trap ERR; deep logic → bashdb",
+        "Production tracing: exec 9>>app.trace then BASH_XTRACEFD=9 — traces land in a file, never in a customer response",
+        "Build a DEBUG logger: debug() { [[ ${VERBOSE:-} ]] && echo [DEBUG] $* >&2 || true; } — flip verbosity with an env var, no re-editing",
+        "Watch live while capturing: cmd | tee out.log; the script(1) utility records whole terminal sessions for replay",
+        "Guard debug sessions: timeout and flock keep an interactive debugging run from wedging locks or shared resources",
+        "Keep a snippet library: strict header, ERR trap with backtrace, debug-grade PS4, VERBOSE logger — paste, do not retype",
+        "Cost model: static checks are near-free; xtrace costs one write per command; trap DEBUG fires before EVERY command — reserve it",
+        "Log safety: trace with a LINENO-only PS4 in shared environments; full -x leaks variable values (and secrets) into logs",
+        "Team standard: every non-trivial script ships with set -euo pipefail, an ERR trap, and a shellcheck-clean CI status",
+        "The checklist: bash -n? shellcheck? bash -x once? read the LAST trace line? check $? at each step? bashdb if still stuck?",
+        "Closing summary: bash is silent by default; everything here — xtrace, PS4, traps, strict mode, shellcheck, bashdb — exists to make it loud"
+      ]
+    }
+  ]
+}

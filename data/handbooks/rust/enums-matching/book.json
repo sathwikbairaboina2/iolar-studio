@@ -1,0 +1,209 @@
+{
+  "title": "Rust Enums, Option & Result: The Pattern Matching Handbook",
+  "summary": "A dense field guide to Rust's sum types — how enums are laid out and matched, how Option and Result replace null and exceptions, and how match, if let, let else, and destructuring combine into exhaustive, compiler-checked control flow.",
+  "chapters": [
+    {
+      "title": "Enums Are Sum Types",
+      "points": [
+        "Definition: `enum` declares a type whose value is exactly one of a fixed set of variants — an algebraic sum type, not a C-style integer alias.",
+        "Contrast with struct: struct = product type (all fields at once, A AND B); enum = sum type (one variant at a time, A OR B).",
+        "Unit variants: `enum Direction { North, South, East, West }` — variants carry no data.",
+        "Tuple variants carry positional data: `enum Shape { Circle(f64), Rect(f64, f64) }`.",
+        "Struct variants carry named fields: `enum Event { Click { x: i32, y: i32 }, KeyPress(char), Close }`.",
+        "One enum can mix all three variant kinds in the same declaration.",
+        "Variants live in the enum's namespace: `Direction::North`, not bare `North`; `use Direction::*;` brings them into scope.",
+        "Tuple variants are also constructor functions: `Some` has type `fn(T) -> Option<T>`, so `vec.into_iter().map(Some)` compiles.",
+        "Explicit discriminants only allowed on fieldless enums: `enum Status { Ok = 200, NotFound = 404 }`, then `Status::NotFound as i32`.",
+        "Fieldless enums cast to integers with `as`; the reverse (int → enum) needs `TryFrom` or a match — no implicit conversion, because arbitrary ints are invalid values.",
+        "`#[derive(Debug, Clone, Copy, PartialEq, Eq)]` on an enum works only if every variant's payload also implements those traits.",
+        "`impl Direction { fn opposite(self) -> Self { ... } }` — enums take inherent methods and trait impls just like structs.",
+        "Recursive enums need indirection: `enum List { Cons(i32, Box<List>), Nil }` — without `Box` the size is infinite and the compiler rejects it.",
+        "Generic enums: `enum Tree<T> { Leaf(T), Node(Box<Tree<T>>, Box<Tree<T>>) }`.",
+        "Enums replace the 'type tag + union' pattern from C, but the tag can never disagree with the payload — the compiler owns the pairing."
+      ]
+    },
+    {
+      "title": "Memory Layout & Niche Optimization",
+      "points": [
+        "An enum value = discriminant (which variant) + payload (that variant's data), laid out as a tagged union.",
+        "Size rule of thumb: `size_of::<Enum>()` ≈ tag size + size of largest variant, rounded up to alignment.",
+        "`enum E { A(u8), B(u64) }` is 16 bytes, not 9: alignment of `u64` is 8, so the tag consumes a whole 8-byte slot.",
+        "`size_of::<Option<u8>>() == 2`, `size_of::<u8>() == 1` — a byte of tag plus padding-free payload.",
+        "Niche optimization: when a payload has invalid bit patterns, the compiler stores the tag *inside* them, costing zero extra bytes.",
+        "`size_of::<Option<&T>>() == size_of::<&T>() == 8` — references can never be null, so null encodes `None`. Same for `Box<T>`, `NonNull<T>`, `NonZeroU32`, `&mut T`, and `fn` pointers.",
+        "This is why `Option<Box<T>>` is the zero-cost, safe replacement for a nullable pointer in FFI-adjacent code.",
+        "`bool` and `char` also have niches (`bool` uses 2 of 256 values), so `Option<bool>` is 1 byte.",
+        "Default `repr(Rust)` gives no layout guarantees: field order, tag size, and variant offsets are all compiler-chosen and may change between releases.",
+        "For FFI use `#[repr(C)]` or `#[repr(u8)]`/`#[repr(i32)]` to pin discriminant size and layout.",
+        "`std::mem::discriminant(&value)` compares which variant two values are without comparing payloads.",
+        "Trade-off: a rarely-used fat variant inflates every value of the enum — box it (`Big(Box<HugeStruct>)`) to shrink the common case.",
+        "Clippy's `large_enum_variant` lint fires when one variant dwarfs the others; the fix is boxing, not restructuring the match.",
+        "Empty enum `enum Never {}` has zero possible values, size 0; it is uninhabited, so `Result<T, Never>` is the same size as `T`.",
+        "Matching on a value of an uninhabited type needs no arms — the compiler knows that code is unreachable."
+      ]
+    },
+    {
+      "title": "Option<T>: Absence Without Null",
+      "points": [
+        "`enum Option<T> { None, Some(T) }` — in the prelude, so `Some`/`None` need no import.",
+        "Rust has no null. Absence is in the type, so the compiler forces you to handle it before touching the value.",
+        "Tony Hoare's 'billion-dollar mistake': null makes every reference secretly nullable; `Option<T>` makes only the marked ones optional.",
+        "`Option<T>` and `T` are different types — `Some(2) + 2` does not compile; you must unwrap or map first.",
+        "`is_some()` / `is_none()` for boolean checks; `is_some_and(|x| x > 3)` combines test and predicate.",
+        "`unwrap()` panics on `None`; `expect(\"msg\")` panics with your message — prefer `expect` so the panic names the invariant.",
+        "`unwrap_or(0)` supplies a fallback; `unwrap_or_else(|| expensive())` defers computing it; `unwrap_or_default()` uses `Default::default()`.",
+        "`map(|x| x * 2)` transforms the inside and leaves `None` untouched: `Option<T> -> Option<U>`.",
+        "`and_then(f)` (monadic bind) flattens when `f` itself returns an `Option` — use it instead of `map` to avoid `Option<Option<T>>`.",
+        "`filter(|x| *x > 0)` turns `Some` into `None` when the predicate fails; `or(other)` / `or_else(f)` supply a fallback Option.",
+        "`take()` moves the value out and leaves `None` in place — the standard trick for stealing a field out of `&mut self`.",
+        "`replace(v)` swaps in a new value and returns the old one; `get_or_insert_with(f)` fills a `None` in place and hands back `&mut T`.",
+        "`as_ref()` turns `&Option<T>` into `Option<&T>` so you can match without moving; `as_mut()` gives `Option<&mut T>`; `cloned()`/`copied()` go back to `Option<T>`.",
+        "`ok_or(err)` / `ok_or_else(|| err)` convert `Option<T>` into `Result<T, E>` at the boundary where absence becomes an error.",
+        "`Option<T>` is an iterator of 0 or 1 items: `vec.extend(maybe_item)` and `iter().flatten()` drop `None`s.",
+        "`?` works on `Option` inside a function returning `Option`: `let first = s.chars().next()?;` returns `None` early."
+      ]
+    },
+    {
+      "title": "Result<T, E>: Errors as Values",
+      "points": [
+        "`enum Result<T, E> { Ok(T), Err(E) }` — recoverable failure is a returned value, not a thrown exception.",
+        "No stack unwinding on the happy-or-sad path: control flow stays visible in the source, so every call site shows its error handling.",
+        "`#[must_use]` on `Result` makes ignoring one a warning — silent error-dropping is caught at compile time.",
+        "`panic!` / `unwrap` is for unrecoverable bugs and broken invariants; `Result` is for expected failures (missing file, bad input, network).",
+        "`?` propagates: `let f = File::open(p)?;` returns `Ok` inner value or early-returns `Err` after converting with `From`.",
+        "Because `?` calls `From::from`, an inner `io::Error` auto-converts into your `AppError` if you `impl From<io::Error> for AppError`.",
+        "`map(f)` transforms `Ok`; `map_err(f)` transforms `Err` — `map_err` is how you attach context before propagating.",
+        "`and_then(f)` chains fallible steps: `parse(s).and_then(validate).and_then(store)`.",
+        "`ok()` discards the error into `Option<T>`; `err()` keeps only the error; `unwrap_or_else(|e| fallback(e))` recovers with the error in hand.",
+        "`fn main() -> Result<(), Box<dyn Error>>` lets `?` work in main; an `Err` return prints the Debug form and exits nonzero.",
+        "Error type choices: concrete enum for libraries (callers can match), `Box<dyn Error>` or `anyhow::Error` for applications; `thiserror` derives the enum boilerplate.",
+        "`collect::<Result<Vec<_>, _>>()` turns an iterator of Results into a Result of Vec, short-circuiting at the first `Err`.",
+        "`Result<T, E>` is `#[must_use]`, but `let _ = fallible();` is the explicit, greppable way to say you really mean to ignore it.",
+        "Comparison table row — Option: 'nothing here'; Result: 'it failed, here's why'. Reach for Result the moment the caller would ask 'why?'",
+        "`transpose()` swaps the layers: `Result<Option<T>, E>` ⇄ `Option<Result<T, E>>`."
+      ]
+    },
+    {
+      "title": "match: The Core Construct",
+      "points": [
+        "`match` is an expression, not a statement — every arm yields a value, so `let x = match v { ... };` is idiomatic.",
+        "Syntax: `match scrutinee { pattern => expr, pattern => { block } }`; commas after expression arms, optional after block arms.",
+        "All arms must have the same type; the compiler unifies them or errors.",
+        "Arms are tested top to bottom, first match wins — order matters when patterns overlap.",
+        "`_` is the wildcard: matches anything, binds nothing. A bare name like `other` matches anything AND binds it.",
+        "Or-patterns with `|`: `1 | 2 | 3 => \"small\"`; every alternative must bind the same names with the same types.",
+        "Range patterns: `1..=9 => \"digit\"`, `'a'..='z' => \"lower\"`. `..=` is inclusive; exclusive `..` ranges in patterns are stable as of Rust 1.80.",
+        "Match guards: `Some(n) if n % 2 == 0 => ...` — an extra boolean condition. Guards are NOT considered by the exhaustiveness checker.",
+        "Guard gotcha: `Some(n) if n > 0` plus `Some(n) if n <= 0` still needs a further arm as far as the compiler can prove.",
+        "Binding `@` captures while testing: `n @ 1..=9 => println!(\"digit {n}\")`.",
+        "Matching on a reference: `match &opt { Some(x) => ...}` — `x` is `&T`; default binding modes (match ergonomics, Rust 2021) auto-ref so you rarely write `ref`.",
+        "`ref` / `ref mut` still exist for explicit borrowing inside patterns in older or ambiguous code.",
+        "Match moves by default: matching `Some(s)` on an owned `Option<String>` moves the String out — match on `&opt` or use `as_ref()` to avoid it.",
+        "Compiles to a jump table or decision tree — no per-arm virtual dispatch, no runtime type tags beyond the discriminant.",
+        "`match` on tuples tests several values at once: `match (a, b) { (0, _) => ..., (_, 0) => ..., _ => ... }`.",
+        "Empty arms and side-effect-only arms return `()`: `Some(_) => {}` is the common 'do nothing' arm."
+      ]
+    },
+    {
+      "title": "Exhaustiveness: The Compiler Has Your Back",
+      "points": [
+        "Every `match` must cover all possible values or it fails to compile: 'error[E0004]: non-exhaustive patterns: `None` not covered'.",
+        "This is the payoff of sum types: add a variant, and every match missing it becomes a compile error — a to-do list generated by the type checker.",
+        "Anti-pattern: `_ => {}` as a catch-all silences future exhaustiveness errors. Prefer listing variants explicitly in code you own.",
+        "When a catch-all is genuinely right, `_ => unreachable!(\"...\")` documents the assumption and panics loudly if it breaks.",
+        "Exhaustiveness works structurally: `match (opt_a, opt_b)` needs all four `Some`/`None` combinations, or a `_`.",
+        "Integers are exhaustive only via a wildcard or a full range — `match n: u8 { 0..=255 => ... }` is accepted, but a partial set is not.",
+        "`#[non_exhaustive]` on a public enum forces *downstream* crates to add a `_` arm, letting you add variants without a semver break.",
+        "Inside the defining crate `#[non_exhaustive]` has no effect — you still get full exhaustiveness checks.",
+        "Unreachable arms are a lint, not an error: 'warning: unreachable pattern' when an earlier arm already covers the case.",
+        "Matching a `&str` or `String` is not exhaustive without a `_` — infinitely many values.",
+        "Uninhabited variants let you match nothing: `Result<T, Infallible>` can be matched with just the `Ok` arm.",
+        "Exhaustiveness is checked *per-pattern*, ignoring guards — a guarded arm never counts toward coverage.",
+        "Refutable vs irrefutable patterns: `let` requires an irrefutable pattern (always matches); `match`/`if let` arms may be refutable.",
+        "`let Some(x) = opt;` is an error ('refutable pattern in local binding') — that is exactly what `if let` and `let else` exist for.",
+        "Practical workflow: when adding a variant, run `cargo check` and let the E0004 errors walk you through every site that needs updating."
+      ]
+    },
+    {
+      "title": "if let, while let, let else",
+      "points": [
+        "`if let Some(x) = opt { use(x) }` — run a block only when one pattern matches; sugar for a `match` with one real arm and `_ => {}`.",
+        "`if let ... else { ... }` covers the non-matching case; chains as `else if let` for a sequence of patterns.",
+        "Trade-off: `if let` gives up exhaustiveness checking. Use it when you truly care about one case; use `match` when you should handle all.",
+        "`while let Some(top) = stack.pop() { ... }` — loop until the pattern stops matching; the canonical drain loop.",
+        "`while let` on an iterator: `while let Some(item) = it.next()` is what `for` desugars to.",
+        "`let else` (stable since Rust 1.65): `let Some(x) = opt else { return; };` — bind or diverge, with `x` in scope for the rest of the function.",
+        "The `else` block of `let else` must diverge: `return`, `break`, `continue`, or `panic!` — it cannot fall through.",
+        "`let else` kills the rightward drift of nested `if let` pyramids by keeping the happy path unindented.",
+        "Pattern: guard clauses at the top of a function — `let Ok(cfg) = load() else { return Err(...) };`.",
+        "`if let` with a guard is not allowed; move the condition inside the block or use a full `match`.",
+        "let-chains (`if let Some(x) = a && x > 3`) are stable in Rust 2024 edition — not available in 2021.",
+        "`matches!(value, Some(x) if x > 3)` returns a bool from a pattern — perfect inside `filter` and `assert!`.",
+        "`if let` on a `Result` ignores the error silently; if the error matters use `match` or `if let Err(e) = ... { log(e) }`.",
+        "Shadowing idiom: `if let Some(opt) = opt` reuses the name so the inner binding is the unwrapped value.",
+        "Choosing: one case → `if let`; one case then leave → `let else`; repeat until empty → `while let`; all cases → `match`."
+      ]
+    },
+    {
+      "title": "Destructuring Patterns in Depth",
+      "points": [
+        "Destructuring pulls fields out in the same shape they were built: `let Point { x, y } = p;`.",
+        "Field shorthand: `Point { x, y }` binds `x` and `y`; rename with `Point { x: px, y: py }`.",
+        "`..` ignores the rest: `Point3 { x, .. }` binds only `x`; `let (first, .., last) = tuple;` skips the middle.",
+        "In slices: `[first, rest @ ..]` binds the head and the tail; `[a, b] => ...` matches exactly two elements.",
+        "Slice patterns need a catch-all for other lengths: `[] | [_] => ...` plus `[a, b, ..] => ...`.",
+        "Nested patterns go arbitrarily deep: `Some(Ok(User { name, .. }))` matches through three layers in one arm.",
+        "Struct-variant destructuring: `Event::Click { x, y } => ...` with the same shorthand and `..` rules.",
+        "Destructuring in function parameters: `fn dist(Point { x, y }: Point) -> f64`; also works in closure params.",
+        "`for (i, item) in v.iter().enumerate()` is a destructuring pattern in the loop binding.",
+        "Match ergonomics: matching `&Some(String)` against `Some(s)` gives `s: &String` automatically — no `ref` needed since Rust 2021.",
+        "Partial moves: destructuring an owned struct moves the bound fields out, leaving the original partially moved and unusable as a whole.",
+        "Ignoring with `_` does NOT move: `let Foo { a: _, b } = foo;` moves only `b`. But `let _ = foo;` drops immediately while `let _x = foo;` holds it to scope end.",
+        "Binding modes: matching `&mut` gives `&mut` bindings; adding an explicit `&` in the pattern dereferences instead: `match &v { &Some(n) => ... }` requires `T: Copy`.",
+        "Constants can appear in patterns (`const MAX: u8 = 9; match n { MAX => ... }`) — but a lowercase name would be a binding, silently matching everything.",
+        "That last gotcha is real: `match x { max => ... }` binds instead of comparing, and the compiler only warns about the now-unreachable arms."
+      ]
+    },
+    {
+      "title": "Gotchas, Costs, and Idiom Table",
+      "points": [
+        "`unwrap()` in library code is a landmine: it converts a caller's recoverable case into your panic. Return `Result` instead.",
+        "Panic vs Result cost: `Result` is a branch and a moved value; a panic unwinds, runs destructors, and is orders of magnitude slower — never use it for control flow.",
+        "Matching moves: `match opt { Some(s) => ... }` on `Option<String>` consumes `opt`; use `opt.as_ref()`, `&opt`, or `opt.take()` depending on intent.",
+        "'use of partially moved value' happens after destructuring an owned value — bind by reference or clone the field you need.",
+        "`Option<Option<T>>` from `map` where you meant `and_then` — `Some(Some(3))` vs `Some(3)` is a common type-mismatch error.",
+        "Comparing an `Option` to a value: `if opt == Some(3)` works (with `PartialEq`), but `if opt > 3` does not — types differ.",
+        "`None::<T>` turbofish is needed when the compiler cannot infer the type parameter.",
+        "Guards defeat exhaustiveness — a match that looks total but is all guards will demand an extra arm; that arm is not dead code, it is the compiler being honest.",
+        "Lowercase binding shadowing a constant matches everything; fix by using SCREAMING_CASE consts or a guard `n if n == max`.",
+        "`if let Ok(_) = risky()` silently swallows the error — use `if let Err(e)` or `.expect()` to make the failure visible.",
+        "Zero runtime cost: enum matching compiles to a discriminant load plus a jump table; `Option<&T>` has no tag at all thanks to the niche.",
+        "Idiom row — got `Option`, need value or default: `unwrap_or_default()`.",
+        "Idiom row — got `Option`, need `Result`: `ok_or_else(|| Error::Missing)`.",
+        "Idiom row — got `Result`, don't care why: `.ok()`.",
+        "Idiom row — got `Vec<Result<T,E>>`, want `Result<Vec<T>,E>`: `.into_iter().collect()`.",
+        "Idiom row — need a bool from a pattern: `matches!(v, Pat)`."
+      ]
+    },
+    {
+      "title": "Putting It Together: A Worked Recap",
+      "points": [
+        "Design rule: model states as variants so illegal states cannot be represented — replace `struct { is_loading: bool, data: Option<T>, error: Option<E> }` with `enum State { Loading, Ready(T), Failed(E) }`.",
+        "That refactor deletes the impossible combinations (loading AND error) and makes the match exhaustive over real states.",
+        "State machine example: `match self.state { Idle => Running, Running => Done, Done => Done }` — transitions become a total function.",
+        "Full pipeline: `fn load(path: &str) -> Result<Config, ConfigError>` — `read_to_string(path)?`, `parse(&text)?`, `validate(cfg)?`, `Ok(cfg)`.",
+        "Boundary conversion: `env::var(\"PORT\").ok().and_then(|s| s.parse().ok()).unwrap_or(8080)` — Result to Option to value in one chain.",
+        "Prefer combinator chains for linear transforms; drop to `match` when arms differ structurally or need several statements.",
+        "Recap — enum: one of N; `Option`: 0 or 1; `Result`: success or reason for failure.",
+        "Recap — `match` for all cases, `if let` for one, `let else` for bind-or-bail, `while let` for drain loops.",
+        "Recap — exhaustiveness turns 'add a variant' into a compiler-generated checklist; a stray `_` throws that away.",
+        "Recap — niche optimization makes `Option<Box<T>>` and `Option<&T>` free; fat variants cost every value, so box them.",
+        "Recap — `?` propagates and calls `From`, so error types compose up the stack without manual matching.",
+        "Recap — patterns are one language used in `match`, `if let`, `let`, `for`, function parameters, and closure parameters.",
+        "Checklist before shipping: no `unwrap` on user input, no bare `_` arm in your own enums, errors carry context via `map_err`.",
+        "Further reading: The Rust Book ch. 6 (enums) and ch. 18 (patterns), `std::option` and `std::result` module docs, the Rustonomicon on `repr` and layout.",
+        "Final thought: Rust does not remove failure — it makes failure a value you must name, and then makes the compiler check you named them all."
+      ]
+    }
+  ]
+}

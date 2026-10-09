@@ -1,0 +1,1137 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "REDIS EXPIRY & EVICTION",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Two Ways Keys Die: Expiry vs Eviction",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "Expiry",
+              "items": [
+                "TTL passed",
+                "Deterministic",
+                "Opt-in per key",
+                "Part of data model"
+              ]
+            },
+            "right": {
+              "title": "Eviction",
+              "items": [
+                "Hit `maxmemory`",
+                "Nondeterministic",
+                "Global, server-wide",
+                "Part of capacity plan"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "They Are Independent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Expiry works fine with `maxmemory` unset.",
+            "Eviction can take keys that have no TTL.",
+            "Which keys depends on `maxmemory-policy`.",
+            "No `maxmemory` + no TTLs = unbounded store, OOM."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Redis is not a cache by default",
+          "text": "It is an in-memory store. Cache behaviour is something you configure, not something you get."
+        },
+        {
+          "type": "heading",
+          "text": "Key Lifetime States"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "no TTL",
+              "TTL set",
+              "logically expired",
+              "physically deleted"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No TTL = persistent. TTL set = volatile.",
+            "Past deadline = invisible to clients, still in RAM.",
+            "Memory returns to allocator only on physical delete.",
+            "So a TTL alone never gives an instant memory drop."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Logically expired",
+          "text": "The central idea of this handbook: after the deadline a key is unreadable but may occupy memory for a while."
+        },
+        {
+          "type": "heading",
+          "text": "Counters and Counts"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`DBSIZE` counts logically-expired-but-present keys.",
+            "`INFO keyspace` does too — counts exceed what reads see.",
+            "Never treat either as authoritative key count."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Section",
+            "Means"
+          ],
+          "rows": [
+            [
+              "`expired_keys`",
+              "`INFO stats`",
+              "TTL reclaims"
+            ],
+            [
+              "`evicted_keys`",
+              "`INFO stats`",
+              "memory pressure"
+            ],
+            [
+              "`used_memory`",
+              "`INFO memory`",
+              "allocator view"
+            ],
+            [
+              "`used_memory_rss`",
+              "`INFO memory`",
+              "OS view"
+            ],
+            [
+              "`maxmemory`",
+              "config",
+              "your ceiling"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "redis-cli info stats | grep -E 'expired|evicted'",
+            "# expired_keys:918422   <- TTLs firing",
+            "# evicted_keys:0        <- no pressure yet",
+            "# never sum these two in a dashboard"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Two Ways Keys Die: Expiry vs Eviction (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Cooperative, Not Real-Time"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Commands are single-threaded; nothing preempts a running one.",
+            "Eviction compares against `used_memory`, not RSS.",
+            "Never assume a key vanished at the exact millisecond.",
+            "Across a cluster, deadlines land node by node."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Carry this through",
+          "items": [
+            "TTL = a promise about visibility.",
+            "TTL is not a promise about memory.",
+            "TTLs express correctness. Eviction expresses survival."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Setting a Deadline"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Unit",
+            "Kind"
+          ],
+          "rows": [
+            [
+              "`EXPIRE`",
+              "seconds",
+              "relative"
+            ],
+            [
+              "`PEXPIRE`",
+              "millis",
+              "relative"
+            ],
+            [
+              "`EXPIREAT`",
+              "unix sec",
+              "absolute"
+            ],
+            [
+              "`PEXPIREAT`",
+              "unix ms",
+              "absolute"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`EXPIRE` returns 1 if set, 0 if key missing.",
+            "`PEXPIREAT` is the primitive; all others reduce to it.",
+            "Storage is always a millisecond Unix timestamp."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reading a Deadline"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "TTL sess:42     # 1798  seconds left",
+            "TTL cfg:region  # -1    exists, no TTL",
+            "TTL ghost       # -2    key not there",
+            "PEXPIRETIME sess:42  # 7.0+: absolute ms"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Classic bug",
+          "text": "Confusing `-1` (persistent) with `-2` (missing). One means immortal, the other means gone."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`PTTL` for millisecond precision on the remainder.",
+            "`EXPIRETIME`/`PEXPIRETIME` (7.0+) give the deadline itself.",
+            "`PERSIST key` strips the TTL, key becomes persistent.",
+            "`PERSIST` returns 1 only if a TTL was really removed."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Set Value and TTL Atomically"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SET tok:9 abc EX 60      # one round trip",
+            "SET tok:9 abc PXAT 1789...  # absolute ms",
+            "SET tok:9 xyz KEEPTTL    # keeps old deadline",
+            "SET tok:9 xyz            # CLEARS the TTL"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`EX` / `PX` / `EXAT` / `PXAT` all valid on `SET`.",
+            "Atomic form leaves no window where the key is immortal.",
+            "`GETEX k EX 60` reads and refreshes in one command.",
+            "`GETEX k PERSIST` reads and strips the TTL."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "The TTL Command Surface",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Redis 7 Condition Flags"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Sets TTL when"
+          ],
+          "rows": [
+            [
+              "`NX`",
+              "no TTL yet"
+            ],
+            [
+              "`XX`",
+              "TTL exists"
+            ],
+            [
+              "`GT`",
+              "new > current"
+            ],
+            [
+              "`LT`",
+              "new < current"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A persistent key counts as infinite TTL here.",
+            "So `GT` never sets a TTL on a persistent key.",
+            "And `LT` always does — it is always shorter than infinity."
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Extend a session, never accidentally shorten it?",
+          "a_bullets": [
+            "Use `GT` so a stale worker cannot cut the window.",
+            "Plain `EXPIRE` would overwrite a longer deadline.",
+            "Negative seconds or a past `EXPIREAT` delete now — and report success."
+          ],
+          "example_code": [
+            "EXPIRE sess:42 1800 GT",
+            "EXPIRE sess:42 -1     # deletes, returns 1"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Legacy sugar",
+          "items": [
+            "`SETEX key sec val` = `SET key val EX sec`.",
+            "Errors outright if seconds <= 0.",
+            "Prefer `SET ... EX` in new code."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Replace Clears, Modify Keeps"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "TTL after"
+          ],
+          "rows": [
+            [
+              "`SET`",
+              "cleared"
+            ],
+            [
+              "`GETSET`",
+              "cleared"
+            ],
+            [
+              "`SET ... KEEPTTL`",
+              "kept"
+            ],
+            [
+              "`INCR`, `APPEND`",
+              "kept"
+            ],
+            [
+              "`LPUSH`, `HSET`, `ZADD`",
+              "kept"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Full value replacement drops the deadline.",
+            "In-place mutation never touches it.",
+            "`SETRANGE` through the SET path clears it too."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "The counter trap",
+          "text": "`INCR` then `EXPIRE` on every request keeps resetting the window — a rate limiter that never resets."
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "local n = redis.call('INCR', KEYS[1])",
+            "if n == 1 then",
+            "  redis.call('EXPIRE', KEYS[1], 60)  -- first hit only",
+            "end",
+            "return n"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Copy, Rename, Recreate"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`RENAME src dst` carries the source TTL to `dst`.",
+            "It destroys whatever TTL `dst` had.",
+            "`COPY src dst` does not copy the TTL — `dst` is persistent.",
+            "`DEL` then recreate = TTL gone, key starts persistent."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "TTL Semantics: What Resets, What Survives",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Per-Key Only"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "You cannot expire one hash field, list element or set member.",
+            "Redis 7.4 `HEXPIRE` adds per-field hash TTLs — hashes only.",
+            "A giant hash or ZSET is otherwise all-or-nothing.",
+            "Model per-item expiry as separate keys, or sweep manually."
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "ZADD idx 1789056000 job:7   # score = deadline",
+            "ZRANGEBYSCORE idx -inf 1789055000",
+            "DEL job:3 job:5             # then drop them",
+            "ZREMRANGEBYSCORE idx -inf 1789055000"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "ZSET sweeper pattern",
+          "items": [
+            "Score = absolute deadline.",
+            "Poll `ZRANGEBYSCORE idx -inf now`.",
+            "Gives per-member expiry with explicit control."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "No Sliding Expiration"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Reading a key never extends its TTL. Redis has no sliding mode.",
+            "Want touch-to-refresh? Call `GETEX key EX n` explicitly.",
+            "`FLUSHDB`/`FLUSHALL` remove everything, TTLs included.",
+            "`SWAPDB` moves the keyspace; deadlines survive, they are absolute."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What a TTL Costs"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "redisDb",
+            "branches": [
+              {
+                "label": "dict",
+                "children": [
+                  "all keys",
+                  "values"
+                ]
+              },
+              {
+                "label": "expires",
+                "children": [
+                  "volatile keys only",
+                  "deadline ms"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "TTLs live in a separate `expires` dict keyed by the same object.",
+            "A persistent key therefore costs zero TTL memory.",
+            "A volatile key costs ~one extra dict entry, tens of bytes.",
+            "Millions of short TTLs is a real memory line item."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Clock hazard",
+          "text": "Deadlines are absolute. A server clock jump forward mass-expires keys; a jump backward strands them."
+        },
+        {
+          "type": "heading",
+          "text": "Every Lookup Checks"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "`GET k`",
+              "`expireIfNeeded()`",
+              "past deadline?",
+              "delete + reply nil"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Lazy Expiry: Expire-on-Access",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Every keyspace lookup calls `expireIfNeeded()` first.",
+            "Past the deadline, the key is deleted right there.",
+            "The command behaves as if the key never existed.",
+            "Cost: O(1) amortised per access, zero background work."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Why lazy is primary",
+          "text": "It piggybacks on work you already pay for. No sweep, no scan, no extra CPU when idle."
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The flaw",
+          "text": "A key never touched again is never lazily expired. Write-once, never-read keys leak forever without active expiry."
+        },
+        {
+          "type": "heading",
+          "text": "Deletion Is Replicated"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The primary sends an explicit `DEL` to replicas and the AOF.",
+            "Removal is a real replicated write, not an implicit rule.",
+            "Since Redis 6 it is `UNLINK` when `lazyfree-lazy-expire yes`.",
+            "Otherwise it stays a plain synchronous `DEL`."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Replicas Never Decide"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Node",
+            "On expired key"
+          ],
+          "rows": [
+            [
+              "Primary",
+              "deletes, propagates"
+            ],
+            [
+              "Replica",
+              "hides from reads"
+            ],
+            [
+              "Replica",
+              "waits for `DEL`"
+            ],
+            [
+              "Writable replica",
+              "own local expires"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A replica's `DBSIZE` can legitimately exceed its primary's.",
+            "That is by design — not a bug, not drift.",
+            "Before Redis 3.2 replicas served stale expired reads.",
+            "Modern replicas filter them at read time instead."
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Writable replicas",
+          "items": [
+            "Keep a local `expires` dict for locally-written keys.",
+            "Rarely used, easily misunderstood corner.",
+            "Avoid unless you know exactly why."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Frozen Time in Scripts"
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "-- time frozen at script start",
+            "local a = redis.call('GET', KEYS[1])",
+            "redis.call('DEBUG', 'sleep', 0)",
+            "local b = redis.call('GET', KEYS[1])  -- same result"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A key cannot expire mid-script; scripts stay deterministic.",
+            "Functions get the same guarantee as Lua `EVAL`.",
+            "`MULTI`/`EXEC` also evaluates expiry once, not between commands."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Lazy Expiry: Expire-on-Access (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Big Values Block"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Freeing a 10M-element set synchronously stalls the loop hundreds of ms.",
+            "`lazyfree-lazy-expire yes` moves the free to a background thread.",
+            "Turn it on whenever values are large collections."
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Is this expiry or memory pressure?",
+          "a_bullets": [
+            "`expired_keys` rising, `evicted_keys` flat = expiry doing its job.",
+            "Both rising = TTLs are not keeping up with the ceiling.",
+            "`OBJECT FREQ` and `DEBUG SLEEP` help only after you know which."
+          ],
+          "example_code": [
+            "redis-cli info stats | grep _keys"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Sampling Loop"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "sample 20 keys",
+              "delete expired",
+              "ratio > 25%?",
+              "repeat DB"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`activeExpireCycle()` runs inside `serverCron`, `hz 10` by default.",
+            "So roughly ten passes per second, per database.",
+            "Samples `ACTIVE_EXPIRE_CYCLE_KEYS_PER_LOOP` = 20 random keys.",
+            "It samples the `expires` dict, never the main dict."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Cost scales with volatile keys",
+          "text": "A 100M-key DB with 1000 TTLs samples from those 1000. Persistent keys cost the cycle nothing."
+        },
+        {
+          "type": "heading",
+          "text": "The 25% Rule"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Delete the expired ones from the sample, then measure the ratio.",
+            "Above 25% expired: immediately repeat the loop on that DB.",
+            "Below 25%: move on to the next database.",
+            "It is a probabilistic guarantee, not a deadline guarantee."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "What 25% buys",
+          "text": "At steady state, expected expired-but-present keys stay under ~25% of the volatile keyspace."
+        },
+        {
+          "type": "heading",
+          "text": "Fast and Slow Cycles"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Cycle",
+            "Runs",
+            "Cap"
+          ],
+          "rows": [
+            [
+              "Fast",
+              "each event loop",
+              "~1000 us"
+            ],
+            [
+              "Slow",
+              "`serverCron`",
+              "25% CPU"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fast cycle shaves latency spikes between cron ticks.",
+            "Slow cycle capped by `ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC`.",
+            "So expiry can never starve command processing.",
+            "Redis 6+ adds an effort dial and an early bail-out check."
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Active Expiry: The Background Sampling Cycle",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "CONFIG SET hz 100        # 10x more cron ticks",
+            "CONFIG SET dynamic-hz yes  # scale with client count",
+            "# smoother memory, steady background CPU cost"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Sampling Is Unordered"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Random sampling means no priority by remaining TTL.",
+            "A 1-second key is not guaranteed reclaimed before a 10-minute one.",
+            "Redis 6 also checks for keys about to expire, to exit early."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Pathological case",
+          "text": "Millions of keys sharing one absolute deadline: all fire at once, the cycle burns its 25% for seconds, latency spikes."
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "base = 3600",
+            "ttl = base + random.randint(0, base // 10)",
+            "r.expire(key, ttl)  # jitter, same trick as stampedes"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "The real contract",
+          "items": [
+            "Active expiry deletes on the primary only.",
+            "Every deletion replicates — mass expiry = traffic burst.",
+            "Lazy + active: invisible at the deadline, reclaimed soon after.",
+            "No upper bound on 'soon' is guaranteed."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Setting the Ceiling"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "maxmemory 2gb            # redis.conf",
+            "CONFIG SET maxmemory 2gb # runtime, evicts now",
+            "# maxmemory 0 = unlimited (common default)"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`maxmemory 0` is the setting most incidents trace back to.",
+            "Units like `2gb` are accepted in config and `CONFIG SET`.",
+            "Lowering it at runtime can trigger immediate mass eviction.",
+            "Compared against `used_memory`, as jemalloc reports it."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Not RSS",
+          "text": "The comparison subtracts replication buffers and AOF buffer overhead. Process RSS is a different number."
+        },
+        {
+          "type": "heading",
+          "text": "The Eviction Loop"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "over limit?",
+              "pick victim",
+              "delete + propagate",
+              "`evicted_keys`++",
+              "re-check"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`performEvictions()` runs before each command that may grow memory.",
+            "Victim chosen by policy, removal propagated as `DEL`/`UNLINK`.",
+            "Loop continues until under the limit or nothing is freeable."
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "maxmemory: When Eviction Starts",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "When Nothing Can Be Freed"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "SET k v",
+            "(error) OOM command not allowed when used",
+            "memory > 'maxmemory'."
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Happens under `noeviction`, or when every key is protected.",
+            "Only denyoom / `may-replicate` commands are rejected.",
+            "Reads and `DEL` still succeed — you can dig yourself out."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sizing and Headroom"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Copy-on-write during `BGSAVE` or `BGREWRITEAOF` can double RSS.",
+            "On a write-heavy forking instance: `maxmemory` ~50-60% of box RAM.",
+            "`maxmemory-clients` (7.0) caps client output buffers separately.",
+            "That keeps a slow consumer out of your data budget."
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Cause",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "high `mem_fragmentation_ratio`",
+              "fragmentation",
+              "`activedefrag yes`"
+            ],
+            [
+              "`used_memory` at ceiling",
+              "too much data",
+              "evict or scale"
+            ],
+            [
+              "p99 spikes on evict",
+              "big values",
+              "`lazyfree-lazy-eviction`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`mem_fragmentation_ratio` = rss / `used_memory`.",
+            "Eviction will not help when the real problem is fragmentation.",
+            "Eviction is synchronous with commands — it lands in `SLOWLOG`.",
+            "Confirm with `LATENCY HISTORY` before blaming the network."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Cluster note",
+          "text": "`maxmemory` is per node. An unbalanced slot distribution evicts hot nodes while the rest sit idle."
+        },
+        {
+          "type": "sidebox",
+          "title": "Read together",
+          "items": [
+            "`evicted_keys` rate, plus hits and misses.",
+            "Rising evictions + falling hit rate = cache too small.",
+            "Not misconfigured — just undersized."
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "All Eight, Side By Side"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Policy",
+            "Scope",
+            "Victim"
+          ],
+          "rows": [
+            [
+              "`noeviction`",
+              "none",
+              "write fails"
+            ],
+            [
+              "`allkeys-lru`",
+              "all keys",
+              "least recent"
+            ],
+            [
+              "`allkeys-lfu`",
+              "all keys",
+              "least frequent"
+            ],
+            [
+              "`allkeys-random`",
+              "all keys",
+              "uniform random"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Policy",
+            "Scope",
+            "Victim"
+          ],
+          "rows": [
+            [
+              "`volatile-lru`",
+              "has TTL",
+              "least recent"
+            ],
+            [
+              "`volatile-lfu`",
+              "has TTL",
+              "least frequent"
+            ],
+            [
+              "`volatile-random`",
+              "has TTL",
+              "random"
+            ],
+            [
+              "`volatile-ttl`",
+              "has TTL",
+              "nearest deadline"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "The Eight maxmemory-policy Options",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "When Each Fits"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`noeviction`: Redis as a database or a queue. Never lose data.",
+            "`allkeys-lru`: the default choice for a pure cache.",
+            "`allkeys-lfu`: skewed access, some items permanently hot.",
+            "`allkeys-random`: cheap, fine under uniform access, good baseline."
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`volatile-*`: mixed instance — durable config beside TTL'd cache.",
+            "TTLs become your explicit 'this is disposable' marker.",
+            "`volatile-ttl` uses the same sampling machinery, not a sorted order.",
+            "So 'shortest TTL first' is approximated, like everything else here."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "The volatile-* trap",
+          "text": "If no key has a TTL there is nothing to evict, and the policy silently degrades to `noeviction` — writes fail while memory looks full of evictable data."
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "`allkeys-*`",
+              "items": [
+                "Nothing is safe",
+                "No pinning possible",
+                "Simple to reason about"
+              ]
+            },
+            "right": {
+              "title": "`volatile-*`",
+              "items": [
+                "Persistent keys pinned",
+                "Needs TTL discipline",
+                "Degrades if TTLs missing"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Setting It"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "CONFIG SET maxmemory-policy allkeys-lfu",
+            "CONFIG GET maxmemory-policy",
+            "# also write it into redis.conf,",
+            "# or the setting is lost on restart"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Decision Heuristic"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "What is this instance?",
+            "branches": [
+              {
+                "label": "pure cache",
+                "children": [
+                  "`allkeys-lru`"
+                ]
+              },
+              {
+                "label": "skewed hot set",
+                "children": [
+                  "`allkeys-lfu`"
+                ]
+              },
+              {
+                "label": "mixed durable",
+                "children": [
+                  "`volatile-lru`"
+                ]
+              },
+              {
+                "label": "source of truth",
+                "children": [
+                  "`noeviction`"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Before you assume",
+          "items": [
+            "Managed services often default to `noeviction`.",
+            "Verify with `CONFIG GET maxmemory-policy`.",
+            "An unset ceiling plus `noeviction` = OOM, not eviction."
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Pinning is the real choice",
+          "text": "`allkeys-*` gives up the ability to protect anything. `volatile-*` keeps that power and charges you TTL hygiene for it."
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your Redis key did not disappear at its deadline — it just became invisible. This handbook walks the whole death pipeline: the TTL command surface and the flags that quietly clear it, the lazy and active expiry cycles that actually reclaim memory, and how maxmemory turns 'soon' into a hard budget under approximated LRU and LFU. Ten pages of internals, sampling math, and the six mistakes that cause silent data loss or an OOM at 3am.",
+    "hashtags": [
+      "#redis",
+      "#backendengineering",
+      "#systemdesign",
+      "#caching",
+      "#databases",
+      "#devops",
+      "#sre",
+      "#performance",
+      "#softwareengineering",
+      "#codingnotes",
+      "#techhandbook",
+      "#distributedsystems"
+    ]
+  }
+}

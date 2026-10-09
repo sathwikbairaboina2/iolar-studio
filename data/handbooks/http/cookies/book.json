@@ -1,0 +1,200 @@
+{
+  "title": "HTTP Cookies & Web Auth: The Field Manual",
+  "summary": "A dense working guide to HTTP cookies — every attribute, how scoping and SameSite actually behave, and how cookies underpin session vs token authentication. Covers mechanics, security flags, trade-offs, and the mistakes that break logins or leak accounts.",
+  "chapters": [
+    {
+      "title": "Why Cookies Exist: State on a Stateless Protocol",
+      "points": [
+        "HTTP is stateless: every request is independent, server remembers nothing between them",
+        "Cookie = small key-value string the server asks the browser to store and replay on later requests",
+        "Server sets with response header `Set-Cookie: sid=abc123`; browser replays with `Cookie: sid=abc123`",
+        "One `Set-Cookie` header per cookie — you cannot comma-join multiple cookies in one header",
+        "Browser sends ALL matching cookies in a single `Cookie` header, `; ` separated: `Cookie: sid=abc; theme=dark`",
+        "Cookies are sent automatically by the browser — no JavaScript needed, and that automatic-ness is the root of CSRF",
+        "Original spec: Netscape 1994; current spec RFC 6265bis (SameSite, prefixes, size limits)",
+        "Size limit: ~4096 bytes per cookie (name+value+attributes); browsers cap ~50 cookies per domain, ~180 total",
+        "Cookies cost bandwidth: they ride on EVERY matching request, including images and CSS — 4KB cookie × 50 assets = 200KB wasted",
+        "Three storage rivals: cookie (auto-sent, server-readable), localStorage (JS-only, never auto-sent), sessionStorage (JS-only, per-tab)",
+        "Rule of thumb: cookie for anything the server needs; localStorage for client-only UI state",
+        "Cookie value must be URL-encoded — raw `;`, `,`, space, and `=` in a value break parsing",
+        "Cookies are not encrypted by default — the browser stores them in plaintext on disk (or an OS keystore); sign or encrypt anything you trust",
+        "Common uses: session ID, auth token, CSRF token, locale, A/B test bucket, analytics ID, consent record"
+      ]
+    },
+    {
+      "title": "Anatomy of Set-Cookie: Every Attribute",
+      "points": [
+        "Full form: `Set-Cookie: name=value; Domain=x; Path=/; Expires=...; Max-Age=...; Secure; HttpOnly; SameSite=Lax; Partitioned`",
+        "`name=value` is the only required part; everything after `;` is an attribute",
+        "`Domain` — which hosts receive the cookie; omitted means host-only (exact host, no subdomains)",
+        "`Path` — URL path prefix that must match; defaults to the directory of the setting request, not `/`",
+        "`Expires=<HTTP-date>` — absolute expiry in GMT: `Expires=Wed, 09 Jun 2027 10:18:14 GMT`",
+        "`Max-Age=<seconds>` — relative lifetime; `Max-Age=0` or negative deletes the cookie immediately",
+        "`Max-Age` beats `Expires` when both are present (all modern browsers)",
+        "No `Expires` and no `Max-Age` = session cookie: dies when the browser closes (but 'restore tabs' can resurrect it)",
+        "`Secure` — only sent over HTTPS; `HttpOnly` — hidden from `document.cookie`; `SameSite` — cross-site send policy",
+        "`Partitioned` (CHIPS) — third-party cookie keyed by the top-level site, one jar per embedding site",
+        "Attributes are NOT sent back: the `Cookie` header carries only `name=value` pairs — the server cannot read a cookie's own Path or Expires",
+        "Unknown attributes are silently ignored — a typo like `HttpOnley` fails with zero errors, which is why flags go unset in production",
+        "Attribute names are case-insensitive (`secure` == `Secure`); cookie NAMES are case-sensitive (`sid` != `SID`)",
+        "Deleting a cookie means re-setting it with the same name, Domain, and Path plus `Max-Age=0` — mismatched Domain/Path leaves a zombie copy",
+        "Server-side helper example (Express): `res.cookie('sid', id, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 86400000 })`"
+      ]
+    },
+    {
+      "title": "Scoping I: Domain and the Subdomain Trap",
+      "points": [
+        "No `Domain` attribute = host-only cookie: set on `app.example.com`, sent ONLY to `app.example.com`",
+        "`Domain=example.com` = sent to `example.com` AND every subdomain (`api.`, `www.`, `blog.`, `evil-tenant.`)",
+        "Leading dot is legacy: `Domain=.example.com` is normalized to `Domain=example.com` — identical behavior today",
+        "You cannot widen upward: `app.example.com` cannot set `Domain=com` or `Domain=other.com` — browser rejects the cookie silently",
+        "You cannot set a cookie for a sibling: `a.example.com` cannot target `b.example.com`, only the shared parent",
+        "Public Suffix List (PSL) blocks setting cookies on registrable suffixes like `.com`, `.co.uk`, `github.io` — the 'supercookie' defense",
+        "Default host-only is the safer default; add `Domain` only when subdomains genuinely need the cookie",
+        "Subdomain trap: an XSS or takeover on `blog.example.com` can read AND overwrite a `Domain=example.com` session cookie",
+        "Cookie tossing attack: a compromised subdomain sets a cookie with the same name on the parent domain to shadow or fixate the real one",
+        "Port is NOT part of cookie scope: `example.com:3000` and `example.com:8080` share one cookie jar — a dev-server footgun",
+        "Scheme is only partly part of scope: `Secure` cookies are HTTPS-only, but a non-Secure cookie set over HTTP is readable over HTTPS and vice versa",
+        "Cookies ignore the same-origin policy — they use 'site' (registrable domain), which is looser than origin",
+        "Origin = scheme + host + port; site = eTLD+1. `https://a.example.com` and `http://b.example.com:8080` are different origins, same site",
+        "Practical pattern: give each tenant/app its own host-only cookie; only SSO cookies deserve a parent `Domain`"
+      ]
+    },
+    {
+      "title": "Scoping II: Path, Prefixes, and Precedence",
+      "points": [
+        "`Path=/admin` sends the cookie to `/admin`, `/admin/`, and `/admin/users` — but NOT `/administrator`",
+        "Match rule: the cookie path must be a prefix ending at a `/` boundary or exactly equal to the request path",
+        "Default path is derived from the setting URL's directory: a response from `/app/login` defaults to `Path=/app` — a classic 'cookie vanished' bug",
+        "Always set `Path=/` for session cookies unless you have a hard reason not to",
+        "Path is NOT a security boundary: same-origin JavaScript can read cookies at any path via iframe tricks; use it for organization only",
+        "Multiple cookies can share a name at different paths — the browser sends all of them, `Cookie: sid=a; sid=b`",
+        "Send order: longer Path first; equal paths break ties by creation time (oldest first) — servers usually read just the first, so shadowing is easy",
+        "The server cannot tell which sent cookie came from which Path — a real source of 'logged in as the wrong user' bugs",
+        "`__Secure-` prefix: browser rejects the cookie unless it has `Secure` and was set over HTTPS",
+        "`__Host-` prefix: requires `Secure`, `Path=/`, and NO `Domain` attribute — locks the cookie to the exact host",
+        "`__Host-` is the strongest anti-cookie-tossing defense: no subdomain can overwrite it. Use `__Host-session` for auth",
+        "Example: `Set-Cookie: __Host-sid=abc; Secure; Path=/; HttpOnly; SameSite=Lax`",
+        "Prefixes are enforced by the browser, not the server — the name is the contract",
+        "Overwriting rule: a cookie is 'the same cookie' only if name + Domain + Path all match; otherwise you get a duplicate, not an update"
+      ]
+    },
+    {
+      "title": "Secure and HttpOnly: The Two Cheapest Wins",
+      "points": [
+        "`Secure` = browser only sends the cookie over HTTPS (localhost is exempted for development)",
+        "Without `Secure`, one plain-HTTP request on hostile Wi-Fi leaks the session ID in cleartext — sslstrip in one line",
+        "`Secure` restricts SENDING, not writing: pre-RFC6265bis, plain HTTP could still overwrite a Secure cookie; modern browsers now block that",
+        "`HttpOnly` = `document.cookie` cannot read or write it — the value is invisible to page JavaScript",
+        "`HttpOnly` does not stop XSS; it stops token EXFILTRATION. An attacker with XSS can still ride the session by firing same-origin fetches",
+        "That is why `HttpOnly` pairs with CSRF defense and short sessions — it raises cost, not a wall",
+        "`HttpOnly` cookies are still visible in DevTools' Application tab and in the network trace — it is not obfuscation",
+        "Rule: every auth cookie gets `Secure` + `HttpOnly` + `SameSite` + `__Host-` prefix. Non-negotiable",
+        "A CSRF token cookie is the standard exception — the double-submit pattern needs JS to read it, so it is deliberately non-HttpOnly",
+        "HSTS (`Strict-Transport-Security`) complements `Secure` by removing the first plaintext request entirely",
+        "Ordering gotcha: setting a cookie without `Secure` on an HTTP redirect page, then upgrading, leaves a leaked copy",
+        "Checklist for prod: no auth cookie without `Secure`; no auth cookie readable from JS; both verified in the browser, not the code",
+        "Testing: `curl -i https://site/login | grep -i set-cookie` shows exactly what the browser will store",
+        "Local dev workaround: use `https://localhost` with a self-signed cert rather than dropping `Secure` conditionally — conditionals ship to prod"
+      ]
+    },
+    {
+      "title": "SameSite: Lax, Strict, None",
+      "points": [
+        "SameSite controls whether a cookie rides on CROSS-SITE requests — the browser-level CSRF mitigation",
+        "'Site' means eTLD+1 (registrable domain), so `a.example.com` → `b.example.com` is same-site, not cross-site",
+        "`SameSite=Strict` — never sent on any cross-site request, including a plain link click from another site",
+        "Strict's cost: click a link from email or Google to your logged-in app and the first page renders logged OUT",
+        "`SameSite=Lax` — sent on top-level GET navigations (link clicks, `window.location`), blocked on POST, iframe, `fetch`, `img`, and `XHR`",
+        "`SameSite=None` — always sent, but the browser REQUIRES `Secure` or the cookie is rejected entirely",
+        "Default when the attribute is omitted: modern Chrome/Firefox/Edge treat it as `Lax`; older browsers treated it as `None`",
+        "'Lax + POST' subtlety: Chrome once gave newly set cookies a 2-minute grace window where cross-site POST still worked — never rely on it",
+        "Safari/ITP historically blocked all third-party cookies regardless of SameSite — test on Safari separately",
+        "Choose Strict for banking-grade actions and admin panels; Lax as the default for normal app sessions",
+        "Choose None+Secure only for genuine third-party embeds: SSO iframes, payment widgets, embedded chat",
+        "Lax still allows cross-site GET, so a GET that mutates state (`/delete?id=5`) is CSRF-able even with Lax — never mutate on GET",
+        "Two-cookie pattern: a Lax 'read' session for smooth link entry plus a Strict cookie required for state-changing routes",
+        "SameSite is defense in depth, not a CSRF replacement — keep tokens for older browsers and for same-site XSS",
+        "CHIPS / `Partitioned`: for third-party contexts, one cookie jar per top-level site so the cookie cannot track across sites"
+      ]
+    },
+    {
+      "title": "Session Auth: Server-Side State",
+      "points": [
+        "Flow: POST credentials → server verifies → creates a session record → returns an opaque session ID in a cookie",
+        "The cookie holds ONLY a random ID; all real data (user ID, roles, expiry) lives server-side in Redis, Postgres, or memory",
+        "Session ID must be cryptographically random and ≥128 bits: `crypto.randomBytes(32).toString('base64url')` — never a counter or UUIDv1",
+        "Every request: browser sends cookie → server looks up the session store → attaches the user → handles the request",
+        "Logout is instant and real: delete the server-side record and the ID becomes worthless everywhere",
+        "Revocation is the headline advantage — ban a user, force-logout every device, invalidate on password change",
+        "Cost: a store lookup per request, plus a shared store once you run more than one server process",
+        "Sticky sessions and in-memory stores break horizontal scaling — the classic 'random logouts after deploy' bug",
+        "Session fixation: ALWAYS regenerate the session ID on login and on privilege change (`req.session.regenerate()`)",
+        "Absolute timeout (max lifetime, e.g. 12h) plus idle timeout (e.g. 30 min of inactivity) — implement both",
+        "Rolling sessions extend the expiry on each request; nice UX, but pair with an absolute cap or sessions live forever",
+        "Store the session's IP and user-agent to detect obvious hijacking, but do not hard-bind — mobile IPs change constantly",
+        "Signed cookie sessions (Rails/Flask style) put the data IN the cookie with an HMAC — no store, but no revocation, and the 4KB cap bites",
+        "Session store TTL must be set at the store level (Redis `EXPIRE`) or dead sessions accumulate forever"
+      ]
+    },
+    {
+      "title": "Token Auth: JWT and the Bearer Model",
+      "points": [
+        "A JWT is three base64url parts joined by dots: `header.payload.signature` — self-contained, no server lookup",
+        "Header names the algorithm (`{\"alg\":\"HS256\",\"typ\":\"JWT\"}`); payload holds claims; signature covers header+payload",
+        "Standard claims: `iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti` — `exp` and `aud` are the ones people forget to verify",
+        "Base64 is ENCODING, not encryption: anyone can read a JWT payload. Never put a password, PII, or a secret in it",
+        "HS256 = one shared secret (simple, but every verifier can also mint). RS256/ES256 = private key signs, public key verifies — right for multi-service",
+        "The `alg: none` attack and the HS256/RS256 confusion attack both come from trusting the header — pin the expected algorithm server-side",
+        "Core trade-off: stateless verification is fast and scales flat, but you cannot revoke a token before `exp`",
+        "Revocation workarounds: very short access tokens (5–15 min), a denylist by `jti`, or a token version column checked per request — each reintroduces state",
+        "Refresh token pattern: short-lived access token in memory or a cookie + long-lived refresh token in an `HttpOnly` cookie on a narrow `Path=/auth/refresh`",
+        "Refresh token rotation: each refresh issues a new one and invalidates the old; a reused old token means theft — kill the whole family",
+        "'Store JWT in localStorage' is the popular bad advice: any XSS reads it instantly, with no `HttpOnly` protection available",
+        "Better: put the JWT in a `Secure; HttpOnly; SameSite` cookie — you get the XSS protection back and take on CSRF, which is easier to defend",
+        "Bearer tokens in an `Authorization: Bearer <jwt>` header are immune to CSRF because the browser never adds them automatically",
+        "JWTs are genuinely right for: cross-service auth, mobile and native clients, third-party APIs, and short-lived one-off grants",
+        "Clock skew: allow a small leeway (30–60s) on `exp`/`nbf` or distributed servers reject valid tokens"
+      ]
+    },
+    {
+      "title": "Session vs Token: The Comparison Table",
+      "points": [
+        "State: session = server-side store; token = self-contained, nothing stored",
+        "Revocation: session = instant delete; token = impossible until `exp` without adding a denylist",
+        "Scaling: session = shared store is a dependency and a bottleneck; token = stateless, no lookup, scales flat",
+        "Per-request cost: session = one store round trip (~1ms Redis); token = one signature verification (~0.1ms CPU)",
+        "Payload size: session cookie ~32–64 bytes; JWT ~200–800 bytes on every single request",
+        "Cross-domain: session cookies are constrained by cookie scoping; tokens travel anywhere in a header",
+        "Mobile/native clients: cookies are awkward outside a browser jar; tokens are the natural fit",
+        "XSS exposure: HttpOnly session cookie is unreadable; localStorage token is fully exposed",
+        "CSRF exposure: cookie-based auth needs SameSite plus tokens; header-based bearer auth is immune by construction",
+        "Complexity: sessions are simpler to get right; token auth needs refresh, rotation, and key management",
+        "Default recommendation: server-rendered app or first-party SPA on one domain → sessions in `__Host-` cookies",
+        "Use tokens when: multiple backend services, a public API, native mobile apps, or third-party integrations",
+        "Hybrid, and very common: session cookie for the browser UI, short-lived JWT minted for service-to-service calls",
+        "Neither choice fixes bad auth: rate-limit login, hash with argon2/bcrypt, and MFA matter more than the transport"
+      ]
+    },
+    {
+      "title": "Mistakes, Debugging, and the Checklist",
+      "points": [
+        "Missing `Secure`/`HttpOnly` in production because the dev config was copied — assert flags in a startup check, not a code review",
+        "Default `Path` swallowing the cookie: cookie set at `/api/login` never reaches `/dashboard`. Always `Path=/`",
+        "Delete fails because Domain/Path do not match the original — the cookie survives and the user stays logged in",
+        "Two cookies with the same name (one host-only, one `Domain=`) — the server reads the wrong one; inspect the raw `Cookie` header, not the parsed map",
+        "`SameSite=None` without `Secure` = the browser drops the cookie entirely, with only a console warning",
+        "OAuth callbacks and payment redirects break under `SameSite=Strict` because the return is a cross-site POST",
+        "No session regeneration on login = session fixation: attacker plants an ID, victim logs in, attacker owns the session",
+        "Storing a JWT in localStorage 'for convenience' — one XSS and every token leaves the building",
+        "Trusting a cookie value as input: cookies are fully attacker-controlled. Sign, validate, and never SQL-interpolate them",
+        "4KB overflow silently truncates or drops the cookie — happens when roles or flash messages get stuffed into a signed cookie session",
+        "Cookies not sent on `fetch` cross-origin: you need `credentials: 'include'` client-side AND `Access-Control-Allow-Credentials: true` with an explicit origin (never `*`) server-side",
+        "Debug tools: DevTools → Application → Cookies (shows every flag), `curl -v`, `document.cookie` (HttpOnly cookies are invisible there — that is the point)",
+        "Chrome logs cookie rejections in the Network tab's Cookies pane with a reason — check it before blaming the server",
+        "Ship checklist: `__Host-` prefix, `Secure`, `HttpOnly`, `SameSite=Lax` or `Strict`, `Path=/`, no `Domain`, absolute + idle timeout, regenerate on login, delete server-side on logout",
+        "One-line summary: cookies are automatic, scoped by site not origin, and attacker-visible — so sign them, flag them, scope them tight, and keep the real state on the server"
+      ]
+    }
+  ]
+}

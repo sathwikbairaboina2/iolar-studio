@@ -1,0 +1,175 @@
+{
+  "title": "Go sync Package, Unlocked: Mutex, WaitGroup, Atomics & the Memory Model",
+  "summary": "Dense handwritten study notes covering Go's synchronization toolkit — Mutex, RWMutex, WaitGroup, Once, and atomic operations — plus the happens-before memory model and the race detector, closing with primitive trade-offs and the classic concurrency bugs to avoid.",
+  "chapters": [
+    {
+      "title": "Goroutines, Shared State & Data Races",
+      "points": [
+        "Goroutines are cheap (~2 KB stacks) and the scheduler multiplexes many onto few OS threads — concurrent access to shared memory is the default hazard.",
+        "Data race defined: two goroutines access the same memory concurrently, at least one access is a write, and no synchronization orders them.",
+        "Data races are undefined behavior in Go: torn reads, lost updates, corrupted maps, crashes — or code that merely looks right.",
+        "Demo: 1000 goroutines run counter++; the final count is usually < 1000 because read-modify-write is three steps (load, add, store) that interleave.",
+        "Critical section = the code region touching shared state; mutual exclusion means at most one goroutine inside it at a time.",
+        "Happens-before teaser: the `go` statement happens before the goroutine runs, but a goroutine's exit is invisible to others without extra sync.",
+        "The three cures: locking (sync.Mutex), single-word ops (sync/atomic), or ownership transfer (channels) — every shared access needs one of them.",
+        "Concurrency != parallelism: races happen even with GOMAXPROCS=1 because interleavings occur at preemption points.",
+        "The compiler and `go vet` do NOT detect data races — only the race detector (chapter 8) does, and only for executed paths.",
+        "Rule of confinement: state owned by exactly one goroutine needs no locks; the moment it's shared, pick a primitive deliberately.",
+        "Vocabulary: mutual exclusion, critical section, happens-before, torn read, lost update.",
+        "Setup example for the whole book: `var counter int` incremented by 1000 goroutines — every later chapter fixes it a different way."
+      ]
+    },
+    {
+      "title": "sync.Mutex — The Workhorse Lock",
+      "points": [
+        "sync.Mutex: Lock() acquires, Unlock() releases; the zero value is a ready-to-use unlocked mutex — no constructor, no init.",
+        "Internals: two fields, state int32 + sema uint32; the fast path is one atomic CAS, the slow path parks the goroutine on the runtime semaphore.",
+        "Keep critical sections tiny: copy data under the lock, process it outside; never hold a lock across I/O or channel sends.",
+        "Idiom: `mu.Lock(); defer mu.Unlock()` — defer survives early returns and panics; the small overhead is almost always worth it.",
+        "Mutexes are NOT reentrant: calling Lock twice from one goroutine deadlocks it forever — restructure code instead of tracking owners.",
+        "Unlocking an unlocked mutex is a fatal, unrecoverable runtime error: `fatal: sync: unlock of unlocked mutex`.",
+        "Never copy a used Mutex (or a struct containing one): the copy carries stale lock state; pass *T and run `go vet` (copylocks check).",
+        "Fairness: Go 1.9+ starvation mode hands the lock to the oldest waiter after ~1 ms of starvation, trading throughput for bounded latency.",
+        "Cost: uncontended Lock+Unlock is tens of nanoseconds (a couple of atomics); the real cost shows up as contention and scheduler parking.",
+        "TryLock (Go 1.18) gives up instead of blocking; stdlib docs discourage it — valid uses are rare, best-effort probes.",
+        "Pattern: group fields guarded by one mutex and document the guard — `mu sync.Mutex // guards balance, history`.",
+        "Worked example: thread-safe account struct — Deposit/Withdraw lock, update balance, unlock; concurrent deposits no longer lose updates."
+      ]
+    },
+    {
+      "title": "sync.RWMutex — Many Readers, One Writer",
+      "points": [
+        "sync.RWMutex allows any number of parallel RLock readers OR exactly one Lock writer — two independent lock halves.",
+        "API: RLock/RUnlock for reads, Lock/Unlock for writes, RLocker() returns the read side as a sync.Locker.",
+        "Internals: readerCount/readerWait counters; an arriving writer flips readerCount negative so new RLocks queue behind it — writers are not starved.",
+        "No upgrade or downgrade: calling Lock while holding RLock self-deadlocks; release, then acquire in the new mode.",
+        "Recursive RLock from the same goroutine deadlocks if a writer is queued in between — a nested helper that RLocks is the classic trap.",
+        "Never call code you don't control while holding RLock: a callback that takes the write lock deadlocks instantly.",
+        "When RWMutex wins: read-mostly data (caches, config, routing tables) where many goroutines read per rare write.",
+        "When it loses: tiny or write-heavy sections — extra atomic bookkeeping makes RWMutex slower than plain Mutex; benchmark before switching.",
+        "Even readers serialize behind an active writer: a slow write spikes read latency — watch your tail latencies.",
+        "Same copying hazard as Mutex: an RWMutex field copied with its struct corrupts state; the copylocks vet check applies.",
+        "Worked example: `cache{mu RWMutex; m map[string]Entry}` — Get takes RLock, Set/evict take Lock; hundreds of readers scale.",
+        "Measure with `go test -bench` + benchstat: find the read:write ratio where RWMutex starts beating Mutex in your workload."
+      ]
+    },
+    {
+      "title": "sync.WaitGroup — Waiting for Goroutines",
+      "points": [
+        "sync.WaitGroup lets one goroutine wait for many: Add(delta) bumps a counter, Done() subtracts one, Wait() blocks until it hits zero.",
+        "Internals: a 64-bit state holding counter + waiter count plus a semaphore — Done wakes a parked waiter exactly at zero.",
+        "Canonical pattern: `wg.Add(n)` in the spawning loop, `defer wg.Done()` as the goroutine's first statement.",
+        "Fatal ordering bug: calling wg.Add(1) inside the goroutine races with Wait — Wait can observe zero and return before Add runs. Add before `go`.",
+        "Always share the WaitGroup by pointer (`&wg`); copying it copies the counter, so Done mutates a useless duplicate — vet flags this.",
+        "`defer wg.Done()` doubles as panic armor: without it, a panicking goroutine leaks a count and Wait hangs forever.",
+        "Add below zero panics (`negative WaitGroup counter`); positive Add calls must happen before Wait observes zero.",
+        "Reuse rule: after Wait returns, the group is free for another Add cycle — but never Add while a Wait for the same generation is running.",
+        "Worker-pool shape: jobs channel + N workers + wg.Wait + close(results) — the standard bounded fan-out skeleton.",
+        "No timeout built in: wrap Wait in a goroutine and select on ctx.Done(), or use errgroup.WithContext (x/sync).",
+        "errgroup upgrade: the WaitGroup shape plus first-error capture, error propagation, and ctx cancellation for the whole group.",
+        "Worked example: fetch 20 URLs concurrently, append results under a mutex, wg.Wait, then print — the book's recurring skeleton."
+      ]
+    },
+    {
+      "title": "sync.Once — Run Exactly Once",
+      "points": [
+        "sync.Once guarantees f runs exactly once no matter how many goroutines call Do(f); every caller returns only after f finished.",
+        "Zero value is ready: `var once sync.Once`; separate instances are independent — one Once is bound to one function.",
+        "Internals: a fast path that atomically loads a done flag, slow path under a mutex — textbook double-checked locking done right.",
+        "Lazy singleton: `once.Do(func(){ instance = NewExpensive() })` — cost paid on first use, not at program start (vs package init()).",
+        "Panic semantics: if f panics, Do still counts it as done — later callers skip f; only OnceFunc/OnceValue (Go 1.21) record and re-panic.",
+        "Go 1.21 helpers: sync.OnceFunc(f) returns func(), sync.OnceValue(f) returns func() T — one-line memoized init with built-in panic replay.",
+        "Do is not reentrant: if f calls the same Once's Do, it deadlocks; f must not wait on anything that needs this Once.",
+        "The blocking guarantee is the point: concurrent first callers WAIT for initialization instead of racing a nil check.",
+        "Once vs atomic flag: Once runs setup exactly once; a plain atomic.Bool check-then-set races unless you write a CAS loop.",
+        "Not for caches: once initialized means never reset; hot-reloading config needs atomic.Value or RWMutex instead.",
+        "Worked example: package-level `var clientOnce sync.Once` builds one shared HTTP client + connection pool on first request."
+      ]
+    },
+    {
+      "title": "sync/atomic — Lock-Free Single Words",
+      "points": [
+        "sync/atomic = single indivisible hardware instructions (LOCK-prefixed ops on x86, LDAR/STLR on arm64): no scheduler, no parking.",
+        "Five families per type: Load, Store, Add, Swap, CompareAndSwap — over int32/64, uint32/64, uintptr, and Pointer.",
+        "Go 1.19 typed wrappers — atomic.Int64, atomic.Bool, atomic.Pointer[T] — safer APIs, automatic alignment, no raw &var misuse.",
+        "CAS semantics: CompareAndSwap(addr, old, new) writes new only if the current value == old and reports success — the atom of lock-free programming.",
+        "CAS retry loop: Load, compute, CAS; on failure another goroutine won — loop until success (optimistic concurrency).",
+        "atomic.Value / atomic.Pointer[T]: swap a whole immutable snapshot — the canonical config hot-reload pattern (readers just Load).",
+        "Alignment trap: on 32-bit platforms atomic int64 ops require 8-byte alignment; a badly ordered struct field crashes — use typed wrappers or put int64 first.",
+        "Atomics fix one word only: atomic.AddInt64(&count,1) fixes the counter, but two related fields still need a Mutex to stay consistent.",
+        "Memory model: an atomic write is synchronized before any atomic read that observes it — Go promises sequential consistency for atomics.",
+        "Cost model: uncontended atomic ≈ mutex fast path (one instruction); under heavy contention everyone fights one cache line — a parking mutex can win.",
+        "Sweet spots: counters, start/stop flags, sequence numbers, single-pointer config swaps; wrong spots: multi-field invariants, waiting logic.",
+        "Mixing hazard: touching the same variable with atomic ops sometimes and plain reads/writes otherwise is still a data race — commit to one."
+      ]
+    },
+    {
+      "title": "The Go Memory Model & Happens-Before",
+      "points": [
+        "The memory model answers one question: when is a write in goroutine A guaranteed visible to a read in goroutine B? Only with happens-before.",
+        "Happens-before = transitive ordering guarantee; with no edge, the compiler and CPU may reorder and caches may serve stale values.",
+        "Channel edges: a send happens before its corresponding receive completes; closing a channel happens before a receive that returns the zero value.",
+        "Lock edges: mu.Unlock() happens before the next mu.Lock() succeeds — that edge is how values written under a lock reach the next holder.",
+        "Other edges: `go f()` happens before f starts; once.Do(f) returning happens before any other Do returns; a goroutine's EXIT creates no edge.",
+        "Atomic edges (Go 1.19): an atomic Load observing an atomic Store's value happens after it — atomics are sequentially consistent.",
+        "Broken classic: spinning on `for !done {}` with a plain bool — the compiler may hoist the load and loop forever. Use atomic.Bool or a channel.",
+        "Safe publish pattern: goroutine builds a struct and sends its pointer over a channel; the receiver sees every field — the send edge covers all writes.",
+        "WaitGroup edge: wg.Done happens before wg.Wait returns — that's why reading collected results after Wait is safe.",
+        "Data race = two unordered accesses, at least one write, same address → undefined behavior; the fix is an edge (lock/atomic/channel), not sleep() or luck.",
+        "Don't bet on x86: its strong hardware hides bugs that arm64 exposes; write code correct per the model, not per your CPU.",
+        "Primary source: go.dev/ref/mem — short and authoritative; reread it after this chapter and it finally clicks."
+      ]
+    },
+    {
+      "title": "The Race Detector (-race)",
+      "points": [
+        "Turn it on everywhere: `go test -race`, `go run -race`, `go build -race` — plus `go vet`'s copylocks for compile-time lock misuse.",
+        "Mechanism: Go embeds ThreadSanitizer (TSan v2); instrumentation checks shadow memory of vector clocks on every access for a missing happens-before edge.",
+        "Report anatomy: `WARNING: DATA RACE` shows two stacks (read vs write) plus the variable — fix both sites, not just the first one shown.",
+        "Zero false positives: any report is a real race. Many false negatives: races only surface on interleavings that actually executed.",
+        "Overhead: ~5–10x memory and 2–20x CPU — standard in CI, never in production binaries.",
+        "Amplify your odds: `go test -race -count=100`, parallel tests, real GOMAXPROCS — stress the interleavings your tests normally miss.",
+        "It finds races only — not deadlocks, goroutine leaks, or wrong logic; a -race-clean run can still hang or be incorrect.",
+        "First finds in most codebases: concurrent map read/write, counter++, lazy init without Once, WaitGroup Add/Done misuse, unsynchronized bool flags.",
+        "Concurrent map writes are fatal even without -race: `fatal error: concurrent map writes`; the detector also catches the subtler near-misses.",
+        "Fix pattern from a report: identify the shared variable, choose the primitive (mutex/atomic/channel), re-run -race until clean, commit.",
+        "Race-enabled builds get the `-race` build tag — gate race-only test setup with `//go:build race` if needed.",
+        "Try it now: run the chapter-1 counter demo with `go run -race` — it prints both racing stacks with exact line numbers in one run."
+      ]
+    },
+    {
+      "title": "Choosing the Right Primitive",
+      "points": [
+        "Decision map: multi-field invariants → Mutex; read-mostly map → RWMutex; one counter/flag → atomic; one-time init → Once; ownership transfer → channel.",
+        "Comparison — Mutex: blocks, tens of ns uncontended, unlimited section size; atomic: non-blocking, single word only, no waiting semantics.",
+        "Comparison — RWMutex: parallel readers, extra bookkeeping, writer-first fairness; channel: coordinates AND moves data, ~50–100 ns per op plus allocations.",
+        "'Share memory by communicating': channels hand ownership between goroutines so no lock is needed — the core Go philosophy.",
+        "Channels are not free: hot-path latency sometimes favors a mutex-guarded ring buffer; benchmark with `go test -bench -benchmem` before committing.",
+        "sync.Map niche: append-only caches or disjoint key sets; otherwise `map + RWMutex` is faster and clearer.",
+        "Sharding pattern: N shards each with its own Mutex (key % N) — turns one global lock into N parallel locks for high-throughput maps.",
+        "Over-locking smell: a lock held across an HTTP call or channel send serializes all goroutines — snapshot under the lock, work outside it.",
+        "Deadlock hygiene with multiple locks: acquire in a fixed global order or don't nest at all; TryLock (Go 1.18) is an escape hatch, not a design.",
+        "Contention math: Mutex serializes so latency grows with holders; atomics stay parallel across words; RWMutex readers scale until the next writer.",
+        "Bound goroutine counts: a buffered channel of capacity N as a semaphore + WaitGroup — the classic bounded worker-pool pattern.",
+        "Strategy: start with the simplest correct thing (a Mutex), profile, then escalate to atomics/RWMutex/shards only with evidence."
+      ]
+    },
+    {
+      "title": "Common Mistakes & Closing Summary",
+      "points": [
+        "The book's top-8 bug table: copied lock, Add inside the goroutine, double Lock, unlock of unlocked, recursive RLock, unaligned int64, plain-bool spin, missing Done.",
+        "Copied-lock deep-dive: value receivers and passing structs by value duplicate mutex state — pointer receivers + `go vet` copylocks keep you safe.",
+        "Panic leaks: any path that skips Done or Unlock after a panic freezes Wait or wedges the lock — defer both, always.",
+        "Two mutexes guarding one field (or one field with none) are both races — every shared field needs exactly one documented guard.",
+        "Spurious confidence: -race clean ≠ correct — only executed interleavings are checked; keep repeated (`-count`), parallel, randomized concurrency tests in CI.",
+        "RWMutex-by-default is a mistake: without a benchmark proving reader parallelism pays, plain Mutex is usually faster and simpler.",
+        "Don't recover() lock bugs: 'unlock of unlocked mutex' and 'concurrent map writes' are fatal errors — fix the logic, not the crash handler.",
+        "Review checklist: every shared field names its guard, every lock graph is acyclic, every goroutine's exit is observed (Wait/channel), every init is Once or eager.",
+        "Summary: Mutex/RWMutex = exclusion, WaitGroup = lifecycle, Once = one-time init, atomic = single-word speed, memory model = the reasoning rules, -race = the verifier.",
+        "Complexity recap: all primitives are O(1) per op; the real cost axis is contention — serialization (Mutex) vs cache-line fights (atomics) vs parallel readers (RWMutex).",
+        "Where to go next: x/sync (errgroup, singleflight, semaphore), sync.Pool for alloc reuse, sync.Cond for waiting on state changes, context for cancellation.",
+        "Final rule: correctness first, measure second, optimize third — and let the race detector watch your back on every commit."
+      ]
+    }
+  ]
+}

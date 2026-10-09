@@ -1,0 +1,175 @@
+{
+  "title": "Bash Plumbing: Process Substitution, FIFOs, tee & xargs — Annotated Study Notes",
+  "summary": "A 10-page dense-notes series on moving data between shell commands: command substitution and its traps, process substitution and named pipes, tee for tapping and splitting streams, xargs for batch and parallel execution, and the right ways to feed loops from command output.",
+  "chapters": [
+    {
+      "title": "Streams, Pipes & the Subshell Model",
+      "points": [
+        "Every process starts with three streams: stdin (fd 0), stdout (fd 1), stderr (fd 2)",
+        "A pipe cmd1 | cmd2 wires stdout of cmd1 to stdin of cmd2 — both commands run concurrently",
+        "2>&1 duplicates stderr onto stdout; order matters: cmd >f 2>&1 vs cmd 2>&1 >f give different files",
+        "Kernel pipes buffer ~64 KB: a full pipe blocks the writer, an empty pipe blocks the reader",
+        "Anonymous pipes are unnamed and die with the pipeline — you cannot reopen or reuse one",
+        "Every pipe segment, $(...), and <(...) runs in a subshell: variable changes do not escape",
+        "SIGPIPE kills the writer when the reader closes early — exit status 141 (128+13) is the fingerprint",
+        "set -o pipefail makes a pipeline fail if ANY stage fails, not just the last one",
+        "Redirection recap: < input, > truncate, >> append, <> read-write, &> both streams",
+        "Why this book exists: one-shot pipes cannot feed two commands, hold a stream open, or act like a file — process substitution and FIFOs can",
+        "Diagram: pipeline anatomy — two processes, fds 0/1/2, kernel ring buffer between them",
+        "QA: why does cmd | head sometimes print a broken-pipe error? head quit early and the writer got SIGPIPE — expected, not a bug"
+      ]
+    },
+    {
+      "title": "Command Substitution: $(...) Fundamentals",
+      "points": [
+        "$(cmd) forks a subshell, runs cmd, and pastes its stdout into the current command line",
+        "Nesting is free: echo $(date -d @$(stat -c %Y f)); backticks need ugly escaping to nest",
+        "Legacy backticks are POSIX but deprecated: no clean nesting, confusing backslash rules",
+        "ALL trailing newlines are stripped: x=$(printf 'a\\n\\n\\n') stores just a",
+        "The substitution's exit status lands in $?: var=$(false) leaves $? = 1",
+        "Idiom: var=$(cmd) || { echo failed; exit 1; } — check the status right at capture time",
+        "Trap: local var=$(cmd) hides the failure — local itself returns 0; assign first, test $? after",
+        "stderr is NOT captured — it still hits the terminal; add 2>/dev/null or 2>&1 to silence or merge",
+        "Everyday captures: now=$(date -u +%FT%TZ), n=$(wc -l < f), dir=$(pwd)",
+        "Prefer wc -l < f over n=$(cat f | wc -l): fewer processes, no quoting risks",
+        "Code: log=/var/tmp/deploy-$(date +%s).log — build unique names via nested substitution"
+      ]
+    },
+    {
+      "title": "Command Substitution Pitfalls",
+      "points": [
+        "Unquoted $(...) is re-split on whitespace and glob-expanded — always double-quote: \"$(cmd)\"",
+        "for f in $(ls) breaks on spaces and globs; use shell globs (for f in *) or find -print0",
+        "echo $(cmd) collapses runs of whitespace; echo \"$(cmd)\" preserves the exact bytes",
+        "NUL bytes cannot survive substitution — find -print0 output is silently mangled",
+        "Output is fully buffered: you get nothing until cmd finishes — no streaming into the variable",
+        "Huge captures eat memory and can exceed ARG_MAX when re-expanded into another command line",
+        "Multi-line captures keep inner newlines — iterate with while IFS= read -r, never with for",
+        "Trap: x=$(false); [ -z $x ] — unquoted empty x vanishes and the test breaks; use \"$x\"",
+        "Don't confuse $( ) substitution with ( ) subshell grouping or (( )) arithmetic",
+        "Assignments inside are lost: v=$(x=5; echo hi) sets v=hi and leaves x unset",
+        "Portable rule: if the capture can contain spaces, newlines, or globs, quote it or change approach",
+        "Callout: quote every expansion — \"$var\" and \"$(cmd)\" — unless you specifically want splitting"
+      ]
+    },
+    {
+      "title": "Process Substitution Mechanics: <(...) and >(...)",
+      "points": [
+        "<(cmd) starts cmd in the background and replaces the token with a path like /dev/fd/63 wired to its stdout",
+        ">(cmd) is the mirror: the path is wired to cmd's stdin — anything written there is consumed by cmd",
+        "To the outer command it looks like an ordinary file argument — no stdin piping required",
+        "Implementation: bash hands out /dev/fd/N descriptors, or falls back to a FIFO under /tmp",
+        "The /dev/fd path is valid only while that one command runs — never save it in a variable",
+        "The substituted command runs CONCURRENTLY: inner and outer proceed in parallel, ordering not guaranteed",
+        "Older bash never waits on procsubs so $? only reflects the outer command; bash 4.4+ can wait $! and report failures",
+        "Not POSIX: fails in dash/sh — scripts must declare #!/bin/bash (or ksh/zsh)",
+        "Wins over temp files: no mktemp, no cleanup, no name collisions between concurrent runs",
+        "Diagram: diff <(sort a) <(sort b) — one diff process fed live by two sort processes via /dev/fd/63 and 64",
+        "Syntax check: no space after the < in <( — a redirect like < (cmd) is a syntax error",
+        "Sidebox: probe support with [[ -e /dev/fd/0 ]] or check bash --version before relying on it"
+      ]
+    },
+    {
+      "title": "Process Substitution in Practice",
+      "points": [
+        "Compare two command outputs: diff <(sort a.txt) <(sort b.txt)",
+        "Compare local vs remote: diff /etc/hosts <(ssh h cat /etc/hosts)",
+        "Loop WITHOUT losing variables: while read -r l; do c=$((c+1)); done < <(grep pat f) — c survives",
+        "Fan a copy to filters: some_cmd | tee >(grep ERR > err.log) >/dev/null",
+        "Grep against a live list: grep -Fxf <(cat blocklist.txt) access.log",
+        "Feed multi-file tools that need real filenames: join <(sort a) <(sort b), paste <(cmd1) <(cmd2)",
+        "Log streams separately: run 2> >(grep -i warn >> warns.log) > >(tee out.log)",
+        "Diff directory trees: diff <(cd d1 && find . | sort) <(cd d2 && find . | sort)",
+        "Gotcha: the path is a pipe, not a seekable file — zip and similar tools reject non-seekable input",
+        "Gotcha: a slow reader blocks the writer, and a substitution may still be running after the outer command exits",
+        "sh-portable fallback: mkfifo plus a background writer, or just use a temp file",
+        "Code: while IFS= read -r ip; do ssh -n \"$ip\" uptime; done < <(cat servers.txt)"
+      ]
+    },
+    {
+      "title": "Named Pipes (FIFOs)",
+      "points": [
+        "mkfifo /tmp/p creates a special file — ls -l shows type p and size 0",
+        "Any process can open it by path — it outlives one pipeline, unlike anonymous pipes and /dev/fd paths",
+        "Data never touches disk: bytes flow through a kernel buffer (~64 KB default on Linux, tunable via fcntl)",
+        "Opening BLOCKS until the other side appears: a reader waits for a writer, a writer waits for a reader",
+        "Demo: terminal 1 runs cat < /tmp/p; terminal 2 runs echo hi > /tmp/p and unblocks the first",
+        "It is a byte stream, not messages: one write may arrive split across multiple reads",
+        "Data is consumed once — multiple readers race each other; use one reader or design locking",
+        "Writer blocks when the buffer is full, reader blocks when empty — natural backpressure",
+        "FIFOs persist until removed — pair with trap 'rm -f $fifo' EXIT in scripts",
+        "Use case: decouple producer and consumer across scripts, daemons, or long-lived shells",
+        "Use case: single log collector — many writers append into one FIFO, one reader fans out",
+        "Comparison: FIFO = named + persistent + cross-process; process substitution = ephemeral + inline + single command"
+      ]
+    },
+    {
+      "title": "tee: Tap and Split a Stream",
+      "points": [
+        "tee FILE copies stdin to stdout AND to each FILE — a T-junction that keeps the pipeline flowing",
+        "Append instead of truncate: tee -a file for logs that grow across runs",
+        "Fan out to many files at once: cmd | tee f1 f2 f3 — stdout still continues downstream",
+        "Write as root: cmd | sudo tee /etc/conf — the fix when cmd > /etc/conf fails with permission denied",
+        "Route a copy through a filter: make 2>&1 | tee >(gzip > build.log.gz) | grep -i error",
+        "Watch AND capture long jobs: ./build.sh 2>&1 | tee build.log",
+        "Debug any pipeline: squeeze tee /dev/tty between two stages to eyeball what flows through",
+        "tee /dev/stderr shows a copy without disturbing the pipeline's stdout",
+        "Exit status: only tee's counts by default — enable set -o pipefail to catch upstream failures",
+        "tee + process substitution = N consumers on one line: tee >(gzip > c.gz) >(md5sum > c.md5) > c",
+        "Pitfall: tee f truncates f at open even if the upstream later fails — write to a temp file and mv",
+        "Code: curl -s api | tee raw.json | jq . > pretty.json — keep evidence and transform in one pass"
+      ]
+    },
+    {
+      "title": "xargs Fundamentals: stdin → arguments",
+      "points": [
+        "Commands like rm, cp, kill take ARGUMENTS, not stdin — xargs converts stdin items into argv",
+        "Default command is echo: printf 'a b c' | xargs just prints — always name your command",
+        "Batch size: -n 2 passes 2 items per invocation; the default packs as many as ARG_MAX allows",
+        "-I {} substitutes each input line for {} — implies one item per invocation (slower, exact control)",
+        "-0 treats input as NUL-separated — the ONLY safe pairing with find -print0 for weird filenames",
+        "Golden pair: find . -name '*.tmp' -print0 | xargs -0 rm -f",
+        "-r / --no-run-if-empty (GNU): skip the command on empty input",
+        "-P 4 runs 4 commands concurrently; -P 0 means one per CPU — combine with -n for chunking",
+        "-t echoes each command before running it; -p asks for confirmation — rehearse before you burn",
+        "ARG_MAX safety: xargs splits huge lists into multiple runs automatically — $(cat list) cannot",
+        "Exit codes: stops early only if a command exits 255; otherwise runs all and returns 123 on any failure",
+        "Code: cat urls.txt | xargs -n 1 -P 8 curl -sO — parallel downloads with bounded concurrency"
+      ]
+    },
+    {
+      "title": "xargs Pitfalls, Parallelism & Alternatives",
+      "points": [
+        "Spaces, newlines, and quotes in filenames corrupt default parsing — without -0, xargs can run the wrong command",
+        "-I {} forces one process per item — the batched default is far faster for cheap commands",
+        "Parallel stdout interleaves: -P output overlaps — prefix lines per job or write per-item files",
+        "Parallel targets must tolerate concurrency: sqlite single-writer and some APIs need serialization or locks",
+        "Signals: an aborted xargs can leave -P children mid-flight — wrap in timeout or manage process groups",
+        "Each invocation is a fresh process: shell functions are invisible — export -f plus bash -c, or call a script",
+        "Function pattern: xargs -0 -n 1 bash -c 'process \"$1\"' _ — item arrives safely as positional $1",
+        "find -exec cmd {} + batches like xargs with no pipe; -exec cmd {} ; runs once per file",
+        "GNU parallel adds --keep-order, retries, and job logs — richer than xargs -P, heavier dependency",
+        "A while read loop beats xargs when you need per-item shell logic, variables, or error handling",
+        "Benchmark mindset: for tiny tasks process startup dominates — parallelizing can make it slower; measure",
+        "QA: why did my command run once with everything glued together? You forgot -n/-I, or fed multi-line input to -I"
+      ]
+    },
+    {
+      "title": "Feeding Loops & Choosing the Right Tool",
+      "points": [
+        "Anti-pattern: for i in $(cmd) — word splitting, globbing, full buffering; avoid for any real input",
+        "cmd | while read -r l; do ...; done is safe BUT the loop is a subshell: counters and exports vanish",
+        "Fix with process substitution: while read -r l; do ((n++)); done < <(cmd) — n survives",
+        "Alternative fixes: done < tmpfile, or restructure so the loop writes results to stdout or files",
+        "Always IFS= read -r: preserves leading/trailing whitespace and backslashes",
+        "Field splitting: while IFS=: read -r user _ uid rest; do ...; done < /etc/passwd",
+        "From a variable: while read -r l; do ...; done <<< \"$multiline_var\"",
+        "NUL-safe loops: while IFS= read -r -d '' f; do ...; done < <(find . -print0)",
+        "Decision rule: small capture → $(...); a value that must look like a file → <(...); persistent cross-script channel → mkfifo; split to consumers → tee >( ); parallel batches → xargs -P",
+        "Final checklist: quote all expansions, pair -print0 with -0, set -o pipefail, IFS= read -r, trap FIFO cleanup",
+        "Test with hostile inputs: files named a b.txt, dashes, quotes, embedded newlines — if the script survives, it is correct",
+        "Closing summary: substitution captures, pipes connect, process substitution fakes files, FIFOs persist, tee splits, xargs batches — each solves a different plumbing problem"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+{
+  "title": "Git Internals: The Objects Under Your Commits",
+  "summary": "A 10-page handwritten-notes carousel dissecting how Git actually stores history — blobs, trees, commits, tags, SHA-1 content addressing, refs, HEAD, reflog, and packfiles.",
+  "chapters": [
+    {
+      "title": "1. The Big Idea: Content-Addressed Storage",
+      "points": [
+        "Git is a key-value store: everything is an object looked up by the SHA-1 hash of its content",
+        "Object location: .git/objects/ab/cdef... — first 2 hex chars are the directory, rest is the filename",
+        "SHA-1 of an object = sha1(\"<type> <size>\\0\" + content) — the header includes type and byte length",
+        "Same content always produces the same SHA → identical files stored once, forever (deduplication for free)",
+        "Content addressing makes history tamper-evident: change a byte, the hash changes, every dependent object changes",
+        "Four object types: blob, tree, commit, tag — all stored in the same object database",
+        "Try it: echo 'hi' | git hash-object -w --stdin → prints the SHA and writes a loose object",
+        "git cat-file -p <sha> pretty-prints any object; git cat-file -t <sha> prints its type",
+        "Collision risk: SHA-1 is ~160 bits; practically safe, and Git now detects collision attacks (sha1dc)",
+        "Mental model: Git isn't diffs or deltas — it's snapshots named by hashes",
+        "git cat-file --batch-check < <sha list> to inspect many objects quickly"
+      ]
+    },
+    {
+      "title": "2. Blobs: Storing File Content",
+      "points": [
+        "Blob = raw file bytes + header, nothing else: no filename, no permissions, no timestamps",
+        "Filename and mode live in the tree, not the blob — rename a file and the blob is reused",
+        "git hash-object -w file.txt writes a blob without staging or committing anything",
+        "Deduplication: 100 files with identical content = 1 blob; git cat-file -s <sha> shows byte size",
+        "File mode is a tiny enum in trees: 100644 (file), 100755 (executable), 120000 (symlink), 160000 (gitlink/submodule)",
+        "Blob identity is content-only → Git tracks content, not files; 'a file' is just a path pointing at a blob in a tree",
+        "Editing one line creates a brand-new blob; the old blob still exists until garbage collection",
+        "git cat-file -p <blob-sha> dumps the raw content back out",
+        "Gotcha: git hash-object without -w only computes the hash, writes nothing",
+        "Binary files are blobs too — Git treats them as opaque bytes (diffs need special config)",
+        "Empty file = valid blob with SHA e69de29... (hash of empty content) — you'll see it constantly"
+      ]
+    },
+    {
+      "title": "3. Trees: Snapshots of Directories",
+      "points": [
+        "A tree = one directory snapshot: list of (mode, type, SHA, filename) entries",
+        "git cat-file -p <tree-sha> reads a tree; use git ls-tree <commit-ish> for human-friendly output",
+        "Trees point to blobs (files) and other trees (subdirectories) — the whole repo is a tree of trees",
+        "The root tree is what a commit points to; it recursively captures the entire working snapshot",
+        "Filenames are part of the tree entry, so a rename changes the tree but reuses the blob",
+        "Any unchanged file/subdirectory keeps its SHA → commits reuse huge subtrees, keeping repos small",
+        "Tree SHAs are content-addressed too: same directory contents anywhere in history = same tree",
+        "git write-tree builds a tree object from the current index — the index literally is the next tree",
+        "Inspect recursively: git ls-tree -r -t HEAD lists every tree and blob under it",
+        "Saw a 040000 mode? That's a directory entry (subtree), different from file modes",
+        "Gotcha: you rarely create trees by hand — git add updates the index, commit writes the tree"
+      ]
+    },
+    {
+      "title": "4. Commits: Pointers With a Story",
+      "points": [
+        "A commit object = tree SHA + parent commit SHA(s) + author/committer + timestamp + message",
+        "git cat-file -p HEAD shows the raw commit — do this once and internals click",
+        "First commit has no parent; a merge commit has 2+ parents — that's all a merge is structurally",
+        "The tree SHA pins the full snapshot at that moment; parents give you history as a linked list/DAG",
+        "Author vs committer: who wrote the change vs who applied it (rebases, patches via git am)",
+        "Timestamps are part of the hash input — same message + parents at a different time = different commit",
+        "Commits are immutable: amending or rebasing creates NEW commit objects; old ones linger until GC",
+        "git commit-tree <tree> -p <parent> -m 'msg' forges a commit by hand — great learning exercise",
+        "A 'branch' is NOT stored in the commit — it's just a ref pointing at a commit (next chapter)",
+        "Commit graph traversal: git log --graph --oneline --all visualizes the DAG",
+        "Gotcha: copying a commit SHA elsewhere fails if parent history isn't there — commits are only meaningful in context"
+      ]
+    },
+    {
+      "title": "5. Annotated Tags vs Everything Else",
+      "points": [
+        "Tag object = a commit SHA + tagger + date + message (+ GPG signature) — the 4th object type",
+        "git cat-file -p v1.0 on an annotated tag shows tagger, message, and the commit it points to",
+        "Lightweight tag = just a ref file containing a commit SHA — no object, no message, no signature",
+        "Annotated tags point at the tag object; the tag object points at the commit — one extra hop",
+        "Use annotated for releases: git tag -a v1.0 -m 'Release 1.0'; verify with git show v1.0",
+        "git tag -s adds a GPG signature inside the tag object — the release's cryptographic receipt",
+        "git tag -v v1.0 verifies the signature; signed tags are the backbone of verified releases",
+        "Gotcha: git push doesn't send tags by default — use git push --tags or push a specific tag",
+        "Gotcha: lightweight tags follow a moved commit silently; annotated tags freeze the moment",
+        "git describe uses tags to name commits like v1.2-3-gabc1234 (3 commits after v1.2)",
+        "Note: lightweight tags aren't 'wrong' — fine for temp bookmarks, wrong for releases"
+      ]
+    },
+    {
+      "title": "6. Refs and HEAD: The Movable Pointers",
+      "points": [
+        "A ref is a 41-byte file containing one SHA: .git/refs/heads/main literally IS the branch",
+        "Branch = movable pointer to a commit; creating one is writing one tiny file — branches are cheap",
+        "HEAD is a symbolic ref: file containing 'ref: refs/heads/main' — it points at a ref, which points at a commit",
+        "Detached HEAD: HEAD holds a raw SHA instead of a ref name — committing here orphans your work",
+        "git branch <name> = write a ref file; git checkout <name> = repoint HEAD; that's it",
+        "Namespaced refs: refs/heads/* (branches), refs/tags/*, refs/remotes/* (remote-tracking), refs/stash",
+        "Special refs outside namespaces: HEAD, ORIG_HEAD, FETCH_HEAD, MERGE_HEAD",
+        "git rev-parse HEAD resolves any ref to its raw SHA; git symbolic-ref HEAD shows what HEAD names",
+        "git update-ref refs/heads/main <sha> is the safe scripted way to move a branch (with locking)",
+        "Gotcha: deleting a branch deletes only the pointer — commits remain until reflog expiry and gc",
+        "Remote refs move only on fetch/push, which is why your origin/main can be 'behind' after others push"
+      ]
+    },
+    {
+      "title": "7. The Reflog: Your Safety Net",
+      "points": [
+        "Reflog = local journal of where each ref has pointed: one line per HEAD/ref movement",
+        "git reflog shows HEAD history; git reflog show <branch> shows that branch's history",
+        "Every entry is reachable: git checkout HEAD@{3} or git reset --hard HEAD@{2} jump back",
+        "Reflog syntax HEAD@{n} = n moves ago; HEAD@{2.hours.ago} = where HEAD was at that time",
+        "Rescuing 'lost' commits: git reflog → find the SHA before the mistake → git branch rescue <sha>",
+        "Why resets feel safe: git reset --hard only moves refs; reflog remembers the old position ~90 days",
+        "gc.reflogExpire (90d) and gc.reflogExpireUnreachable (30d): after expiry, dropped commits become GC fodder",
+        "Gotcha: reflog is local-only — never pushed; it can't rescue commits from someone else's reset",
+        "Gotcha: a freshly cloned repo has a nearly empty reflog — no local history to rewind",
+        "git log -g walks commits in reflog order rather than topological order",
+        "Common save: git reset --hard HEAD@{1} to undo a bad reset you just ran"
+      ]
+    },
+    {
+      "title": "8. Packfiles: Compression at Scale",
+      "points": [
+        "Loose objects (one file per object) waste space and inodes → Git packs them into .git/objects/pack/*.pack",
+        "Packing triggers: git gc, git repack, push/fetch over smart HTTP & SSH, many loose objects",
+        "Pack index (.idx) maps SHA → byte offset in the .pack for O(1)-ish object lookup",
+        "Delta compression: similar blobs stored as delta against a base object — often just version N vs N+1 of a file",
+        "Deltas work across types: a blob may be stored against an unrelated-but-similar blob",
+        "git verify-pack -v reports pack contents, sizes, and chain depths — find your repo hogs",
+        "git gc packs and prunes; git count-objects -vH compares loose vs packed footprint",
+        "Lookup order: packfiles first (via idx), then loose objects — transparent to every command",
+        "Gotcha: objects pushed to a server arrive as a pack immediately; local edits stay loose until gc",
+        "Trade-off: deltas make storage tiny but reads require delta resolution — a deliberate CPU-for-space trade",
+        "Shallow clones (--depth) and partial clones (--filter=blob:none) skip pack data you don't need"
+      ]
+    },
+    {
+      "title": "9. Common Mistakes & Recovery Playbook",
+      "points": [
+        "Myth: 'git reset --hard deletes my work' — it only moves refs; reflog still holds the old SHA",
+        "Myth: 'force-push loses history forever' — on the receiving machine it does; on yours reflog has it",
+        "Detached-HEAD disaster: committed while detached, checked out elsewhere → grab SHA from reflog, branch it",
+        "git reset --hard <sha> vs git checkout <sha>: reset moves the branch, checkout moves only HEAD",
+        "Deleted a branch: git reflog show <branch> before it expires, or use fsck --lost-found",
+        "git fsck --unreachable finds dangling commits/blobs the reflog no longer protects — last-resort recovery",
+        "Amended/rebased commit 'vanished': it's still in reflog under ORIG_HEAD or the pre-move entry",
+        "Accidental git add of secrets: unstage ≠ removed; the blob is in the object DB — rewrite history (filter-repo) and rotate keys",
+        "Stash is ref-based too: dropped stash recoverable via git fsck --unreachable | grep commit",
+        "Habituating --force on push hides others' work — prefer --force-with-lease",
+        "Rule of thumb: anything committed is recoverable for ~30–90 days; anything only staged, less so (blobs still exist until gc)"
+      ]
+    },
+    {
+      "title": "10. Summary: The Whole Model on One Page",
+      "points": [
+        "The stack: blob (file bytes) → tree (directory snapshot) → commit (snapshot + parents) → tag (signed label)",
+        "Everything is content-addressed by SHA-1: same content = same object, everywhere, forever",
+        "Branches and tags are just files containing SHAs; HEAD is a pointer to a pointer — that's the entire 'branch' feature",
+        "git add writes blobs + updates index; git commit writes a tree + a commit and moves the ref",
+        "Reflog is your local undo journal; packfiles + deltas are the storage engine underneath",
+        "One command tour: hash-object → cat-file → write-tree → commit-tree → update-ref = Git's core in five primitives",
+        "Complexity cheat sheet: object lookup ~O(1) via pack idx; branch create O(1); log traverses the commit DAG",
+        "Immutability is the feature: hashes make history verifiable; movability of refs makes history editable",
+        "Reading list: Pro Git ch. 10 (Git Internals), git help gitobjectlayout, git help repository-layout",
+        "Exam yourself: what does .git/refs/heads/main contain? What's the difference between a tree and a commit?",
+        "Final habit: when lost — git reflog, git fsck, git cat-file. The object database almost never loses what you committed"
+      ]
+    }
+  ]
+}

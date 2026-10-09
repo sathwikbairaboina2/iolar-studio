@@ -1,0 +1,176 @@
+{
+  "title": "The JavaScript Memory Model: GC, Leaks & Weak References",
+  "summary": "Dense study-notes on how JavaScript manages memory: how garbage collection actually works inside the engine, the leak patterns that bite real apps, the WeakMap/WeakSet/WeakRef family, and how to hunt leaks with heap snapshots in DevTools.",
+  "chapters": [
+    {
+      "title": "Memory Fundamentals: Stack, Heap & References",
+      "points": [
+        "Memory lifecycle in JS: allocate → use → release; the first two are your code, the third is the engine's GC",
+        "Stack vs heap: primitives and call frames live on the fast, fixed-size stack; objects, arrays, functions and closures live on the heap",
+        "Primitives copy by value, objects copy by reference — two variables can point at one heap object",
+        "const locks the binding, not the value: a const object's properties can still mutate",
+        "Closures capture variables by reference, so an escaping function keeps its captured scope on the heap",
+        "Shallow vs deep: spread and Object.assign copy one level; nested objects stay shared with the original",
+        "Strings are immutable — every concatenation allocates a new string and strands the old one for GC",
+        "Boxed wrappers (new String(5), new Number()) create pointless heap objects — use primitives",
+        "Hidden classes (V8): objects with the same shape share maps, cutting per-object overhead — shape churn costs memory",
+        "Allocation itself is cheap; the bill arrives at collection time, so allocation patterns shape GC behavior",
+        "Key definition: an object is garbage the moment nothing can reach it — references are the unit of lifetime",
+        "Mental picture (diagram): variable → reference → object on the heap; freeing means removing the arrow, not the box"
+      ]
+    },
+    {
+      "title": "Reachability & Mark-and-Sweep",
+      "points": [
+        "Core rule: GC collects objects unreachable from the root set — lifetime = reachability",
+        "The roots: global object, current call stack, active module state, and anything the engine pins (e.g. DOM of a live document)",
+        "Mark-and-sweep phase 1 (mark): walk every edge from the roots, flag everything reachable",
+        "Phase 2 (sweep): everything unflagged is garbage; the engine reclaims its memory",
+        "Reachability is transitive — a live object keeps its entire reference subgraph alive",
+        "Cycles are fine: two objects referencing each other but unreachable from roots still get collected — this is why JS dropped pure reference counting",
+        "Unreachable ≠ freed instantly: collection timing is the engine's call, not yours",
+        "Retention: one stray reference to a big object can pin megabytes of subgraph — leaks are about edges, not object size",
+        "No destructors in JS: you can't run code 'when an object dies' (FinalizationRegistry is the one, unreliable exception)",
+        "Trace-based GC vs reference counting: tracing tolerates cycles; refcounting pays an increment/decrement on every assignment",
+        "Diagram: roots → live graph, plus a floating island of garbage no root points to",
+        "Litmus test: setting obj = null frees nothing while another variable still references the object"
+      ]
+    },
+    {
+      "title": "Under the Hood: V8's Generational GC",
+      "points": [
+        "Generational hypothesis: most objects die young, so the heap is split into a young space and an old space",
+        "Minor GC (Scavenger in V8): a fast, semi-space copying collector that cleans the nursery and promotes survivors to old space",
+        "Major GC: mark-sweep/mark-compact over old space — slower, triggered by allocation pressure or promotion",
+        "Write barriers: old→young pointers are recorded so minor GC scans a small remembered set instead of the whole old heap",
+        "Incremental marking: the big mark phase is chopped into small steps interleaved with your JS to cap pause length",
+        "Concurrent + parallel phases: background and helper threads do marking/sweeping so the main thread mostly stops only briefly",
+        "Result: GC happens in short bursts at engine-chosen moments — never assume 'between frames' or 'when idle'",
+        "Hidden classes and pointer compression shrink per-object overhead — stable object shapes are GC-friendly too",
+        "You can't schedule GC in production: no exposed API — allocate less instead of 'forcing' collection",
+        "Dev-only escape hatch: run Chrome/Node with --expose-gc to call gc() in tests and benchmarks",
+        "Symptoms of memory pressure: rising heapUsed baseline, growing jank from more frequent GC, eventual OOM crash",
+        "Rule of thumb: tuning GC is off-limits; shaping allocation (fewer, smaller, shorter-lived objects) is your lever"
+      ]
+    },
+    {
+      "title": "Leak Pattern Clinic I: Timers, Listeners & Closures",
+      "points": [
+        "Leak #1 — forgotten timers: a setInterval never cleared keeps its callback, its closure, and everything they capture, forever",
+        "Typical shape: mount() starts an interval, unmount() never calls clearInterval — one accumulates per re-mount",
+        "Leak #2 — listeners: addEventListener on a long-lived node (window, document) keeps the handler closure alive after its owner is 'gone'",
+        "removeEventListener needs the same function reference — anonymous handlers can never be removed",
+        "Modern fix: AbortController + addEventListener(type, fn, { signal }) — one abort() tears down every listener",
+        "Leak #3 — closures over big data: a tiny exported function can pin megabytes through its captured scope",
+        "Capture granularity: in V8 a variable survives if any closure in the same scope reads it — unrelated big locals can get pinned",
+        "Recreate-handler bug: passing a new arrow each render means old ones are never removed even if you 'remove' with the new ref",
+        "Pending timers from debounce/throttle hold their captured state — cancel them on teardown",
+        "Never-settling promises: awaiting closures that never resolve accumulate with everything they captured",
+        "Contract to memorize: every subscription (timer, listener, observer) needs a symmetric unsubscribe path",
+        "Code sketch: leaked interval vs fixed version with clearInterval in the cleanup function"
+      ]
+    },
+    {
+      "title": "Leak Pattern Clinic II: Detached DOM, Caches & Globals",
+      "points": [
+        "Leak #4 — detached DOM: a node removed from the document but still referenced from JS keeps its whole subtree in memory",
+        "Sources of detached refs: node arrays, template caching, tab keep-alive, storing an element in a module-level variable",
+        "Leak #5 — implicit globals: assigning x = 1 without declaration in sloppy mode creates a window property that lives forever",
+        "Prevention: 'use strict' / ES modules make accidental globals a hard error",
+        "Leak #6 — unbounded caches: a Map used as a memo table grows monotonically — no eviction means no GC",
+        "Fix pattern: cap with LRU (Map + delete/re-set for recency) or add TTL/size limits to every cache you write",
+        "Module-level log arrays ('just keep the last events') are unbounded in practice — use a ring buffer instead",
+        "Detached iframes: holding an object from a removed iframe pins its entire window/world",
+        "DevTools retains values you console.log while it's open — noisy dev logging can distort memory readings",
+        "Framework variant: refs and state holding nodes/data after unmount, effects registered without cleanup functions",
+        "Detection smell: heap snapshot full of 'Detached <div>' entries whose retainer chain ends at one array",
+        "Hygiene: null out references in teardown; use WeakMap for any per-node metadata you attach"
+      ]
+    },
+    {
+      "title": "WeakMap: Attach Without Owning",
+      "points": [
+        "WeakMap definition: a map whose keys are held weakly — an entry exists only while its key is otherwise reachable",
+        "Ephemeron model: when the key is collected, the entry (key AND value) becomes collectable — value lifetime is tied to key lifetime",
+        "Keys must be objects (registered Symbols allowed in newer spec); primitives throw TypeError",
+        "Deliberately unobservable: no iteration, no .size, no keys()/values()/entries() — enumeration would depend on GC timing",
+        "Full API: set(k, v), get(k), has(k), delete(k) — that's it",
+        "Primary use: attaching metadata to objects you don't own — DOM nodes, library instances — without mutating or pinning them",
+        "Other uses: object-keyed memoization/caches that self-clean, per-instance private-ish state",
+        "It is not a 'smaller Map': string/number keys need Map; WeakMap is about lifetime, not size",
+        "Values are still strong: an entry's value can be a huge object graph — only the key link is weak",
+        "Missing keys return undefined silently, and entries can vanish at any GC — write code that tolerates disappearance",
+        "Example: WeakMap for node → config object, vs el.dataset for visible strings — WeakMap holds objects, dataset holds strings",
+        "Comparison row: Map = strong keys, iterable, sizeable, predictable; WeakMap = weak keys, opaque, GC-coupled"
+      ]
+    },
+    {
+      "title": "WeakSet, WeakRef & FinalizationRegistry",
+      "points": [
+        "WeakSet: weakly-held membership — add/has/delete only, no iteration or size; entries exist while the object is otherwise reachable",
+        "Use case: marking objects as seen/processed/frozen without keeping them alive",
+        "WeakRef: new WeakRef(target) holds a weak pointer; ref.deref() returns the target or undefined if it was collected",
+        "deref() === undefined is a normal, expected path — every deref call needs a rebuild/degrade branch",
+        "WeakRef never keeps its target alive; it only lets you use the object if it happens to still exist",
+        "Spec guidance: don't build correctness on weak refs — treat them as an optimization, never the source of truth",
+        "FinalizationRegistry: register(target, callback, token) — the callback runs (eventually) after the target is collected",
+        "Finalizer timing is unpredictable and may never run before exit — never put essential cleanup there; close files and release handles eagerly",
+        "Use unregister(token) inside the callback to drop registry bookkeeping; keep callbacks trivial",
+        "Realistic use: libraries doing native/handle interop or cache hygiene — app code rarely needs these",
+        "Testing gotcha: WeakRef behavior depends on GC having run — force gc() with --expose-gc in tests",
+        "Code sketch: WeakRef-backed view cache — deref, fall back to rebuilding when undefined"
+      ]
+    },
+    {
+      "title": "Weak vs Strong: Choosing the Right Structure",
+      "points": [
+        "The decision question: 'should this data die when the key dies?' Yes → weak structure; No → Map/Set",
+        "Map vs WeakMap: Map has any key type + iteration + size but pins keys; WeakMap trades features for lifetime coupling",
+        "Set vs WeakSet mirrors it: enumerability vs non-pinning membership",
+        "Cost model: weak structures are not faster or smaller — you pay with lost introspection to gain automatic cleanup",
+        "Strong + bounded beats weak + unbounded: an LRU Map with eviction is the right cache when you control the eviction policy",
+        "Weak structures shine when key lifetime is owned elsewhere: metadata on DOM nodes, parsed data cached per object",
+        "WeakMap vs expando (obj._meta = x): expando is visible, enumerable and strong; WeakMap is invisible and weak — pick by whether others must see it",
+        "Private state: WeakMap keyed by instance was the pre-class-fields idiom; real #private fields are now the default answer",
+        "Pitfall: using weak refs for correctness (assuming the object 'must still be there') — different GC timings across engines break you",
+        "Pitfall: a WeakMap of huge values still eats memory if its keys live long — weak ≠ no memory, just deferred",
+        "Migration pattern: convert a leaking Map cache to WeakMap only if entries are per-object and GC-evictable; otherwise add LRU",
+        "Summary table: lifetime control, iteration, key types, best use-cases across Map/WeakMap/Set/WeakSet"
+      ]
+    },
+    {
+      "title": "Debugging with Heap Snapshots",
+      "points": [
+        "Tooling: Chrome DevTools → Memory panel; three modes — Heap snapshot, Allocation instrumentation on timeline, Allocation sampling",
+        "Heap snapshot = full point-in-time object graph; leaks show up as growth between snapshots",
+        "Three-snapshot technique: baseline → perform the suspected leaking action → snapshot → repeat → snapshot; compare object-count deltas",
+        "Shallow size = the object itself; Retained size = object + everything only it keeps alive — sort by retained to find the real holders",
+        "Retainers pane: shows the exact chain of references from a root to the object — the fix is always breaking one link in that chain",
+        "Filter by constructor: 'Detached' for orphaned DOM, plus search by suspected class/function name",
+        "Views: Summary (by constructor), Comparison (snapshot vs snapshot), Containment (heap top-down), Statistics",
+        "Allocation instrumentation: blue bars = allocated and still live; gray = already collected — surviving blue bars point at leak sites",
+        "Allocation sampling: low-overhead stack sampling — the best first tool when the page slows but you don't know where allocations come from",
+        "Force GC before snapshots (trash-can icon or --expose-gc) so dead objects don't pollute the comparison",
+        "Node.js: --inspect + Chrome DevTools, process.memoryUsage() heapUsed trend, v8.getHeapSnapshot() for CI diffs",
+        "Workflow: reproduce → baseline snapshot → interact → compare → read retainer chain → fix → re-snapshot to verify"
+      ]
+    },
+    {
+      "title": "Summary: The Leak-Hunter's Checklist",
+      "points": [
+        "The one mental model to keep: reachability from roots decides lifetime; GC is mark-sweep over that graph",
+        "Allocate less, don't 'GC harder' — the cheapest memory to collect is memory never allocated",
+        "Every subscription gets a symmetric teardown: setInterval↔clearInterval, addEventListener↔removeEventListener or AbortController",
+        "Attach, don't own: WeakMap/WeakSet for metadata and membership that should die with the object",
+        "WeakRef and FinalizationRegistry are observability and cleanup-hygiene tools — never load-bearing lifecycle logic",
+        "Any cache you write needs an eviction story: LRU, TTL or size cap — a Map without limits is a future leak",
+        "Avoid accidental globals: strict mode/modules, and null out module-level refs during teardown",
+        "Read retained size, not shallow size, when hunting leaks; follow the retainer chain to the one link to break",
+        "Make snapshotting a habit: before/after adding intervals, listeners or caches — compare, don't guess",
+        "Red flags: heapUsed that ratchets up and never falls, interaction jank from GC, 'Detached' nodes in snapshots",
+        "Boiled-down rule: a leak is a reference you forgot you were holding — find the edge, cut the edge",
+        "Go deeper: V8 blog's GC deep-dives (Orinoco), MDN Memory Management, TC39 WeakRef proposal explainer"
+      ]
+    }
+  ]
+}

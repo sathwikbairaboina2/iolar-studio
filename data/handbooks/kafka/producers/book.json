@@ -1,0 +1,199 @@
+{
+  "title": "Kafka Producers: Acks, Batching, Idempotence & Retries",
+  "summary": "A dense field guide to the Kafka producer path: how acks levels trade durability for latency, how batching and linger control throughput, how the idempotent producer kills duplicates, and how retries, ordering and error handling really behave in production.",
+  "chapters": [
+    {
+      "title": "The Producer Path: What Send Actually Does",
+      "points": [
+        "KafkaProducer is thread-safe and expensive to create — share one instance per app, not one per request",
+        "producer.send(record) is asynchronous: it returns Future<RecordMetadata> immediately, it does not hit the broker",
+        "Five stages of a send: serialize -> partition -> accumulate into batch -> Sender thread groups by broker -> ProduceRequest over the wire",
+        "Two threads matter: the caller (application) thread does serialize+partition+append; the background Sender (I/O) thread does the network",
+        "RecordAccumulator holds a per-TopicPartition deque of batches in a memory pool of size buffer.memory (default 32 MB)",
+        "Serializers convert key and value to byte[]; broker never inspects the payload, it stores opaque bytes",
+        "Partitioner: explicit partition > key hash (murmur2 of key bytes % numPartitions) > sticky partitioner when key is null",
+        "Sticky partitioner (default since 2.4) fills one partition's batch, then switches — bigger batches, lower latency, still even long-run spread",
+        "RecordMetadata returned on success carries topic, partition, offset, timestamp — offset is the broker-assigned log position",
+        "Callback form: send(record, (metadata, exception) -> ...) — exactly one of the two args is non-null",
+        "Callbacks run on the Sender thread: never block or do slow work inside them or you stall all sends",
+        "send().get() makes it synchronous: correct, simple, and roughly 100x slower throughput — batching collapses to one record",
+        "Gotcha: a try/catch around send() only catches serialization and buffer-full errors, never broker-side failures",
+        "producer.flush() blocks until all buffered records complete; close() flushes then releases the connection"
+      ]
+    },
+    {
+      "title": "acks: The Durability Dial",
+      "points": [
+        "acks controls how many replicas must acknowledge a write before the broker responds to the producer",
+        "acks=0: fire-and-forget. Producer never waits, offset returned is -1, records lost silently on broker failure or full socket buffer",
+        "acks=1: leader writes to its log and replies. Lost if leader dies before followers replicate that record",
+        "acks=all (== acks=-1): leader waits for all in-sync replicas to fetch the record; the durable choice",
+        "acks=all is the default since Kafka 3.0 (with enable.idempotence=true); older clients defaulted to acks=1",
+        "acks=all alone is NOT enough — pair with broker/topic min.insync.replicas or 'all ISR' can mean 'just the leader'",
+        "min.insync.replicas=2 with replication.factor=3 is the standard safe triple: tolerates one broker down, still rejects writes at two down",
+        "When ISR count < min.insync.replicas the broker rejects the produce with NotEnoughReplicasException — producer sees an error rather than silently losing data",
+        "acks=all does not wait for fsync to disk — it waits for the record to be in each replica's page cache; durability is replication, not flush",
+        "Latency cost: acks=0 ~fastest, acks=1 adds one leader write, acks=all adds a follower fetch round trip (typically single-digit ms in-DC)",
+        "Throughput cost of acks=all is far smaller than people assume because batching amortizes the wait across many records",
+        "Choice table: metrics/logs where loss is tolerable -> acks=1; payments, orders, CDC, event sourcing -> acks=all",
+        "acks=0 is incompatible with idempotence and transactions; the producer refuses to start with both configured",
+        "unclean.leader.election.enable=true silently defeats acks=all by letting an out-of-sync replica become leader — keep it false"
+      ]
+    },
+    {
+      "title": "Batching: batch.size and linger.ms",
+      "points": [
+        "Kafka batches at the partition level: one batch = many records for one TopicPartition, compressed and CRC'd as a unit",
+        "batch.size (default 16384 bytes) is a byte cap, not a record count — a full batch is sent immediately regardless of linger",
+        "linger.ms (default 0) is how long the Sender waits for more records before sending a non-full batch",
+        "linger.ms=0 does NOT mean no batching: records that arrive while a previous request is in flight still coalesce",
+        "The two are a race: batch ships at whichever fires first — batch.size full OR linger.ms elapsed",
+        "Typical high-throughput tuning: batch.size=32768..131072 with linger.ms=5..100",
+        "Bigger batches raise throughput and compression ratio, and reduce broker request rate and CPU per record",
+        "Cost of batching is bounded added latency: worst-case producer-side delay ~= linger.ms",
+        "A record larger than batch.size gets its own oversized batch — batch.size is not a hard cap on record size",
+        "max.request.size (default 1 MB) caps one ProduceRequest; message.max.bytes on the broker must be >= it or writes are rejected",
+        "buffer.memory (default 32 MB) is the total accumulator pool; when exhausted, send() blocks up to max.block.ms (default 60s) then throws TimeoutException",
+        "compression.type: none | gzip | snappy | lz4 | zstd — applied per batch, so bigger batches compress much better",
+        "lz4/zstd are the usual picks: lz4 for CPU-cheap speed, zstd for the best ratio at moderate CPU",
+        "Broker stores the compressed batch as-is and consumers decompress — compression saves disk and network end to end",
+        "Gotcha: broker recompression happens if broker compression.type differs from the producer's, burning broker CPU — set it to 'producer'",
+        "Metrics to watch: batch-size-avg, records-per-request-avg, compression-rate-avg, record-queue-time-avg"
+      ]
+    },
+    {
+      "title": "Retries, Timeouts and In-Flight Requests",
+      "points": [
+        "retries defaults to Integer.MAX_VALUE in modern clients — retry count is no longer the real bound, time is",
+        "delivery.timeout.ms (default 120000) is the true upper bound on send(): covers batching time + all retries + all in-flight attempts",
+        "Invariant: delivery.timeout.ms >= linger.ms + request.timeout.ms; the producer refuses to start otherwise",
+        "request.timeout.ms (default 30000) bounds one attempt waiting for the broker's response before it is retried",
+        "retry.backoff.ms (default 100) waits between attempts; retry.backoff.max.ms (default 1000) caps exponential backoff with jitter",
+        "max.block.ms bounds send() and partitionsFor() blocking on metadata fetch or a full buffer — unrelated to delivery timeout",
+        "Retriable errors: NotLeaderOrFollowerException, LeaderNotAvailable, NetworkException, RequestTimedOut, NotEnoughReplicas",
+        "Non-retriable: RecordTooLargeException, SerializationException, AuthorizationException, InvalidTopicException — retrying can never help",
+        "max.in.flight.requests.per.connection (default 5) is how many unacked ProduceRequests can be outstanding per broker",
+        "Ordering hazard: without idempotence, max.in.flight > 1 + retries can reorder — batch 2 succeeds while retried batch 1 lands later",
+        "Pre-idempotence fix was max.in.flight=1, which crushed throughput; idempotence gives ordering back up to 5 in flight",
+        "A retry after a broker-side success but a lost ack produces a duplicate — this is the core at-least-once problem",
+        "On delivery timeout the callback receives TimeoutException and the outcome is genuinely unknown: may have been written",
+        "Retry storms are real: an under-replicated cluster plus MAX_VALUE retries can hold buffer.memory hostage and block producers"
+      ]
+    },
+    {
+      "title": "Idempotent Producer: Exactly-Once Per Partition",
+      "points": [
+        "enable.idempotence=true makes broker-side retries produce no duplicates — on by default since Kafka 3.0",
+        "Producer obtains a Producer ID (PID) from the transaction coordinator via an InitProducerId request at startup",
+        "Every batch carries (PID, epoch, base sequence number); sequence numbers increment per partition, per producer",
+        "Broker keeps the last 5 sequence numbers per PID per partition in memory and in the log's producer state snapshot",
+        "Duplicate detection: an incoming batch whose sequence was already committed is acknowledged again but not appended",
+        "The broker returns the original offset for a deduped batch, so the producer's callback still sees a valid RecordMetadata",
+        "Ordering guarantee: the broker rejects out-of-order sequences with OutOfOrderSequenceException, so retries cannot reorder writes",
+        "This is why max.in.flight up to 5 is safe with idempotence — the broker enforces sequence order, not the client",
+        "Required config combination, auto-enforced: acks=all, retries>0, max.in.flight<=5 — a conflicting explicit value throws ConfigException",
+        "Cost is near zero: a few extra bytes per batch header plus a small broker-side map; leave it on",
+        "Scope limits: guarantees hold per partition, per producer session — a new producer instance gets a new PID and loses the dedupe history",
+        "Epoch bumps fence a zombie producer: the older epoch's writes get rejected with a fencing error",
+        "producer state expires after transactional.id.expiration.ms / when segments age out; a very idle producer can lose its state and see UNKNOWN_PRODUCER_ID",
+        "Idempotence is not end-to-end exactly-once: application-level double-send (retry above the client) still creates duplicates"
+      ]
+    },
+    {
+      "title": "Transactions: Atomic Multi-Partition Writes",
+      "points": [
+        "Transactions extend idempotence from one partition to an atomic set of writes across partitions and topics",
+        "Set transactional.id to a stable, unique per-instance string — it is what survives restarts and enables fencing",
+        "API sequence: initTransactions() once, then beginTransaction() / send()... / commitTransaction() or abortTransaction()",
+        "initTransactions() fences any prior producer with the same transactional.id by bumping the epoch and aborting its open transaction",
+        "The transaction coordinator writes markers (commit/abort control records) into every partition the transaction touched",
+        "Consumers set isolation.level=read_committed to skip aborted records and stop at the Last Stable Offset (LSO)",
+        "isolation.level=read_uncommitted (default) shows aborted records — reading transactional output requires opting in",
+        "sendOffsetsToTransaction(offsets, groupMetadata) makes consume-process-produce atomic: the offset commit joins the transaction",
+        "This is exactly the mechanism Kafka Streams uses under processing.guarantee=exactly_once_v2",
+        "transaction.timeout.ms (default 60s) must be <= broker transaction.max.timeout.ms (default 15 min) or initTransactions fails",
+        "Throughput cost is real: commit is a two-phase write of markers; batch many records per transaction, don't commit per record",
+        "ProducerFencedException, OutOfOrderSequenceException and authorization errors are fatal — close the producer, do not retry",
+        "KafkaException on commit is ambiguous only for retriable causes; abortTransaction() is the safe response to most failures",
+        "Transactions cost extra end-to-end latency for read_committed consumers: they cannot see records until the marker lands"
+      ]
+    },
+    {
+      "title": "Delivery Semantics End to End",
+      "points": [
+        "At-most-once: acks=0 or retries=0 — never duplicates, can lose records; suitable for high-volume metrics",
+        "At-least-once: acks=all + retries — never loses, can duplicate; the pre-0.11 default and still the pragmatic norm",
+        "Exactly-once (within Kafka): idempotent producer for one partition, transactions across partitions, read_committed consumers",
+        "Comparison row — acks=0: latency lowest, durability none, duplicates none, loss likely under failure",
+        "Comparison row — acks=1: latency low, durability leader-only, duplicates possible on retry, loss on leader failover",
+        "Comparison row — acks=all + idempotence: latency slightly higher, durability ISR-wide, duplicates none, loss only on total ISR loss",
+        "Kafka's exactly-once is exactly-once processing inside Kafka, not exactly-once delivery to an external system",
+        "Writing to an external DB still needs idempotent upserts, a dedupe key, or the transactional outbox pattern",
+        "Consumer-side offset commit timing decides semantics too: commit before processing = at-most-once, commit after = at-least-once",
+        "Idempotent consumer design: dedupe on a business key or on (topic, partition, offset) stored with the write",
+        "A duplicate is only harmful if the downstream effect is not idempotent — 'set balance to X' is safe, 'add X' is not",
+        "Ordering guarantee is per partition only — global ordering needs a single partition and gives up parallelism",
+        "Keyed records preserve per-entity order: same key -> same partition -> ordered, which is what most systems actually need",
+        "Repartitioning (adding partitions) breaks key-to-partition stability and therefore breaks historical ordering per key"
+      ]
+    },
+    {
+      "title": "Error Handling and Common Mistakes",
+      "points": [
+        "Mistake: ignoring the send() return value entirely — failures vanish and the app reports success it never got",
+        "Mistake: try/catch around send() and assuming it caught broker errors — it only sees synchronous serialize/buffer errors",
+        "Mistake: send().get() in a loop for 'safety' — turns a 100k msg/s producer into ~1k msg/s with zero durability gain",
+        "Mistake: heavy work inside the callback — the Sender thread is blocked and every partition's throughput drops",
+        "Mistake: creating a producer per request — connection churn, metadata refetch, and no batching at all",
+        "Mistake: forgetting close() — buffered records in the accumulator are simply lost on shutdown",
+        "Use close(Duration) in a shutdown hook so in-flight sends drain with a bound instead of hanging forever",
+        "Mistake: acks=all with min.insync.replicas=1, which quietly degrades to leader-only durability",
+        "Mistake: leaving unclean.leader.election.enable=true, which can truncate acknowledged records",
+        "Mistake: setting retries=0 to 'avoid duplicates' when idempotence already solves duplicates without losing records",
+        "Mistake: huge linger.ms on a latency-sensitive path — added delay is invisible in throughput tests and painful in production",
+        "TimeoutException after delivery.timeout.ms means unknown outcome: log with the key, and let a downstream dedupe absorb the replay",
+        "RecordTooLargeException means fix max.request.size and broker message.max.bytes together, or shrink the payload",
+        "Fatal-vs-retriable: build the error branch on the exception type, not on a blanket retry-everything wrapper",
+        "Producing to a non-existent topic with auto.create.topics.enable=true silently creates a wrongly-configured topic"
+      ]
+    },
+    {
+      "title": "Tuning, Monitoring and Real Config Recipes",
+      "points": [
+        "Throughput recipe: acks=1 or all, linger.ms=20..100, batch.size=131072, compression.type=lz4, buffer.memory=64MB+",
+        "Low-latency recipe: linger.ms=0, batch.size default, compression.type=none or lz4, max.in.flight=5",
+        "Max-durability recipe: acks=all, enable.idempotence=true, delivery.timeout.ms high, min.insync.replicas=2, RF=3, unclean election off",
+        "Key JMX metrics: record-send-rate, request-latency-avg, record-error-rate, record-retry-rate, batch-size-avg, buffer-available-bytes",
+        "record-queue-time-avg rising means the accumulator is backing up — the broker or network is the bottleneck, not the app",
+        "buffer-available-bytes trending to zero predicts send() blocking on max.block.ms before it happens",
+        "Diagnostic: high request-latency-avg with normal record-send-rate points at broker or ISR problems, not producer config",
+        "Rule of thumb: tune batch.size first, linger.ms second, compression third — most wins come from bigger batches",
+        "Compression benchmark ranking (typical JSON): zstd best ratio, gzip good ratio at high CPU, lz4 fastest, snappy in between",
+        "Scaling out: more producer instances help only if partition count allows — throughput ceiling is partitions x per-partition rate",
+        "Partition count sets the parallelism ceiling; too many partitions raises broker memory and end-to-end latency",
+        "max.block.ms is the config that turns a broker outage into either backpressure or a fast failure — pick deliberately",
+        "Test durability with real chaos: kill the leader mid-load and count records, don't trust config review alone",
+        "Producer interceptors (interceptor.classes) let you add tracing or auditing without touching call sites"
+      ]
+    },
+    {
+      "title": "Summary: The Producer Cheat Sheet",
+      "points": [
+        "One-line mental model: send() buffers, the Sender batches, acks decides who must confirm, sequences kill duplicates",
+        "acks=0 loses, acks=1 loses on failover, acks=all + min.insync.replicas=2 is the durable baseline",
+        "delivery.timeout.ms is the only bound that matters for how long a send can take — retries is effectively infinite",
+        "enable.idempotence=true is free correctness: no duplicates, no reordering, up to 5 in-flight requests",
+        "Transactions add atomicity across partitions and the consume-process-produce loop; they cost latency, not correctness",
+        "Ordering is per partition; keys pin entities to partitions; adding partitions breaks that pinning",
+        "Bigger batches almost always win: throughput, compression ratio, and broker CPU all improve together",
+        "linger.ms is the only knob that deliberately trades latency for throughput — everything else is a durability trade",
+        "Always handle the callback or the future; a fire-and-forget send is a silent data-loss policy",
+        "Always close the producer with a timeout on shutdown, or buffered records disappear",
+        "Kafka exactly-once ends at Kafka's boundary — external sinks still need idempotent writes or an outbox",
+        "Config invariants to memorize: delivery.timeout >= linger + request.timeout; max.request.size <= broker message.max.bytes; RF > min.insync.replicas",
+        "Default-good starting point for most services: acks=all, idempotence on, linger.ms=10, batch.size=65536, compression lz4",
+        "Debug order when producing is slow: check record-queue-time, then request-latency, then ISR health, then config"
+      ]
+    }
+  ]
+}

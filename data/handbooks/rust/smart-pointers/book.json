@@ -1,0 +1,203 @@
+{
+  "title": "Rust Smart Pointers: Box, Rc, Arc, RefCell & the Cycle Trap",
+  "summary": "A dense field guide to Rust's heap and shared-ownership pointers — Box, Rc, Arc, Cell, RefCell, Mutex — and the interior-mutability rules that let you mutate through shared references. Covers internals, Deref/Drop mechanics, runtime borrow panics, trade-offs, and how reference cycles leak memory and how Weak breaks them.",
+  "chapters": [
+    {
+      "title": "Why Smart Pointers Exist",
+      "points": [
+        "Definition: a smart pointer is a struct that owns data, acts like a pointer, and runs cleanup code on drop.",
+        "Plain reference `&T` borrows and never owns; `Box<T>`, `Rc<T>`, `String`, `Vec<T>` all own their heap buffer.",
+        "`String` and `Vec<T>` are smart pointers you already use daily — pointer + length + capacity, freed on drop.",
+        "Two traits define the category: `Deref` (behave like a pointer) and `Drop` (run code when it goes out of scope).",
+        "Stack vs heap: stack is fixed-size, LIFO, fast; heap is dynamic-size, allocator-managed, slower to reach.",
+        "Rust has no GC and no manual `free` — the ownership system decides deallocation at compile time.",
+        "Ownership rules recap: one owner, moved on assignment, dropped at end of scope.",
+        "Borrow rules recap: many `&T` XOR one `&mut T`, and no reference outlives its data.",
+        "Smart pointers exist to encode ownership patterns the borrow checker alone cannot express (shared, recursive, mutate-through-shared).",
+        "Map of the handbook: `Box` = single owner on heap; `Rc`/`Arc` = many owners; `Cell`/`RefCell`/`Mutex` = mutate through shared ref.",
+        "Compile-time vs runtime enforcement: `Box` costs nothing at runtime; `Rc` counts; `RefCell` checks borrows while running.",
+        "Rule of thumb: reach for a smart pointer only when a plain reference or a move genuinely cannot express the shape of your data.",
+        "Term: 'zero-cost abstraction' — `Box<T>` compiles to a raw pointer plus a free; no vtable, no header, no overhead."
+      ]
+    },
+    {
+      "title": "Box<T>: One Owner on the Heap",
+      "points": [
+        "`Box<T>` puts a value on the heap and keeps a single-word pointer on the stack.",
+        "Create with `Box::new(5)`, deref-read with `*b`, and it frees automatically at end of scope.",
+        "Size: `size_of::<Box<T>>()` is one usize (8 bytes on 64-bit) for `Sized` T — same as `&T`.",
+        "Use case 1 — recursive types: `enum List { Cons(i32, Box<List>), Nil }` gives the compiler a known size.",
+        "Without `Box`, a recursive enum errors: \"recursive type has infinite size\", fix suggested as indirection.",
+        "Use case 2 — move a large value without copying bytes: `Box::new(big)` moves the payload once, then only the pointer moves.",
+        "Use case 3 — trait objects: `Box<dyn Error>`, `Vec<Box<dyn Shape>>` store different concrete types behind one type.",
+        "`Box<dyn Trait>` is a fat pointer: 16 bytes — data pointer plus vtable pointer.",
+        "`Box<T>` is the only pointer that allows moving the value back out: `let v = *b;` (special compiler support).",
+        "`Box::leak(b)` returns `&'static mut T` and deliberately never frees — for one-time global setup.",
+        "`Box::into_raw` / `Box::from_raw` for FFI hand-off; forgetting `from_raw` leaks the allocation.",
+        "`Box<T>` implements `Deref<Target = T>`, so all `&T` methods work directly on the box.",
+        "Trade-off: one heap allocation and one pointer hop; no reference counting, no runtime checks.",
+        "Anti-pattern: `Box<i32>` for a plain integer — allocation and indirection for zero benefit.",
+        "`Box<[T]>` vs `Vec<T>`: the box drops the capacity field, saving 8 bytes when the length is final."
+      ]
+    },
+    {
+      "title": "Deref, DerefMut and Drop Mechanics",
+      "points": [
+        "`Deref` trait: implement `fn deref(&self) -> &Self::Target` to make your type usable as a reference.",
+        "Behind the scenes the compiler rewrites `*b` into `*(b.deref())`.",
+        "Deref coercion: `&Box<String>` auto-converts to `&String` then `&str` at call sites — chains until types match.",
+        "Classic example: `hello(&boxed_name)` compiles where `fn hello(name: &str)` — three coercions, zero runtime cost.",
+        "Coercion runs at compile time, so it costs nothing; it does not fire for generic type parameters.",
+        "Three coercion directions: `&T` to `&U`, `&mut T` to `&mut U`, and `&mut T` to `&U` — never `&T` to `&mut U`.",
+        "`DerefMut` supplies the mutable path; requires `Deref` as a supertrait.",
+        "Method-resolution order: the compiler tries `self`, then `&self`, then `&mut self`, then derefs and repeats.",
+        "Deref polymorphism is an anti-pattern: don't use `Deref` to fake inheritance between your own structs.",
+        "`Drop` trait: `fn drop(&mut self)` runs automatically when the value leaves scope.",
+        "Drop order: variables drop in reverse declaration order; struct fields drop in declaration order.",
+        "Calling `.drop()` by hand is a compile error (would double-free); use `std::mem::drop(x)` to free early.",
+        "`std::mem::forget(x)` skips the destructor without freeing — safe but leaks.",
+        "Nested drop: dropping a `Box<Node>` recursively drops the whole chain, which can blow the stack on very long lists.",
+        "Example worth writing out: a `CustomSmartPointer` printing on drop shows LIFO ordering exactly."
+      ]
+    },
+    {
+      "title": "Rc<T>: Shared Ownership, Single Thread",
+      "points": [
+        "`Rc<T>` = reference counted; several owners share one heap value, freed when the last owner drops.",
+        "Use when a value has multiple owners and you cannot tell at compile time which one dies last.",
+        "`Rc::clone(&a)` bumps the count — it does NOT deep-copy the data; it is cheap (one increment).",
+        "Convention: write `Rc::clone(&a)` rather than `a.clone()` so readers see the count bump, not a deep copy.",
+        "`Rc::strong_count(&a)` reads the current count; it drops by one at each scope end.",
+        "Memory layout: `RcBox { strong: Cell<usize>, weak: Cell<usize>, value: T }` — two counters live next to the value.",
+        "The counters are plain `Cell<usize>`, non-atomic — this is exactly why `Rc<T>` is not `Send` or `Sync`.",
+        "`Rc<T>` hands out only immutable access — `&mut` through an `Rc` is impossible without interior mutability.",
+        "`Rc::get_mut(&mut rc)` returns `Some(&mut T)` only when strong == 1 and weak == 0.",
+        "`Rc::make_mut` implements clone-on-write: clones the value if it is shared, otherwise mutates in place.",
+        "`Rc::ptr_eq(&a, &b)` compares addresses, not values — the identity test for shared nodes.",
+        "Canonical example: two cons lists `b` and `c` sharing one tail `a` — impossible with `Box`.",
+        "Complexity: clone and drop are O(1) counter updates; the payload is never copied.",
+        "Trade-off: an extra pointer hop, two counters of memory, and a runtime check on every drop.",
+        "Pitfall: an `Rc` cycle never reaches zero — see the cycle chapter."
+      ]
+    },
+    {
+      "title": "Arc<T>: Shared Ownership Across Threads",
+      "points": [
+        "`Arc<T>` = atomically reference counted; same API as `Rc<T>` but safe to move between threads.",
+        "`Arc<T>` is `Send + Sync` when `T: Send + Sync`; `Rc<T>` is neither.",
+        "Sending an `Rc` into `thread::spawn` fails to compile: \"`Rc<...>` cannot be sent between threads safely\".",
+        "The counters are `AtomicUsize`; increments use `Ordering::Relaxed`, the final decrement uses `Release` then an `Acquire` fence.",
+        "Cost: an atomic RMW is roughly 10-30x a plain increment under contention because of cache-line ownership transfer.",
+        "Rule: use `Rc` by default inside one thread; pay for `Arc` only when the value truly crosses threads.",
+        "The classic multi-thread shape is `Arc<Mutex<T>>` — `Arc` shares the ownership, `Mutex` guards the mutation.",
+        "`Arc<T>` alone gives shared read access only; it does not make `T` mutable.",
+        "Clone the `Arc` before the `move` closure, one clone per thread, then join.",
+        "`Arc::strong_count` exists but is only a snapshot — racy by nature in concurrent code.",
+        "`Arc::try_unwrap(a)` returns `Ok(T)` when this is the last handle, `Err(a)` otherwise.",
+        "For immutable shared data (a config, a lookup table), `Arc<T>` alone is enough — no lock needed.",
+        "Comparison row: `Rc` = fast, single-thread; `Arc` = atomic, multi-thread; identical ergonomics otherwise.",
+        "`Arc` cycles leak exactly like `Rc` cycles — atomics fix data races, not the topology of your graph."
+      ]
+    },
+    {
+      "title": "Interior Mutability: Cell and RefCell",
+      "points": [
+        "Interior mutability: mutate data through an immutable reference `&T` — allowed via `UnsafeCell` inside.",
+        "`UnsafeCell<T>` is the only legal way to get `&mut T` from `&T`; every cell type is built on it.",
+        "The rule is not removed, it is moved: `RefCell` enforces the same borrow rules at runtime instead of compile time.",
+        "`Cell<T>` — no references handed out, only whole-value `get()` (needs `Copy`), `set()`, `replace()`, `take()`.",
+        "`Cell` has zero runtime overhead and can never panic; use it for small `Copy` values like counters and flags.",
+        "`RefCell<T>` — hands out references and tracks a borrow flag at runtime.",
+        "`borrow()` returns `Ref<T>` (a shared borrow); `borrow_mut()` returns `RefMut<T>` (an exclusive borrow).",
+        "The borrow flag is one `isize`: positive counts shared borrows, -1 means one active mutable borrow.",
+        "The guards `Ref`/`RefMut` release the flag in their `Drop` — so scope, not statements, controls the borrow.",
+        "`try_borrow` / `try_borrow_mut` return `Result` for the fallible path instead of panicking.",
+        "Cost: `RefCell` is one extra word plus a check-and-update on each borrow — cheap, but not free.",
+        "Both `Cell` and `RefCell` are `!Sync`: usable in one thread only; `Mutex`/`RwLock` are the thread-safe siblings.",
+        "Prime use case: mock objects that must record calls behind an `&self` trait method.",
+        "Second use case: memoization / lazy caching inside a struct that outwardly looks immutable.",
+        "`RefCell<T>` gives you a single owner with runtime-checked mutation — combine with `Rc` for shared mutation."
+      ]
+    },
+    {
+      "title": "Rc<RefCell<T>>: The Shared-Mutable Combo",
+      "points": [
+        "`Rc<RefCell<T>>` = many owners (`Rc`) plus mutation through any of them (`RefCell`) — the workhorse pattern.",
+        "Read the nesting outside-in: share first, then mutate the shared thing.",
+        "Ordering matters: `RefCell<Rc<T>>` means one owner of a swappable shared handle — a different tool entirely.",
+        "Canonical example: `let value = Rc::new(RefCell::new(5));` then `*value.borrow_mut() += 10;` updates every holder.",
+        "The `*` on `borrow_mut()` derefs the `RefMut` guard down to the inner value.",
+        "Use it for graphs, trees with parent links, observer lists, and shared mutable state in a GUI-like tree.",
+        "Thread-safe equivalent: `Arc<Mutex<T>>`, or `Arc<RwLock<T>>` for read-heavy workloads.",
+        "Every layer costs: heap allocation + two counters + a borrow flag + two pointer hops.",
+        "Panic risk: holding one `borrow()` alive while calling a method that does `borrow_mut()` aborts at runtime.",
+        "Guard-lifetime trap: `let x = rc.borrow_mut();` holds until end of scope — bind into a small block to release early.",
+        "Temporaries in one expression are dropped at the end of the statement, which is why `*a.borrow_mut() += *b.borrow();` usually works but a self-borrow does not.",
+        "Prefer plain ownership or an index/arena (`Vec<Node>` with `usize` ids) when the graph is dense — often simpler and faster.",
+        "`Rc<RefCell<T>>` in a data structure is a strong hint you should audit for cycles.",
+        "Type shorthand seen in real code: `type Shared<T> = Rc<RefCell<T>>;` keeps signatures readable."
+      ]
+    },
+    {
+      "title": "Reference Cycles and Weak<T>",
+      "points": [
+        "A cycle is two or more `Rc`s pointing at each other; each keeps the other's strong count above zero.",
+        "Consequence: the strong count never reaches 0, `drop` never runs, memory leaks — a leak is safe in Rust, just wrong.",
+        "Rust guarantees memory safety, not the absence of leaks; `Rc` cycles and `mem::forget` are both sound.",
+        "Reproduce it: two `Rc<RefCell<Cons>>` list nodes whose tails are set to each other, then print `Rc::strong_count` — never 0.",
+        "Printing such a cycle overflows the stack — evidence the loop is real.",
+        "`Weak<T>` is a non-owning handle: it bumps the weak count and does not keep the value alive.",
+        "Create with `Rc::downgrade(&rc)`; recover with `weak.upgrade()`, which returns `Option<Rc<T>>`.",
+        "`upgrade()` yields `None` once the value has been dropped — the check that makes weak links safe.",
+        "`Weak::new()` makes an empty weak handle that always upgrades to `None` — the usual placeholder for a root's parent.",
+        "Design rule: ownership flows one direction. Parent owns child with `Rc`; child points back at parent with `Weak`.",
+        "Tree node shape: `struct Node { value: i32, parent: RefCell<Weak<Node>>, children: RefCell<Vec<Rc<Node>>> }`.",
+        "Two counters, two jobs: the allocation is freed when strong hits 0; the `RcBox` header lives until weak also hits 0.",
+        "So a lingering `Weak` holds the small header, not the payload — the `T` is already dropped.",
+        "`Rc::weak_count` and `Rc::strong_count` together let you trace ownership in tests.",
+        "Detection in practice: track the counts, watch memory in a loop, or run under Valgrind/heaptrack; the compiler cannot catch cycles.",
+        "Same rules apply verbatim to `Arc` and `std::sync::Weak`."
+      ]
+    },
+    {
+      "title": "Common Mistakes and Gotchas",
+      "points": [
+        "`already borrowed: BorrowMutError` — a `borrow_mut()` while a `borrow()` guard is still alive.",
+        "`already mutably borrowed: BorrowError` — the mirror case; both are runtime panics, not compile errors.",
+        "Fix: shrink the guard's scope with a block, or split into read-then-write phases with the value cloned out.",
+        "Recursion trap: a method that borrows and then calls itself borrows twice — restructure to pass the guard down.",
+        "`a.clone()` on an `Rc<Vec<T>>` clones the pointer, not the vector — obvious to Rust, surprising to reviewers.",
+        "Overusing `Rc<RefCell<T>>` where a `&mut` and a restructure would do — it trades compile errors for runtime panics.",
+        "`Rc` across threads never compiles; swapping in `Arc` blindly hides that the design still needs a lock.",
+        "Deadlock: two threads locking the same two `Mutex`es in opposite order — no borrow checker helps here.",
+        "Holding a `MutexGuard` across an `.await` poisons async code — use `tokio::sync::Mutex` there.",
+        "`Box<dyn Trait>` in a hot loop pays a vtable indirection each call; generics monomorphize instead.",
+        "Forgetting `Weak` for back-pointers is the #1 source of Rust memory leaks in tree and graph code.",
+        "`Rc::get_mut` returning `None` means the value is still shared — not a bug, a signal.",
+        "Comparing `Rc`s with `==` compares the pointed-to values; use `Rc::ptr_eq` for identity.",
+        "`drop(x)` frees early only if no other clone exists; with `Rc` it merely decrements.",
+        "Nested `Rc<RefCell<Rc<RefCell<...>>>>` is a smell — flatten the model or move to an arena."
+      ]
+    },
+    {
+      "title": "Choosing the Right Pointer: Cheat Sheet",
+      "points": [
+        "Single owner, heap, known cost: `Box<T>`.",
+        "Multiple owners, one thread: `Rc<T>`.",
+        "Multiple owners, many threads: `Arc<T>`.",
+        "Mutate a small `Copy` value behind `&self`: `Cell<T>`.",
+        "Mutate any value behind `&self`, one thread: `RefCell<T>`.",
+        "Shared and mutable, one thread: `Rc<RefCell<T>>`.",
+        "Shared and mutable, many threads: `Arc<Mutex<T>>`, or `Arc<RwLock<T>>` when reads dominate.",
+        "Break a cycle / back-pointer: `Weak<T>` (or `sync::Weak` with `Arc`).",
+        "Borrow-check timing: `Box` and `&T` at compile time; `RefCell` and `Mutex` at runtime.",
+        "Failure mode by type: `Box` none, `Rc` leak-on-cycle, `RefCell` panic, `Mutex` deadlock or poison.",
+        "Overhead ranking, cheapest first: `&T` and `Box` (zero), `Cell` (zero), `RefCell` (one flag check), `Rc` (counter), `Arc` (atomic), `Mutex` (atomic + possible syscall).",
+        "Thread safety: `Box` and `Arc` are `Send`/`Sync` when `T` is; `Rc`, `Cell`, `RefCell` are single-thread only.",
+        "Decision order to memorize: plain ownership, then `&`/`&mut`, then `Box`, then `Rc`/`Arc`, then add a cell only if mutation is required.",
+        "Escape hatch: when the graph is dense, an arena (`Vec<Node>` + `usize` indices) beats every pointer here on speed and simplicity.",
+        "Closing recap: `Box` moves data to the heap, `Rc`/`Arc` count owners, `RefCell`/`Mutex` move the borrow check to runtime, and `Weak` keeps the ownership graph acyclic."
+      ]
+    }
+  ]
+}

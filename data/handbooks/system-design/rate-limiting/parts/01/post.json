@@ -1,0 +1,1335 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "SYSTEM DESIGN",
+  "date": "29/08/2026",
+  "slides": [
+    {
+      "page_title": "Why Rate Limit At All",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Two Words, One Job",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Rate limit = cap on ops per unit time",
+            "Throttling = the action taken when cap breached",
+            "Limiter decides; throttler enforces"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Four Driving Motives"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Motive",
+            "Example"
+          ],
+          "rows": [
+            [
+              "Capacity",
+              "avoid overload collapse"
+            ],
+            [
+              "Cost",
+              "per-call cloud/LLM spend"
+            ],
+            [
+              "Fairness",
+              "one tenant starves rest"
+            ],
+            [
+              "Abuse",
+              "cred stuffing, scraping, spam"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Retry Storm Loop"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "no limit",
+              "queues grow",
+              "latency spikes",
+              "client timeout",
+              "retry",
+              "more load"
+            ]
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Degradation is non-linear. Retries feed the fire — congestion collapse."
+        },
+        {
+          "type": "heading",
+          "text": "Three Tools, Often Confused"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Rate limit: admission control at the edge",
+            "Load shedding: admission control under duress",
+            "Circuit breaker: guards caller from sick dependency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Rate vs Quota vs Concurrency"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Control",
+            "What it bounds"
+          ],
+          "rows": [
+            [
+              "Rate",
+              "100 rps arrival"
+            ],
+            [
+              "Quota",
+              "1M req/month, billing"
+            ],
+            [
+              "Concurrency",
+              "20 in-flight at once"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Little's Law Ties Them",
+          "items": [
+            "L = λ × W",
+            "Concurrency follows rate × latency",
+            "Capping λ bounds L only if W bounded",
+            "Slow endpoint: cap concurrency, cheap one: cap rate"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "Where Limiters Live"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Client SDK — politeness, saves the round trip",
+            "Gateway/LB — cheapest, guards everything behind",
+            "Service middleware — knows the user and the cost",
+            "DB / queue — last line of defense"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Real Anchors"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "API",
+            "Published limit"
+          ],
+          "rows": [
+            [
+              "GitHub",
+              "5000 req/hour auth"
+            ],
+            [
+              "Stripe",
+              "~100 read req/sec"
+            ],
+            [
+              "AWS API GW",
+              "10,000 rps + burst"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Ask This First",
+          "text": "All three are token-bucket-shaped. Name the scarce resource — CPU, dollars, a partner's contract, or a human's patience. That answer picks the algorithm."
+        }
+      ]
+    },
+    {
+      "page_title": "Anatomy of a Limiter",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Every Limiter Is One Function",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "decide(key, cost, now) -> Decision",
+            "# Decision = allow|deny + retry_after",
+            "d = lim.decide('t42:search', 5, now)",
+            "if not d.allow: return 429, d.retry_after"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Key Picks Fairness"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per API key, per user, per IP, per tenant",
+            "Composite: tenant:endpoint isolates noisy routes",
+            "Coarse key = wide collateral damage"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Key Traps"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Per-IP breaks behind NAT/CGNAT — office = one IP",
+            "Behind a CDN, read X-Forwarded-For or get spoofed",
+            "Per-user breaks for anonymous traffic",
+            "Layer both: loose IP pre-auth, tight user post-auth"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Not All Requests Cost 1"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Call",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "health check",
+              "1"
+            ],
+            [
+              "REST read",
+              "1"
+            ],
+            [
+              "nested GraphQL",
+              "50"
+            ],
+            [
+              "LLM completion",
+              "4000"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Multi-Tier Limits Stack"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "10 rps AND 1000/hour AND 100k/month",
+            "A request must pass every tier",
+            "Tightest failing tier supplies Retry-After"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fail Open or Fail Closed"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Store down",
+            "Result"
+          ],
+          "rows": [
+            [
+              "fail-open",
+              "product lives, no guard"
+            ],
+            [
+              "fail-closed",
+              "backend safe, total outage"
+            ],
+            [
+              "reads",
+              "pick fail-open"
+            ],
+            [
+              "money movement",
+              "pick fail-closed"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Response Contract"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "429 Too Many Requests + Retry-After",
+            "Retry-After: seconds or an HTTP-date",
+            "503 = overload, not per-client policy"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "HTTP/1.1 429 Too Many Requests",
+            "RateLimit-Limit: 100",
+            "RateLimit-Remaining: 0",
+            "RateLimit-Reset: 27   # older: X-RateLimit-*",
+            "Retry-After: 27"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Ship It Dark First",
+          "text": "Every new limit goes out in shadow/dry-run mode: log what would have been rejected, learn the false-positive rate, then flip to enforcing."
+        },
+        {
+          "type": "heading",
+          "text": "Mechanic",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Chop the clock into fixed intervals (each minute)",
+            "counter[key][window_id] += 1 per request",
+            "Reject when counter > limit",
+            "window_id = floor(now / window_size)",
+            "Pure arithmetic — no timers, no sweeper"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Anatomy of a Limiter (cont.)",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Redis Form"
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "local n = redis.call('INCR', k)",
+            "if n == 1 then",
+            "  redis.call('EXPIRE', k, w)",
+            "end  -- one script, or the TTL can be lost",
+            "return n <= tonumber(lim)"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Memory Cost"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "O(1) per key: one integer + one TTL",
+            "The cheapest algorithm that exists"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Boundary Burst Flaw"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "00:59.9 send 100",
+              "window flips",
+              "01:00.1 send 100",
+              "200 req in 200 ms"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Limit 100/min, client got 2× the intended rate",
+            "Worst case is exactly 2× — any window size",
+            "Windows are synchronized across all clients",
+            "So every boundary is a thundering herd"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Mitigations"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Fix",
+            "Trade"
+          ],
+          "rows": [
+            [
+              "offset = hash(key) % W",
+              "spreads resets"
+            ],
+            [
+              "100/min becomes 10/6s",
+              "kills legit bursts"
+            ],
+            [
+              "use as outer tier only",
+              "precise inner tier"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Good Fit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Daily API quotas, monthly billing counters",
+            "Cheap outer tier above a precise inner one",
+            "Anywhere 2× overshoot is harmless"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Bad Fit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A capacity-constrained backend that dies at 2×",
+            "Anything user-visible near the boundary"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "One Line",
+          "text": "Fixed window trades 2× accuracy for a single integer. Only buy it where 2× is harmless."
+        },
+        {
+          "type": "heading",
+          "text": "Mechanic",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Store the timestamp of every accepted request",
+            "Evict entries older than now − window",
+            "Compare the surviving count to the limit",
+            "Exact: zero approximation, the reference answer"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Redis: One ZSET Per Key"
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "redis.call('ZREMRANGEBYSCORE',k,0,now-w)",
+            "local n = redis.call('ZCARD', k)",
+            "if n < lim then",
+            "  redis.call('ZADD', k, now, id) end",
+            "redis.call('EXPIRE', k, w) -- one script"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Unique Member Rule"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Member must be a UUID or now:counter",
+            "Same-millisecond entries otherwise collapse",
+            "A collapse means one request rode free"
+          ]
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "Fixed Window Counter",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Complexity"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Axis",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Space",
+              "O(N), N = limit"
+            ],
+            [
+              "Insert",
+              "O(log N) amortized"
+            ],
+            [
+              "Evict k stale",
+              "O(k), paid after idle"
+            ],
+            [
+              "10k/hr × 1M users",
+              "10B timestamps"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Memory Attack Surface"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Unauth per-IP log: attacker cycles source IPs",
+            "Each new IP forces fresh allocation",
+            "Bound key count with an LRU; cap ZSET length"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Hygiene Rules"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Do NOT log denied requests",
+            "Else a retry loop keeps its own window full",
+            "TTL ≥ window so idle users stop leaking",
+            "Delete-on-read makes the log self-cleaning"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Fit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Good: logins, password resets, payments",
+            "Good: expensive report generation",
+            "Bad: high-QPS public endpoints",
+            "There, per-request memory and payload dominate"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Low Volume, High Value",
+          "text": "The log is the only algorithm you can put on the witness stand — pay O(N) only where the decision must be provable."
+        },
+        {
+          "type": "heading",
+          "text": "The Trick",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep two fixed-window counters: current + previous",
+            "Interpolate the overlap, store no timestamps"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Formula"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "elapsed = now % W",
+            "wt = (W - elapsed) / W   # prev weight",
+            "est = cur + prev * wt",
+            "allow = est < limit"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Worked Example"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Input",
+            "Value"
+          ],
+          "rows": [
+            [
+              "limit",
+              "100 / min"
+            ],
+            [
+              "previous min",
+              "80"
+            ],
+            [
+              "current min",
+              "30"
+            ],
+            [
+              "elapsed",
+              "25%"
+            ],
+            [
+              "estimate",
+              "30 + 80×0.75 = 90"
+            ]
+          ]
+        },
+        {
+          "type": "paragraph",
+          "text": "90 < 100, so allow — 10 remaining."
+        },
+        {
+          "type": "heading",
+          "text": "The Assumption"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Assumes previous traffic was uniformly spread",
+            "That assumption is the whole approximation",
+            "Error bounded by burstiness inside the prev window",
+            "Cloudflare: ~0.003% wrongly allowed/denied at scale"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cost"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "O(1) memory — two integers per key",
+            "Near-log accuracy at fixed-window price",
+            "Hence the default for large-scale edge limiting"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Sliding Window Log",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Redis Form"
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "-- HASH per key: {cur, prev, wid}",
+            "if wid < nowid then",
+            "  prev = (nowid-wid==1) and cur or 0",
+            "  cur = 0; wid = nowid end  -- roll",
+            "cur = cur + 1"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What It Buys And Costs"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Smooths the fixed-window boundary burst",
+            "No double-dip: the prev window still counts, weighted",
+            "No audit trail — cannot name which requests counted",
+            "Escalate to the log only for security-critical actions"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Default HTTP Tier",
+          "text": "Two integers, four nines of accuracy. This is the limiter you reach for first at the edge."
+        },
+        {
+          "type": "heading",
+          "text": "Model",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bucket of capacity B refills at r tokens/sec",
+            "Each request removes `cost` tokens",
+            "tokens < cost → deny, or wait for refill"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Independent Knobs"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "r",
+              "sustained long-run rate"
+            ],
+            [
+              "B",
+              "maximum burst"
+            ],
+            [
+              "B = r",
+              "one second of burst"
+            ],
+            [
+              "B = 10r",
+              "tolerates a 10s spike"
+            ],
+            [
+              "B = 1",
+              "strict rate, no burst"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Lazy Refill"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "d = now - last        # no timer thread",
+            "tok = min(B, tok + d * r)",
+            "if tok >= cost:",
+            "    tok -= cost; last = now; allow()"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Idle Credit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A quiet client accrues up to B tokens",
+            "Then fires B requests instantly — intentional",
+            "This is why bursty clients feel fast",
+            "O(1) time and memory: one float, one timestamp"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Weighted Cost Is Native"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A 4000-token LLM call simply debits 4000",
+            "GraphQL complexity limits are token buckets inside"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Throttle vs Shape"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flavor",
+            "Behavior"
+          ],
+          "rows": [
+            [
+              "Throttle",
+              "deny now, 429 — servers"
+            ],
+            [
+              "Shape",
+              "block till tokens accrue — SDKs"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Lineage And Misuse"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The standard traffic policer in networking",
+            "RFC 2697 srTCM: two rates, committed vs peak",
+            "Misuse: B far larger than downstream capacity",
+            "Big B? pair it with a concurrency limit"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Token Bucket",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Default Pick",
+          "text": "For API rate limiting where clients are legitimately bursty, token bucket is the best general-purpose choice."
+        },
+        {
+          "type": "heading",
+          "text": "Queue Model",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Arrivals enter a FIFO queue of fixed size",
+            "Queue drains at a constant rate r",
+            "Full queue → new arrivals dropped",
+            "Output rate constant whatever the input shape"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "One Name, Two Readings"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Form",
+            "Behaves as"
+          ],
+          "rows": [
+            [
+              "Queue",
+              "shaper, adds latency"
+            ],
+            [
+              "Meter",
+              "counter draining at r"
+            ],
+            [
+              "Meter",
+              "mirror of token bucket"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "GCRA — The Meter"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "# store one value: TAT",
+            "if now >= TAT - burst_tol:",
+            "    TAT = max(now, TAT) + 1.0/r",
+            "    allow()   # O(1), one timestamp"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "emission_interval = 1/r",
+            "No counters, no windows, no sweeps"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Memory And Drops"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Form",
+            "Memory"
+          ],
+          "rows": [
+            [
+              "Queue",
+              "O(queue_size)"
+            ],
+            [
+              "Meter",
+              "O(1)"
+            ],
+            [
+              "Drop policy",
+              "tail / head / priority"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Where It Wins"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Downstream with a hard fixed ceiling",
+            "Partner API contractually capped at 50 rps",
+            "Legacy system that folds above a set rate",
+            "Background jobs and outbound calls, not user reads"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Bufferbloat Trap"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A big queue looks generous, hides huge tail latency",
+            "Requests dequeue long after the client gave up",
+            "Always pair the queue form with a deadline",
+            "Fast-fail anything past its client timeout"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Origin",
+          "items": [
+            "Standardized in ATM for cell rate conformance",
+            "GCRA = Generic Cell Rate Algorithm",
+            "Why redis-cell and throttled ship the meter form"
+          ],
+          "ink": "green"
+        }
+      ]
+    },
+    {
+      "page_title": "Leaky Bucket & GCRA",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "The Table",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Algo",
+            "Mem",
+            "Accuracy",
+            "Burst"
+          ],
+          "rows": [
+            [
+              "Fixed win",
+              "O(1)",
+              "poor, 2×",
+              "yes, by accident"
+            ],
+            [
+              "Sliding log",
+              "O(N)",
+              "exact",
+              "no"
+            ],
+            [
+              "Sliding ctr",
+              "O(1)",
+              "~99.99%",
+              "minimal"
+            ],
+            [
+              "Token bkt",
+              "O(1)",
+              "exact to model",
+              "yes, up to B"
+            ],
+            [
+              "Leaky/GCRA",
+              "O(1) meter",
+              "exact",
+              "no, smooth"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Best For"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Algo",
+            "Best fit"
+          ],
+          "rows": [
+            [
+              "Fixed win",
+              "cheap coarse quotas"
+            ],
+            [
+              "Sliding log",
+              "low-volume security limits"
+            ],
+            [
+              "Sliding ctr",
+              "high-QPS edge default"
+            ],
+            [
+              "Token bkt",
+              "bursty clients, weighted cost"
+            ],
+            [
+              "Leaky/GCRA",
+              "fixed-capacity downstream"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Felt Difference"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Only the leaky queue form adds waiting time",
+            "Token bucket feels fastest — bursts sail through",
+            "Leaky queue feels slowest but never spikes",
+            "Fixed window feels erratic near boundaries",
+            "Only the log reconstructs what was counted"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Two-Line Model",
+          "text": "Token bucket asks 'do I have credit saved up?' Leaky asks 'is it my turn yet?' Sliding window asks 'how many have I done recently?'"
+        },
+        {
+          "type": "heading",
+          "text": "Layer, Don't Choose"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Edge per IP → sliding counter",
+            "Per API key → token bucket",
+            "Downstream contract → GCRA / leaky",
+            "Monthly quota → fixed window"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "N Servers Means N × L"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each node with local limiter L enforces N×L total",
+            "The limit silently multiplies by fleet size",
+            "Divide by N? breaks on uneven LB and autoscaling",
+            "Idle nodes hoard share while others reject traffic"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "One Shared Counter"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Redis or Memcached holds the count",
+            "One round trip per decision, every node",
+            "Atomicity mandatory — read-then-write over-admits",
+            "Lua script or INCR; never GET followed by SET"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "-- one script = one atomic decision",
+            "local n = redis.call('INCR', k)",
+            "if n==1 then redis.call('PEXPIRE',k,w) end"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Comparison & Going Distributed",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "Latency Tax",
+          "items": [
+            "Same-AZ hop: 0.2–2 ms per request",
+            "Cross-AZ or cross-region: limiter is the bottleneck"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Redis Is A SPOF",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fail-closed turns a cache incident into a full outage",
+            "Set a tight client timeout — a few milliseconds",
+            "Document the fallback before you need it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Sharding & Replication"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Limiter keys are independent, so sharding spreads load",
+            "A hot tenant still lands on one shard: pre-filter locally",
+            "Async replicas serve stale counts — read the primary",
+            "Cluster: one owner per key, no cross-slot Lua"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cut The Round Trips"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Design",
+            "Trade"
+          ],
+          "rows": [
+            [
+              "Local + global tier",
+              "bounded accuracy loss"
+            ],
+            [
+              "Gossip / broadcast",
+              "overshoot ≈ sync interval"
+            ],
+            [
+              "Per-region cells",
+              "global = sum of regions"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two-tier: node holds its share, syncs consumed counts",
+            "Cloudflare and Kong use the gossip style",
+            "Cross-region consensus is never worth the latency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Productionized Form"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Envoy global rate limit service over gRPC RLS",
+            "Istio / Kubernetes wire straight into it",
+            "One dedicated ratelimit service in front of Redis"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "One Clock Rules"
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "local t = redis.call('TIME')",
+            "local now = t[1] + t[2]/1e6",
+            "-- node skew corrupts TAT and windows"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Backoff Rules"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A limiter is a contract: server rejects, client backs off",
+            "wait = base × 2^attempt, always capped",
+            "Full jitter: sleep = random(0, backoff)",
+            "Server Retry-After beats the client's own guess"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Shared State & Backpressure",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Budgets & Safety"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Retry budget: cap retries at ~10% of successes",
+            "Beats per-request counts when an outage is broad",
+            "Idempotency key before retrying any write",
+            "Never retry 400 / 401 / 403"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "429 Is Not 503"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Client action"
+          ],
+          "rows": [
+            [
+              "429",
+              "policy hit — back off, continue"
+            ],
+            [
+              "503",
+              "overloaded — back off hard, failover"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "AIMD Client",
+          "items": [
+            "Additively increase send rate on success",
+            "Multiplicatively halve it on 429",
+            "Converges on the server's real capacity",
+            "A local bucket kills the doomed round trip first"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "Key Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Why it bites"
+          ],
+          "rows": [
+            [
+              "IP-only keys",
+              "NAT + free proxy rotation"
+            ],
+            [
+              "Blind XFF trust",
+              "spoofed = no limit"
+            ],
+            [
+              "Unbounded keys",
+              "store memory exhausted"
+            ],
+            [
+              "One limit, all routes",
+              "export ≠ key lookup"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Counting Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Counting rejects locks a retry loop out forever",
+            "Count accepted work, not attempts",
+            "GET-then-SET races; a lost EXPIRE leaks keys",
+            "No jitter → every client stampedes at reset"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Policy Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Limit set by guess instead of load test + p99",
+            "Forgot health checks, webhooks, service-to-service",
+            "Throttled monitoring makes an incident invisible",
+            "Fail-closed everywhere caps product availability"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Visibility Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No RateLimit-* headers: clients cannot self-pace",
+            "They learn the limit only by being rejected",
+            "No dry run, no metrics — the alert is a customer"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Your API doesn't fall over at 2× traffic — it falls over because 100 clients all retried at the same second. This is the full field guide to rate limiting: token bucket, leaky bucket/GCRA, sliding window log vs counter, the Redis Lua scripts that keep them atomic, and why N app servers quietly enforce N× your limit. 10 pages of handwritten notes, from the boundary-burst flaw to AIMD client backoff. Save it before your next design round.",
+    "hashtags": [
+      "#systemdesign",
+      "#ratelimiting",
+      "#tokenbucket",
+      "#backendengineering",
+      "#redis",
+      "#distributedsystems",
+      "#apidesign",
+      "#softwareengineering",
+      "#techinterview",
+      "#codenewbie",
+      "#devnotes",
+      "#iolar"
+    ]
+  }
+}

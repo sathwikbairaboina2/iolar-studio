@@ -1,0 +1,197 @@
+{
+  "title": "Terraform Environments: Workspaces, Directories & Drift",
+  "summary": "A practical handbook on structuring Terraform for multiple environments — CLI workspaces vs directory-per-environment vs Terragrunt-style composition — plus how remote runs execute state, and how drift appears and is detected between dev, staging, and prod.",
+  "chapters": [
+    {
+      "title": "State, Backends & the Environment Problem",
+      "points": [
+        "Terraform state = JSON map from config addresses (aws_instance.web) to real resource IDs (i-0abc123); no state means no knowledge of what exists",
+        "One state file describes exactly one deployed instance of a configuration — this is the root of the entire environment problem",
+        "'Environment' in Terraform is not a first-class concept: it is only ever a separate state file plus a separate set of input variables",
+        "Backend = where state lives: local (terraform.tfstate on disk), s3, azurerm, gcs, http, or Terraform Cloud/HCP remote",
+        "State locking prevents two concurrent applies corrupting state: S3 uses lockfile (S3 native, 1.10+) or legacy DynamoDB table, azurerm uses blob leases",
+        "Backend config is block-level and cannot use variables or interpolation — this restriction is what forces the workspace-vs-directory decision",
+        "terraform init -backend-config=prod.hcl is the escape hatch: partial backend configuration supplied at init time, not plan time",
+        "Root module = the directory where you run terraform; child modules are called from it and never own state of their own",
+        "terraform.tfstate.backup is written before every state mutation; on a remote backend the provider keeps versions instead",
+        "Sensitive values (RDS passwords, generated keys) land in state in plaintext — encrypt at rest (S3 SSE/KMS) and restrict bucket reads per environment",
+        "State is versioned by a serial number and lineage UUID; mismatched lineage means you pointed at a foreign state and Terraform refuses",
+        "Rule of thumb: blast radius = one state file. Splitting environments is really splitting blast radius",
+        "terraform state list / show / mv / rm are the surgical tools; state rm forgets a resource without destroying it",
+        "Comparison: local state = fast, no locking, no sharing; remote state = locking, sharing, audit, but a network dependency on every command"
+      ]
+    },
+    {
+      "title": "CLI Workspaces: Mechanics",
+      "points": [
+        "terraform workspace new dev / select dev / list / show / delete are the whole command surface",
+        "Every configuration starts with exactly one workspace named 'default' that cannot be deleted",
+        "Local backend layout: default state at terraform.tfstate, others at terraform.tfstate.d/<name>/terraform.tfstate",
+        "S3 backend layout: default at <key>, others at <workspace_key_prefix>/<name>/<key> — prefix defaults to 'env:'",
+        "terraform.workspace is the interpolation hook: name = \"app-${terraform.workspace}\"",
+        "Common pattern: locals { settings = { dev = { size = \"t3.micro\", count = 1 }, prod = { size = \"m5.large\", count = 6 } } } then lookup by terraform.workspace",
+        "One config, one backend, one provider block, one set of modules — only the state file swaps",
+        "Workspaces do NOT isolate credentials: same AWS profile, same account, same region unless you deliberately vary them",
+        "terraform workspace delete refuses if the state is non-empty; -force deletes state and orphans real infrastructure",
+        "The selected workspace is stored in .terraform/environment — it is local, untracked, and invisible in code review",
+        "CI must run terraform workspace select <env> explicitly; forgetting it silently applies to whatever workspace was last selected",
+        "Workspaces were originally named 'environments' in Terraform 0.9 and renamed in 0.10 — HashiCorp's own docs now warn against using them for environments",
+        "Terraform Cloud/HCP workspaces are a different concept entirely: they own their own variables, credentials, and run history",
+        "Gotcha: terraform init in a fresh clone lands you in 'default', not your last workspace"
+      ]
+    },
+    {
+      "title": "Directory-per-Environment: Mechanics",
+      "points": [
+        "Layout: envs/dev/, envs/staging/, envs/prod/ — each a root module with its own main.tf, backend.tf, terraform.tfvars",
+        "Shared logic lives in modules/network, modules/app; each environment root calls them with different inputs",
+        "Each directory has its own backend block with a literal, greppable key: key = \"prod/app/terraform.tfstate\"",
+        "Provider block per environment means per-environment account, role_arn, and region — real credential isolation",
+        "Diffs are reviewable: 'prod instance_type m5.large -> m5.xlarge' shows up in the pull request as a code change",
+        "Environments can legitimately diverge: prod has a WAF and multi-AZ RDS, dev does not, and no conditional expression is needed",
+        "Cost: N copies of nearly identical root modules; adding an output means editing N files",
+        "Mitigate duplication by keeping roots thin — ideally the root is one module call plus a backend block plus tfvars",
+        "Symlinking shared .tf files across environment dirs is a known trick but breaks on Windows and confuses terraform fmt",
+        "-var-file=envs/prod.tfvars with a single root is the hybrid: one directory, per-environment tfvars, but you still need -backend-config to swap state",
+        "terraform init must run once per directory; .terraform/ and lockfiles are per-directory too",
+        "Version pinning can differ per environment: prod can pin provider 5.31.0 while dev tests 5.40.0",
+        "Promotion flow: merge the same module version bump through dev tfvars, then staging, then prod — explicit and auditable",
+        "Directory layout is the pattern HashiCorp, Gruntwork, and most large teams recommend for real environments"
+      ]
+    },
+    {
+      "title": "Workspaces vs Directories: Head to Head",
+      "points": [
+        "State isolation: workspaces = same backend, different key; directories = independent backends possible",
+        "Credential isolation: workspaces = none by default; directories = full (separate provider/role per env)",
+        "Code drift between environments: workspaces forbid it structurally; directories permit it, for better and worse",
+        "Divergence handling: workspaces need conditionals (count = terraform.workspace == \"prod\" ? 3 : 1) which multiply and rot",
+        "Review visibility: workspace differences hide inside locals maps; directory differences appear as plain diffs",
+        "Blast radius of a mistake: wrong workspace selected = apply dev config to prod state; wrong directory = you had to cd there deliberately",
+        "Onboarding: directories are self-evident from ls; workspaces require tribal knowledge of an invisible CLI flag",
+        "Boilerplate: workspaces near zero; directories O(N) files",
+        "Good fit for workspaces: short-lived ephemeral copies — per-branch preview stacks, per-developer sandboxes, test fixtures",
+        "Bad fit for workspaces: dev/staging/prod that live in different cloud accounts or have different compliance controls",
+        "Hybrid that works: directories for the stage boundary, workspaces inside a stage for ephemeral feature stacks",
+        "Terragrunt sits on top of directories: terragrunt.hcl generates the backend block and injects inputs, removing the O(N) duplication",
+        "Terraform Cloud/HCP inverts the model: one directory, many named cloud workspaces, each with its own variable set and credentials",
+        "Decision rule: if the environments differ in identity (account, credentials, compliance), use directories; if they differ only in size/name, workspaces are defensible"
+      ]
+    },
+    {
+      "title": "Remote Runs & Remote State",
+      "points": [
+        "Two distinct things people call 'remote': remote state (backend stores the file) and remote runs (plan/apply execute on a server)",
+        "cloud {} block or backend \"remote\" makes terraform plan a local command that streams a run executing elsewhere",
+        "Remote execution mode: config is uploaded, run happens on the platform, credentials live there, output streams to your terminal",
+        "Local execution mode: platform stores state only; plan/apply run on your laptop or CI runner",
+        "Speculative plans: a plan-only run triggered by a pull request, never applyable, used for review",
+        "Run lifecycle: plan queued -> policy check (Sentinel/OPA) -> cost estimate -> apply awaiting confirmation -> applied",
+        "Remote runs solve the credential problem workspaces cannot: secrets never touch a developer machine",
+        "terraform_remote_state data source reads another state's outputs: data \"terraform_remote_state\" \"net\" { backend = \"s3\" config = { bucket = ..., key = \"prod/net.tfstate\" } }",
+        "Reading remote state grants access to the whole state file, secrets included — prefer published outputs, SSM parameters, or a data source lookup",
+        "Cross-stack coupling by remote state creates an apply-order dependency: network must apply before app, and there is no dependency graph across states",
+        "Atlantis/CI alternative: PR comment 'atlantis plan -d envs/prod' runs plan in a controlled runner and posts the diff",
+        "Remote runs make the workspace-selection footgun disappear: the run is bound to a named workspace, not to a local file",
+        "Cost of remote runs: queueing latency, no local -target debugging, and provider network egress from someone else's VPC",
+        "Agents/self-hosted runners exist for private networks the SaaS cannot reach"
+      ]
+    },
+    {
+      "title": "Drift: What It Is and Where It Comes From",
+      "points": [
+        "Drift = divergence between three things that should agree: the configuration, the state file, and the real infrastructure",
+        "Type 1, infrastructure drift: someone changed the console; real != state",
+        "Type 2, state drift: state says a resource exists but it was deleted out of band; plan proposes to recreate it",
+        "Type 3, code drift: environments' configurations have diverged; prod and staging no longer describe the same system",
+        "Refresh is how drift is detected: Terraform reads every resource from the provider API before diffing",
+        "terraform plan -refresh-only shows drift without proposing config changes — the canonical detection command",
+        "terraform apply -refresh-only writes reality into state, accepting the drift instead of reverting it",
+        "-refresh=false skips detection: faster plans, but you are diffing against a possibly stale state",
+        "Common drift sources: console hotfixes during incidents, autoscaling changing desired_count, cloud provider defaulting a field, another Terraform config touching the same resource",
+        "Provider-injected drift: AWS adds default tags or a security group description; the plan shows a change you never wrote",
+        "Drift between stages is the dangerous one: staging passes, prod fails, because prod was hand-patched six months ago",
+        "Deleted-outside drift makes plan propose a create; a create in prod during an incident can be catastrophic",
+        "Silent drift: attributes Terraform does not manage (an EBS volume's actual data, an unmanaged tag) never appear in any plan",
+        "Drift is not always a bug — a break-glass fix is legitimate; the bug is failing to reconcile it afterwards"
+      ]
+    },
+    {
+      "title": "Detecting & Reconciling Drift",
+      "points": [
+        "Scheduled drift detection: run terraform plan -refresh-only -detailed-exitcode nightly per environment",
+        "-detailed-exitcode returns 0 = no changes, 1 = error, 2 = changes present — the exit code is the alerting hook",
+        "terraform plan -out=tfplan then terraform show -json tfplan | jq '.resource_changes[] | select(.change.actions != [\"no-op\"])' for machine-readable drift",
+        "HCP Terraform has built-in continuous drift detection with health assessments per workspace",
+        "Reconciliation option A — revert: terraform apply, forcing reality back to code (correct default)",
+        "Reconciliation option B — adopt: update the .tf to match reality, then apply so the plan is empty",
+        "Reconciliation option C — accept: apply -refresh-only, only valid when the attribute is genuinely externally owned",
+        "Reconciliation option D — ignore: lifecycle { ignore_changes = [desired_count, tags[\"LastScanned\"]] } for fields another system owns",
+        "terraform import (or an import block) adopts an unmanaged resource that someone created by hand",
+        "import { to = aws_s3_bucket.logs, id = \"my-logs\" } is the 1.5+ declarative form and shows up in the plan",
+        "terraform state rm releases a resource you now want managed elsewhere without destroying it",
+        "Drift alerts must name the environment: 'prod: 3 resources drifted' is actionable, 'drift detected' is not",
+        "Comparison of stages: diff terraform show -json across dev and prod states to find code drift, not just infra drift",
+        "Post-incident checklist: every console change gets a follow-up PR within the sprint or it becomes permanent drift"
+      ]
+    },
+    {
+      "title": "Preventing Divergence Between Stages",
+      "points": [
+        "Root cause of stage drift is people, not tooling: fix the write path, not just the detector",
+        "Remove human write access to prod: apply only through a CI role, developers get read-only plus break-glass",
+        "Version your modules: source = \"git::...//modules/app?ref=v1.4.2\" so promotion is a version bump, not a copy-paste",
+        "Same module version across dev/staging/prod means the difference between them is exactly the tfvars — auditable in one diff",
+        "Pin providers in .terraform.lock.hcl and commit it; unpinned providers drift environments apart on their own schedule",
+        "Promote by artifact, not by re-running: the module ref that passed staging is the ref that goes to prod",
+        "Keep environment differences in data (tfvars, a settings map), never in structure (different resource blocks)",
+        "Policy as code: Sentinel or OPA/conftest to block 'prod resource without tags' or 'public S3 bucket'",
+        "Required checks: terraform fmt -check, terraform validate, tflint, checkov, plan review — all before merge",
+        "Make prod plans empty by default; a non-empty prod plan on an unrelated PR is a signal something is wrong",
+        "Bake the ephemeral stack: preview environments from workspaces so nobody hand-builds a test environment in prod",
+        "Terragrunt DRY pattern: root terragrunt.hcl with remote_state block, child files supply only inputs",
+        "Immutable prod: deploy replacement infrastructure rather than mutating it, so drift has nothing to accumulate in",
+        "Measure it: track 'days since last unreverted drift' per environment as a real reliability metric"
+      ]
+    },
+    {
+      "title": "Common Mistakes & Gotchas",
+      "points": [
+        "Applying to the wrong workspace because .terraform/environment was left on 'prod' — nothing in the plan header stops you",
+        "Using workspaces across AWS accounts, then discovering one backend bucket in one account holds all environments' secrets",
+        "terraform.workspace conditionals metastasizing: fifteen ternaries in one file, none of them tested for dev",
+        "The 'default' workspace holding real prod state because someone forgot to create one — and default cannot be deleted",
+        "terraform workspace delete -force orphaning live resources with no state to destroy them from",
+        "Sharing one S3 key across environments so two applies race and corrupt state",
+        "Forgetting terraform init after switching directories: 'Backend initialization required' or worse, stale modules",
+        "Copying a state file between environments — lineage mismatch, or silently adopting prod resource IDs into dev",
+        "-target used as a routine tool: it skips dependency updates and leaves state partially applied",
+        "Running apply with -refresh=false in CI to save time, then never noticing drift for months",
+        "Storing secrets in tfvars committed to git; state already leaks them, the repo does not need to as well",
+        "count vs for_each on environment-sized lists: removing the middle element of a count list re-indexes and destroys the wrong resources",
+        "Auto-apply on merge to main for prod without a manual gate — a bad plan ships at 2am",
+        "Assuming an empty plan means healthy: unmanaged resources and ignore_changes fields are invisible to it",
+        "Deleting a module from code without terraform apply first: state keeps the resource, plan can no longer manage it"
+      ]
+    },
+    {
+      "title": "Summary & Decision Playbook",
+      "points": [
+        "Environments in Terraform are just separate state files plus separate inputs — every pattern is a way to arrange those two",
+        "Default recommendation: directory-per-environment for dev/staging/prod, workspaces only for ephemeral copies",
+        "Choose workspaces when: same account, same credentials, same shape, short-lived, differences are only names and sizes",
+        "Choose directories when: different accounts, different credentials, different compliance, or environments legitimately differ",
+        "Choose Terragrunt/HCP workspaces when directory duplication becomes the bottleneck and you need generated backends and per-workspace variables",
+        "Remote state gives locking and sharing; remote runs give credential isolation and reviewable plans — adopt both for prod",
+        "Consume other stacks' outputs deliberately (terraform_remote_state or SSM), and remember that reading state reads its secrets",
+        "Drift has three flavors: infra vs state, state vs reality, and code vs code across stages",
+        "Detect drift with scheduled terraform plan -refresh-only -detailed-exitcode; alert on exit code 2 per environment",
+        "Reconcile by reverting (default), adopting into code, accepting via refresh-only, or ignoring via lifecycle — pick one deliberately",
+        "Prevent divergence with versioned modules, committed lockfiles, no human write access to prod, and policy-as-code gates",
+        "Health check for any setup: can a new engineer tell which environment they will change from the files alone?",
+        "Second health check: is the prod plan empty right now, and do you have evidence it was empty yesterday?",
+        "The tool does not enforce environment discipline — the repository layout and the CI pipeline do"
+      ]
+    }
+  ]
+}

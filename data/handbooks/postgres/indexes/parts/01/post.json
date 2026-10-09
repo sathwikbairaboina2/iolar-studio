@@ -1,0 +1,1059 @@
+{
+  "brand": "iolar",
+  "template": "terminal-dark",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "POSTGRES INDEXES",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "Access Paths & Why Indexes Exist",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Heap And Index",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Heap = unordered 8 KB pages; seq scan reads all of them",
+            "Selectivity of `WHERE` does not shrink a seq scan",
+            "Index = separate structure mapping key values to TIDs",
+            "`ctid` = block number + item offset inside that block",
+            "Postgres has secondary indexes only, no InnoDB-style clustered store"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Indexes You Already Have",
+          "items": [
+            "One implicit index per `PRIMARY KEY`",
+            "One per `UNIQUE` constraint",
+            "`FOREIGN KEY` columns get none",
+            "Classic cause of slow cascading deletes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Four Access Paths"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Path",
+            "Wins when"
+          ],
+          "rows": [
+            [
+              "Seq Scan",
+              "most rows match"
+            ],
+            [
+              "Index Scan",
+              "few rows, random I/O"
+            ],
+            [
+              "Index Only Scan",
+              "all columns in index"
+            ],
+            [
+              "Bitmap Index + Heap",
+              "medium selectivity"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Bitmap scan builds a TID bitmap, then sorts it",
+            "Heap then read in physical order, not random order",
+            "Combines several indexes with bitmap AND / OR"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cost Model"
+        },
+        {
+          "type": "code",
+          "lang": "conf",
+          "lines": [
+            "seq_page_cost        = 1.0",
+            "random_page_cost     = 4.0   # spinning disk",
+            "cpu_tuple_cost       = 0.01",
+            "cpu_index_tuple_cost = 0.005",
+            "cpu_operator_cost    = 0.0025"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Planner picks by estimated cost, never by rules",
+            "Index wins under roughly 5-10% row selectivity",
+            "Above that, random I/O dominates and seq scan is cheaper",
+            "On SSD set `random_page_cost = 1.1` or index use stays suppressed"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Where Selectivity Comes From",
+          "items": [
+            "`pg_statistic`, refreshed by `ANALYZE`",
+            "`n_distinct`, `most_common_vals` / `freqs`",
+            "`histogram_bounds` for ranges",
+            "`correlation` for physical order"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reading EXPLAIN"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "EXPLAIN (ANALYZE, BUFFERS)",
+            "SELECT id FROM orders",
+            "WHERE status = 'pending';",
+            "-- rows=12 (actual rows=41000) : bad stats"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Compare `rows=` estimated against actual rows",
+            "A 100x gap means stale statistics, not a missing index",
+            "`Rows Removed by Filter` = index fetched rows then threw them away",
+            "That index simply is not selective enough"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Index Cond, Not Filter",
+          "text": "`Index Cond` is evaluated inside the index; `Filter` runs after the heap fetch. Moving a predicate from Filter to Index Cond is the whole game."
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- a failed build leaves an INVALID index",
+            "SELECT indexrelid::regclass FROM pg_index",
+            "WHERE indisvalid = false;",
+            "DROP INDEX CONCURRENTLY idx;  -- then retry"
+          ],
+          "runnable": false
+        }
+      ]
+    },
+    {
+      "page_title": "Access Paths & Why Indexes Exist (cont.)",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Indexes Charge Writes",
+          "text": "Every `INSERT`, `UPDATE` and `DELETE` must maintain every index on the table."
+        },
+        {
+          "type": "heading",
+          "text": "Shape Of The Tree",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default index type in Postgres",
+            "Balanced multi-way tree, all leaves at the same depth",
+            "Typically 3-4 levels for hundreds of millions of rows"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "btree index",
+            "branches": [
+              {
+                "label": "meta page",
+                "children": [
+                  "points at root"
+                ]
+              },
+              {
+                "label": "root + internal",
+                "children": [
+                  "separator keys",
+                  "downlinks"
+                ]
+              },
+              {
+                "label": "leaf pages",
+                "children": [
+                  "(key, TID)",
+                  "sorted order"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Fanout ~ page_size / entry_size",
+            "8 KB pages, 3 levels, billions of keys addressed",
+            "So a lookup costs about 4 page reads"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Operation",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Search",
+              "O(log n)"
+            ],
+            [
+              "Insert",
+              "O(log n)"
+            ],
+            [
+              "Range scan",
+              "O(log n + k)"
+            ],
+            [
+              "Ordered output",
+              "free, no Sort node"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "B-link Leaves"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Leaf pages are doubly linked left to right (Lehman & Yao)",
+            "Range and backward scans walk siblings, never revisit the root",
+            "Right-links let readers proceed during a page split",
+            "No tree-wide locks needed for concurrency"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Splits And Free Space"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A full page splits about 50/50",
+            "Rightmost inserts split 90/10 for monotonic keys",
+            "`serial` and `now()` hit that path constantly",
+            "`fillfactor` default 90 leaves 10% for HOT-friendly growth",
+            "Lower it on heavily updated indexes"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Modern Shrinkage",
+          "items": [
+            "PG 13+ deduplication: one key, a posting list of TIDs",
+            "Low-cardinality indexes shrink dramatically",
+            "PG 14+ bottom-up deletion reclaims dead entries before splitting",
+            "Fights version churn from non-HOT updates"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "No Visibility In The Index"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Index tuples carry no `xmin` / `xmax`",
+            "So heap or visibility map must be consulted",
+            "Entries exist for dead tuples too",
+            "Only `VACUUM` removes them"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Operators Served"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "WHERE a BETWEEN 1 AND 9  -- < <= = >= >",
+            "WHERE a IN (1, 2, 3)",
+            "WHERE a IS NULL          -- yes, indexed",
+            "WHERE s LIKE 'pre%'      -- C collation",
+            "-- or a text_pattern_ops index"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "2704 Bytes Max",
+          "text": "Entries cap at ~1/3 of a page; long text raises `index row size exceeds maximum`. Hash the value or index an expression instead."
+        }
+      ],
+      "cont": true
+    },
+    {
+      "page_title": "B-tree in Practice: Multicolumn, Order, Sorting",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Leftmost Prefix Rule",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Multicolumn keys are compared left to right",
+            "Only a leftmost prefix can become an `Index Cond`",
+            "A skipped leading column ends index usability"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t (a, b, c);",
+            "WHERE a=1                -- served",
+            "WHERE a=1 AND b=2        -- served",
+            "WHERE a=1 AND b=2 AND c=3 -- served",
+            "WHERE b=2                -- NOT served"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Equality First, Range Last"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "For `WHERE a = 1 AND b > 5 ORDER BY c`, two candidates exist",
+            "Index `(a, b)` stops the scan at `b`",
+            "Index `(a, c)` bounds `a` and gives the sort for free",
+            "Measure both, do not guess"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A range predicate ends usable index ordering",
+            "Columns after the first inequality become filters, not bounds"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "two single-col indexes",
+              "items": [
+                "column order irrelevant",
+                "bitmap AND of both",
+                "extra bitmap step"
+              ]
+            },
+            "right": {
+              "title": "one composite index",
+              "items": [
+                "prefix order matters",
+                "single index scan",
+                "nearly always faster"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Sort Direction"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON t (a DESC, b ASC);",
+            "-- ORDER BY a DESC, b ASC : no Sort node",
+            "-- default: ASC is NULLS LAST",
+            "-- default: DESC is NULLS FIRST"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`NULLS FIRST` / `NULLS LAST` must match the query's `ORDER BY`",
+            "B-tree does store NULLs, unlike Oracle",
+            "So `WHERE col IS NULL` can use an index scan"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Keyset Pagination"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "WHERE (created_at, id) < ($1, $2)",
+            "ORDER BY created_at DESC, id DESC",
+            "LIMIT 20;  -- index (created_at, id)",
+            "-- OFFSET 100000 walks 100k rows first"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Row comparison `(a, b) > (1, 2)` maps to a composite bound",
+            "The expanded `OR` rewrite usually does not"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Text And Collation"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`text_pattern_ops` / `varchar_pattern_ops` enable `LIKE 'abc%'`",
+            "Needed whenever the collation is not C",
+            "`COLLATE \"C\"` on the column achieves the same",
+            "A glibc upgrade changing `lc_collate` silently corrupts text ordering",
+            "`REINDEX` after any collation version change"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Housekeeping",
+          "items": [
+            "Index `(a)` is redundant beside `(a, b)`",
+            "Drop the narrow one unless small and hot",
+            "`CREATE UNIQUE INDEX` enforces uniqueness",
+            "NULLs are distinct; `NULLS NOT DISTINCT` (PG 15+) forbids repeats"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Hash Indexes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "One Operator Only",
+          "ink": "accent"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON pages USING hash (url);",
+            "WHERE url = $1   -- the only served op",
+            "-- no <, >, LIKE, ORDER BY, UNIQUE"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stores a 32-bit hash code, never the value itself",
+            "Index size is independent of the column's data width",
+            "A 4 KB URL and a 20-byte slug cost the same"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Structure"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "hash index",
+            "branches": [
+              {
+                "label": "meta page",
+                "children": [
+                  "bucket count"
+                ]
+              },
+              {
+                "label": "buckets",
+                "children": [
+                  "primary page",
+                  "overflow chain"
+                ]
+              },
+              {
+                "label": "bitmap pages",
+                "children": [
+                  "free overflow pages"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Lookup is O(1) expected: hash, jump to bucket, scan the page",
+            "Bucket splits happen incrementally as the index grows",
+            "No single giant rehash pause"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Crash Safety"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Before PG 10 hash indexes were not WAL-logged",
+            "Unsafe after a crash and never replicated",
+            "PG 10+ made them crash-safe and replicable"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Cannot Do"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No `ORDER BY`, ranges or `LIKE`",
+            "No uniqueness, primary keys or exclusion constraints",
+            "One column only, never multicolumn",
+            "No index-only scan: the value is unrecoverable from the hash"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Feature",
+            "hash",
+            "btree"
+          ],
+          "rows": [
+            [
+              "Equality",
+              "yes",
+              "yes"
+            ],
+            [
+              "Range / sort",
+              "no",
+              "yes"
+            ],
+            [
+              "Wide key size",
+              "flat",
+              "grows"
+            ],
+            [
+              "Index-only scan",
+              "no",
+              "yes"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Always Rechecked",
+          "text": "Hash collisions are possible, so Postgres compares the real value against the heap tuple on every hit."
+        },
+        {
+          "type": "heading",
+          "text": "Verdict"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Real win: very long equality keys, URLs, long text ids",
+            "Exactly where a btree entry is huge or breaks the size limit",
+            "Otherwise btree lands within a few percent and stays flexible"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- portable alternative, any version",
+            "CREATE INDEX ON t (md5(long_col));",
+            "SELECT * FROM t",
+            "WHERE md5(long_col) = md5($1);"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "sidebox",
+          "title": "Same Trick, Cheaper Hash",
+          "items": [
+            "`hashtext(long_col)` also works as an expression index",
+            "Query predicate must repeat the function exactly",
+            "Gives ordering and index-only scans that hash cannot"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Inverted By Design",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "GIN = Generalized Inverted Index",
+            "For column types holding many elements",
+            "Arrays, `jsonb`, `tsvector`, trigrams",
+            "Answers 'which rows contain this element'",
+            "Exact inverse of btree's 'which rows equal this value'"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "GIN: Inverted Index for Composite Values",
+      "blocks": [
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "GIN",
+            "branches": [
+              {
+                "label": "btree over keys",
+                "children": [
+                  "distinct elements"
+                ]
+              },
+              {
+                "label": "posting list",
+                "children": [
+                  "few TIDs, inline"
+                ]
+              },
+              {
+                "label": "posting tree",
+                "children": [
+                  "many TIDs, own btree"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Full-Text Search"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE INDEX ON docs USING gin",
+            "  (to_tsvector('english', body));",
+            "SELECT id FROM docs",
+            "WHERE to_tsvector('english', body)",
+            "      @@ plainto_tsquery('vacuum');"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Opclasses That Matter"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Opclass",
+            "Stores",
+            "Operators"
+          ],
+          "rows": [
+            [
+              "`jsonb_ops`",
+              "every key + value",
+              "`@>` `?` `?|` `?&`"
+            ],
+            [
+              "`jsonb_path_ops`",
+              "hashed paths",
+              "`@>` only"
+            ],
+            [
+              "`gin_trgm_ops`",
+              "trigrams",
+              "`LIKE '%x%'`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`jsonb_path_ops` is much smaller and faster, containment only",
+            "Arrays: `WHERE tags @> ARRAY['pg']` is GIN-accelerated",
+            "So is `&&` overlap between two arrays",
+            "`pg_trgm` also makes `ILIKE` and fuzzy `%` similarity indexable"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Write Cost"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One row touches many index keys, so writes are slow",
+            "`fastupdate` buffers inserts in a pending list",
+            "Flushed in batches, so an occasional query pays the cost",
+            "A big pending list has to be scanned linearly"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "ALTER INDEX idx SET (fastupdate = on);",
+            "SET gin_pending_list_limit = '4MB';",
+            "-- 4MB is the default; lower to flush often",
+            "SET gin_fuzzy_search_limit = 5000;",
+            "-- caps rows from very common terms"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Lossy, Always",
+          "text": "GIN results are rechecked against the heap every time, so index-only scans are impossible with GIN."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Not for range queries and not for sorting",
+            "Reach for it on containment, overlap and text search"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Before A Big Build",
+          "items": [
+            "Raise `maintenance_work_mem` first",
+            "It dominates GIN build speed",
+            "Restore it after the build finishes"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "A Tree Framework",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "GiST = Generalized Search Tree, a balanced tree framework",
+            "The data type supplies the behaviour, not the index",
+            "Internal nodes store a lossy summary of their subtree",
+            "A search descends every branch whose summary might match"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Methods The Type Supplies",
+          "items": [
+            "`consistent` and `union`",
+            "`penalty` and `picksplit`",
+            "`same`"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "GiST and SP-GiST: Extensible Trees",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "Lossy summaries make results approximate",
+            "Every candidate row is rechecked against the heap",
+            "Unlike btree, subtree regions may overlap",
+            "Search follows multiple paths, so worst case is data-dependent"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "What It Indexes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Operators"
+          ],
+          "rows": [
+            [
+              "PostGIS `geometry`",
+              "`&&`, `<->`, ST_Intersects"
+            ],
+            [
+              "`tstzrange`, `int4range`",
+              "`@>`, `&&`, `<<`, `>>`"
+            ],
+            [
+              "text `gist_trgm_ops`",
+              "`LIKE '%x%'`"
+            ],
+            [
+              "`point`",
+              "`<->` nearest neighbour"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Exclusion Constraints"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "CREATE EXTENSION btree_gist;",
+            "ALTER TABLE booking ADD EXCLUDE USING gist",
+            "  (room WITH =, during WITH &&);",
+            "-- no double-booking; btree cannot do this"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`btree_gist` lets scalar types join a GiST index",
+            "So an equality column sits beside a range column",
+            "Both live in one exclusion constraint"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Nearest Neighbour"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT name FROM places",
+            "ORDER BY loc <-> point '(0,0)'",
+            "LIMIT 10;  -- ordered GiST scan",
+            "-- no full sort of the table"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`gist_trgm_ops` is smaller and faster to build than GIN",
+            "But slower to search, so GIN wins read-heavy text",
+            "GiST updates are cheaper than GIN's",
+            "Prefer GiST when the column is written often"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "SP-GiST"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Space-Partitioned GiST: unbalanced, non-overlapping partitions",
+            "Quadtrees, k-d trees and radix tries",
+            "Excels at point data and `inet` addresses",
+            "Also text prefix search, where partitions never overlap"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Index",
+            "Search",
+            "Build",
+            "Size"
+          ],
+          "rows": [
+            [
+              "GIN",
+              "fast",
+              "slow",
+              "big"
+            ],
+            [
+              "GiST",
+              "medium",
+              "fast",
+              "small"
+            ],
+            [
+              "GiST extras",
+              "KNN",
+              "exclusion",
+              "-"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "BRIN: Block Range Indexes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Summary Per Block Range",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "BRIN = Block Range INdex",
+            "Stores min/max per range of heap blocks, not per row",
+            "`pages_per_range` defaults to 128, so one tuple covers 1 MB",
+            "Index size is tiny, often thousands of times under btree"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "memory-cells",
+          "spec": {
+            "label": "brin summaries",
+            "cells": [
+              "r0 1-999",
+              "r1 1000-1999",
+              "r2 2000-2999",
+              "r3 3000-3999"
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "How A Scan Runs"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "read summaries",
+              "discard ranges",
+              "scan survivors",
+              "recheck tuples",
+              "bitmap heap scan"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Lossy by design: never proves a row matches",
+            "Only proves a block range might match",
+            "So it is always a bitmap heap scan, never a plain index scan"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Only With Correlation"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT attname, correlation FROM pg_stats",
+            "WHERE tablename = 'events';",
+            "-- want > 0.9 or < -0.9",
+            "CREATE INDEX ON events USING brin (ts);"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Canonical fit: append-only time-series with a `created_at`",
+            "Or a log table with a monotonically increasing id",
+            "Anti-pattern: a `uuid` or hashed key, randomly distributed",
+            "There every range matches, degenerating into a seq scan plus overhead"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "BRIN",
+            "btree"
+          ],
+          "rows": [
+            [
+              "Size",
+              "~1000x smaller",
+              "big"
+            ],
+            [
+              "Maintenance",
+              "cheap",
+              "costly"
+            ],
+            [
+              "Precision",
+              "lossy",
+              "exact"
+            ],
+            [
+              "Scattered lookup",
+              "useless",
+              "good"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Tuning"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Lower `pages_per_range` = more precision, bigger index",
+            "Raise it for very large, very well-correlated tables",
+            "New ranges are summarized on `VACUUM`",
+            "Or force it with `brin_summarize_new_values('idx')`",
+            "`autosummarize = on` handles it automatically"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Most slow Postgres queries already have an index — it just is not the one the planner can use. This handbook opens up btree, hash, GIN, GiST and BRIN from the inside: page splits, posting lists, block summaries, visibility bits, and the exact reason `WHERE date(created_at) = ...` throws your index away. Ten pages, from the cost constants to the workflow that turns a Filter into an Index Cond.",
+    "hashtags": [
+      "#postgresql",
+      "#postgres",
+      "#sql",
+      "#database",
+      "#databaseengineering",
+      "#backend",
+      "#backenddeveloper",
+      "#dataengineering",
+      "#performancetuning",
+      "#softwareengineering",
+      "#devnotes",
+      "#codingnotes"
+    ]
+  }
+}

@@ -1,0 +1,391 @@
+{
+  "brand": "iolar",
+  "template": "spiral-notes",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "DEBUGGING RUNNING CONTAINERS",
+  "date": "15/09/2026",
+  "slides": [
+    {
+      "page_title": "The Debugging Mindset",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What is a container?",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "A container = a process wrapped in namespaces + cgroups. Debugging containers is really debugging a process with an isolated view."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No init system, no systemd usually",
+            "Shared kernel with the host",
+            "`PID 1` is your app/entrypoint",
+            "No zombie reaper unless `--init`"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Debug surface layers",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "exec: process",
+              "logs: stdio",
+              "healthchecks",
+              "cgroups: resources",
+              "namespaces: isolation"
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Golden rule",
+          "text": "Never hand-fix a running container. Reproduce, fix the image/config, redeploy — a 'fixed' container is a drift bomb that resets on restart."
+        },
+        {
+          "type": "heading",
+          "text": "Read the STATUS column",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Status",
+            "Meaning",
+            "Move"
+          ],
+          "rows": [
+            [
+              "Up",
+              "running but broken",
+              "`exec` + logs"
+            ],
+            [
+              "Restarting",
+              "crash loop",
+              "`logs -p`"
+            ],
+            [
+              "Exited",
+              "dead on arrival",
+              "`ps -a`, exit code"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Exit codes diagnose: `137` = SIGKILL (OOM), `143` = SIGTERM",
+            "`126/127` = command/exec problem",
+            "`docker ps -a` shows exited; `start`/`attach` re-enters"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Is it the container, the orchestrator, or the host?",
+          "a_bullets": [
+            "`docker inspect` → container layer",
+            "`kubectl describe` → orchestrator",
+            "`dmesg` → host/kernel",
+            "Ephemeral FS: persist state via volumes first"
+          ],
+          "example_code": [
+            "docker inspect -f '{{.State.ExitCode}}' ctr",
+            "dmesg | grep -i oom"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Toolkit map",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "docker logs",
+              "docker exec",
+              "docker inspect",
+              "docker stats",
+              "nsenter /proc"
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "Cattle, not pets",
+          "items": [
+            "Immutable images only",
+            "Changes vanish on restart",
+            "Evidence first, surgery last"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "docker exec: Into the Live Process",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "What exec really does",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "`docker exec` spawns a NEW process inside the container's existing namespaces. It never 'enters' PID 1."
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec -it web sh   # prefer sh over bash",
+            "-i: keep STDIN open",
+            "-t: allocate a TTY",
+            "# no -t in scripts; fine without colors"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "exec vs attach",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "attach",
+              "items": [
+                "binds to PID 1 stdio",
+                "Ctrl-C can kill app"
+              ]
+            },
+            "right": {
+              "title": "exec",
+              "items": [
+                "side process",
+                "safer for debugging"
+              ]
+            }
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Env inherited from config; `exec -e VAR=x` probes env bugs",
+            "`--user 1000:1000` tests permission issues",
+            "exec'd procs show in `docker top` + host `ps`"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "No shell in the image (distroless)?",
+          "a_bullets": [
+            "`docker debug` (podman)",
+            "`kubectl debug` ephemeral containers",
+            "`docker cp` a static busybox in"
+          ],
+          "example_code": [
+            "kubectl debug -it pod --image=busybox"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Scriptable probes",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec web ps aux",
+            "docker exec web env",
+            "docker exec web cat /etc/resolv.conf",
+            "docker exec web test -f /tmp/ready  # exit = probe"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "heading",
+          "text": "Write permission test",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker exec web touch /data/probe \\",
+            "  && docker exec web rm /data/probe",
+            "echo $?   # 0 = volume writable"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Gotcha",
+          "text": "exec fails on crash-looping containers — the process table never settles. Read logs, or run an identical container on the same volume and debug that."
+        },
+        {
+          "type": "sidebox",
+          "title": "One-liners",
+          "items": [
+            "`ps aux` — what's running",
+            "`env` — config sanity",
+            "`test -f` — scriptable health"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Logs: stdout, stderr, Drivers",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Where logs live",
+          "ink": "blue"
+        },
+        {
+          "type": "paragraph",
+          "text": "Docker captures fd 1 + fd 2 as JSON lines via the `json-file` driver, under `/var/lib/docker/containers/<id>/<id>-json.log`."
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker logs -f web      # like tail -f",
+            "docker logs --tail 100 web",
+            "docker logs --since 30m web",
+            "docker logs -t web  # -t adds timestamps"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`-t` exposes lag between log time and real event time",
+            "Nonzero exit codes land in state, not logs"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "cloud",
+          "title": "Classic trap",
+          "text": "Files written inside the container (`/var/log/nginx`) never reach `docker logs`. Symlink them to `/dev/stdout`, or run `tail -F` to forward."
+        },
+        {
+          "type": "heading",
+          "text": "Driver gotchas",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Driver",
+            "docker logs?",
+            "Tool"
+          ],
+          "rows": [
+            [
+              "json-file",
+              "yes",
+              "`docker logs`"
+            ],
+            [
+              "journald",
+              "no",
+              "`journalctl`"
+            ],
+            [
+              "fluentd",
+              "no",
+              "collector UI"
+            ],
+            [
+              "syslog",
+              "no",
+              "log server"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Default driver has NO size limit — set `--log-opt max-size`/`max-file` or the disk fills silently",
+            "Long lines split with `'partial': true` markers",
+            "Stack traces: handle multiline in the collector, not the source"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Crash loop — how to see the dead run?",
+          "a_bullets": [
+            "`kubectl logs <pod> -c <ctr> -p`",
+            "`-p` = previous crashed instance",
+            "Gold for loop diagnosis"
+          ],
+          "example_code": [
+            "kubectl logs web -c app -p --tail=50"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Joining logs",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Log container ID/hostname at startup",
+            "Log request ID to join app ↔ infra logs",
+            "Trade-off: stdout = central, loses file structure — pick per component"
+          ]
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "app stdout",
+              "json-file",
+              "collector",
+              "store / alert"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Healthchecks: Broken vs Alive",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Define a probe",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "HEALTHCHECK CMD curl -f \\\\"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "",
+    "hashtags": []
+  }
+}

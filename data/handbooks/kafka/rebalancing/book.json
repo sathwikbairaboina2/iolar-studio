@@ -1,0 +1,334 @@
+{
+  "title": "Kafka Rebalancing: Deep Dive Notes",
+  "summary": "A dense study-notes handbook on Kafka consumer group rebalancing: triggers, assignment strategies, eager vs cooperative protocols, static membership, zombie fencing, and practical tuning.",
+  "chapters": [
+    {
+      "title": "Consumer Groups & Why Rebalancing Exists",
+      "points": [
+        "Consumer group = set of consumers sharing a group.id; partitions of a topic are divided among members (not replicated)",
+        "Group Coordinator: a broker (leader of __consumer_offsets partition for the group) that manages membership via heartbeat requests",
+        "Group Leader: one consumer member computes the assignment plan; coordinator just distributes it — assignment logic lives client-side",
+        "Max of one consumer owns a partition per group; ownership is the invariant rebalancing preserves",
+        "Consumer sends JoinGroup → coordinator picks leader → leader sends SyncGroup with plan → members get their assignment",
+        "Offsets are committed per (group, topic, partition); rebalancing without committing causes duplicates or losses",
+        "Generation number: incremented every rebalance; every member's requests carry it so stale members are rejected",
+        "Rebalancing = stopping-the-world by default: all members drop partitions, halt processing, then rejoin",
+        "Livelock risk: if one consumer hangs but keeps heartbeats, group can't proceed — max.poll.interval.ms guards this",
+        "Rebalancing is triggered client-side via membership changes, not broker pushes — coordinator learns via session timeouts",
+        "Key mental model: rebalancing trades availability of the whole group to fix membership of one member"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Groups, coordinator, leader — the cast of characters"
+        },
+        {
+          "type": "diagram",
+          "note": "JoinGroup / SyncGroup handshake between members, coordinator, and leader"
+        },
+        {
+          "type": "bullets",
+          "note": "membership rules, generation numbers, stop-the-world cost"
+        },
+        {
+          "type": "callout",
+          "note": "one partition → one consumer per group; offsets vs ownership"
+        }
+      ]
+    },
+    {
+      "title": "What Triggers a Rebalance",
+      "points": [
+        "Member leaves: consumer.close() or LeaveGroupRequest (e.g., clean shutdown, SIGTERM handled by the client)",
+        "Session timeout: no heartbeat within session.timeout.ms (broker-side config) → member evicted, rebalance starts",
+        "Poll timeout: no poll() within max.poll.interval.ms (client config) → consumer proactively leaves the group",
+        "Heartbeat interval: heartbeats sent by background thread at heartbeat.interval.ms (must be < 1/3 session timeout)",
+        "New member joins: scale-out, app deploy, or consumer started with same group.id",
+        "Subscription change: any member changes its subscribed topics/pattern — group-wide rebalance",
+        "Topic/partition changes: partitions added to a subscribed topic or topic deleted",
+        "Coordinator change: broker holding the group dies → new coordinator may need to reform the group",
+        "Config confusion: session.timeout.ms is broker-side (group.max.session.timeout.ms ceiling); max.poll.interval.ms is client-side — tune both, they fail differently",
+        "Docker/K8s gotcha: rolling deploys without graceful close trigger LeaveGroup; SIGKILL instead triggers the full session timeout wait",
+        "Diagnosis: watch log for 'Preparing to rebalance group ... with old member id' and generation bumps in JMX (kafka.consumer:type=consumer-coordinator-metrics)",
+        "Every rebalance pauses ALL consumption — so a flaky member is a tax on the whole group"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Six ways to stop the world"
+        },
+        {
+          "type": "table",
+          "note": "trigger → who detects it → which config governs"
+        },
+        {
+          "type": "sidebox",
+          "note": "session.timeout vs max.poll.interval: broker-side vs client-side"
+        },
+        {
+          "type": "bullets",
+          "note": "subscription change, partition growth, coordinator failover"
+        },
+        {
+          "type": "callout",
+          "note": "SIGKILL in K8s = members gone until session timeout expires"
+        }
+      ]
+    },
+    {
+      "title": "The Eager Rebalance Protocol (Classic)",
+      "points": [
+        "Eager = 'give up everything first': all members revoke ALL partitions before requesting new ones",
+        "Flow: everyone rejoins (JoinGroup) → leader computes plan → SyncGroup → members fetch their (possibly same) partitions",
+        "Whole group's consumption stops for the duration — duration includes the slowest member's poll/commit cleanup",
+        "OnPartitionRevoked fires for every partition, even ones the consumer will get right back",
+        "Commit-on-revoke pattern: commit offsets for revoked partitions inside the revoke callback to avoid reprocessing",
+        "Straggler problem: one slow or GC-paused consumer delays every member's rejoin (JoinGroup waits for all)",
+        "Request timeout during rebalance: if the group takes too long, members get RebalanceInProgress or commit failures",
+        "Shuffle cost: Range and RoundRobin assignors often move partitions between members even when membership barely changed — churn kills cache/page warmth",
+        "Message loss/dup window: processing in-flight when partitions are revoked must be fenced by generation checks on commit",
+        "Kafka 2.4+ still defaults the protocol to EAGER for Range/RoundRobin — cooperative requires opt-in",
+        "Rule of thumb: eager rebalance cost grows with group size × partition count, not just with the change size"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Eager: revoke everything, then re-request"
+        },
+        {
+          "type": "diagram",
+          "note": "timeline: revoke-all → JoinGroup → SyncGroup → assign, group paused throughout"
+        },
+        {
+          "type": "bullets",
+          "note": "commit-on-revoke, stragglers, shuffle churn"
+        },
+        {
+          "type": "callout",
+          "note": "rebalance cost scales with group×partitions, not with change size"
+        }
+      ]
+    },
+    {
+      "title": "Range & RoundRobin Assignors",
+      "points": [
+        "RangeAssignor (default): per-topic, partitions sorted, consumers sorted lexicographically; first C consumers get the remainder",
+        "Range flaw: with many topics, the lexicographically-first consumers always get the extra partition — skew accumulates per topic",
+        "Example: 5 partitions, 2 consumers, Range → A gets 3, B gets 2; with 10 topics A gets +10 partitions total",
+        "CooperativeAssignableStickyRangeAssignor: range's logic made cooperative-compatible (3.0+ renamed to RangeAssignor handling COOPERATIVE)",
+        "RoundRobinAssignor: all partitions pooled across topics, dealt out cyclically to members — even spread",
+        "RoundRobin requires all group members to subscribe to the same topics, else it degenerates",
+        "Both Range and RoundRobin are EAGER: full revoke on every rebalance",
+        "StickyAssignor: minimizes partition movement between rebalances while staying balanced — but still eager protocol",
+        "Comparison lens: balance (RR best) vs fairness per topic (Range) vs movement minimization (Sticky)",
+        "Sticky is only as good as its inputs — unequal subscriptions force it to break stickiness",
+        "Tie-breakers are member-id-based: changing member IDs (e.g., on restart) can reshuffle a 'sticky' plan",
+        "Real-world note: default Range + eager is why legacy groups see heavy churn on every deploy"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "The legacy assignors and their quirks"
+        },
+        {
+          "type": "table",
+          "note": "Range vs RoundRobin vs Sticky: balance, fairness, movement, protocol"
+        },
+        {
+          "type": "code",
+          "note": "5 partitions / 2 consumers Range walkthrough showing per-topic skew"
+        },
+        {
+          "type": "sidebox",
+          "note": "Sticky reduces movement but is still stop-the-world"
+        }
+      ]
+    },
+    {
+      "title": "Cooperative-Sticky: The Incremental Protocol",
+      "points": [
+        "Cooperative rebalancing (KIP-429, Kafka 2.4): members revoke only the partitions actually being reassigned; rest keep processing",
+        "Two round trip: first SyncGroup tells members what to revoke, revocations happen, second round finalizes new assignments",
+        "No global stop-the-world: unaffected members never pause; group throughput mostly preserved",
+        "CooperativeStickyAssignor: enabled via partition.assignment.strategy=org.apache.kafka.clients.consumer.CooperativeStickyAssignor",
+        "Sticky inherited: assignment minimizes movement between rebalances AND uses the incremental protocol",
+        "OnPartitionsRevoked now fires only for partitions truly lost; use onPartitionsLost for partitions owned by someone else (crash case)",
+        "Consumer code gotcha: must not call poll() with partitions you haven't been assigned; callbacks must be cooperative-safe",
+        "Rolling upgrade path: consumers must switch protocols in a specific order — set strategy on all members across two restarts (all → EAGER then all → COOPERATIVE) or you hit inconsistent protocol errors",
+        "Both old and new members present = INCONSISTENT_GROUP_PROTOCOL; plan the migration, don't mix protocols",
+        "Big win: rolling restarts and scale-ups cause only incremental movement, preserving local caches and fetch buffers",
+        "Incremental cooperative also reduces 'rebalance storms' since partial failures don't wipe all state",
+        "Trade-off: plan computation is more complex and stickiness heuristics can occasionally yield slightly imbalanced assignments"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "KIP-429: rebalance without stopping the world"
+        },
+        {
+          "type": "diagram",
+          "note": "two-phase: assign-with-revocations → revoke subset → final assignment"
+        },
+        {
+          "type": "code",
+          "note": "partition.assignment.strategy config line"
+        },
+        {
+          "type": "callout",
+          "note": "migration trap: can't flip protocols in one restart — do the two-step dance"
+        },
+        {
+          "type": "bullets",
+          "note": "onPartitionsRevoked vs onPartitionsLost, throughput preservation"
+        }
+      ]
+    },
+    {
+      "title": "Static Membership (KIP-345)",
+      "points": [
+        "Problem: consumer restart gets a NEW member.id → coordinator sees leave/join → full rebalance on every restart, even with same identity",
+        "Fix: group.instance.id (e.g., pod-0, host-a) gives a stable identity; server-side member.id tracked against it",
+        "Behavior: consumer with same group.instance.id rejoins without triggering a rebalance — it just reclaims its partitions",
+        "Config: group.instance.id (client) + session.timeout.ms raised (e.g., 45s–5min) so restarts fit inside the window",
+        "LeaveGroup from a static member is IGNORED by the coordinator by default — deliberate stop won't rebalance until session timeout",
+        "Consequence: you must shut down gracefully and wait, or accept the session-timeout delay for partition reassignment",
+        "Best fit: stateful apps (Kafka Streams, k8s StatefulSets) with stable pod names/identities",
+        "Anti-pattern: autoscaling or dynamic pools reusing instance ids → zombies or overlap errors: 'member id X fenced by instance id Y' (FENCED_INSTANCE_ID)",
+        "Static membership + sticky/cooperative-sticky = near-zero partition movement on restarts: same instance gets same partitions",
+        "Bonus: offsets and internal state (e.g., Streams standbys) stay warm — big tail-latency win",
+        "Monitor: fenced instance id errors indicate duplicate identity assignment, not normal rebalancing"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "KIP-345: restart without rebalancing"
+        },
+        {
+          "type": "code",
+          "note": "group.instance.id + session.timeout.ms config"
+        },
+        {
+          "type": "bullets",
+          "note": "LeaveGroup ignored, graceful-shutdown implications, StatefulSet fit"
+        },
+        {
+          "type": "callout",
+          "note": "FENCED_INSTANCE_ID = duplicate identity, a bug signal not a rebalance"
+        }
+      ]
+    },
+    {
+      "title": "Zombies, Fencing & Generation/Epoch Guardrails",
+      "points": [
+        "Zombie = a consumer believed dead by the group (timed out or left) that keeps processing and committing offsets",
+        "Classic hazard: zombie commits stale offsets after another member already reprocessed the partition → duplicates or lost writes",
+        "Generation number fencing: commits carry (group, generation, member.id); coordinator rejects commits with a stale generation via ILLEGAL_GENERATION",
+        "Zombie fencing only works at commit time — in-flight side effects (DB writes, API calls) are NOT fenced by Kafka",
+        "Real fencing needs downstream: transactional id + producer epoch for exactly-once (KIP-98), or external idempotency/version checks",
+        "FencedInstanceException (KIP-345): static member rejoining with a new runtime member.id fences the old one instantly",
+        "Consumer heartbeat thread detects ILLEGAL_GENERATION / UNKNOWN_MEMBER_ID → commits fail → consumer must drop work and rejoin",
+        "Pattern: pause processing on revoke callback until onPartitionsAssigned re-grants — avoids processing unowned partitions",
+        "Transactional consumers: read_committed + transactional producers make the zombie's writes invisible via LSO/abort markers",
+        "Streams analogue: task-level fencing via transactional producer epoch; old thread crashes with ProducerFencedException",
+        "Timeout tuning vs zombies: shorter session.timeout fences faster but risks spurious rebalances under GC pauses",
+        "Key insight: Kafka fences OFFSET COMMITS reliably; everything else (external effects) needs your own idempotency design"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Zombies and how the protocol fences them"
+        },
+        {
+          "type": "diagram",
+          "note": "zombie commits with old generation → coordinator rejects (ILLEGAL_GENERATION)"
+        },
+        {
+          "type": "bullets",
+          "note": "commit-time vs side-effect fencing; transactional id + epoch"
+        },
+        {
+          "type": "sidebox",
+          "note": "pause-on-revoke pattern"
+        },
+        {
+          "type": "callout",
+          "note": "Kafka fences commits, not your database writes"
+        }
+      ]
+    },
+    {
+      "title": "Tuning & Common Mistakes",
+      "points": [
+        "Mistake: processing > max.poll.interval.ms → consumer leaves group → rebalance loop; fix by lowering max.poll.records or raising interval",
+        "Mistake: session.timeout.ms set below group.min.session.timeout.ms or above max on broker → client defaults silently applied",
+        "Mistake: long GC pauses misread as dead members; use cooperative + moderate session timeout instead of ultra-short timeouts",
+        "Mistake: committing inside onPartitionsRevoked with an old generation → commit fails; handle CommitFailedException gracefully",
+        "Mistake: heavy onClose work in callbacks — revoke/assign callbacks run on the poll thread and block the rebalance for everyone",
+        "Mistake: mixing protocols (one member on cooperative-sticky, others eager) → INCONSISTENT_GROUP_PROTOCOL, group won't form",
+        "Mistake: Kafka Streams custom assignment: enable cooperative via protocol field on StreamsConfig ( Streams 2.6+ supports COOPERATIVE) — must not mix with EAGER deployments",
+        "Tuning: max.poll.records down + longer max.poll.interval up for slow processing; heartbeat.interval.ms = session.timeout/3",
+        "Tuning: raise session.timeout.ms + static membership for K8s rolling deploys; use terminationGracePeriod > session timeout",
+        "Monitoring: rebalance rate, rebalance latency (time in PreparingRebalance/CompletingRebalance), commit failure count, generation number churn",
+        "Idempotency: design consumers so a reprocessed record is safe — dedup keys, upserts, or transactions; rebalances guarantee at-least-once",
+        "Checklist: cooperative-sticky assignor + static ids + sane timeouts + idempotent effects + graceful shutdown = resilient group"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Failure modes and the knobs that fix them"
+        },
+        {
+          "type": "table",
+          "note": "symptom → cause → config/fix"
+        },
+        {
+          "type": "code",
+          "note": "tuned consumer config block"
+        },
+        {
+          "type": "bullets",
+          "note": "rebalance-loop causes, callback pitfalls, monitoring metrics"
+        },
+        {
+          "type": "callout",
+          "note": "at-least-once is guaranteed — idempotency is your job"
+        }
+      ]
+    },
+    {
+      "title": "Cheat Sheet & Decision Summary",
+      "points": [
+        "Pick assignor: CooperativeStickyAssignor for almost everything; Sticky if stuck on eager; Range only for legacy compatibility",
+        "Pick membership: static group.instance.id for stable/stateful deployments; dynamic for true autoscaling pools",
+        "Rebalance triggers recap: join, leave, session timeout, poll timeout, subscription change, partition/topic change, coordinator failover",
+        "Protocol recap: eager = revoke-all stop-the-world; cooperative = incremental revoke via two SyncGroup rounds",
+        "Fencing recap: generation/member.id guard commits; producer epoch guards transactions; FENCED_INSTANCE_ID guards static identities",
+        "Golden configs: heartbeat.interval.ms ≈ session.timeout/3; max.poll.interval > worst-case poll cycle; session.timeout generous with static membership",
+        "Migration recipe: step 1 roll out with protocol=EAGER (or none), step 2 roll all members to COOPERATIVE — never mixed",
+        "Deploy recipe: static ids + cooperative-sticky + graceful close (leave via API when intentional) + wait or accept timeout",
+        "Symptom map: rebalance loop → poll interval; commit failures → generation changes; duplicates → zombie or missing commit-on-revoke",
+        "Trade-off table: eager (simple, disruptive) vs cooperative (complex plan, minimal disruption); dynamic (elastic, rebalances on restart) vs static (stable, sticky, needs careful shutdown)",
+        "Cost model: rebalance pain ∝ members × partitions × (revoke + rejoin + re-fetch warmup) — cooperative and sticky shrink every term",
+        "Final rule: design for rebalances as routine events — they WILL happen; make consumers idempotent, callbacks fast, and identities stable"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "One page to rule them all"
+        },
+        {
+          "type": "table",
+          "note": "eager vs cooperative; dynamic vs static — pick per column"
+        },
+        {
+          "type": "bullets",
+          "note": "assignor/membership/fencing recaps, migration + deploy recipes"
+        },
+        {
+          "type": "callout",
+          "note": "rebalances are routine — engineer consumers to survive them"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,502 @@
+{
+  "brand": "iolar",
+  "template": "engineer-grid",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "BASH TRAPS & SIGNALS — PART 2",
+  "date": "07/09/2026",
+  "slides": [
+    {
+      "page_title": "The ERR Trap and set -e",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Pipelines Hide Failures"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Without `pipefail`, `false | true` succeeds",
+            "Status is the LAST element's, so errors vanish mid-pipe",
+            "`PIPESTATUS` holds every element's status",
+            "Read it immediately — the next command clobbers it"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Two Handlers, Two Jobs"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "cmd fails",
+              "ERR: diagnose",
+              "set -e abort",
+              "EXIT: clean",
+              "exit rc"
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "ERR runs first — report `$?`, `$LINENO`, `${BASH_SOURCE[0]}`",
+            "Add `${FUNCNAME[@]}` for a usable stack trace",
+            "EXIT runs after, for teardown only — do not mix them"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Opting Out On Purpose",
+          "items": [
+            "`cmd || true` exempts one command from `set -e` and ERR",
+            "Comment WHY, or someone re-breaks it later",
+            "`cmd || die \"msg\"` beats `set -e` when each failure differs"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Everything That Forks",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "tree",
+          "spec": {
+            "root": "subshell sources",
+            "branches": [
+              {
+                "label": "explicit",
+                "children": [
+                  "( ... )",
+                  "$( ... )"
+                ]
+              },
+              {
+                "label": "implicit",
+                "children": [
+                  "pipe segments",
+                  "cmd &"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A subshell is a forked copy of the whole shell",
+            "Variables, traps and options are copied, not shared",
+            "Nothing set inside can reach back to the parent"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Fork Reset Rule"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Parent state",
+            "Child gets"
+          ],
+          "rows": [
+            [
+              "caught (`trap f INT`)",
+              "default"
+            ],
+            [
+              "ignored (`trap '' INT`)",
+              "still ignored"
+            ],
+            [
+              "EXIT trap",
+              "reset"
+            ],
+            [
+              "ERR + `set -E`",
+              "inherited"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Why $(...) Feels Broken",
+          "text": "A trap set inside command substitution dies with that subshell, and the parent's EXIT trap does not run when a subshell exits."
+        }
+      ]
+    },
+    {
+      "page_title": "Subshells: Where Traps Vanish",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Inheritance Switches"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`set -E` (errtrace): ERR reaches functions, `$()`, subshells",
+            "`set -T` (functrace): same for DEBUG and RETURN",
+            "Neither switch exists for EXIT — it always resets"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Pipelines And Background"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each pipeline element runs in its own subshell",
+            "So `while read` in a pipe sets neither parent vars nor traps",
+            "Unless `lastpipe` is on with job control off",
+            "`cmd &` sets INT and QUIT to ignore without job control"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Background Survives Ctrl-C",
+          "items": [
+            "Ignored signals stay ignored across the fork",
+            "So a background child can outlive your interrupt",
+            "Track its PID and kill it from cleanup explicitly"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "Identity And Scope"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "echo $$ $BASHPID       # equal here",
+            "( echo $$ $BASHPID )   # $$ unchanged!",
+            "( trap 'rm -f \"$f\"' EXIT; work )  # scoped"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`$$` stays the parent PID inside a subshell",
+            "Use `$BASHPID` to signal the actual current shell",
+            "`exec cmd` replaces the image: no EXIT trap, no handlers",
+            "A sourced file shares your trap table and can hijack EXIT"
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Feature",
+            "Scope"
+          ],
+          "rows": [
+            [
+              "`set -e`",
+              "shell + subshells"
+            ],
+            [
+              "ERR trap",
+              "this shell only"
+            ],
+            [
+              "ERR + `set -E`",
+              "shell + subshells"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Four That Bite Everyone",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Wrong",
+            "Result",
+            "Right"
+          ],
+          "rows": [
+            [
+              "trap before create",
+              "unset var",
+              "trap right after"
+            ],
+            [
+              "`\"rm $tmp\"`",
+              "frozen value",
+              "single quotes"
+            ],
+            [
+              "`rm -rf $tmpdir`",
+              "wipes `/`",
+              "quote + guard"
+            ],
+            [
+              "INT without re-raise",
+              "reports 0",
+              "`kill -INT $$`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A failure between create and trap leaks the resource",
+            "Double quotes expand at definition, before the value exists",
+            "An empty unquoted variable turns cleanup into a wipe",
+            "Never rely on EXIT alone — `kill -9`, power loss, `exec` bypass it"
+          ]
+        }
+      ]
+    },
+    {
+      "page_title": "Trade-offs, Costs, and Failure Modes",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Silent Teardown Failures"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A second `trap ... EXIT` silently overwrites the first",
+            "One handler slot per signal — compose into one function",
+            "Cleanup that fails under `set -e` skips the rest quietly",
+            "Expensive work in a handler invites re-entry mid-run"
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Startup Sweep",
+          "text": "Because SIGKILL leaves temp dirs behind, delete stale ones matching your `mktemp` template at launch. It is the only cure for uncatchable death."
+        },
+        {
+          "type": "heading",
+          "text": "Choosing Your Machinery"
+        },
+        {
+          "type": "diagram",
+          "kind": "compare",
+          "spec": {
+            "left": {
+              "title": "single cleanup",
+              "items": [
+                "one function",
+                "trivial to read",
+                "not composable",
+                "edit for each resource"
+              ]
+            },
+            "right": {
+              "title": "cleanup stack",
+              "items": [
+                "array of commands",
+                "pops in reverse",
+                "libraries can push",
+                "more machinery"
+              ]
+            }
+          }
+        },
+        {
+          "type": "heading",
+          "text": "Costs Worth Naming"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Group kill is thorough but can hit the launching shell",
+            "Only safe once you are group leader via `set -m`",
+            "`set -euo pipefail` breaks scripts using non-zero as data",
+            "Retrofit it one file at a time, not repo-wide"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Re-entrancy And Races"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A signal during cleanup can re-enter cleanup",
+            "Disarm first: `trap - EXIT INT TERM` on entry",
+            "Between `mktemp` and `trap` sits a microsecond leak window",
+            "Small but real — the startup sweep covers it"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Tracing What Ran",
+          "items": [
+            "`set -x` inside the handler shows the teardown",
+            "`trap 'echo D: $BASH_COMMAND' DEBUG` traces before the failure",
+            "Turn both off before shipping — DEBUG is loud"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Skeleton",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "set -Eeuo pipefail",
+            "tmpdir=$(mktemp -d -t iolar.XXXXXX)",
+            "trap cleanup EXIT INT TERM HUP",
+            "main \"$@\"   # work goes after the trap"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              "strict mode",
+              "acquire",
+              "trap",
+              "work",
+              "cleanup"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "page_title": "Production Patterns and Summary",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "Handler Contract"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Disarm first: `trap - EXIT INT TERM` stops re-entry",
+            "Preserve status: `local rc=$?` then `return $rc`",
+            "Never let cleanup mask the real failure code",
+            "For INT finish with `trap - INT; kill -INT \"$$\"` — callers see 130"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "Reaping And Locking"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Collect child PIDs in an array as you spawn them",
+            "TERM them all, sleep a grace period, KILL survivors, `wait`",
+            "Lock via a file descriptor, not a PID file"
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "exec 9>/var/lock/my.lock",
+            "flock -n 9 || exit 1   # already running",
+            "# fd closes on death — even on SIGKILL"
+          ],
+          "runnable": false
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Idempotency Rule",
+          "text": "Every cleanup action must be safe to run twice and safe when the resource was never created. That single rule kills most trap bugs."
+        },
+        {
+          "type": "heading",
+          "text": "Prove It Works"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Run the script, `kill -TERM` it from another terminal",
+            "Assert the temp dir is gone and status is 143",
+            "Repeat with Ctrl-C and assert 130",
+            "`shellcheck` in CI catches unquoted and double-quoted traps"
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "The Whole Table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Signal",
+            "When",
+            "Use it for"
+          ],
+          "rows": [
+            [
+              "EXIT",
+              "always",
+              "cleanup"
+            ],
+            [
+              "ERR",
+              "on failure",
+              "diagnostics"
+            ],
+            [
+              "INT",
+              "Ctrl-C",
+              "clean, re-raise"
+            ],
+            [
+              "TERM",
+              "shutdown",
+              "graceful stop"
+            ],
+            [
+              "KILL",
+              "never caught",
+              "plan for the leak"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Four Moves To Memorise",
+          "items": [
+            "Acquire, then immediately trap",
+            "Disarm on handler entry",
+            "Preserve the status on exit",
+            "Assume SIGKILL eventually wins"
+          ]
+        }
+      ]
+    }
+  ],
+  "caption": {
+    "text": "Part 2 of BASH TRAPS & SIGNALS. Your script creates a temp dir, then dies to Ctrl-C — and leaves the mess behind. This handbook is the full field guide to Bash traps: EXIT vs ERR vs INT, why double quotes in a trap string freeze the wrong value, how an unquoted `$tmpdir` turns cleanup into `rm -rf /`, and the two-phase TERM-then-KILL pattern for children that spawn children. Ten pages, from signal numbers to a production skeleton you can paste today.",
+    "hashtags": [
+      "#bash",
+      "#shellscripting",
+      "#linux",
+      "#devops",
+      "#sysadmin",
+      "#commandline",
+      "#sre",
+      "#coding",
+      "#programming",
+      "#terminal",
+      "#opensource",
+      "#techtips"
+    ]
+  }
+}

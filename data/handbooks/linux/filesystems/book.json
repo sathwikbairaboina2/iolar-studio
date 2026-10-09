@@ -1,0 +1,175 @@
+{
+  "title": "Linux Filesystems: From Mount Points to LVM — Dense Study Notes",
+  "summary": "A page-per-topic crash course on how Linux filesystems actually work: the single mount tree, inode internals, hardlinks vs symlinks, df/du diagnostics, filesystem type trade-offs, LVM layering, and fstab — closing with crash recovery, classic mistakes, and a field cheat sheet.",
+  "chapters": [
+    {
+      "title": "The Single Tree: Mount Points & the VFS",
+      "points": [
+        "One rooted tree: Linux mounts every filesystem onto the same tree starting at '/', unlike Windows drive letters (C:\\, D:\\).",
+        "A mount point is just an ordinary directory; after mounting, it becomes the entry door to another filesystem.",
+        "Gotcha: mounting over a non-empty directory hides its old contents until you unmount — the files aren't gone.",
+        "The VFS (virtual filesystem) layer gives every fs type the same syscalls: open/read/write work identically on ext4, XFS, NFS, and tmpfs.",
+        "Mount pattern: mount -t ext4 /dev/sdb1 /mnt/backup; detach with umount /mnt/backup.",
+        "FHS landmarks: /etc configs, /var logs and spool, /home user data, /boot kernels, /usr OS files.",
+        "Pseudo-filesystems: /proc (process and kernel state), /sys (device tree), /dev (device nodes) live in memory, not on disk.",
+        "See what's mounted: findmnt (tree view), mount, or cat /proc/mounts — each line is device, mountpoint, type, options.",
+        "Mount options change behavior per mount: ro (read-only), noexec (no binaries), nosuid (ignore SUID), nodev (no device nodes).",
+        "A bind mount (mount --bind /srv/data /mnt/x) exposes an existing directory at a second path — same inodes, two doors.",
+        "'Target is busy': unmount fails while a process holds a file open or a shell is cd'd inside; find the culprit with fuser -vm /mnt/backup.",
+        "umount -l (lazy) detaches from the tree now and cleans up when the last user exits — useful, but leaves surprises if forgotten."
+      ]
+    },
+    {
+      "title": "Inodes: What a File Really Is",
+      "points": [
+        "An inode is the filesystem's record for one file: type, permissions, owner, size, timestamps, link count, and pointers to data blocks.",
+        "The filename is NOT in the inode — a directory is just a table mapping names to inode numbers.",
+        "See it: ls -i shows inode numbers; stat file dumps the full inode metadata.",
+        "Inode numbers are unique per filesystem only; two files on different partitions can share a number.",
+        "Classic ext layout: 12 direct block pointers plus single, double, and triple indirect pointers — small files stay cheap, huge files still resolve.",
+        "Block size (4K typical) sets the minimum on-disk size: a 1-byte file still occupies one full block, so du shows 4K.",
+        "Timestamps: atime (last read), mtime (data changed), ctime (inode/metadata changed — a rename updates ctime, not mtime).",
+        "Filesystems are built with a fixed inode table; when it runs out you get 'No space left on device' even though df shows free blocks.",
+        "Diagnose with df -i (inodes) vs df -h (blocks); classic cause: millions of tiny files — maildirs, caches, PHP sessions.",
+        "Directories have inodes too; a directory's link count = 2 + number of subdirectories (its '.' plus each child's '..').",
+        "stat reports apparent size (logical bytes) while du reports blocks actually used — sparse files make these diverge."
+      ]
+    },
+    {
+      "title": "Symlinks vs Hardlinks",
+      "points": [
+        "Hard link: another directory entry pointing at the same inode — ln notes.txt notes-hard; both names are equally 'the file'.",
+        "Edits through any hard link are instantly visible through all of them — one copy of data and metadata exists.",
+        "Deleting a name decrements the inode's link count; data is freed only when the count hits 0 and no process holds the file open.",
+        "Hardlink limits: cannot link directories (breaks tree acyclicity and '..' logic) and cannot cross filesystem boundaries (inode numbers are per-fs).",
+        "Symlink: a small separate file whose content is a path — ln -s /opt/app-2.1 /opt/app; it has its own inode.",
+        "Symlinks can cross filesystems, can point at directories, and dangle (break) when the target is removed or renamed.",
+        "Read them: ls -l shows the 'l' type and 'name -> target'; readlink -f resolves to the final absolute target.",
+        "Relative vs absolute symlink targets: relative links keep working when a tree is moved; absolute ones break.",
+        "The link count column in ls -l is the hardlink count; a symlink also consumes its own inode and a few blocks for the path.",
+        "Permission quirk: a symlink's mode is mostly ignored (usually 777) — permission checks use the target file.",
+        "Real uses: versioned releases with a 'current' symlink (atomic rollback = flip the link), /etc alternates, hardlink dedup with rsync --link-dest for snapshot-style backups.",
+        "find /path -type l -xtype l lists dangling symlinks; a broken link in PATH or a config is a classic intermittent failure.",
+        "Rule of thumb: hardlink = same file, second name; symlink = pointer to a path. Prefer symlinks unless you need inode-level aliasing."
+      ]
+    },
+    {
+      "title": "df & du: Measuring Disk Usage",
+      "points": [
+        "df reports space per mounted filesystem (block-level truth from the fs itself); du walks a directory tree and adds up file usage.",
+        "Daily drivers: df -h, du -sh /var, and du -h --max-depth=1 /var to find the biggest subdirectory.",
+        "du -x keeps du on one filesystem — stops it from wandering into /proc, /sys, and other mounts.",
+        "Mismatch #1 — deleted but open: a process still holds a deleted file, so df counts it while du can't see it. Find with lsof +L1.",
+        "Fix the deleted-open case by restarting the process or truncating via /proc/PID/fd/N — no reboot needed.",
+        "Mismatch #2 — sparse files: ls -lh and df show apparent size, du shows allocated blocks; VM disk images often look huge but use little.",
+        "Mismatch #3 — reserved blocks: ext4 defaults keep ~5% for root, so a 'full' disk still has write room for daemons; tune with tune2fs -m 1.",
+        "'No space left' with df -h showing free space means check df -i: you're out of inodes, not bytes.",
+        "Mounts shadow data: files hidden under a mount point belong to the underlying filesystem and confuse both du and df attributions.",
+        "Fast triage: du -xh --max-depth=1 / | sort -h | tail; interactive favorite: ncdu /.",
+        "Containers: df inside overlayfs reports overlay sizes that can look absurd — measure real usage on the host.",
+        "Treat df -h and df -i as a pair, always: Use% can mislead through reservations and inode pressure alike."
+      ]
+    },
+    {
+      "title": "Filesystem Types Compared",
+      "points": [
+        "ext4: the safe default — journaling, extents, delayed allocation, decades of tooling (tune2fs, e2fsck, debugfs).",
+        "XFS: built for huge files and highly parallel I/O; RHEL default; grows online with xfs_growfs but cannot shrink.",
+        "Shrink rule: ext4 can shrink offline (resize2fs); XFS never can — plan volume sizes accordingly.",
+        "Btrfs and ZFS: copy-on-write — writes go to new blocks, enabling snapshots, checksumming, and compression.",
+        "CoW trade-off: snapshots are nearly free, but random-write workloads (databases, VMs) fragment; mitigate with nodatacow or chattr +C.",
+        "FAT32/exFAT: for USB sticks and cross-OS interchange; no permissions, no journal; FAT32 caps files at 4 GiB.",
+        "tmpfs: memory-backed — /run and /dev/shm; blazing fast, contents vanish on reboot, size capped with the size= option.",
+        "Journaling answers one question: after a crash, how to avoid a long fsck and lost metadata? Pending metadata changes are logged, then replayed on mount.",
+        "Journal modes: journal (data + metadata logged), ordered (metadata logged, data written before commit — ext4 default), writeback (fastest, stale data possible after crash).",
+        "Journaling protects metadata consistency, not file contents: a crash can still leave a freshly-written file holding old or garbage data.",
+        "Create and inspect: mkfs.ext4 /dev/vg0/data; blkid prints UUID and type; lsblk -f shows the whole layout at a glance.",
+        "NFS/CIFS are just more VFS citizens: same mount workflow, plus _netdev, hard vs soft mounts, and latency to think about."
+      ]
+    },
+    {
+      "title": "LVM Basics: PV, VG, LV",
+      "points": [
+        "LVM inserts a layer between disks and filesystems: Physical Volumes (disks/partitions) feed a Volume Group (pool), which funds Logical Volumes (virtual disks you format and mount).",
+        "Setup in three commands: pvcreate /dev/sdb, vgcreate data-vg /dev/sdb, lvcreate -n data -L 100G data-vg.",
+        "LVs appear as /dev/data-vg/data or /dev/mapper/... — device-mapper does the mapping; mkfs and mount them like any block device.",
+        "Why bother: grow volumes across multiple disks, shrink, migrate, and snapshot — all without repartitioning.",
+        "Space is allocated in extents (PE, default 4 MiB); lvextend -L +10G just hands the LV more extents from the VG's free pool.",
+        "Grow in one step: lvextend -r -L +20G data-vg/data extends the LV AND resizes the filesystem (resize2fs/xfs_growfs under the hood).",
+        "Shrink is ext4-only and offline: resize2fs first, then lvreduce (or lvreduce --resizefs); shrinking XFS is impossible — back up and recreate.",
+        "Snapshots: lvcreate -s -n data-snap -L 10G data-vg/data — the snapshot stores only changed blocks (CoW), so keep spare space in the VG.",
+        "Snapshot gotcha: if changes exceed the snapshot size, it invalidates and drops — size generously or use thin LVs.",
+        "pvmove /dev/sdb migrates data off a disk live; vgreduce then removes it from the pool — zero-downtime disk replacement.",
+        "Typical stack order: disk → LUKS encryption → PV → VG → LV → filesystem; verify what you're looking at with lsblk.",
+        "Thin provisioning: thin pools over-commit space and volumes fill as used — but a silently full pool stalls writers; monitor with lvs (Data%/Meta%)."
+      ]
+    },
+    {
+      "title": "/etc/fstab: Mounting at Boot",
+      "points": [
+        "fstab is the boot-time mount table; each line has six fields: device, mount point, type, options, dump, pass.",
+        "Example line: UUID=... /data ext4 defaults,noatime 0 2.",
+        "Always key on UUID= or LABEL= (via blkid or lsblk -f): /dev/sdb1 can become /dev/sdc1 when disks and kernels shuffle names.",
+        "Options that matter: noatime (skip read-time metadata writes), nofail (boot even if the device is missing), _netdev (wait for network — NFS/iSCSI), ro, noauto.",
+        "The pass field orders boot fsck: 1 for root, 2 for other real filesystems, 0 to skip (swap, tmpfs, network shares).",
+        "Test before you trust: mount -a mounts everything fstab knows — run it after every edit so a typo fails now, not at boot.",
+        "systemd translates fstab into mount units; after edits run systemctl daemon-reload; units can be started/stopped like services.",
+        "Gotcha: a bad fstab line can hang the boot or drop you to emergency mode; nofail plus x-systemd.device-timeout=10s keeps boot alive with missing disks.",
+        "x-systemd.automount makes a mount on-demand: the directory appears immediately, the device mounts on first access — ideal for slow or remote shares.",
+        "Swap is just another fstab entry: UUID=... none swap sw 0 0.",
+        "Removable media: the 'user' option lets non-root users mount that entry; desktops automate this with udisksctl.",
+        "Pre-flight check: findmnt --verify validates fstab for errors before you reboot; findmnt -t ext4 lists mounts by type."
+      ]
+    },
+    {
+      "title": "Journal Replay, fsck & Recovery",
+      "points": [
+        "After an unclean shutdown, ext4/XFS replay the journal automatically on mount — that's why post-power-loss reboots usually just work.",
+        "fsck checks and repairs filesystem structure; run it on an UNMOUNTED filesystem — fsck on a mounted ext4 risks corrupting it.",
+        "Schedule checks: tune2fs -c 1 forces a check on next mount; ext4 also self-checks by mount count or time interval.",
+        "XFS's repair tool is xfs_repair, not fsck; xfs_repair -n does a dry run that reports without writing.",
+        "lost+found at each ext root is fsck's orphanage: unlinked-but-recoverable files get parked there after a repair.",
+        "Rescue sequence: boot live USB → mount root read-only (mount -o ro) → inspect → only then attempt repair.",
+        "Live remount: mount -o remount,ro / to freeze a running fs; mount -o remount,rw / after fixing fstab in rescue mode.",
+        "rm is unlink: it removes the directory entry and decrements the link count; blocks stay until reused — but no built-in undelete exists.",
+        "ext4 makes undelete genuinely hard (extents + zeroing on truncate) — real recovery means backups, or file-carving tools as a last resort.",
+        "When SMART reports errors, stop writing and clone first: ddrescue /dev/sdb /mnt/backup/img — repair the copy, never the original.",
+        "Scrubs are the health checks: btrfs scrub / zpool scrub verify every block against checksums; ext4/XFS rely on periodic e2fsck/xfs_repair runs.",
+        "Backups beat recovery: 3-2-1 (three copies, two media, one offsite) — snapshots and RAID are not backups."
+      ]
+    },
+    {
+      "title": "Common Mistakes & Field Habits",
+      "points": [
+        "Mounting over a non-empty directory 'loses' files: they're hidden under the mount — check mount | grep /path before panicking.",
+        "Editing fstab without testing mount -a: one typo (missing comma, wrong UUID) can stop the machine from booting.",
+        "Using df and du interchangeably: du can't see deleted-open files, df can't see per-directory detail — use both.",
+        "Letting logs fill /var until the root fs hits 100%: give heavy writers their own LV/mount so one runaway can't take down the system.",
+        "Trying to shrink XFS: impossible — snapshot/backup, recreate smaller. Check the fs type with findmnt before any resize.",
+        "Hardlinking a directory (ln -d) fails by design: use a symlink or a bind mount instead.",
+        "Cross-filesystem hardlinks fail with 'Invalid cross-device link' — the fs boundary is the inode namespace boundary.",
+        "Confusing a dangling symlink with a missing file: ls shows the link, cat fails — resolve with readlink -f and check the target.",
+        "Creating a relative symlink from the wrong working directory: the link points somewhere you never intended — verify with readlink -f.",
+        "Ignoring inode exhaustion: 'disk full' errors with free gigabytes; watch df -i on cache and mail servers.",
+        "Snapshot neglect on LVM: leaving snapshots tiny and stale until they fill, invalidate, and vanish — monitor lvs, merge or delete early.",
+        "Misreading errors: ENOSPC means space/inodes, EROFS means a read-only remount (often errors=remount-ro after an fs error) — neither is a permission problem."
+      ]
+    },
+    {
+      "title": "The Mental Model & Cheat Sheet",
+      "points": [
+        "One-line model: directories map names to inodes; inodes map files to blocks; mounts graft whole trees onto the single root.",
+        "Layer stack to redraw from memory: disk → partition/LUKS → PV → VG → LV → filesystem → mount point → path.",
+        "Command quadrants: inspect (lsblk -f, findmnt, blkid), measure (df -h, df -i, du -sh -x), link (ln, ln -s, readlink -f), maintain (mount -a, fsck/xfs_repair, pvs/lvs).",
+        "One-liners: biggest dirs — du -xh --max-depth=1 /var | sort -h | tail; deleted-open files — lsof +L1; dangling links — find /path -xtype l.",
+        "Type decisions: snapshots/checksums → Btrfs/ZFS; huge parallel I/O → XFS; safe default → ext4; USB interchange → exFAT; fast-and-volatile → tmpfs.",
+        "Resize rules: grow anytime (lvextend -r, xfs_growfs); shrink only ext4, only offline; XFS never shrinks.",
+        "Link rules: same-file alias → hardlink (same fs, no directories); path pointer → symlink (cross-fs OK, can dangle).",
+        "Space rules: read df -h and df -i together; scope du with -x; 'full' with free space = inodes or reserved blocks.",
+        "fstab ritual: UUID not /dev/sdX, nofail on non-critical mounts, then mount -a and findmnt --verify before any reboot.",
+        "Failure rules: unmount before fsck; SMART errors → ddrescue clone first; journal replay is automatic, manual repair is the exception.",
+        "Go deeper next: page cache and dirty writeback, mount namespaces in containers, btrfs subvolumes, RAID vs LVM, autofs."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,215 @@
+{
+  "title": "Docker Compose: The Multi-Container Handbook",
+  "summary": "A dense field guide to Docker Compose — from the service model and startup ordering to healthchecks, networks, volumes, env resolution, override layering, and horizontal scaling. Covers the mechanics underneath each keyword, the trade-offs, and the mistakes that bite in production.",
+  "chapters": [
+    {
+      "title": "What Compose Actually Is",
+      "points": [
+        "Definition: Compose is a spec + CLI that turns one declarative YAML file into a set of Docker API calls — it creates networks, volumes, and containers; it is not a runtime or an orchestrator",
+        "The unit of work is the *project*: a name (default = directory name) that namespaces every resource it creates, e.g. project `shop` makes container `shop-web-1`, network `shop_default`",
+        "Set project name explicitly with `-p myproj`, `COMPOSE_PROJECT_NAME`, or top-level `name:` in the YAML — otherwise renaming your folder orphans your volumes",
+        "Compose V1 (Python, `docker-compose`, hyphen) is EOL; V2 is a Go plugin invoked as `docker compose` (space). V2 also dropped the implicit `_` separator: `proj_web_1` became `proj-web-1`",
+        "The `version:` top-level key is obsolete in the Compose Specification — Compose V2 ignores it and warns. Delete it",
+        "Minimal file: `services:` is the only required top key; `networks:`, `volumes:`, `configs:`, `secrets:` are optional top-level declarations",
+        "Compose is declarative-with-reconciliation: `docker compose up` diffs desired state vs running containers and only recreates what changed (image, env, ports, mounts)",
+        "Key commands: `up -d` (create+start), `down` (stop+remove containers/networks), `down -v` (also removes named volumes — destructive), `ps`, `logs -f`, `exec`, `run --rm`, `config` (render merged file)",
+        "`docker compose config` is the debugging tool that matters: it prints the fully merged, variable-interpolated YAML Compose will actually act on",
+        "Example: `services: { web: { image: nginx, ports: [\"8080:80\"] } }` — 3 lines is a valid Compose file"
+      ]
+    },
+    {
+      "title": "The Service Block: Anatomy",
+      "points": [
+        "A service is a *template* for containers, not a single container — `scale` makes N containers from one service definition",
+        "`image:` pulls a prebuilt image; `build:` builds from a Dockerfile. Both together = build, then tag the result with the `image:` name",
+        "`build:` long form: `context`, `dockerfile`, `args` (build-time only, become Dockerfile `ARG`), `target` (multi-stage stage name), `cache_from`",
+        "Build args ≠ env vars: `args` exist only during build and never appear in the running container's environment",
+        "`command:` overrides the image's CMD; `entrypoint:` overrides ENTRYPOINT. Setting `entrypoint:` resets the image's CMD to empty — a classic silent breakage",
+        "`ports: \"8080:80\"` publishes host→container (short form `HOST:CONTAINER`); `expose:` is documentation only and does nothing on a user-defined network",
+        "Always quote port mappings: `56:56` is parsed as YAML sexagesimal and becomes `3416`. Quoting avoids it",
+        "`restart:` policies — `no` (default), `on-failure[:N]`, `always`, `unless-stopped`. `always` restarts on daemon boot; `unless-stopped` does not if you manually stopped it",
+        "`working_dir`, `user` (`\"1000:1000\"`), `hostname`, `init: true` (PID 1 reaper for zombie processes), `stop_grace_period: 30s`, `stop_signal: SIGINT`",
+        "`profiles: [\"debug\"]` keeps a service out of the default `up` until you pass `--profile debug` — the clean way to ship optional tooling in the same file",
+        "`deploy.resources.limits` (`cpus`, `memory`) is honored by Compose V2 outside Swarm; `deploy.replicas` is honored too, but most other `deploy` keys are Swarm-only and silently ignored"
+      ]
+    },
+    {
+      "title": "depends_on: Ordering, and Its Big Lie",
+      "points": [
+        "Short form `depends_on: [db]` only guarantees *start order* — Compose starts `db`'s container before `web`'s. It says nothing about whether Postgres is accepting connections",
+        "The consequence: your app boots in 300ms, the database takes 8s, the app crashes with 'connection refused'. depends_on did exactly what it promised and you still lost",
+        "Long form fixes it: `depends_on: { db: { condition: service_healthy } }` — Compose blocks until `db`'s healthcheck reports healthy",
+        "Three conditions: `service_started` (default, weak), `service_healthy` (requires a healthcheck on the dependency), `service_completed_successfully` (dependency exits 0 — for migration/seed jobs)",
+        "`required: false` (Compose 2.20+) makes a dependency optional — if the service isn't in the current profile set, `up` proceeds instead of erroring",
+        "depends_on also controls *shutdown* order (reverse) and is transitive: `docker compose up web` implicitly starts the whole dependency graph",
+        "Circular dependencies are a hard error at parse time — Compose refuses to build a startup order it cannot topologically sort",
+        "Migration pattern: `migrate` service with `condition: service_completed_successfully` on `db: service_healthy`, then `web` depends on `migrate` completing",
+        "depends_on has no effect across separate Compose projects or on `docker compose run` unless dependencies are enabled (`run` starts deps by default; `--no-deps` skips them)",
+        "The robust belt-and-braces answer: healthcheck conditions in Compose *plus* connection-retry logic in the app. Compose handles boot; retries handle mid-life restarts, which depends_on cannot"
+      ]
+    },
+    {
+      "title": "Healthchecks: How Compose Knows",
+      "points": [
+        "A healthcheck is a command run *inside* the container on an interval; exit 0 = healthy, exit 1 = unhealthy. Docker stores the state, Compose reads it",
+        "Full block: `healthcheck: { test, interval, timeout, retries, start_period, start_interval }`",
+        "`test` forms: `[\"CMD\", \"curl\", \"-f\", \"http://localhost/health\"]` (exec, no shell) vs `[\"CMD-SHELL\", \"pg_isready -U postgres || exit 1\"]` (runs via `/bin/sh -c`, so pipes and `$VAR` work)",
+        "`interval` (default 30s) = time between checks; `timeout` (30s) = how long one check may run; `retries` (3) = consecutive failures before status flips to `unhealthy`",
+        "`start_period` (0s) is the grace window: failures during it don't count toward `retries` and don't mark the container unhealthy — essential for slow-booting JVM or database services",
+        "`start_interval` (25.0+) polls faster *during* start_period, so a container that's ready in 2s is marked healthy in 2s instead of waiting a full 30s interval",
+        "States: `starting` → `healthy` | `unhealthy`. A container with no healthcheck reports no status at all, and `condition: service_healthy` on it fails immediately",
+        "Worst-case time to detect failure ≈ `interval × retries + timeout` — tune these numbers, don't inherit the defaults blindly",
+        "`test: [\"NONE\"]` disables a healthcheck inherited from the base image; `disable: true` is the equivalent Compose key",
+        "The command must exist in the image: `curl` is absent from `alpine` and most distroless images. Use `wget --spider -q`, the language runtime, or ship a static binary",
+        "Healthchecks cost CPU on every interval across every replica — a 1s interval on 20 containers is 20 process spawns per second",
+        "Docker does NOT restart an unhealthy container by itself. `restart: always` reacts to *exits*, not to health. Only Swarm/Kubernetes act on health status"
+      ]
+    },
+    {
+      "title": "Networks and Service Discovery",
+      "points": [
+        "Compose creates one network per project by default, `<project>_default`, of driver `bridge`, and attaches every service to it",
+        "Service discovery is DNS: Docker's embedded resolver at 127.0.0.11 resolves a service's *name* to its container IP. `http://db:5432` just works — no links, no IP hardcoding",
+        "Container-to-container traffic uses the *container* port, not the published host port. From `web`, Postgres is `db:5432` even if you published `15432:5432`",
+        "Therefore `ports:` is only for host access. Internal-only services need no `ports:` at all — publishing them is needless exposure",
+        "`aliases` give extra DNS names per network; a service is also reachable by its container name and, in the default network, by service name",
+        "Custom networks segment traffic: put `web`+`api` on `frontend`, `api`+`db` on `backend`, and `web` physically cannot reach `db`",
+        "`internal: true` on a network blocks all outbound external routing — the standard hardening for a database tier",
+        "Declaring any `networks:` on a service replaces the default attachment; forget to list `default` and the service loses its old neighbors",
+        "`external: true` joins a pre-existing network Compose didn't create (and won't delete) — how two separate Compose projects talk",
+        "Scaled services resolve to *multiple* A records for one name; Docker's DNS returns them in rotation, giving crude round-robin load balancing with no proxy",
+        "DNS round-robin is not load balancing: clients cache resolutions, connections are sticky, and dead replicas stay in DNS until the container is removed",
+        "`network_mode: host` (Linux only) skips the network namespace entirely — ports bind directly on the host, and `networks:` becomes illegal alongside it"
+      ]
+    },
+    {
+      "title": "Volumes: Where Data Survives",
+      "points": [
+        "Three mount types: **named volume** (Docker-managed, `/var/lib/docker/volumes/...`), **bind mount** (a host path), **tmpfs** (RAM only, gone on stop)",
+        "Named volume: `db_data:/var/lib/postgresql/data` + a top-level `volumes: { db_data: }` declaration. Bind mount: any path with a `/` or `.` — `./src:/app/src`",
+        "Compose namespaces named volumes as `<project>_db_data`; `external: true` points at a volume created outside the project and exempts it from `down -v`",
+        "Long syntax is explicit and worth it: `{ type: volume, source: db_data, target: /var/lib/postgresql/data, read_only: false }`",
+        "Key asymmetry: an *empty named volume* is pre-populated from the image's contents at that path on first use; a *bind mount* never is — it shadows whatever the image had there",
+        "That asymmetry is the `node_modules` disappearing act: `./:/app` hides the image's installed modules. Fix with an anonymous volume on top — `- /app/node_modules`",
+        "Bind mounts inherit host permissions. A container running as UID 1000 writing into a root-owned host directory gets EACCES — mismatched UIDs are the #1 volume bug",
+        "Bind-mount performance on Docker Desktop (macOS/Windows) crosses a virtualization boundary and is slow for many small files; named volumes stay inside the VM and are fast",
+        "`:ro` for read-only mounts (config, certs), `:z`/`:Z` for SELinux relabeling on RHEL/Fedora hosts",
+        "`down` keeps named volumes; `down -v` deletes them; `docker volume prune` removes anonymous/unused ones. Losing a database to a reflexive `-v` is a rite of passage",
+        "`volumes_from` is deprecated in the Compose Spec — use a shared named volume mounted into both services instead",
+        "Rule of thumb: named volumes for state (databases, uploads), bind mounts for source code in development, tmpfs for secrets and scratch"
+      ]
+    },
+    {
+      "title": "Environment Variables: Two Different Worlds",
+      "points": [
+        "Critical distinction: variables that Compose interpolates into the *YAML itself*, versus variables injected into the *container's* environment. They come from different places",
+        "`${VAR}` in the YAML is substituted by Compose at parse time from the shell environment and the `.env` file next to the Compose file",
+        "`environment:` and `env_file:` set variables *inside the container* and are never visible to YAML interpolation",
+        "`.env` is auto-loaded from the project directory (or `--env-file`) and feeds interpolation only — it does NOT automatically populate containers",
+        "Interpolation defaults: `${VAR:-default}` (default if unset *or empty*), `${VAR-default}` (only if unset), `${VAR:?error}` (fail with message if unset/empty), `$$` to escape a literal `$`",
+        "`environment:` accepts map form `KEY: value` or list form `- KEY=value`; bare `- KEY` (no `=`) passes through from the host shell",
+        "`env_file:` loads a file into the container; it can take a list, and later files win. Since 2.24 it also supports `{ path: ..., required: false }`",
+        "Precedence, highest first: `docker compose run -e` → shell environment (for pass-through keys) → `environment:` → `env_file:` → Dockerfile `ENV`",
+        "`env_file` syntax is NOT shell: no `export`, no command substitution, and quotes are handled by Compose's own parser, not by bash",
+        "Never commit real secrets to `.env` — `.gitignore` it, ship a `.env.example`, and prefer `secrets:` (mounted as files under `/run/secrets/`) for anything sensitive",
+        "Env vars leak: they appear in `docker inspect`, in `docker compose config`, and in child processes. File-based secrets do not"
+      ]
+    },
+    {
+      "title": "Override Files and Merge Semantics",
+      "points": [
+        "`docker compose up` auto-loads `compose.yaml` *and* `compose.override.yaml` if present, merging the second onto the first",
+        "Filename precedence: `compose.yaml` is the preferred modern name; `docker-compose.yaml`/`.yml` still work. If both exist, `compose.yaml` wins",
+        "Explicit chains with `-f`: `docker compose -f compose.yaml -f compose.prod.yaml up`. Order matters — later files override earlier ones. `COMPOSE_FILE` sets it via env (separator `:` or `;` on Windows)",
+        "Once you pass `-f` explicitly, the automatic `compose.override.yaml` pickup stops — you must list it yourself",
+        "Merge rules by type: scalars (`image`, `command`) are **replaced**; mappings (`environment`, `labels`) are **merged key-by-key**; sequences (`ports`, `volumes`, `dns`) are **appended**",
+        "Appending is the trap: overriding `ports` doesn't replace the list, it adds — so you get both `8080:80` and `80:80`. Use `!reset` (Compose 2.24+) to clear a key, or `!override` to replace it wholesale",
+        "Relative paths in an override file resolve against the *first* file's directory, not the override's own — a frequent surprise in multi-directory setups",
+        "`extends:` pulls a service definition from another file or service, letting you share a base without merging entire files. It does not carry `depends_on` or `volumes_from`",
+        "`include:` (Compose 2.20+) composes whole sub-Compose files into one project — better than `extends` for modularizing large stacks",
+        "Canonical layout: `compose.yaml` = the shared truth; `compose.override.yaml` = dev (bind mounts, exposed debug ports, hot reload); `compose.prod.yaml` = prod (pinned image tags, replicas, resource limits, no source mounts)",
+        "Always verify a merge with `docker compose -f a.yaml -f b.yaml config` before deploying — the rendered output is the only reliable source of truth"
+      ]
+    },
+    {
+      "title": "Scaling Services Horizontally",
+      "points": [
+        "`docker compose up -d --scale worker=5` runs five containers from one service definition, named `proj-worker-1` … `proj-worker-5`",
+        "Declaratively, `deploy: { replicas: 3 }` sets a default count that Compose V2 honors without Swarm; a CLI `--scale` flag overrides it",
+        "Hard constraint: a scaled service cannot have a fixed host port. `ports: [\"8080:80\"]` with `--scale=3` fails — replicas 2 and 3 collide on 8080",
+        "Two ways out: publish a port *range* (`\"8080-8082:80\"`) or omit the host port entirely (`\"80\"`) and let Docker assign ephemeral host ports",
+        "The usual fix is neither — put a reverse proxy (nginx, Traefik, Caddy) in front and let it resolve the service name, which yields all replica IPs via DNS",
+        "Scaling only works for stateless services. Three replicas sharing one bind-mounted SQLite file will corrupt it; three Postgres replicas on one volume will refuse to start",
+        "Worker/queue services scale cleanly because the queue does the coordination — the pattern Compose scaling is actually good at",
+        "`container_name:` makes a service unscalable: names are unique, so the second replica cannot be created. Same for a fixed `hostname:`",
+        "Scaling down removes the highest-numbered containers; there is no graceful drain, so honor `SIGTERM` and set `stop_grace_period`",
+        "Compose scaling is single-host. It has no scheduler, no rolling updates, no rescheduling on node failure — the moment you need those, you need Swarm, Nomad, or Kubernetes"
+      ]
+    },
+    {
+      "title": "Compose vs Everything Else",
+      "points": [
+        "Compose vs plain `docker run`: Compose is a persisted, version-controlled, reviewable form of the same API calls — plus automatic networks, dependency ordering, and one-command teardown",
+        "Compose vs Dockerfile: the Dockerfile builds *one image* (build time); Compose wires *many containers* (run time). `build:` is Compose calling the Dockerfile, not replacing it",
+        "Compose vs Swarm: same file format, but Swarm is multi-node with a scheduler, rolling updates, and overlay networks. Swarm reads the `deploy:` block Compose mostly ignores",
+        "Compose vs Kubernetes: Compose = one host, minutes to learn, no self-healing, no autoscaling. Kubernetes = a cluster, real scheduling, health-driven restarts, and far more operational surface",
+        "Compose vs `podman-compose` / Podman `kube play`: Podman offers daemonless, rootless execution and mostly-compatible Compose support; some `deploy` and network features diverge",
+        "Legacy `links:` vs modern networks: `links` is deprecated — user-defined networks give the same DNS resolution plus isolation, and don't leak environment variables between containers",
+        "`docker compose run` vs `exec`: `run` creates a *new* one-off container from the service definition (use `--rm`); `exec` attaches to an already-running one",
+        "`up --build` vs `build` then `up`: identical result, but `up --build` forces a rebuild every time — expensive in a hot loop; use `--no-build` in CI when images are pre-pulled",
+        "`stop` vs `down`: `stop` halts containers and keeps them; `down` deletes containers and networks. Only `down -v` touches named volumes",
+        "Honest positioning: Compose is the right answer for local development, CI test environments, and small single-host deployments. Beyond one machine, it's the wrong tool"
+      ]
+    },
+    {
+      "title": "Trade-offs and Production Realities",
+      "points": [
+        "No self-healing: an unhealthy-but-running container stays in service forever. Compose has no controller loop reconciling health to action",
+        "No rolling updates: `up` recreates changed containers, dropping connections. Zero-downtime needs an external proxy plus a manual scale-up/scale-down dance",
+        "Single host means a single point of failure — no rescheduling, no node draining, no multi-AZ story",
+        "Startup ordering is a *boot-time* guarantee only. If the database restarts at 3am, `depends_on` is irrelevant; only app-level retry saves you",
+        "Image tag discipline: `latest` in a Compose file makes deployments non-reproducible. Pin to a digest (`image: app@sha256:...`) or an immutable tag in production",
+        "Build-on-deploy is a trade-off: `build:` in production couples deploy time to build time and can produce different images on different hosts. Prefer pre-built, registry-pulled images",
+        "Secrets in `environment:` are visible to `docker inspect` and often to logs; the `secrets:` top-level block mounts them as files, which is meaningfully safer",
+        "Resource limits are opt-in. Without `deploy.resources.limits`, one runaway container can OOM the host and take the whole stack with it",
+        "Logging defaults to unbounded `json-file` — set `logging: { options: { max-size: \"10m\", max-file: \"3\" } }` or watch the disk fill",
+        "State on a single host means backups are your job: named volumes are not replicated, snapshotted, or backed up by anything Compose does",
+        "The pragmatic verdict: Compose's simplicity is a real feature. Use it until you need multi-node or self-healing — then migrate, don't bolt on"
+      ]
+    },
+    {
+      "title": "Common Mistakes: A Field Guide",
+      "points": [
+        "Trusting bare `depends_on` to mean 'ready'. It means 'started'. Use `condition: service_healthy` plus app retries",
+        "Unquoted ports: `ports: [22:22]` becomes `1342` via YAML's sexagesimal rule. Always quote",
+        "Connecting to the published host port from inside another container. Use `service:container_port` — the host mapping is irrelevant on the internal network",
+        "Bind-mounting over a directory the image populated (`node_modules`, `vendor`, `.venv`) and wondering where it went. Layer an anonymous volume on top",
+        "Running `docker compose down -v` on a machine holding real data. `-v` destroys named volumes. There is no undo",
+        "Expecting `.env` to reach your containers. It feeds YAML interpolation; use `env_file:` to actually inject it",
+        "Committing `.env` with real credentials. Gitignore it; ship `.env.example`",
+        "A healthcheck calling a binary the image doesn't have — `curl` in alpine — so the service is permanently `unhealthy` and everything depending on it never starts",
+        "Setting `container_name:` and then trying to `--scale`. Names are unique; remove it",
+        "Assuming override files replace list keys. `ports`, `volumes`, and `dns` *append*. Verify with `config`, or use `!override` / `!reset`",
+        "Leaving `version: \"3.8\"` at the top — obsolete and noisy in V2",
+        "Renaming the project directory and 'losing' the database — resources are namespaced by project name. Pin it with top-level `name:`",
+        "Using `restart: always` as a substitute for a healthcheck. Restart policies react to process exit, not to a hung-but-alive process"
+      ]
+    },
+    {
+      "title": "The Whole Picture, One Page",
+      "points": [
+        "Mental model: **project** namespaces → **services** are container templates → **networks** connect them by DNS name → **volumes** outlive them → **env** parameterizes them → **overrides** re-shape them per environment",
+        "The four-line startup contract: `depends_on` orders, `healthcheck` defines ready, `condition: service_healthy` links the two, app-level retry covers everything after boot",
+        "Networking in one line: talk to services by name on the container port; publish ports only for host access; segment tiers with custom networks and `internal: true`",
+        "Volumes in one line: named volumes for state, bind mounts for dev source, `:ro` for config, and `-v` on `down` is a loaded gun",
+        "Env in one line: `.env` and `${VAR}` shape the YAML; `environment:`/`env_file:` shape the container; secrets belong in files, not variables",
+        "Overrides in one line: base file + `compose.override.yaml` for dev + `-f compose.prod.yaml` for prod; scalars replace, maps merge, lists append",
+        "Scaling in one line: `--scale` works for stateless services with no fixed host port and no `container_name`, fronted by a proxy",
+        "Debug loop: `docker compose config` (what will run) → `ps` (what is running) → `logs -f <svc>` (why it died) → `exec <svc> sh` (what it sees) → `docker inspect` (what state it's in)",
+        "Production checklist: pin image digests, set resource limits, cap log size, healthcheck every service, no source bind mounts, secrets as files, back up named volumes",
+        "Know the ceiling: no self-healing, no rolling updates, one host. Compose is excellent inside those walls and wrong outside them",
+        "Smallest complete stack worth memorizing: `db` with a named volume and a `pg_isready` healthcheck; `web` with `depends_on: { db: { condition: service_healthy } }`, a published port, and `restart: unless-stopped`"
+      ]
+    }
+  ]
+}

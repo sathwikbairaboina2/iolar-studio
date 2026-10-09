@@ -1,0 +1,204 @@
+{
+  "title": "Terraform Plan & Apply: The Graph Under the Diff",
+  "summary": "A deep field guide to what actually happens between `terraform plan` and `terraform apply` — how the dependency graph is built and walked, what refresh does to state, how to read every symbol in a plan diff, and when targeted apply and `-replace` are the right escape hatches.",
+  "chapters": [
+    {
+      "title": "Plan & Apply: The Core Model",
+      "points": [
+        "Terraform is declarative convergence, not a script: you describe desired state, it computes the actions to reach it.",
+        "Plan has three inputs: configuration (HCL desired state), state file (prior known state), real infrastructure (read via refresh).",
+        "`terraform plan` is read-only — it never writes managed infrastructure and in modern versions never persists refreshed state.",
+        "`terraform plan -out=tfplan` saves a binary plan file; `terraform apply tfplan` applies exactly that, no re-plan, no approval prompt.",
+        "`terraform apply` with no plan file runs a plan internally and prompts `yes`; `-auto-approve` skips the prompt.",
+        "The saved plan file embeds the state snapshot it was based on — if state serial moved, apply fails with `Saved plan is stale`.",
+        "A plan file is NOT encrypted: it contains variable values and resource attributes including secrets. Never commit it.",
+        "`terraform plan -detailed-exitcode`: 0 = no changes, 1 = error, 2 = changes present. The standard CI drift gate.",
+        "Plan modes: normal, `-destroy` (plan the teardown), `-refresh-only` (propose state-only updates, no infrastructure change).",
+        "Apply is NOT a transaction — there is no rollback. A failed apply leaves partially created infrastructure recorded in state.",
+        "Idempotence test: a second apply immediately after the first must produce `No changes.` A non-empty plan means a perpetual-diff bug.",
+        "`terraform show -json tfplan` emits the stable machine-readable plan for policy engines (OPA/Conftest/Sentinel).",
+        "Example CI pipeline: `terraform plan -out=tfplan -detailed-exitcode` → artifact → policy check on JSON → `terraform apply tfplan`.",
+        "Plan output is a proposal, not a promise: unknown values may resolve at apply time to something the provider rejects."
+      ]
+    },
+    {
+      "title": "The Dependency Graph (DAG)",
+      "points": [
+        "Terraform builds a directed acyclic graph every run: nodes are resources, data sources, providers, variables, locals, outputs, modules.",
+        "Edges come from implicit references — writing `subnet_id = aws_subnet.a.id` creates an edge from the instance to the subnet.",
+        "`depends_on` adds an explicit edge for hidden dependencies (IAM policy that must exist before an instance uses it at runtime).",
+        "`depends_on` must be a static reference list — it cannot contain a computed expression.",
+        "The graph must be acyclic. `Error: Cycle: aws_security_group.a, aws_security_group.b` — usually mutual references or depends_on loops.",
+        "Fix cycles by splitting: use standalone `aws_security_group_rule` resources instead of inline mutually-referencing rules.",
+        "`terraform graph` prints DOT; pipe to Graphviz. `terraform graph -type=plan` shows the plan-time graph.",
+        "Create order = reverse topological order (dependencies first). Destroy order is inverted: dependents are destroyed before what they depend on.",
+        "Provider nodes are dependencies of every resource that uses them — a provider block configured from a resource attribute is a chicken-and-egg problem.",
+        "`count` and `for_each` are expanded during graph expansion: one node per instance, addressed `aws_subnet.this[0]` or `aws_subnet.this[\"a\"]`.",
+        "Full address form: `module.network.aws_subnet.this[\"public-a\"]` — module path, resource type, name, index key.",
+        "Data source nodes are read during plan when their arguments are known, and deferred to apply when they depend on unknown values.",
+        "`create_before_destroy` inverts the edge direction for that node pair so the new object exists before the old is removed.",
+        "`depends_on` on a `module` block applies to every resource inside that module — coarse, and it serializes the walk.",
+        "The graph walker runs independent nodes concurrently: default 10, tuned with `-parallelism=n`.",
+        "The graph is never persisted — it is rebuilt from config plus state on every plan and every apply."
+      ]
+    },
+    {
+      "title": "State & Refresh",
+      "points": [
+        "State maps config addresses to real object IDs plus the last-known attribute values — it is the only link between HCL and reality.",
+        "Refresh calls the provider's ReadResource for each managed resource, updating the in-memory state before the diff is computed.",
+        "Drift = a resource changed outside Terraform. Refresh detects it; the plan reports `Note: Objects have changed outside of Terraform`.",
+        "If a resource was deleted outside Terraform, refresh marks it gone and the plan proposes a create.",
+        "`terraform refresh` is deprecated (0.15.4+). Use `terraform plan -refresh-only` to inspect drift and `terraform apply -refresh-only` to accept it into state.",
+        "`-refresh=false` skips all reads: much faster, but plans against possibly stale attributes — an emergency speed flag, not a habit.",
+        "Refresh cost is O(number of resources) in API calls and dominates plan runtime on large root modules.",
+        "Data sources are not \"refreshed\" — they are re-evaluated from scratch on every plan.",
+        "Backends lock state for the duration of a write-capable run; `Error acquiring the state lock` means another run holds it.",
+        "`terraform force-unlock <LOCK_ID>` only when you are certain no apply is running — otherwise you invite concurrent writes and corruption.",
+        "Every state write increments the serial; the plan file records it, which is how staleness detection works.",
+        "State stores sensitive attributes in plaintext — use an encrypted backend (S3+SSE, Terraform Cloud) and restrict read access.",
+        "Surgical tools: `terraform state list`, `state show`, `state mv`, `state rm`, `terraform import`.",
+        "`import` blocks (1.5+) make imports declarative and reviewable; `plan -generate-config-out=gen.tf` scaffolds the HCL.",
+        "`moved` blocks preserve identity across refactors (renames, module extraction) instead of planning destroy + create."
+      ]
+    },
+    {
+      "title": "Reading a Plan Diff",
+      "points": [
+        "`+` create, `-` destroy, `~` update in place, `-/+` destroy then create (replace), `+/-` create then destroy (create_before_destroy), `<=` read data source.",
+        "Summary line is the headline: `Plan: 2 to add, 1 to change, 3 to destroy.` Read it before the body.",
+        "`# forces replacement` next to an attribute names the exact field that turned an update into a replacement.",
+        "`(known after apply)` marks an unknown — the provider computes it, so Terraform cannot show the final value.",
+        "One unknown poisons expressions downstream: an ID used inside a template makes the entire rendered string unknown and noisy.",
+        "`(sensitive value)` masks output; the value still exists in the plan file and in the JSON plan.",
+        "The `Note: Objects have changed outside of Terraform` block is drift, listed separately from planned actions — never scroll past it.",
+        "Replace reasons are printed: `will be replaced, as requested` (`-replace`), `is tainted, so must be replaced`, `has been deleted`.",
+        "No-op resources are hidden. Only changed resources appear under `Terraform will perform the following actions:`.",
+        "`Changes to Outputs:` is a separate trailing section — output-only diffs still count as changes.",
+        "`# module.db.aws_instance.this has moved to ...` shows `moved` block resolution with no infrastructure action.",
+        "In JSON: `resource_changes[].change.actions` is `[\"create\"]`, `[\"update\"]`, `[\"delete\",\"create\"]` (replace), `[\"create\",\"delete\"]` (CBD), or `[\"no-op\"]`.",
+        "`replace_paths` in the JSON plan gives the machine-readable version of `# forces replacement`.",
+        "CI hygiene: `-no-color` and `-compact-warnings` keep logs readable; gate on `delete` actions against protected resource types.",
+        "Review discipline: scan for `must be replaced` and `will be destroyed` before reading anything else."
+      ]
+    },
+    {
+      "title": "How a Plan Is Computed (Internals)",
+      "points": [
+        "Provider plugin protocol calls, in order: GetProviderSchema, ValidateResourceConfig, ReadResource (refresh), PlanResourceChange, ApplyResourceChange.",
+        "PlanResourceChange receives three values per resource: prior state, proposed new state (config merged over prior), and config.",
+        "The provider — not Terraform core — decides whether a change is in-place or a replacement.",
+        "It signals replacement by returning `RequiresReplace` attribute paths, set via `ForceNew: true` (SDKv2) or `RequiresReplace()` plan modifiers (Plugin Framework).",
+        "Values are `cty` values; unknowns are a first-class value that propagates through every expression that touches them.",
+        "`Provider produced inconsistent final plan` means the applied value differed from a known planned value — a provider bug, not user error.",
+        "Diffing is whole-object: nested blocks and sets are compared elementwise, which is why set ordering changes can look like churn.",
+        "`lifecycle { ignore_changes = [tags[\"LastModified\"]] }` drops attributes from the diff; `ignore_changes = all` freezes everything after create.",
+        "`lifecycle { prevent_destroy = true }` makes any plan proposing destruction a hard error — including a `-replace`.",
+        "`precondition` / `postcondition` blocks assert invariants and fail the plan or apply with your own message.",
+        "`check` blocks run after apply and only warn — they never block the run.",
+        "A data source whose arguments are unknown is deferred to apply, so everything it feeds becomes unknown in the plan.",
+        "Provisioners are apply-time only; they never appear as detail in the plan, which is one reason they undermine plan review.",
+        "The plan file is an internal binary archive (plan + state snapshot); `terraform show -json` is the only stable contract for tooling."
+      ]
+    },
+    {
+      "title": "Targeted Apply (`-target`)",
+      "points": [
+        "`terraform apply -target=aws_instance.web` prunes the graph to that node plus everything it depends on.",
+        "Dependencies are pulled in automatically; dependents are excluded — the reverse of what people usually expect.",
+        "Repeat the flag for multiple targets: `-target=aws_instance.a -target=aws_instance.b`.",
+        "Module addresses work: `-target=module.vpc` targets every resource inside that module.",
+        "Indexed addresses need quoting: `-target='aws_instance.web[0]'` in bash, `-target=\"aws_instance.web[0]\"` in PowerShell.",
+        "Terraform prints a warning every time: resource targeting is exceptional and the resulting state may be incomplete.",
+        "Outputs are not fully evaluated in a targeted run, so downstream consumers can read stale output values.",
+        "`-target` works on `plan`, `apply`, `destroy`, and `-refresh-only` — but it is a plan-time flag, so it cannot be applied to a saved plan file.",
+        "Targeting does not skip provider configuration or variable evaluation — required variables are still required.",
+        "Legitimate uses: recovering from a failed apply, working around a provider bug, breaking a chicken-and-egg bootstrap, fixing one drifted resource fast.",
+        "Illegitimate use: routine workflow. It hides broken configuration and produces state no full apply can reproduce.",
+        "Always follow a targeted apply with an untargeted `terraform plan` and confirm it converges to `No changes.`",
+        "Emergency fast loop: `terraform apply -target=... -refresh=false` skips the O(n) refresh entirely.",
+        "Newer Terraform versions add `-exclude` as the inverse — apply everything except the named addresses.",
+        "The real fix for chronic targeting is structural: split the root module so the blast radius matches the change."
+      ]
+    },
+    {
+      "title": "Replace, Taint & Lifecycle",
+      "points": [
+        "`terraform apply -replace=aws_instance.web` forces destroy-then-create on a healthy resource — the modern way to \"turn it off and on again\".",
+        "`-replace` is plan-time: the replacement appears in a reviewable plan before anything happens.",
+        "`terraform taint` (deprecated in 0.15.2) mutated state out of band with no plan to review — that is why it was replaced.",
+        "`terraform untaint <address>` still exists to clear legacy tainted marks left by older workflows or failed creates.",
+        "Resources are tainted automatically when creation partially fails or a creation-time provisioner errors — the object exists but is not trustworthy.",
+        "`lifecycle { create_before_destroy = true }` builds the new object first; required for zero-downtime swaps.",
+        "create_before_destroy propagates: dependencies that must also be recreated inherit the flag, which is the usual source of surprising cascades.",
+        "Globally-unique names (S3 buckets, IAM roles) break under create_before_destroy unless you use `name_prefix` or a random suffix.",
+        "A deposed object is an old instance left behind when create_before_destroy's destroy step failed; it shows as `(deposed)` in the plan and is cleaned up on the next apply.",
+        "`prevent_destroy = true` blocks replacement too — you must remove the lifecycle block before `-replace` will run.",
+        "Update-in-place vs replacement is decided by the provider's schema, not by any user flag. `-replace` is the only user override.",
+        "`-replace` can be repeated and combined with `-target` for surgical recovery.",
+        "Replacement cascades: dependents that reference the replaced resource's computed attributes get their own updates or replacements.",
+        "To force downstream re-runs without a real replace, use `terraform_data` with `triggers_replace` (1.4+, the successor to `null_resource`).",
+        "Comparison — taint: state mutation, invisible until next plan, deprecated. `-replace`: plan-time, reviewable, reversible by not applying."
+      ]
+    },
+    {
+      "title": "Apply Mechanics, Failure & Trade-offs",
+      "points": [
+        "Apply walks the same DAG the plan produced, calling ApplyResourceChange per node in dependency order.",
+        "State is written incrementally as each resource completes — partial success is a normal outcome, not a corruption.",
+        "On error, Terraform lets in-flight nodes finish, stops scheduling new ones, persists state, and exits non-zero. Nothing is rolled back.",
+        "Recovery is always the same: re-run `terraform plan` and read what work remains.",
+        "If the state write itself fails, Terraform dumps `errored.tfstate` locally — recover with `terraform state push`.",
+        "`-parallelism=n` trade-off: raising it shortens wall-clock time but multiplies API rate-limit (429) and quota errors.",
+        "Per-resource `timeouts { create = \"60m\" }` blocks override provider defaults for slow resources like RDS or EKS.",
+        "Splitting plan and apply across CI jobs requires the same Terraform version, the same provider versions, the plan artifact, and an unchanged state serial.",
+        "`-auto-approve` is fine in CI only when the plan artifact was already reviewed or policy-checked; on a laptop it is how databases die.",
+        "Concurrent applies against one state are the primary corruption risk — state locking is the only guard, so never make `-lock=false` routine.",
+        "Plan runtime scales with resource count via refresh; the structural fix is smaller root modules, not faster flags.",
+        "Apply is not atomic across resources — design configurations so a re-run after failure is safe.",
+        "Provisioners and `local-exec` execute outside the plan/state model: they cannot be planned, diffed, or retried safely. Prefer `user_data` / cloud-init.",
+        "Trade-off summary: `-refresh=false` buys speed for accuracy, `-target` buys speed for completeness, high parallelism buys speed for rate-limit risk."
+      ]
+    },
+    {
+      "title": "Common Mistakes & Gotchas",
+      "points": [
+        "Perpetual diff: the provider normalizes a value (JSON policy whitespace, tag case, ARN casing) so config never matches state. Fix with `jsonencode()` or `ignore_changes`.",
+        "Making `-refresh=false` the default: fast plans that silently ignore real drift.",
+        "Using `-target` as a routine workflow — the config eventually only works when targeted.",
+        "Still reaching for `terraform taint` when `-replace` gives you a reviewable plan.",
+        "Applying a saved plan after someone else applied: `Saved plan is stale`. Re-plan; never work around it.",
+        "Committing `tfplan` or `terraform.tfstate` to git — both leak secrets in plaintext.",
+        "`depends_on` overuse: every extra edge serializes the graph and slows apply. Prefer real attribute references.",
+        "`count` index shift: removing the middle element of a list replaces every resource after it. Use `for_each` with stable string keys.",
+        "Switching `count` to `for_each` without `moved` blocks destroys and recreates the entire set.",
+        "Mutually referencing security groups create a cycle — split into standalone rule resources.",
+        "Skimming the plan and missing a `# forces replacement` on a stateful resource. Read every replacement line out loud.",
+        "Forgetting `prevent_destroy` on production data stores — and being surprised when it later blocks a legitimate `-replace`.",
+        "Ignoring the drift block: someone's console hotfix gets silently reverted by your next apply.",
+        "Treating the plan as a guarantee — `(known after apply)` values can resolve into something the API rejects mid-apply.",
+        "Running plan and apply on different Terraform or provider versions, so the applied diff is not the reviewed diff.",
+        "`force-unlock` on a lock held by a live apply — the fastest way to corrupt shared state."
+      ]
+    },
+    {
+      "title": "Summary & Field Cheat Sheet",
+      "points": [
+        "The loop, in order: build graph → refresh state via provider reads → diff config vs prior → provider plans each change → walk graph and apply.",
+        "`terraform plan -out=tfplan` then `terraform apply tfplan` is the only workflow where you apply exactly what you reviewed.",
+        "`-detailed-exitcode`: 0 no changes, 1 error, 2 changes — the drift-detection gate.",
+        "Diff symbols: `+` create, `-` destroy, `~` update, `-/+` replace, `+/-` create-before-destroy, `<=` data read.",
+        "`(known after apply)` = unknown; `# forces replacement` = the attribute that triggered a replace.",
+        "Drift lives in the `Objects have changed outside of Terraform` block; accept it with `apply -refresh-only`.",
+        "Graph edges come from references first, `depends_on` only for invisible runtime dependencies.",
+        "Cycles are config bugs — decompose the mutually-referencing resources.",
+        "`-target` includes dependencies, excludes dependents, warns loudly, and must always be followed by a clean full plan.",
+        "`-replace` supersedes `taint`; `create_before_destroy` for zero downtime; `prevent_destroy` for the resources you cannot lose.",
+        "Speed knobs and their cost: `-refresh=false` (accuracy), `-target` (completeness), `-parallelism` (rate limits). Structure beats all three.",
+        "Apply has no rollback and no cross-resource atomicity — state is written incrementally and re-running the plan is the recovery path.",
+        "Automate review, not approval: `terraform show -json tfplan` into a policy engine that fails on unexpected `delete` actions.",
+        "Health check for any module: apply twice; the second plan must say `No changes.`"
+      ]
+    }
+  ]
+}
