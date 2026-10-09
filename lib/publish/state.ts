@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { subjectDir } from '@/lib/paths';
 import type { Finding } from '@/lib/verify/gates';
+import { writeFileAtomic } from './atomic';
 
 export type Verdict = 'pass' | 'unsure' | 'fail';
 export type ChapterState = {
@@ -46,8 +47,7 @@ export async function readState(subject: string): Promise<PublishState> {
 export async function writeState(subject: string, s: PublishState): Promise<void> {
   const file = stateFile(subject);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(`${file}.tmp`, JSON.stringify(s, null, 2));
-  await fs.rename(`${file}.tmp`, file);
+  await writeFileAtomic(file, JSON.stringify(s, null, 2));
 }
 
 /** Selected, not rejected, never failed, and cleared by the AI (a pass) or by a person. */

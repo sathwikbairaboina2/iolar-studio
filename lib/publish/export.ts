@@ -7,12 +7,24 @@ import { iconSvg } from '@/lib/renderer/icons';
 import { asChapterParts, editionHash, editionIconNames, editionWords, loadEdition, type Edition } from '@/lib/digital/edition';
 import { parseHandbook, safeSvg, type Handbook } from './contract';
 import { chapterHash } from './hash';
-import { liveChapters, readState, writeState } from './state';
+import { writeFileAtomic } from './atomic';
+import { liveChapters, readState, updateState, type ChapterState } from './state';
 
 const PASSES = ['rules', 'facts', 'pedagogy', 'readability'];
 
 export function exportFile(subject: string) {
   return path.join(publishedDir(), `${subject}.handbook.json`);
+}
+
+/**
+ * Whether the chapter's reviewed edition is still the one on disk and still matches the chapter's content.
+ * The export includes a live chapter only then; the studio counts live chapters with the same test.
+ */
+export async function isChapterCurrent(subject: string, slug: string, cs: ChapterState | undefined, edition?: Edition | null): Promise<boolean> {
+  if (!cs) return false;
+  const hash = await chapterHash(subject, slug).catch(() => null);
+  const e = edition === undefined ? await loadEdition(subject, slug) : edition;
+  return !!hash && hash === cs.hash && !!e && e.inputsHash === hash && cs.editionHash === editionHash(e);
 }
 
 type Built = { handbook: Handbook | null; frozen: boolean; live: Map<string, string> };
@@ -27,11 +39,10 @@ async function build(subject: string): Promise<Built> {
   const current = new Map<string, string>();
   const editions = new Map<string, Edition>();
   for (const slug of liveChapters(state)) {
-    const hash = await chapterHash(subject, slug).catch(() => null);
     const edition = await loadEdition(subject, slug);
     const cs = state.chapters[slug];
-    if (hash && hash === cs.hash && edition && edition.inputsHash === hash && cs.editionHash === editionHash(edition)) {
-      current.set(slug, hash);
+    if (edition && (await isChapterCurrent(subject, slug, cs, edition))) {
+      current.set(slug, cs.hash!);
       editions.set(slug, edition);
     }
   }
@@ -94,8 +105,18 @@ export async function buildHandbook(subject: string): Promise<Handbook | null> {
   return (await build(subject)).handbook;
 }
 
+type Exported = { written: boolean; path: string; chapters: number };
+const exports = new Map<string, Promise<unknown>>();
+
+/** One export per subject at a time, so the publish job and a click in the studio never write the file together. */
+export function exportSubject(subject: string): Promise<Exported> {
+  const run = (exports.get(subject) ?? Promise.resolve()).catch(() => {}).then(() => exportNow(subject));
+  exports.set(subject, run);
+  return run;
+}
+
 /** Writes or deletes `published/<subject>.handbook.json`. An invalid file is never written; the contract's errors are thrown instead. */
-export async function exportSubject(subject: string): Promise<{ written: boolean; path: string; chapters: number }> {
+async function exportNow(subject: string): Promise<Exported> {
   const file = exportFile(subject);
   const { handbook, frozen, live } = await build(subject);
   if (frozen) {
@@ -106,8 +127,7 @@ export async function exportSubject(subject: string): Promise<{ written: boolean
       if (keep.length !== previous.chapters.length) {
         const slugs = keep.map((c) => c.slug);
         const next: Handbook = { ...previous, updatedAt: new Date().toISOString(), order: previous.order.filter((s) => slugs.includes(s)), chapters: keep.map((c) => ({ ...c, prerequisites: c.prerequisites.filter((p) => slugs.includes(p)) })) };
-        await fs.writeFile(`${file}.tmp`, JSON.stringify(next, null, 2));
-        await fs.rename(`${file}.tmp`, file);
+        await writeFileAtomic(file, JSON.stringify(next, null, 2));
       }
     }
     return { written: false, path: file, chapters: 0 };
@@ -119,9 +139,7 @@ export async function exportSubject(subject: string): Promise<{ written: boolean
   const checked = parseHandbook(handbook);
   if (!checked.ok) throw new Error(`handbook is not valid: ${checked.errors.slice(0, 5).join('; ')}`);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(`${file}.tmp`, JSON.stringify(handbook, null, 2));
-  await fs.rename(`${file}.tmp`, file);
-  const state = await readState(subject);
-  await writeState(subject, { ...state, exportedAt: handbook.updatedAt });
+  await writeFileAtomic(file, JSON.stringify(handbook, null, 2));
+  await updateState(subject, (s) => { s.exportedAt = handbook.updatedAt; });
   return { written: true, path: file, chapters: handbook.chapters.length };
 }

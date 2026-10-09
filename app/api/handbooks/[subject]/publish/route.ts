@@ -2,9 +2,8 @@ import { NextResponse } from 'next/server';
 import { existsSync } from 'fs';
 import { chapterDir, isSlug } from '@/lib/paths';
 import { loadSubject } from '@/lib/store';
-import { exportSubject } from '@/lib/publish/export';
-import { chapterHash } from '@/lib/publish/hash';
-import { editionHash, loadEdition } from '@/lib/digital/edition';
+import { exportSubject, isChapterCurrent } from '@/lib/publish/export';
+import { loadEdition } from '@/lib/digital/edition';
 import { readJob, startPublish } from '@/lib/publish/job';
 import { checkOrder } from '@/lib/publish/order';
 import { liveChapters, queue, readState, updateState } from '@/lib/publish/state';
@@ -22,9 +21,8 @@ async function snapshot(subject: string) {
   for (const [slug, c] of Object.entries(state.chapters)) {
     const edition = await loadEdition(subject, slug);
     if (edition) editions[slug] = edition.sections.flatMap((s) => s.pages.map(() => s.title));
-    const changed = !!c.hash && (await chapterHash(subject, slug).catch(() => null)) !== c.hash;
-    const swapped = !!c.editionHash && (!edition || editionHash(edition) !== c.editionHash);
-    if (changed || swapped) stale.push(slug);
+    // The same test the export uses, so what the studio calls live is what is in the file.
+    if (c.hash && !(await isChapterCurrent(subject, slug, c, edition))) stale.push(slug);
   }
   return {
     state,

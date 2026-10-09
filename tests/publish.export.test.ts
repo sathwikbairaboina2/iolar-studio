@@ -143,4 +143,51 @@ describe('exportSubject', () => {
     expect(Object.keys(file.icons)).toEqual(['python']);
     expect(JSON.stringify(file)).not.toContain('onload');
   });
+
+  it('records exportedAt without losing a change another caller is making to the state', async () => {
+    await fixture();
+    const { exportSubject } = await import('@/lib/publish/export');
+    const { updateState, readState } = await import('@/lib/publish/state');
+    const slow = updateState('py', async (st) => {
+      await new Promise((r) => setTimeout(r, 150));
+      st.alwaysAsk = true;
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    await Promise.all([exportSubject('py'), slow]);
+    const state = await readState('py');
+    expect(state.alwaysAsk).toBe(true);
+    expect(state.exportedAt).toBe(read().updatedAt);
+  });
+
+  it('never exports one subject twice at the same time, and still writes a valid file', async () => {
+    await fixture();
+    let active = 0;
+    let most = 0;
+    vi.doMock('@/lib/publish/hash', async (orig) => {
+      const real = await orig<typeof import('@/lib/publish/hash')>();
+      return { ...real, chapterHash: async (s: string, c: string) => { active++; most = Math.max(most, active); await new Promise((r) => setTimeout(r, 15)); const h = await real.chapterHash(s, c); active--; return h; } };
+    });
+    const { exportSubject } = await import('@/lib/publish/export');
+    const { parseHandbook } = await import('@/lib/publish/contract');
+    const results = await Promise.all([exportSubject('py'), exportSubject('py'), exportSubject('py'), exportSubject('py')]);
+    expect(results.every((r) => r.written)).toBe(true);
+    expect(most).toBe(1);
+    expect(parseHandbook(read()).ok).toBe(true);
+    vi.doUnmock('@/lib/publish/hash');
+  });
+
+  it('uses a different temporary file for every write', async () => {
+    await fixture();
+    const fs = await import('fs');
+    const renames: string[] = [];
+    const real = fs.promises.rename;
+    const spy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (a, b) => { renames.push(String(a)); return real(a, b); });
+    const { exportSubject } = await import('@/lib/publish/export');
+    await exportSubject('py');
+    await exportSubject('py');
+    spy.mockRestore();
+    const handbookTmp = renames.filter((r) => r.includes('py.handbook.json'));
+    expect(handbookTmp).toHaveLength(2);
+    expect(new Set(handbookTmp).size).toBe(2);
+  });
 });

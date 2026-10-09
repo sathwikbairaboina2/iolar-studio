@@ -78,6 +78,8 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
   const allSelected = chapters.length > 0 && sel.size === chapters.length;
   const live = new Set(pub?.live ?? []);
   const selected = [...sel];
+  // Live, stale (edited since its review) or still waiting: any chapter the publish state holds as selected can come off.
+  const onSite = (s: string) => !!pub?.state.chapters[s]?.selected;
   const publishError = (e: unknown) => message.error(e instanceof Error ? e.message : 'failed');
   const startRun = async () => {
     try {
@@ -88,7 +90,7 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
   };
   const takeOff = async () => {
     try {
-      await act({ action: 'unselect', chapters: selected.filter((s) => live.has(s)) });
+      await act({ action: 'unselect', chapters: selected.filter(onSite) });
       setSel(new Set());
     } catch (e) { publishError(e); }
   };
@@ -242,7 +244,7 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
       <PublishBar
         count={sel.size}
         toReview={selected.filter((s) => !live.has(s)).length}
-        anyLive={selected.some((s) => live.has(s))}
+        anyLive={selected.some(onSite)}
         busy={!!pub?.job?.live}
         onClear={() => setSel(new Set())}
         onUnpublish={takeOff}

@@ -85,6 +85,14 @@ describe('publish UI', () => {
     await waitFor(() => expect(posts).toContainEqual({ url: '/api/handbooks/py/publish', body: { action: 'approve', chapter: 'tasks' } }));
   });
 
+  it('takes any selected chapter off aiiolar: live, waiting or failed', async () => {
+    await mount();
+    fireEvent.click(screen.getByLabelText('select Tasks'));
+    fireEvent.click(screen.getByLabelText('select Databases'));
+    await act(async () => { fireEvent.click(screen.getByText('Take off aiiolar')); });
+    await waitFor(() => expect(posts).toContainEqual({ url: '/api/handbooks/py/publish', body: { action: 'unselect', chapters: ['tasks', 'db'] } }));
+  });
+
   it('posts Always ask me', async () => {
     await mount();
     await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Always ask me' })); });
