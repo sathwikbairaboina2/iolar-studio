@@ -4,6 +4,9 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { validatePost, type Post } from '@/lib/schema';
 
+// The spill mechanics are pinned at a 10-page carousel; the live limit is 20.
+vi.mock('@/lib/schema', async (orig) => ({ ...(await orig<typeof import('@/lib/schema')>()), MAX_SLIDES: 10 }));
+
 /**
  * A spill has to leave the part consistent: post.json, the PNGs and the report all agreeing
  * on how many pages there are. Trimming the authored pages does not settle that on its own,

@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { loadPost, listParts } from '../store';
+import { loadPost, listParts, chapterCategory } from '../store';
+import { bookGates, numberingGates, pageTitleGates } from './categoryGates';
 import { getSettings } from '../settings';
 import { rendersDir } from '../paths';
 import { loadBook } from '../ai/book';
@@ -73,6 +74,16 @@ export async function runGates(subject: string, chapter: string, part: number): 
   // lowest-numbered part. `part` joins the min so a part not yet on disk still reports.
   const book = await loadBook(subject, chapter);
   const parts = await listParts(subject, chapter);
+  // The category's own rules: numbering per part, and the book-level ones once, like coverage.
+  const category = await chapterCategory(subject, chapter).catch(() => undefined);
+  const before = parts.filter((n) => n < part).at(-1);
+  const prior = before ? (await loadPost(subject, chapter, before).catch(() => null))?.slides ?? [] : [];
+  findings.push(...numberingGates(post.slides, category, prior));
+  if (part === Math.min(...parts, part)) {
+    if (book) findings.push(...bookGates(book, category));
+    const titles = await Promise.all(parts.map(async (n) => (await loadPost(subject, chapter, n).catch(() => null))?.slides.map((s) => s.page_title) ?? []));
+    findings.push(...pageTitleGates(titles));
+  }
   if (book && part === Math.min(...parts, part)) {
     let combined = post;
     for (const p of parts) {

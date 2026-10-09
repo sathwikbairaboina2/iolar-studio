@@ -1,0 +1,226 @@
+{
+  "title": "Async HTTP in Python: Clients, Servers and Production Patterns",
+  "summary": "Dense notes on async HTTP with aiohttp and httpx. Covers client session lifecycle, connection pools, timeouts, bounded concurrency, retries, streaming, async servers (aiohttp.web and FastAPI), blocking code in handlers and graceful shutdown.",
+  "chapters": [
+    {
+      "title": "Async HTTP Fundamentals",
+      "points": [
+        "Async HTTP means the coroutine sends a request and awaits the socket, and the event loop runs other coroutines while it waits on network I/O",
+        "It speeds up I/O-bound fan-out (many requests, high latency) but gives no speedup for CPU-bound work",
+        "Calling async def fetch() only returns a coroutine object; nothing runs until it is awaited or scheduled as a Task",
+        "asyncio.run(main()) creates the loop, runs main, cancels leftover tasks and closes the loop",
+        "A sequential `for u in urls: await fetch(u)` has no concurrency: total time = sum of all latencies",
+        "asyncio.gather(*(fetch(u) for u in urls)) runs them concurrently: total time ≈ the slowest request",
+        "asyncio.create_task() schedules immediately; keep a reference or the task can be garbage-collected mid-flight",
+        "requests is blocking, so calling it inside async def freezes the whole event loop",
+        "aiohttp: asyncio-only, HTTP client and web server in one package",
+        "httpx: the same API in sync (Client) and async (AsyncClient) form, optional HTTP/2 via httpx[http2], runs on asyncio and trio",
+        "Compared with threads: one thread drives thousands of sockets more cheaply than thread-per-request, but any single blocking call stalls every request"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Client Lifecycle: aiohttp.ClientSession and httpx.AsyncClient",
+      "points": [
+        "A ClientSession holds the connector (connection pool), cookie jar and default headers; create one per application, not one per request",
+        "`async with aiohttp.ClientSession() as s:` closes on exit; otherwise call `await s.close()` explicitly",
+        "`async with s.get(url) as r: data = await r.json()` returns the connection to the pool when the block exits",
+        "`async with httpx.AsyncClient(base_url=..., headers=...) as c: r = await c.get('/items')` reads the body eagerly unless you stream",
+        "Set base_url, default headers, auth and cookies once on the client instead of on every call",
+        "The top-level httpx.get() builds a throwaway client per call, so nothing is pooled",
+        "A session per request pays a fresh TCP + TLS handshake (1–3 extra RTTs) every time",
+        "Neither library raises on 4xx/5xx by default; call r.raise_for_status() (aiohttp raises ClientResponseError, httpx raises HTTPStatusError)",
+        "A session that is never closed triggers an 'Unclosed client session' warning and leaks sockets",
+        "Create the session inside running async code; it binds to that event loop, so never share it across loops or threads",
+        "In a long-lived service, open the client at startup/lifespan, store it on app state and close it on shutdown"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Connection Pooling and Limits",
+      "points": [
+        "Keep-alive pooling reuses open TCP/TLS connections for the same (scheme, host, port), skipping handshakes",
+        "aiohttp TCPConnector(limit=100, limit_per_host=0) are the defaults; limit=0 means no global cap and limit_per_host=0 means no per-host cap",
+        "limit_per_host caps simultaneous sockets to one host, protecting a single upstream",
+        "When the pool is full, new requests queue for a free connection; in aiohttp that wait counts toward the connect and total timeouts",
+        "httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=5.0) are the defaults",
+        "httpx raises PoolTimeout when no connection frees up within the pool timeout",
+        "aiohttp caches DNS: TCPConnector(ttl_dns_cache=10) is the default (seconds)",
+        "AsyncClient(http2=True) multiplexes many concurrent requests over one connection per host",
+        "A response that is never read or released leaks its connection; enough leaks exhaust the pool and every later request hangs",
+        "TCPConnector(force_close=True) disables keep-alive, costing a new connection per request",
+        "If the server closes idle pooled connections, reused sockets fail with 'Server disconnected'; retry only idempotent requests",
+        "The pool limit caps sockets, not tasks: 10k tasks still get created and just queue for the pool"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Per-Request and Total Timeouts",
+      "points": [
+        "With no timeout a request can hang forever on a stalled server; always set one",
+        "aiohttp's default is ClientTimeout(total=300, sock_connect=30): 5 minutes, usually far too long",
+        "aiohttp ClientTimeout fields: total (whole operation), connect (includes pool wait), sock_connect (TCP connect), sock_read (max gap between reads)",
+        "Override per request: s.get(url, timeout=aiohttp.ClientTimeout(total=5))",
+        "httpx defaults to 5s on every phase; httpx.Timeout(10.0, connect=3.0) sets connect, read, write and pool separately",
+        "httpx timeouts are per phase, not a total: a server that trickles a byte every 4s never trips the read timeout",
+        "Enforce a hard overall deadline with `async with asyncio.timeout(10):` (3.11+) or asyncio.wait_for(coro, 10)",
+        "Wrapping gather() in asyncio.timeout cancels every child request when the deadline hits",
+        "aiohttp raises asyncio.TimeoutError for total and ServerTimeoutError for socket phases; httpx raises ConnectTimeout, ReadTimeout, WriteTimeout and PoolTimeout (all TimeoutException)",
+        "Rule of thumb: a short connect timeout (3–5s), a read timeout matched to the endpoint's SLA, and a total deadline on the caller",
+        "Passing timeout=None in httpx disables all timeouts, a common way to cause a silent hang"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Bounded Concurrency for Many Requests",
+      "points": [
+        "gather() over 10,000 URLs starts 10,000 tasks at once, causing memory spikes, long pool queues, file-descriptor exhaustion and upstream 429s",
+        "Use asyncio.Semaphore(n) with `async with sem: return await fetch(s, url)` to allow at most n requests in flight",
+        "Example: `sem = asyncio.Semaphore(20)` → `results = await asyncio.gather(*(bounded(u) for u in urls))`",
+        "Worker pool: asyncio.Queue plus N worker tasks keeps memory constant for huge or streaming inputs",
+        "asyncio.TaskGroup (3.11+) gives structured concurrency: the first failure cancels its siblings and raises an ExceptionGroup",
+        "Plain gather(): the first exception propagates, but the other tasks keep running and are not cancelled",
+        "gather(..., return_exceptions=True) returns errors as results so one failure doesn't lose the batch",
+        "asyncio.as_completed(tasks) processes results in completion order, which suits progress bars and early exit",
+        "A semaphore bounds the whole operation (request + parse + retries); a connector limit bounds only open sockets",
+        "A rate limit (requests/sec) is not a concurrency limit; use a token bucket (e.g. aiolimiter) for req/s quotas",
+        "Size n from the upstream's capacity and keep it ≤ limit_per_host so tasks don't just wait inside the pool"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Retries with Exponential Backoff",
+      "points": [
+        "Retry only transient failures: connect errors, timeouts, 429, 502, 503 and 504; never 400, 401, 403, 404 or 422",
+        "Retry only idempotent requests: GET, PUT and DELETE are safe; retry POST only with an idempotency key",
+        "Exponential backoff: delay = min(cap, base * 2**attempt), e.g. 0.5, 1, 2, 4… capped at 30s",
+        "Full jitter: `await asyncio.sleep(random.uniform(0, delay))` spreads out retries and avoids a thundering herd",
+        "Honor the Retry-After header on 429/503 instead of your own computed delay",
+        "Manual loop: `for attempt in range(5): try: return await fetch() except (httpx.TransportError, ...): await asyncio.sleep(backoff(attempt))`",
+        "tenacity decorates async def directly: @retry(stop=stop_after_attempt(5), wait=wait_random_exponential(max=10), retry=retry_if_exception_type(...))",
+        "httpx.AsyncHTTPTransport(retries=3) retries only ConnectError/ConnectTimeout, never status codes",
+        "aiohttp has no built-in retry; write the loop yourself or use aiohttp-retry",
+        "Sleep outside the semaphore so a backing-off task doesn't hold a concurrency slot, and cap total attempts with an overall deadline",
+        "Never swallow asyncio.CancelledError in a retry `except`; re-raise it or shutdown and timeouts break"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Streaming Responses",
+      "points": [
+        "Stream large downloads, SSE and NDJSON feeds so the whole body is never loaded into memory",
+        "aiohttp: `async for chunk in r.content.iter_chunked(64 * 1024):`; iter_any() gives whatever has arrived and readline() suits line protocols",
+        "httpx: `async with c.stream('GET', url) as r: async for chunk in r.aiter_bytes():`, with aiter_text(), aiter_lines() and aiter_raw() variants",
+        "httpx c.get() always buffers the full body; you must use c.stream() to stream",
+        "Call r.raise_for_status() before iterating so an error page isn't saved as data",
+        "Inside stream(), `await r.aread()` loads the body on demand, e.g. only for error responses",
+        "Leaving a stream half-consumed without exiting its context leaks the connection; always exit the `async with`",
+        "Download example: stream chunks → write with aiofiles, or batch writes via asyncio.to_thread, because plain file.write blocks",
+        "The read timeout applies per chunk, so a slow stream never times out; add a total deadline with asyncio.timeout",
+        "SSE/NDJSON: `async for line in r.aiter_lines(): event = json.loads(line)`",
+        "Streaming uploads: aiohttp data=<async generator>, httpx content=<async iterator>"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Async Web Servers: aiohttp.web and FastAPI/Starlette",
+      "points": [
+        "aiohttp.web: `async def handle(request): return web.json_response({...})`, then app.router.add_get('/x', handle) and web.run_app(app)",
+        "aiohttp handlers must be async def; read input via request.match_info and `await request.json()`",
+        "aiohttp cleanup_ctx: an async generator creates the ClientSession before `yield` and closes it after; store it with app[web.AppKey(...)]",
+        "FastAPI/Starlette run on an ASGI server (uvicorn) with one event loop per worker process",
+        "`async def` endpoint runs directly on the event loop, so it may only await non-blocking I/O",
+        "A plain `def` endpoint runs in the anyio threadpool (default 40 threads), so blocking calls are safe there",
+        "The table: async def + await httpx → best; async def + requests/time.sleep → blocks every request; def + requests → OK up to 40 concurrent",
+        "Dependencies follow the same rule: `def` dependencies also run in the threadpool",
+        "lifespan: `@asynccontextmanager async def lifespan(app): app.state.client = httpx.AsyncClient(); yield; await app.state.client.aclose()`",
+        "Reuse the lifespan client in every request; never create an AsyncClient per request",
+        "StreamingResponse(async_gen()) proxies an upstream c.stream() to the caller without buffering",
+        "Multi-core: `uvicorn --workers N` or gunicorn -k uvicorn.workers.UvicornWorker; each worker has its own loop and client"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Blocking Code in Handlers and Graceful Shutdown",
+      "points": [
+        "Blocking symptom: latency spikes across all endpoints at once; PYTHONASYNCIODEBUG=1 logs callbacks slower than 100ms",
+        "`await asyncio.to_thread(func, *args)` (3.9+) runs blocking I/O in the default thread executor",
+        "`loop.run_in_executor(pool, func)` with your own ThreadPoolExecutor(max_workers=...) controls the thread count",
+        "CPU-bound work needs ProcessPoolExecutor, because the GIL means threads don't parallelize Python bytecode",
+        "Starlette/FastAPI helpers: `await run_in_threadpool(func)` or anyio.to_thread.run_sync(func)",
+        "Threads can't be cancelled: a timeout on to_thread abandons the await but the thread keeps running",
+        "Graceful shutdown order: stop accepting → finish in-flight requests → cancel background tasks → close HTTP clients → exit",
+        "uvicorn on SIGTERM stops accepting and drains in-flight requests; --timeout-graceful-shutdown N caps the wait",
+        "aiohttp web.run_app(shutdown_timeout=60) is the default drain window; on_shutdown/on_cleanup hooks close resources",
+        "Track background tasks in a set, then on shutdown call task.cancel() and `await asyncio.gather(*tasks, return_exceptions=True)`",
+        "Kubernetes sends SIGTERM, then SIGKILL after terminationGracePeriodSeconds (30s default); keep the app's drain timeout below it",
+        "Closing ClientSession/AsyncClient in cleanup closes pooled sockets cleanly and avoids unclosed-resource warnings"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Async HTTP Cheatsheet",
+      "points": [
+        "One client per app: ClientSession / AsyncClient opened in lifespan or cleanup_ctx and closed on shutdown",
+        "Timeouts: aiohttp.ClientTimeout(total=10, sock_connect=3) / httpx.Timeout(10, connect=3), plus asyncio.timeout() for a hard total",
+        "Pool knobs: TCPConnector(limit=100, limit_per_host=10) / httpx.Limits(max_connections=100, max_keepalive_connections=20)",
+        "Fan-out: Semaphore(n) + gather/TaskGroup; Queue + N workers for huge inputs; aiolimiter for req/s",
+        "Retries: transient and idempotent only, exponential backoff + full jitter, honor Retry-After, re-raise CancelledError",
+        "Streaming: r.content.iter_chunked() / c.stream() + aiter_bytes(); always exit the context to release the connection",
+        "Server rule: async def only awaits; blocking → def endpoint or asyncio.to_thread; CPU → ProcessPoolExecutor",
+        "Shutdown: SIGTERM → stop accepting → drain → cancel background tasks → close clients, all within the grace period",
+        "Errors: aiohttp ClientError / ClientResponseError; httpx RequestError / HTTPStatusError / TimeoutException",
+        "Top mistakes: a session per request, requests in async def, unbounded gather, no timeout, unreleased responses"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

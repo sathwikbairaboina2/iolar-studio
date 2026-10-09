@@ -1,7 +1,13 @@
 import { z } from 'zod';
 
-/** Instagram shows 10 carousel images. Advisory: the UI warns past this, nothing rejects it. */
-export const MAX_SLIDES = 10;
+/** Instagram shows 20 carousel images. Advisory: the UI warns past this, nothing rejects it. */
+export const MAX_SLIDES = 20;
+
+/**
+ * How many pages a book aims for. Below the carousel limit on purpose: polish grows pages and
+ * spills, and a book planned at the limit would push its tail into a second post.
+ */
+export const BOOK_PAGES = 15;
 
 export const RATIOS: Record<string, [number, number]> = {
   '3:4': [1080, 1440],
@@ -11,7 +17,7 @@ export const RATIOS: Record<string, [number, number]> = {
 
 export const TEMPLATES = [
   'spiral-notes', 'margin-qa', 'blackboard', 'studygram-pastel',
-  'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet', 'sketchnote', 'marker-notes',
+  'engineer-grid', 'terminal-dark', 'legal-pad', 'sticky-wall', 'study-sheet', 'sketchnote', 'marker-notes', 'notebook',
 ] as const;
 
 export const INKS = ['blue', 'red', 'green', 'black', 'accent', 'purple', 'orange', 'pink'] as const;
@@ -114,14 +120,22 @@ const DiagramSchema = z.discriminatedUnion('kind', [
 ]);
 
 const BlockSchema = z.union([
-  z.object({ type: z.literal('heading'), text: z.string().min(1), ink: Ink.optional() }),
+  z.object({ type: z.literal('heading'), text: z.string().min(1), ink: Ink.optional(), style: z.enum(['ribbon']).optional() }),
   z.object({ type: z.literal('paragraph'), text: z.string().min(1), frame: Frame.optional(), ink: Ink.optional() }),
   z.object({ type: z.literal('bullets'), items: z.array(z.string().min(1)).min(1), style: z.enum(BULLET_STYLES).optional(), frame: Frame.optional(), ink: Ink.optional() }),
   z.object({ type: z.literal('sidebox'), title: z.string(), items: z.array(z.string()).min(1), ink: Ink.optional() }),
   z.object({ type: z.literal('table'), headers: z.array(z.string()).min(1), rows: z.array(z.array(z.string())).min(1), highlightRow: z.number().int().min(0).optional(), frame: Frame.optional() }),
-  z.object({ type: z.literal('code'), lang: z.string().default('python'), lines: z.array(z.string()).min(1), note: z.string().optional() }),
+  z.object({
+    type: z.literal('code'), lang: z.string().default('python'), lines: z.array(z.string()).min(1), note: z.string().optional(),
+    /** What the code returns, drawn as a small table beside it (a drill's query output). */
+    result: z.object({ headers: z.array(z.string()).min(1), rows: z.array(z.array(z.string())) }).optional(),
+  }),
   DiagramSchema,
-  z.object({ type: z.literal('callout'), style: z.enum(['tip', 'takeaway', 'cloud', 'sticky', 'sticky-pink']), title: z.string(), text: z.string() }),
+  z.object({ type: z.literal('callout'), style: z.enum(['tip', 'takeaway', 'cloud', 'sticky', 'sticky-pink', 'banner']), title: z.string(), text: z.string() }),
+  /** A listicle page's opener: the big numeral and the concept's name. */
+  z.object({ type: z.literal('concept'), number: z.number().int().min(0), title: z.string().min(1), tagline: z.string().optional() }),
+  /** Icon + label + text rows ("What it is:"), one to four. */
+  z.object({ type: z.literal('labelrows'), rows: z.array(z.object({ icon: z.string().min(1), label: z.string().min(1), text: z.string().min(1) })).min(1).max(4) }),
   z.object({ type: z.literal('qa'), q: z.string(), a_bullets: z.array(z.string()).min(1), example_code: z.array(z.string()).optional() }),
 ]);
 
@@ -143,6 +157,8 @@ export const SlideSchema = z
     cont: z.boolean().optional(),
     /** A logo or icon drawn in the page chrome, top right (the AWS cloud, a bucket). */
     hero: z.string().optional(),
+    /** A short handwritten note in the page corner, under the page badge (notebook family). */
+    aside: z.string().max(40).optional(),
     /** Smaller line after the title: "(Identity and Access Management)". */
     subtitle: z.string().optional(),
     /** A cover is its own page: no blocks, never merged into or spilled from. */

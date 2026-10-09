@@ -4,7 +4,7 @@ import { Alert, Button, Modal, Space, Typography } from 'antd';
 import { ReloadOutlined, ExpandOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 export default function PreviewPane({
-  subject, chapter, part, slide, slideCount, version, overflowPx, fillPct, onRerender, onAiFix, onDensify, rendering, referenceUrl,
+  subject, chapter, part, slide, slideCount, version, overflowPx, fillPct, undrawn = 0, onRerender, onRenderAll, onAiFix, onDensify, rendering, referenceUrl,
 }: {
   subject: string;
   chapter: string;
@@ -14,6 +14,9 @@ export default function PreviewPane({
   version: number;
   overflowPx: number | null;
   fillPct?: number | null;
+  /** Blocks left off this page by a one-slide render: the page is full, not thin. */
+  undrawn?: number;
+  onRenderAll?: () => void;
   onRerender: () => void;
   onAiFix: () => void;
   onDensify?: () => void;
@@ -38,7 +41,18 @@ export default function PreviewPane({
         </span>
       </div>
 
-      {fillPct != null && fillPct < 80 && overflowPx === 0 && onDensify && (
+      {undrawn > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 8 }}
+          title={`${undrawn} block(s) did not fit and are not drawn`}
+          description="Render the whole part to flow them onto the next page."
+          action={onRenderAll && <Button size="small" onClick={onRenderAll}>Render all</Button>}
+        />
+      )}
+
+      {fillPct != null && fillPct < 80 && overflowPx === 0 && !undrawn && onDensify && (
         <Alert
           type="warning"
           showIcon

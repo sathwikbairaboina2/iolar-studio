@@ -1,17 +1,22 @@
 'use client';
 import { use, useEffect, useState } from 'react';
-import { Button, Card, Empty, Input, Modal, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Card, Empty, Input, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from 'antd';
 import { message } from '@/lib/ui/message';
 import { PlusOutlined } from '@ant-design/icons';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { isSlug, slugify } from '@/lib/paths';
 import { SWEEP } from '@/components/ThemeProvider';
+import { CATEGORIES, categoryOf, filterChapters, type CategoryId } from '@/lib/handbookCategories';
+import { CategorySelect } from '@/components/handbooks/CategorySelect';
 
 type ChapterMeta = {
-  subject: string; slug: string; title: string; parts: number;
+  subject: string; slug: string; title: string; category?: string; parts: number;
   points: number; pages: number; avgFill: number; status: string;
   partStatuses?: string[]; updatedAt: string;
 };
+
+const STATUSES = ['draft', 'rendered', 'polished', 'packaged', 'published'];
 type Subject = { slug: string; name: string; emoji: string; description: string };
 
 const STATUS_COLOR: Record<string, string> = {
@@ -24,7 +29,13 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
   const [chapters, setChapters] = useState<ChapterMeta[]>([]);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
+  const [category, setCategory] = useState<CategoryId>('handbook');
+  const [fCategory, setFCategory] = useState<string>('');
+  const [fStatus, setFStatus] = useState<string | undefined>();
+  const [query, setQuery] = useState('');
   const router = useRouter();
+  const shown = filterChapters(chapters, { category: fCategory, status: fStatus, query });
+  const count = (id: string) => chapters.filter((c) => categoryOf(c.category).id === id).length;
 
   const slug = slugify(title);
   const load = () =>
@@ -39,11 +50,12 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
     const r = await fetch(`/api/handbooks/${subject}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug, title }),
+      body: JSON.stringify({ slug, title, category }),
     });
     if (r.ok) {
       setOpen(false);
       setTitle('');
+      setCategory('handbook');
       router.push(`/handbooks/${subject}/${slug}`);
     } else {
       message.error((await r.json()).error ?? 'failed');
@@ -57,16 +69,50 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
           {meta ? `${meta.emoji} ${meta.name}` : subject} · {chapters.length} chapters
         </Typography.Title>
         <Space style={{ marginLeft: 'auto' }}>
+          <Link href="/handbooks/categories">category rules</Link>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>new chapter</Button>
         </Space>
       </div>
+
+      {chapters.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+          <Segmented
+            value={fCategory}
+            onChange={(v) => setFCategory(String(v))}
+            options={[
+              { value: '', label: `All ${chapters.length}` },
+              ...CATEGORIES.filter((c) => count(c.id) > 0).map((c) => ({ value: c.id, label: `${c.emoji} ${c.name} ${count(c.id)}` })),
+            ]}
+          />
+          <Select
+            allowClear
+            placeholder="any status"
+            value={fStatus}
+            onChange={setFStatus}
+            options={STATUSES.map((s) => ({ value: s, label: s }))}
+            style={{ width: 140 }}
+          />
+          <Input.Search
+            allowClear
+            placeholder="filter by title"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            style={{ width: 220 }}
+          />
+          {shown.length !== chapters.length && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>{shown.length} of {chapters.length}</Typography.Text>
+          )}
+        </div>
+      )}
 
       {chapters.length === 0 ? (
         <Empty description="No chapters yet">
           <Button type="primary" onClick={() => setOpen(true)}>+ new chapter</Button>
         </Empty>
+      ) : shown.length === 0 ? (
+        <Empty description="No chapters match these filters" />
       ) : (
-        chapters.map((c, i) => (
+        shown.map((c) => (
           <Card
             key={c.slug}
             size="small"
@@ -81,10 +127,11 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
                   justifyContent: 'center', fontWeight: 700, fontSize: 13, color: '#fff', backgroundImage: SWEEP,
                 }}
               >
-                {String(i + 1).padStart(2, '0')}
+                {String(chapters.indexOf(c) + 1).padStart(2, '0')}
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <b style={{ fontSize: 14 }}>{c.title}</b>
+                <Tag style={{ marginInlineStart: 8, fontSize: 11 }}>{categoryOf(c.category).emoji} {categoryOf(c.category).name}</Tag>
                 <div style={{ fontSize: 11.5, opacity: 0.65 }}>
                   {c.points} points · {c.avgFill ? `${c.avgFill}% avg fill` : 'not rendered'}
                 </div>
@@ -128,6 +175,12 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
           onChange={(e) => setTitle(e.target.value)}
           style={{ marginBottom: 10 }}
         />
+        <div style={{ marginBottom: 10 }}>
+          <CategorySelect value={category} onChange={setCategory} style={{ width: '100%' }} />
+          <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 4 }}>
+            {categoryOf(category).blurb}
+          </Typography.Text>
+        </div>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           chapter-slug: <b>{slug || '—'}</b>
         </Typography.Text>

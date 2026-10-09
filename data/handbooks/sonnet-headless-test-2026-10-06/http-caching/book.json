@@ -1,0 +1,228 @@
+{
+  "title": "HTTP Caching: Cache-Control, Validators and CDNs",
+  "summary": "A practical guide to how HTTP caching works: Cache-Control directives, ETag/Last-Modified validation with 304 responses, the Vary header, browser vs CDN vs proxy caches, hashed-filename cache busting, and the misconfigurations that bite in production.",
+  "chapters": [
+    {
+      "title": "Why HTTP Caching Matters",
+      "points": [
+        "Caching stores a copy of a response so a later request can reuse it instead of hitting the origin",
+        "Three wins: lower latency, less bandwidth, less origin load",
+        "Cache hit vs cache miss: a hit is served from the cache, a miss goes to the origin and may store the result",
+        "Freshness: a stored response is fresh while its age is below its freshness lifetime",
+        "Staleness: a stale response must be revalidated (or served under explicit stale rules) before reuse",
+        "Only cacheable methods and status codes are stored by default: GET/HEAD with 200, 301, 404 etc.; POST is rarely cached",
+        "Heuristic freshness: with no explicit lifetime, caches may guess ~10% of (Date - Last-Modified)",
+        "Age header: how many seconds a response has sat in shared caches",
+        "Request flow: browser cache -> CDN edge -> proxy/origin shield -> origin",
+        "Shared cache (CDN, proxy) serves many users; private cache (browser) serves one"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cache-Control Basics: max-age and s-maxage",
+      "points": [
+        "Cache-Control is the modern header that governs caching; it overrides Expires and Pragma",
+        "Syntax: comma-separated directives, e.g. Cache-Control: public, max-age=3600",
+        "max-age=N: response is fresh for N seconds after it was generated, counted from the Date header",
+        "s-maxage=N: same as max-age but applies only to shared caches and overrides max-age there",
+        "Example: Cache-Control: max-age=60, s-maxage=3600 gives browsers 1 minute and CDNs 1 hour",
+        "Expires: legacy absolute date; ignored if max-age is present",
+        "max-age=0 means immediately stale, so every use requires revalidation",
+        "Time is relative to response generation, not receipt, so Age header is subtracted from lifetime",
+        "Request-side Cache-Control (e.g. max-age=0, no-cache on reload) lets clients demand fresh copies",
+        "s-maxage also implies the response is allowed in shared caches even if it carries Authorization",
+        "Pragma: no-cache is an HTTP/1.0 request relic and not reliable as a response header"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "no-cache vs no-store",
+      "points": [
+        "no-cache does NOT mean don't cache: the response may be stored but must be revalidated before every reuse",
+        "no-store means never write the response to any cache, browser or shared",
+        "no-cache gives you caching plus freshness guarantee; no-store gives you no caching at all",
+        "Use no-store for sensitive data: banking pages, tokens, personal data",
+        "Use no-cache for HTML shells that should always be checked but can still get a cheap 304",
+        "Comparison table: no-cache = stored + revalidate; no-store = not stored; max-age=0 = stored + stale immediately",
+        "must-revalidate: once stale, the cache must not serve it without successful revalidation, even if the origin is down",
+        "no-cache, no-store together is redundant; no-store alone is enough",
+        "Mistake: using no-cache to mean no-store for private data, leaving a copy on disk",
+        "Even no-store cannot protect data from the user's own browser history/back-button in all cases; test it",
+        "Back/forward cache (bfcache) can restore pages regardless of caching headers unless no-store is set"
+      ],
+      "shape": [
+        "definition",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "public, private, immutable, stale-while-revalidate",
+      "points": [
+        "public: any cache, including shared ones, may store the response, even if it looks personalized or has Authorization",
+        "private: only the end user's browser cache may store it; CDNs and proxies must not",
+        "Default for responses with Authorization is not shared-cacheable unless public, s-maxage or must-revalidate is set",
+        "immutable: tells the browser the body will never change during its freshness lifetime, so skip revalidation even on reload",
+        "immutable matters because reloading normally triggers conditional requests for every asset",
+        "Example for fingerprinted assets: Cache-Control: public, max-age=31536000, immutable",
+        "stale-while-revalidate=N: serve the stale copy instantly for up to N seconds while refreshing in the background",
+        "Example: Cache-Control: max-age=60, stale-while-revalidate=300 hides revalidation latency from users",
+        "stale-if-error=N: serve stale for N seconds if the origin returns 5xx or is unreachable",
+        "SWR trade-off: users may see content up to max-age + N seconds old, so pick N by how stale is acceptable",
+        "Browser support for immutable varies (Safari/Firefox yes; others ignore safely since it's an optimization)",
+        "Per-directive scope: s-maxage and public target shared caches; private and immutable target the browser"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Validators: ETag and Last-Modified",
+      "points": [
+        "Validators let a cache ask 'has this changed?' cheaply instead of re-downloading",
+        "Last-Modified: timestamp of last change, one-second resolution, sent as an HTTP date",
+        "ETag: opaque identifier of a specific representation version, e.g. ETag: \"a1b2c3\"",
+        "Strong ETag \"abc\" means byte-for-byte identical; weak ETag W/\"abc\" means semantically equivalent",
+        "ETag generation: content hash (MD5/SHA), version number, or inode+size+mtime",
+        "ETag beats Last-Modified: it handles sub-second changes, reverts, and non-file content",
+        "If both are present, caches use both; ETag takes precedence for If-None-Match matching",
+        "Gotcha: per-server ETags (inode-based) differ across load-balanced nodes, causing needless 200s",
+        "Gotcha: compression middleware can alter or strip the ETag; gzip vs br variants need distinct ETags",
+        "Range requests require strong validators; weak ETags cannot be used with If-Range",
+        "Last-Modified in the future or constantly updating (dynamic pages) breaks heuristic freshness",
+        "Without any validator, a stale response can only be re-fetched in full"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Conditional Requests and 304 Not Modified",
+      "points": [
+        "Flow: client sends validator back; origin compares and replies 304 with no body or 200 with fresh body",
+        "If-None-Match: \"a1b2c3\" pairs with ETag; server returns 304 if any listed tag matches",
+        "If-Modified-Since: <date> pairs with Last-Modified; 304 if resource not modified after that date",
+        "If-None-Match takes precedence when both conditions are sent",
+        "Example exchange: GET /app.css -> 200 + ETag \"v7\"; later GET with If-None-Match: \"v7\" -> 304 Not Modified",
+        "A 304 has no body but should repeat Cache-Control, Expires, ETag, Vary so the cache can update freshness",
+        "After a 304 the cache resets the freshness clock and serves its stored body",
+        "Cost of a 304: one round trip with tiny headers, saving bandwidth but not latency",
+        "If-Match and If-Unmodified-Since are for writes (optimistic concurrency), returning 412 Precondition Failed",
+        "If-Range: resume a partial download only if the validator still matches, else send the full body",
+        "Mistake: server ignores If-None-Match and always returns 200, wasting bandwidth",
+        "Mistake: returning 304 without a matching Vary-aware check, serving wrong variant",
+        "Browser reload sends max-age=0 conditional requests; hard reload (Ctrl+Shift+R) bypasses caches entirely"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "The Vary Header",
+      "points": [
+        "Vary lists request headers that influenced the response; caches key stored copies on URL plus those header values",
+        "Example: Vary: Accept-Encoding stores separate gzip and brotli copies of the same URL",
+        "Vary: Accept-Language for localized content; Vary: Accept for content negotiation (e.g. WebP vs JPEG)",
+        "Vary: Cookie makes each cookie value a separate entry, which kills CDN hit rate",
+        "Vary: * means the response is never reusable by shared caches without revalidating",
+        "Vary: User-Agent fragments the cache into thousands of variants; normalize at the CDN instead",
+        "Missing Vary is a correctness bug: a gzip body may be served to a client that cannot decode it",
+        "Mistake: personalised content on a public URL without Vary or private leaks one user's page to others",
+        "CDNs let you normalize or whitelist headers in the cache key to limit variants",
+        "Vary applies to revalidation too: a 304 must correspond to the same variant",
+        "Prefer separate URLs for variants (/en/, /fr/) over Vary when you can: simpler and more cache-friendly"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Browser vs CDN vs Proxy Caches",
+      "points": [
+        "Browser cache: private, per user and per device, honors private and no-store; fastest, zero network",
+        "CDN edge: shared across all users in a region, honors s-maxage and public, offloads the origin",
+        "Forward proxy: sits in front of clients (corporate/ISP) and shares responses among that group",
+        "Reverse proxy (Varnish, nginx, Cloudflare): sits in front of origin servers, caches for all clients",
+        "Layered lookup: browser -> CDN edge -> regional/shield tier -> origin, each with its own TTL",
+        "Comparison table columns: scope, who controls it, purge ability, honors private, typical TTL",
+        "You cannot purge a browser cache remotely; you can purge CDN caches via API, tag, or URL",
+        "CDN-Cache-Control, Surrogate-Control and Cloudflare-CDN-Cache-Control let you give the CDN a different policy than browsers",
+        "Example split: Cache-Control: max-age=0 for browsers with CDN-Cache-Control: max-age=86400 and purge on deploy",
+        "Cache status headers: X-Cache: HIT/MISS, CF-Cache-Status, Age, and the standard Cache-Status",
+        "CDNs may ignore origin headers by default for some extensions or add their own minimum TTLs",
+        "Caching of redirects (301 is cached long, 302 per headers) can trap users on old targets"
+      ],
+      "shape": [
+        "comparison",
+        "mechanism",
+        "example"
+      ]
+    },
+    {
+      "title": "Cache Busting with Hashed Filenames",
+      "points": [
+        "Problem: long TTLs make updates invisible until expiry, and you cannot purge browsers",
+        "Solution: put a content hash in the filename so a new build means a new URL, e.g. app.3f9a1c.js",
+        "Assets get Cache-Control: public, max-age=31536000, immutable since the URL changes when content does",
+        "HTML entry point references the hashed names and gets no-cache or a short TTL",
+        "Bundlers produce hashes automatically: webpack [contenthash], Vite and Rollup [hash], Next.js _next/static",
+        "Query-string busting (app.js?v=2) works for browsers but some proxies and CDNs ignore query strings in cache keys",
+        "Content hash beats build timestamp or version number: unchanged files keep their URL and stay cached",
+        "Deploy order: upload new hashed assets first, then publish the new HTML, so no page references a missing file",
+        "Keep the previous build's assets for a while so users with old HTML do not get 404s",
+        "Mistake: hashed asset served with short TTL wastes the benefit; non-hashed asset with long TTL traps users on old files",
+        "Cascading hashes: if a shared chunk changes, every file that imports it changes hash; split vendor code to limit this",
+        "Service worker files and manifest.json should not be hash-cached long, or updates never arrive"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Common Misconfigurations and Cheatsheet",
+      "points": [
+        "Mistake: HTML cached with long max-age, so users stay on old releases until expiry",
+        "Mistake: no-cache confused with no-store, leaking sensitive data into caches",
+        "Mistake: Set-Cookie on cacheable responses; many CDNs refuse to cache them or cache one user's session",
+        "Mistake: missing Vary: Accept-Encoding or an overly broad Vary: Cookie/User-Agent",
+        "Mistake: relying only on Last-Modified with load-balanced servers whose file times differ",
+        "Mistake: assuming a CDN purge clears browser caches; it does not",
+        "Mistake: Expires and max-age disagreeing, since max-age wins but confuses debugging",
+        "Mistake: caching error responses (5xx, soft 404s) with the same long TTL as success",
+        "Debug: curl -I, DevTools Network tab (from memory/disk cache), Age and X-Cache headers",
+        "Cheatsheet: HTML = no-cache + ETag; hashed assets = public, max-age=31536000, immutable; API user data = private, no-store; public API = s-maxage + stale-while-revalidate",
+        "Cheatsheet: sensitive = no-store; revalidate always = no-cache; CDN-only TTL = s-maxage",
+        "Summary: cache aggressively with unique URLs, validate cheaply with ETags, and keep personalized data out of shared caches"
+      ],
+      "shape": [
+        "mistakes",
+        "cheatsheet",
+        "summary"
+      ]
+    }
+  ]
+}

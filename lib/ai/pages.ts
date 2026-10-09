@@ -3,9 +3,58 @@ import { getSettings } from '../settings';
 import { loadPost, savePost, loadChapterMeta } from '../store';
 import { provider, thinker, Runner } from './runner';
 import { extractJson } from './revise';
-import { Book, loadBook } from './book';
+import { Book, loadBook, datasetRules } from './book';
 import { SCHEMA_RULES, RECIPE_GUIDANCE } from './rules';
 import { familyRecipe } from './plan';
+import { categoryOf, itemRange, isCover, isItemChapter } from '../handbookCategories';
+
+/**
+ * The chapter's category, cut into the page prompt: its page template and item rules, and for
+ * items numbered across pages, the numbers this page carries. Empty when no category is given.
+ */
+export function categoryPageRules(book: Book, index: number, category?: string): string {
+  if (!category) return '';
+  const c = categoryOf(category);
+  const chapter = book.chapters[index];
+  // The template is for item pages. A cover gets the cover recipe; an intro or closing page
+  // (a shape sharing under half the template's roles) keeps the shape the book gave it.
+  if (isCover(chapter)) return `CATEGORY "${c.name}": this page is the cover. ${c.presentation.cover}`;
+  if (!isItemChapter(category, chapter, book.chapters)) {
+    const closing = index === book.chapters.length - 1 ? ` If this page closes the post: ${c.presentation.closing}` : '';
+    return `CATEGORY "${c.name}": this is an intro or closing page, not an item page. Follow its own shape, not the item template. Rules: ${c.content.rules.join(' ')}${closing}`;
+  }
+  const lines = [
+    `CATEGORY "${c.name}": this page is ${c.content.unit} (${c.presentation.itemsPerPage}). ${c.presentation.pageRules}`,
+    `Rules: ${c.content.rules.join(' ')}`,
+  ];
+  if (c.presentation.numbering === 'continuous') {
+    const { from, to } = itemRange(book, index);
+    lines.push(`This page carries items Q${from} to Q${to}, numbered exactly so, in the order of the points.`);
+  }
+  if (index === book.chapters.length - 1) lines.push(`If this page closes the post: ${c.presentation.closing}`);
+  return lines.join('\n');
+}
+
+/**
+ * The template a part is planned in. A part that still has the template new chapters used to be
+ * seeded with (the settings default) takes the category's family; anything else was chosen by
+ * the user and stays. With no category there is nothing to move to.
+ */
+export function templateFor(existing: string | undefined, seededDefault: string, category?: string): string {
+  if (!category) return existing ?? seededDefault;
+  if (!existing || existing === seededDefault) return categoryOf(category).presentation.template;
+  return existing;
+}
+
+/** Title words that are never the topic: counts, hype and the category's own nouns. */
+const FILLER = new Set(('the a an of to in for and with you your every all most asked top best complete ultimate essential '
+  + 'must know should can t skip developer developers interview interviews question questions answers concept concepts '
+  + 'handbook guide notes system design practice queries query drills edition').split(' '));
+
+/** The comment-gate keyword: the first topic word of the title ("50 Most Asked API Questions" → "api"). */
+export function ctaKeyword(title: string): string {
+  return title.toLowerCase().split(/[^a-z0-9.#+]+/).find((w) => w && !/^\d+$/.test(w) && !FILLER.has(w)) ?? 'pdf';
+}
 
 /**
  * Page-by-page planning. One prompt per chapter instead of one prompt for the whole
@@ -23,6 +72,13 @@ or, for a cover chapter:
 Ignore the post envelope and slide-count rules in the vocabulary below; the block vocabulary, inline markup, icons and per-block ceilings apply to this one page.
 ONE PAGE ONLY: this chapter must fit one handwritten page. With an icon-card strip or a flowchart on the page, write 8-11 blocks; with text, tables and code only, 12-16. Never write more than a page; a second page is a separate chapter.`;
 
+/**
+ * Brand marks are for pages about that brand. Planners reach for the database or container logo
+ * on every page of a database or container post; a concept page about indexing is not a
+ * PostgreSQL page, and the cover strip is not a row of vendor logos.
+ */
+export const ICON_RULE = 'ICON CHOICE (hero, cover icons, flowchart and card icons): use a brand or product logo (postgresql, mysql, docker, kafka, redis, mongodb and the like) only when this page is about that product. A generic concept page (indexing, transactions, caching, REST, joins) takes a generic icon (database, server, lock, zap, network, table, shield-check, lightbulb) or no hero at all.';
+
 export type PriorPage = { index: number; title: string; taught: string[] };
 
 export function chapterPrompt(opts: {
@@ -32,6 +88,7 @@ export function chapterPrompt(opts: {
   index: number;
   prior: PriorPage[];
   coveredElsewhere?: string[];
+  category?: string;
 }): string {
   const { book, index } = opts;
   const chapter = book.chapters[index];
@@ -52,8 +109,11 @@ export function chapterPrompt(opts: {
     'EVERY point below must be taught on this page — nothing may be dropped:',
     JSON.stringify(chapter.points),
     hint,
+    categoryPageRules(book, index, opts.category),
+    datasetRules(book, opts.category),
     familyRecipe(opts.template),
     RECIPE_GUIDANCE,
+    ICON_RULE,
     prior,
     opts.coveredElsewhere?.length ? `Other posts on this account already cover: ${opts.coveredElsewhere.join(', ')} — do not re-teach those, a one-line pointer is enough.` : '',
     'Write original prose — teach each point concretely with real examples, tables, diagrams and code, the way dense study notes do.',
@@ -64,12 +124,17 @@ export function chapterPrompt(opts: {
     .join('\n\n');
 }
 
-export function captionPrompt(book: Book, brand: string): string {
+export function captionPrompt(book: Book, brand: string, category?: string): string {
+  const c = category ? categoryOf(category) : null;
   return [
     `Write the Instagram caption for a handwritten-notes carousel by "${brand}".`,
     `Handbook: "${book.title}" — ${book.summary}. Pages: ${book.chapters.map((c) => c.title).join('; ')}.`,
-    'Return ONLY {"text": string, "hashtags": [string, ...]} — 2-3 sentences, hook first, then 8-12 relevant hashtags. No prose, no fences.',
-  ].join('\n\n');
+    c ? `CATEGORY "${c.name}": ${c.script.caption}` : '',
+    c ? `End the caption with this call to action, verbatim: ${c.script.cta.replace('{keyword}', ctaKeyword(book.title))}` : '',
+    c
+      ? 'Return ONLY {"text": string, "hashtags": [string, ...]} with 8-12 relevant hashtags. No prose, no fences.'
+      : 'Return ONLY {"text": string, "hashtags": [string, ...]} — 2-3 sentences, hook first, then 8-12 relevant hashtags. No prose, no fences.',
+  ].filter(Boolean).join('\n\n');
 }
 
 /**
@@ -128,9 +193,9 @@ async function askSlide(run: Runner, prompt: string): Promise<Slide> {
   }
 }
 
-async function askCaption(run: Runner, book: Book, brand: string): Promise<Post['caption']> {
+async function askCaption(run: Runner, book: Book, brand: string, category?: string): Promise<Post['caption']> {
   try {
-    const out = extractJson(await run(captionPrompt(book, brand), { timeoutMs: 120_000 })) as { text?: unknown; hashtags?: unknown };
+    const out = extractJson(await run(captionPrompt(book, brand, category), { timeoutMs: 120_000 })) as { text?: unknown; hashtags?: unknown };
     const text = typeof out.text === 'string' ? out.text : book.summary;
     const hashtags = Array.isArray(out.hashtags) ? out.hashtags.filter((h): h is string => typeof h === 'string') : [];
     return { text, hashtags };
@@ -154,7 +219,9 @@ export async function planPagesFromBook(
   if (!book) throw new Error('no book yet — generate the book first');
   const s = getSettings();
   const existing = await loadPost(subject, chapter, part).catch(() => null);
-  const template = existing?.template ?? s.defaultTemplate;
+  const { chapterCategory } = await import('../store');
+  const category = await chapterCategory(subject, chapter).catch(() => undefined);
+  const template = templateFor(existing?.template, s.defaultTemplate, category);
 
   let coveredElsewhere: string[] = [];
   try {
@@ -163,12 +230,12 @@ export async function planPagesFromBook(
   } catch { /* graph optional */ }
 
   const slides = await mapLimit(book.chapters.length, PAGE_CONCURRENCY, async (i) => {
-    const slide = await askSlide(run, chapterPrompt({ brand: s.brand, template, book, index: i, prior: otherPages(book, i), coveredElsewhere }));
+    const slide = await askSlide(run, chapterPrompt({ brand: s.brand, template, book, index: i, prior: otherPages(book, i), coveredElsewhere, category }));
     onPage?.(i, slide);
     return slide;
   });
 
-  const caption = await askCaption(run, book, s.brand);
+  const caption = await askCaption(run, book, s.brand, category);
   const post = validatePost({
     brand: s.brand,
     template,

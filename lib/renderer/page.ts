@@ -17,6 +17,8 @@ export type TemplateManifest = {
   columnGap?: string;
   defaults?: { frame?: Frame };
   codeFont?: 'mono' | 'hand';
+  /** The chrome prints "Page 06 of 15". The flow only knows the page count once it ends, so such a family is re-stamped after it. */
+  pageCountInChrome?: boolean;
   /** One paragraph telling the planner how pages of this family are shaped. */
   recipe?: string;
 };
@@ -42,7 +44,8 @@ function assetStamp(): string {
   return String(Math.round(newest));
 }
 
-export function buildSlideHtml(post: Post, slideIndex: number): string {
+/** `pageCount`: the part's real page count, when the post holds fewer slides than the flow makes pages (a one-slide preview). */
+export function buildSlideHtml(post: Post, slideIndex: number, opts: { pageCount?: number } = {}): string {
   const slide = post.slides[slideIndex];
   const [width, height] = RATIOS[post.ratio];
   const tpl = readFileSync(path.join(templatesRoot(), post.template, 'template.html'), 'utf8');
@@ -73,14 +76,17 @@ export function buildSlideHtml(post: Post, slideIndex: number): string {
     date: post.date,
     series: post.series,
     // Templates render their own "Page N" prefix; drop any the author typed.
-    page_title: isCover ? slide.cover!.title : slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, ''),
+    // A leading "2. " goes too: every family numbers its own pages, and "2. 2. Indexing" reads as a bug.
+    page_title: isCover ? slide.cover!.title : slide.page_title.replace(/^\s*page\s*\d+\s*[:.\-—]\s*/i, '').replace(/^\s*\d+[.)]\s+/, ''),
+    // The handwritten corner note, for families that draw one.
+    aside: (slide.aside ?? '').trim(),
     // Templates wrap the subtitle in parens themselves; drop any the planner typed.
     subtitle: (slide.subtitle ?? '').trim().replace(/^\(([\s\S]*)\)$/, '$1'),
     // The Instagram glyph for handle badges; families that want it read PAGE.brandIcon.
     brandIcon: iconSvg('instagram'),
     kind: slide.kind ?? 'page',
     pageNum: slideIndex + 1,
-    pageCount: post.slides.length,
+    pageCount: opts.pageCount ?? post.slides.length,
     seed: post.seed,
     width,
     height,

@@ -34,6 +34,10 @@ export default function BookPanel({
       .catch(() => setGaps(null));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); loadGaps(); }, [subject, chapter]);
+  // Gaps are measured against the book, so a new or revised book needs them measured again —
+  // before it existed there was nothing to miss, and that empty answer read as full coverage.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (book) loadGaps(); }, [book]);
 
   // The book is the record of what the chapter promised; a gap means pages lost content.
   const repair = async () => {
@@ -122,6 +126,7 @@ export default function BookPanel({
       message.success(`Generated ${d.slides.length} slides — rendering`);
       setOpen(false);
       await onSlidesPlanned();
+      await loadGaps();
     } catch (err) {
       message.error(String(err));
     } finally {

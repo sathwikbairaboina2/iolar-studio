@@ -24,6 +24,11 @@ describe('renderSlideBlocks', () => {
     expect(fourShort).not.toContain('data-force-full="1"');
     const fourLong = renderSlideBlocks([{ type: 'table', headers: ['a', 'b', 'c', 'd'], rows: [['1', 'a rather long cell value', '3', '4']] }] as Block[]);
     expect(fourLong).toContain('data-force-full="1"');
+    // Two columns, but one call too long to break: it would run into the next column.
+    const longCall = renderSlideBlocks([{ type: 'table', headers: ['Situation', 'Call'], rows: [['CPU-heavy', '`await loop.run_in_executor(ProcessPoolExecutor(), fn, x)`']] }] as Block[]);
+    expect(longCall).toContain('data-force-full="1"');
+    const shortCall = renderSlideBlocks([{ type: 'table', headers: ['Situation', 'Call'], rows: [['Loop', '`asyncio.get_running_loop()`']] }] as Block[]);
+    expect(shortCall).not.toContain('data-force-full="1"');
 
     const narrow = renderSlideBlocks([
       { type: 'table', headers: ['a', 'b'], rows: [['1', '2']] },
@@ -61,12 +66,12 @@ describe('renderBlockHtml', () => {
     expect(h).toContain('data-rough');
   });
 
-  it('qa renders question, label, bullets and code', () => {
+  it('qa renders question, bullets and code (no Ans label)', () => {
     const h = renderBlockHtml({
       type: 'qa', q: 'What?', a_bullets: ['because'], example_code: ['x = 1'],
     } as Block);
     expect(h).toContain('What?');
-    expect(h).toContain('Ans');
+    expect(h).not.toContain('Ans');
     expect(h).toContain('because');
     expect(h).toContain('x = <span class="tk-num">1</span>');
   });

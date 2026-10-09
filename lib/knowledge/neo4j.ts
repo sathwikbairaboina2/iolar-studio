@@ -48,6 +48,14 @@ export class Neo4jGraph implements GraphStore {
     await this.query(`MATCH (n {space: $space}) DETACH DELETE n`, { space });
   }
 
+  async pruneOrphans(space: Space) {
+    const rows = await this.query<{ n: number }>(
+      `MATCH (n {space: $space}) WHERE NOT (n)--() WITH n LIMIT 100000 DELETE n RETURN count(*) AS n`,
+      { space },
+    );
+    return rows[0]?.n ?? 0;
+  }
+
   async close() {
     await this.driver.close();
   }

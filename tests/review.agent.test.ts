@@ -82,6 +82,35 @@ describe('reviewPart', () => {
     expect(review.findings.some((f) => f.pass === 'facts')).toBe(true);
   }, 60_000);
 
+  it('fails content with a major factual error, but not a major of another kind', async () => {
+    const { reviewPassed } = await import('@/lib/verify/review');
+    const f = (pass: string, severity: 'blocker' | 'major' | 'minor') => ({ pass, rule: `${pass}.ai`, severity, page: 1, summary: 's', evidence: 'e', fix: 'f' });
+    // Wrong content must not publish; a thin page or a teaching-order nit may.
+    expect(reviewPassed([f('facts', 'major')])).toBe(false);
+    expect(reviewPassed([f('visual', 'major'), f('pedagogy', 'major'), f('facts', 'minor')])).toBe(true);
+    expect(reviewPassed([f('code', 'blocker')])).toBe(false);
+  });
+
+  it("tells the reviewers what the chapter's other parts cover", async () => {
+    const runClaude = vi.fn().mockResolvedValue(JSON.stringify({ findings: [] }));
+    vi.doMock('@/lib/ai/claude', () => ({ runClaude, ClaudeUnavailableError: class extends Error {} }));
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'lists');
+    await savePost('python', 'lists', 1, clean());
+    const second = clean();
+    second.slides[0].page_title = 'NamedTuple vs TypedDict';
+    await savePost('python', 'lists', 2, second);
+
+    const { reviewPart } = await import('@/lib/verify/review');
+    await reviewPart('python', 'lists', 1);
+
+    // A part judged alone reports the next part's topics as missing coverage.
+    const prompts = runClaude.mock.calls.map((c) => String(c[0]));
+    const told = prompts.filter((p) => p.includes('NamedTuple vs TypedDict'));
+    expect(told.length).toBeGreaterThanOrEqual(2);
+  }, 60_000);
+
   it('treats a stale review as not current', async () => {
     mockClaude();
     const { createSubject, createChapter, savePost } = await import('@/lib/store');

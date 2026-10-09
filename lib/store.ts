@@ -6,6 +6,7 @@ import {
   bookFile, chapterDir, chapterFile, handbooksRoot, partDir, partsDir, postFile,
   rendersDir, exportDir, subjectDir, subjectFile,
 } from './paths';
+import { categoryOf, isCategoryId, type CategoryId } from './handbookCategories';
 
 export type Subject = { slug: string; name: string; emoji: string; description: string };
 export type SubjectMeta = Subject & { chapters: number; pages: number };
@@ -13,6 +14,11 @@ export type ChapterMeta = {
   subject: string;
   slug: string;
   title: string;
+  /** The handbook category whose rules drive this chapter; older chapters read as "handbook". */
+  category: CategoryId;
+  /** Reading order within the subject; chapters without one follow, oldest first. */
+  order?: number;
+  created?: string;
   parts: number;
   points: number;
   pages: number;
@@ -84,21 +90,25 @@ export async function listSubjects(): Promise<SubjectMeta[]> {
 
 /* ── chapters ─────────────────────────────────────────── */
 
-export async function createChapter(subject: string, slug: string, title?: string): Promise<ChapterMeta> {
+export async function createChapter(subject: string, slug: string, title?: string, category: CategoryId = 'handbook'): Promise<ChapterMeta> {
+  if (!isCategoryId(category)) throw new Error(`unknown category "${category}"`);
   // Creating over a chapter that exists would reset part 1 to the placeholder page and throw
   // away everything written there. Refuse instead: the caller wants a different slug.
   if (existsSync(chapterFile(subject, slug))) {
     throw new Error(`chapter ${subject}/${slug} already exists`);
   }
+  // A new chapter reads after the ones already there.
+  const order = Math.max(0, ...(await listChapters(subject)).map((c) => c.order ?? 0)) + 1;
   await fs.mkdir(chapterDir(subject, slug), { recursive: true });
   await fs.writeFile(
     chapterFile(subject, slug),
-    JSON.stringify({ title: title ?? titleCase(slug), created: new Date().toISOString() }, null, 2)
+    JSON.stringify({ title: title ?? titleCase(slug), category, order, created: new Date().toISOString() }, null, 2)
   );
   const s = getSettings();
   await createPart(subject, slug, 1, validatePost({
     brand: s.brand,
-    template: s.defaultTemplate,
+    // The category decides the look: a listicle, a Q&A bank and the rest are all drawn in its family.
+    template: categoryOf(category).presentation.template,
     ratio: s.defaultRatio,
     seed: 42,
     series: (title ?? titleCase(slug)).toUpperCase(),
@@ -109,8 +119,13 @@ export async function createChapter(subject: string, slug: string, title?: strin
   return loadChapterMeta(subject, slug);
 }
 
+/** The chapter's category without the full meta's render-report reads; "handbook" when unset. */
+export async function chapterCategory(subject: string, chapter: string): Promise<CategoryId> {
+  return categoryOf((await readJson<{ category?: string }>(chapterFile(subject, chapter)))?.category).id;
+}
+
 export async function loadChapterMeta(subject: string, chapter: string): Promise<ChapterMeta> {
-  const meta = await readJson<{ title: string }>(chapterFile(subject, chapter));
+  const meta = await readJson<{ title: string; category?: string; order?: number; created?: string }>(chapterFile(subject, chapter));
   const parts = await listParts(subject, chapter);
   const book = await readJson<{ chapters: { points: string[] }[] }>(bookFile(subject, chapter));
 
@@ -148,6 +163,9 @@ export async function loadChapterMeta(subject: string, chapter: string): Promise
     subject,
     slug: chapter,
     title: meta?.title ?? titleCase(chapter),
+    category: categoryOf(meta?.category).id,
+    order: meta?.order,
+    created: meta?.created,
     parts: parts.length,
     points: book ? book.chapters.reduce((n, c) => n + c.points.length, 0) : 0,
     pages,
@@ -167,7 +185,11 @@ export async function listChapters(subject: string): Promise<ChapterMeta[]> {
     if (!(await exists(chapterFile(subject, entry)))) continue;
     out.push(await loadChapterMeta(subject, entry));
   }
-  return out.sort((a, b) => a.title.localeCompare(b.title));
+  // Reading order, not the alphabet: a subject is taught front to back.
+  return out.sort((a, b) =>
+    (a.order ?? Infinity) - (b.order ?? Infinity)
+    || (a.created ?? '').localeCompare(b.created ?? '')
+    || a.title.localeCompare(b.title));
 }
 
 /* ── parts ────────────────────────────────────────────── */
@@ -194,6 +216,17 @@ export async function createPart(subject: string, chapter: string, part: number,
   await fs.writeFile(postFile(subject, chapter, part), JSON.stringify(valid, null, 2));
   await indexChapter(subject, chapter, valid);
   return valid;
+}
+
+/** Removes a part from disk and drops its render rows. The caller has moved its pages elsewhere. */
+export async function deletePart(subject: string, chapter: string, part: number): Promise<void> {
+  await fs.rm(partDir(subject, chapter, part), { recursive: true, force: true });
+  try {
+    const { getDb } = await import('./db');
+    getDb().prepare('DELETE FROM renders WHERE subject = ? AND chapter = ? AND part = ?').run(subject, chapter, part);
+  } catch (err) {
+    console.warn('[instastudio] render rows kept for', subject, chapter, part, err);
+  }
 }
 
 export async function loadPost(subject: string, chapter: string, part: number): Promise<Post> {
@@ -227,9 +260,11 @@ export async function partStatus(
 /** Mirrors content into SQLite + the knowledge graph. Never fails a save. */
 async function indexChapter(subject: string, chapter: string, post: Post) {
   try {
-    (await import('./handbookIndex')).indexChapter(subject, chapter, post, 'draft');
+    // Search lists chapters by their own title, not the carousel header of the last part saved.
+    const meta = await readJson<{ title: string }>(chapterFile(subject, chapter));
+    (await import('./handbookIndex')).indexChapter(subject, chapter, post, 'draft', meta?.title);
     const { syncChapter } = await import('./knowledge/spaces/handbooks');
-    await syncChapter(subject, chapter, post, 'draft');
+    await syncChapter(subject, chapter, post, 'draft', meta?.title);
   } catch (err) {
     console.warn('[instastudio] index failed for', subject, chapter, err);
   }

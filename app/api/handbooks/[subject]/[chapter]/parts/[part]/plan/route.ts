@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { planSlidesFromBook, densifySlides } from '@/lib/ai/plan';
+import { planSlidesFromBook, densifySlides, fitPlannedPages } from '@/lib/ai/plan';
 import { planPagesFromBook } from '@/lib/ai/pages';
 import { ClaudeUnavailableError } from '@/lib/ai/claude';
 
@@ -34,7 +34,9 @@ export async function POST(req: Request, ctx: Ctx) {
 
     // Default: one prompt per chapter with a running summary. `mode: 'whole'` keeps the single-shot planner.
     if (body.mode === 'whole') return NextResponse.json(await planSlidesFromBook(subject, chapter, part));
-    return NextResponse.json(await planPagesFromBook(subject, chapter, part));
+    await planPagesFromBook(subject, chapter, part);
+    // Over-long pages are condensed now, while each is still one page, so none spills onto a stub.
+    return NextResponse.json((await fitPlannedPages(subject, chapter, part)).post);
   } catch (err) {
     if (err instanceof ClaudeUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });

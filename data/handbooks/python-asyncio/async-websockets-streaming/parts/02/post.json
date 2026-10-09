@@ -1,0 +1,1521 @@
+{
+  "brand": "iolar",
+  "template": "study-sheet",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "ASYNC WEBSOCKETS & STREAMING IN PYTHON — PART 2",
+  "date": "26/09/2026",
+  "slides": [
+    {
+      "page_title": "Ping/Pong Heartbeats and Keepalive",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Definition: Why Heartbeat",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==NATs==, load balancers and proxies **silently** drop idle TCP",
+            "No FIN, no RST: both sides think the link is alive",
+            "A dead peer can go unnoticed for __minutes__",
+            "Heartbeat = send a ping on a timer and expect a pong back"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Mechanism: Ping and Pong Frames",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Frame",
+            "Opcode",
+            "Rule"
+          ],
+          "rows": [
+            [
+              "ping",
+              "`0x9`",
+              "peer **must** answer"
+            ],
+            [
+              "pong",
+              "`0xA`",
+              "echoes ==same payload=="
+            ],
+            [
+              "unsolicited pong",
+              "`0xA`",
+              "one-way keepalive"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "websockets: `ping_interval=20`, `ping_timeout=20` by default",
+            "No pong within the timeout → close with ==1011==",
+            "1011 reason: __keepalive ping timeout__ (codes: page 5)",
+            "Control frames can arrive between the fragments of a message"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "3. Example: Configure and Measure",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "serve(handler, \"\", 8765,",
+            "      ping_interval=20,",
+            "      ping_timeout=20)",
+            "# manual ping = RTT probe",
+            "pong = await ws.ping()",
+            "latency = await pong  # seconds"
+          ],
+          "note": "ping() returns a future; await it"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Stack",
+            "Setting",
+            "Value"
+          ],
+          "rows": [
+            [
+              "{icon:python} websockets",
+              "`ping_interval`/`timeout`",
+              "20s / 20s"
+            ],
+            [
+              "aiohttp server",
+              "`WebSocketResponse(heartbeat=30)`",
+              "30s"
+            ],
+            [
+              "aiohttp client",
+              "`ws_connect(url, heartbeat=30)`",
+              "30s"
+            ],
+            [
+              "Uvicorn",
+              "`--ws-ping-interval 20 --ws-ping-timeout 20`",
+              "20s / 20s"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "4. Proxies, Browsers & TCP",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "nginx `proxy_read_timeout` (60s default) **must** exceed the ping interval",
+            "Browser JS can't send ping frames → app-level `{\"type\":\"ping\"}`",
+            "==TCP keepalive== (~2 h default) is far too slow",
+            "Use WebSocket-level pings to catch dead peers"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Pick 20–30s",
+          "text": "Shorter intervals detect failures faster but cost ==wakeups== and traffic across **10k+** connections."
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Detecting dead links"
+    },
+    {
+      "page_title": "Backpressure and Bounded Queues",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is backpressure",
+          "ink": "green"
+        },
+        {
+          "type": "paragraph",
+          "text": "==Backpressure==: a slow consumer must **slow down** the producer. Without it, buffers grow without limit until the process runs out of memory (OOM).",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Mechanism in websockets",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Side",
+            "Knob",
+            "Default",
+            "When full"
+          ],
+          "rows": [
+            [
+              "Send",
+              "`write_limit`",
+              "32 KiB",
+              "`send()` waits"
+            ],
+            [
+              "Receive",
+              "`max_queue`",
+              "16 msgs",
+              "stops reading"
+            ],
+            [
+              "TCP",
+              "window",
+              "kernel",
+              "sender blocks"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`await ws.send()` waits past the ==high-water mark==",
+            "Always **await** send: that wait *is* the backpressure",
+            "Full `max_queue` → library stops reading the socket",
+            "TCP flow control then pushes back on the {blue:sender}"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "3. Template: bounded queue",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "q = asyncio.Queue(maxsize=100)",
+            "await q.put(x)  # blocks if full",
+            "try:",
+            "    q.put_nowait(x)",
+            "except asyncio.QueueFull:",
+            "    ...  # apply drop policy"
+          ],
+          "note": "never unbounded Queue() on hot paths"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Policy",
+            "How",
+            "Fits"
+          ],
+          "rows": [
+            [
+              "Drop newest",
+              "skip x",
+              "stale-ok ticks"
+            ],
+            [
+              "Drop oldest",
+              "get_nowait → put",
+              "prices, cursors"
+            ],
+            [
+              "Keep one slot",
+              "maxsize=1",
+              "latest value"
+            ],
+            [
+              "Block",
+              "`await q.put`",
+              "chat, event logs"
+            ],
+            [
+              "Disconnect",
+              "close 1008/1013",
+              "chat, event logs"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Pick by data type",
+          "text": "==Latest-value== data (prices, cursors) → drop old or keep one slot. Event logs / chat → **block** or disconnect with 1008/1013."
+        },
+        {
+          "type": "heading",
+          "text": "4. Example: per-client writer",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "producer",
+                "ink": "black"
+              },
+              {
+                "text": "bounded queue",
+                "sub": "one per client",
+                "ink": "purple"
+              },
+              {
+                "text": "writer task",
+                "sub": "one per client",
+                "ink": "blue"
+              },
+              {
+                "text": "ws.send()",
+                "ink": "green"
+              }
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def writer(ws, q):",
+            "    while True:",
+            "        m = await q.get()",
+            "        await asyncio.wait_for(",
+            "            ws.send(m), timeout=5)"
+          ],
+          "note": "on TimeoutError: close the client"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Core loop: `await ws.send(await q.get())`",
+            "Guard slow sends with `wait_for(..., timeout=5)`",
+            "Timeout → **close** that client so it can't stall others",
+            "Fan-out to many clients: see page 7"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "heading",
+          "text": "5. Common mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`create_task(ws.send(m))` per message (fire-and-forget)",
+            "…this ==hides errors== and **discards** backpressure",
+            "Unbounded `Queue()` on a hot path → OOM",
+            "Calling `send()` without await, or with no timeout"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "slow consumers, safe buffers"
+    },
+    {
+      "page_title": "Broadcast Registry & Fan-out Methods",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. Mechanism: The Registry",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "clients: set = set()",
+            "async def handler(ws):",
+            "    clients.add(ws)",
+            "    try: await ws.wait_closed()",
+            "    finally: clients.discard(ws)"
+          ],
+          "note": "finally runs on every disconnect"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Registry== = a `set` of live connections",
+            "`add` inside **try**, `discard` inside finally, so no entry leaks",
+            "Rooms: `dict[str, set[ws]]` maps each topic to its subscribers",
+            "Delete a room when its set is **empty**, or keys pile up"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "rooms: dict[str, set] = {}",
+            "rooms.setdefault(t, set()).add(ws)",
+            "rooms[t].discard(ws)",
+            "if not rooms[t]: del rooms[t]"
+          ],
+          "note": "empty room = leaked key"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Example: Queue Fan-out",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "data = json.dumps(msg)  # ONCE",
+            "for ws in list(clients):  # copy",
+            "    try: queues[ws].put_nowait(data)",
+            "    except asyncio.QueueFull:",
+            "        policy(ws)  # drop / close"
+          ],
+          "note": "bounded queue per client"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each client has a ==writer task==: `await ws.send(await q.get())`",
+            "The writer applies its **own** drop/disconnect policy (see page 6)",
+            "Serialize once, then fan out: O(N) writes per message",
+            "`list(clients)` is a **snapshot**, so the set can change safely"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 3. Comparison: 4 Ways",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Waits?",
+            "Slow client"
+          ],
+          "rows": [
+            [
+              "`for ws: await send`",
+              "serial",
+              "**stalls all**"
+            ],
+            [
+              "`gather(..., return_exceptions=True)`",
+              "concurrent",
+              "slowest = finish"
+            ],
+            [
+              "`broadcast(conns, m)`",
+              "no (sync)",
+              "skipped"
+            ],
+            [
+              "queue + writer",
+              "no",
+              "own policy"
+            ]
+          ],
+          "highlightRow": 3,
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "websockets.asyncio.server.broadcast",
+          "text": "Synchronous, so **no await**. It writes without waiting and skips clients that are closed or backed up."
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "Publisher",
+                "sub": "any worker"
+              },
+              {
+                "text": "Redis pub/sub",
+                "sub": "redis.asyncio / NATS",
+                "ink": "red"
+              },
+              {
+                "text": "Worker A, B, C",
+                "sub": "subscribe"
+              },
+              {
+                "text": "Local clients",
+                "sub": "fan out",
+                "ink": "green"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A worker's registry only sees **its own** process",
+            "With many processes/hosts: publish to ==Redis pub/sub== or NATS",
+            "Each worker fans the message out to its local set"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "blue"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "one message, N sockets"
+    },
+    {
+      "page_title": "Broadcast Pitfalls & Picking a Strategy",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "from websockets.asyncio.server \\",
+            "    import broadcast",
+            "data = json.dumps(msg)",
+            "broadcast(clients, data)  # sync"
+          ],
+          "note": "no await; skips closed/backed-up"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`for ws in clients: await ws.send(m)`: one slow client stalls **everyone**",
+            "Iterating the live set: 'set changed size during iteration'",
+            "`json.dumps` inside the loop: N× the serialization work",
+            "No `discard` in finally: dead sockets stay in the registry",
+            "Expecting `gather` to be fast: the **slowest** client still sets the finish time"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. Example: gather vs broadcast",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "data = json.dumps(msg)",
+            "await asyncio.gather(",
+            "  *(ws.send(data)",
+            "    for ws in list(clients)),",
+            "  return_exceptions=True)"
+          ],
+          "note": "slowest client sets the finish time"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 6. Pick a Strategy",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Use"
+          ],
+          "rows": [
+            [
+              "few clients, all fast",
+              "`gather`"
+            ],
+            [
+              "latest-value ticks",
+              "`broadcast()`"
+            ],
+            [
+              "must not lose events",
+              "queue + writer"
+            ],
+            [
+              "many workers / hosts",
+              "==Redis pub/sub=="
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Check return_exceptions",
+          "text": "`gather(..., return_exceptions=True)` returns errors as values: scan them and **discard** those sockets from the registry."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 7. Example: Redis Across Workers",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "ps = redis.pubsub()",
+            "await ps.subscribe(\"chat\")",
+            "async for m in ps.listen():",
+            "  if m[\"type\"] == \"message\":",
+            "    broadcast(clients, m[\"data\"])"
+          ],
+          "note": "runs once per worker process"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Publish side: `await redis.publish(\"chat\", data)`",
+            "Use `redis.asyncio`, never the **blocking** client",
+            "Every worker gets the message, fans out ==locally==",
+            "Skip non-`message` events (subscribe confirmations)"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 8. Rooms: Topic Broadcast",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "def to_room(t, msg):",
+            "  subs = rooms.get(t, set())",
+            "  data = json.dumps(msg)",
+            "  broadcast(list(subs), data)"
+          ],
+          "note": "missing room = no subscribers"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Registry set, `discard` in **finally**",
+            "Snapshot with `list()` before any fan-out",
+            "==Serialize once==, reuse the string for all",
+            "Delete empty rooms; Redis for multi-worker"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "blue"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "one message, N sockets"
+    },
+    {
+      "page_title": "Close Codes & Backoff with Jitter",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. Definition: Close Handshake",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "A sends close frame",
+                "sub": "code + reason ≤123 B",
+                "ink": "green"
+              },
+              {
+                "text": "B echoes close",
+                "sub": "same code back",
+                "ink": "blue"
+              },
+              {
+                "text": "server closes TCP",
+                "sub": "clean shutdown",
+                "ink": "black"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Meaning",
+            "When"
+          ],
+          "rows": [
+            [
+              "1000",
+              "normal",
+              "done, bye"
+            ],
+            [
+              "1001",
+              "going away",
+              "shutdown / navigation"
+            ],
+            [
+              "1002",
+              "protocol error",
+              "bad frame"
+            ],
+            [
+              "1003",
+              "unsupported data",
+              "wrong type"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Meaning",
+            "Retry?"
+          ],
+          "rows": [
+            [
+              "1008",
+              "policy (auth)",
+              "**no**, fix creds"
+            ],
+            [
+              "1009",
+              "message too big",
+              "no"
+            ],
+            [
+              "1011",
+              "internal error",
+              "yes"
+            ],
+            [
+              "1012",
+              "service restart",
+              "yes"
+            ],
+            [
+              "1013",
+              "try again later",
+              "yes"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "sidebox",
+          "title": "1006 & 4xxx",
+          "items": [
+            "==1006== is **never** sent on the wire",
+            "local report: TCP died, no close frame",
+            "==4000–4999== = your app, e.g. 4001 token expired",
+            "`await ws.close(code=4001, reason=\"expired\")`"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Mechanism: Backoff",
+          "ink": "purple"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "{green:Retry}: 1001 · 1006 · 1011 · 1012 · 1013",
+            "{red:Don't retry blindly}: 1008 or 4xxx auth",
+            "fix credentials **first**, then reconnect",
+            "==full jitter== spreads clients → no thundering herd"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "import random",
+            "BASE, CAP = 1, 30  # seconds",
+            "def delay(attempt):",
+            "  return random.uniform(0,",
+            "    min(CAP, BASE * 2**attempt))"
+          ],
+          "note": "random 0..ceiling, not fixed delay"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "attempt",
+            "ceiling",
+            "delay"
+          ],
+          "rows": [
+            [
+              "0",
+              "1s",
+              "0–1s"
+            ],
+            [
+              "1",
+              "2s",
+              "0–2s"
+            ],
+            [
+              "3",
+              "8s",
+              "0–8s"
+            ],
+            [
+              "5",
+              "32→30s",
+              "__0–30s__"
+            ]
+          ],
+          "highlightRow": 3
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Reset rule",
+          "text": "Reset `attempt = 0` only after the link stays **stable** a while (e.g. 60s), not right after the handshake."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**re-authenticate** on every new socket",
+            "**re-subscribe** to your channels",
+            "resume from ==last seen message id==",
+            "→ no events lost across the gap"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "retrying 1008 / 4001 in a loop, same bad token",
+            "fixed delay, no jitter → thundering herd",
+            "resetting attempt right after handshake",
+            "sending 1006 yourself; reason over 123 bytes",
+            "reconnecting without resume → lost events"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`async for ws in connect()` yields a **new** socket per retry",
+            "Catch `ConnectionClosed` inside, then `continue`",
+            "Send auth + `last_id` first: ==resume==, no lost events",
+            "`break` out of the loop to stop reconnecting"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "blue"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "close, retry, resume"
+    },
+    {
+      "page_title": "Auto-Reconnect, App Codes & Resume",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 3. Example: Auto-Reconnect",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async for ws in connect(URI):",
+            "  try:",
+            "    await ws.send(auth(token))",
+            "    await ws.send(sub(last_id))",
+            "    async for m in ws: handle(m)",
+            "  except ConnectionClosed:",
+            "    continue  # next retry"
+          ],
+          "note": "connect() loop has built-in backoff"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. Example: Closing with App Codes",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "if expired(token):",
+            "  await ws.close(code=4001,",
+            "    reason=\"expired\")  # ≤123 B",
+            "# peer sees code 4001:",
+            "# refresh token, then reconnect"
+          ],
+          "note": "never send 1006 yourself"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Exception",
+            "Codes",
+            "Action"
+          ],
+          "rows": [
+            [
+              "`ConnectionClosedOK`",
+              "1000 / 1001",
+              "stop or reconnect"
+            ],
+            [
+              "`ConnectionClosedError`",
+              "1006 / 1011 / …",
+              "==backoff== + retry"
+            ],
+            [
+              "`e.rcvd.code` 1008 / 4xxx",
+              "auth",
+              "**fix creds** first"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 6. Server Side: Which Code?",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Send"
+          ],
+          "rows": [
+            [
+              "graceful shutdown",
+              "`1001`"
+            ],
+            [
+              "deploy / restart",
+              "`1012`"
+            ],
+            [
+              "overloaded, slow client",
+              "`1013`"
+            ],
+            [
+              "bad or missing token",
+              "`1008`"
+            ],
+            [
+              "oversized message",
+              "`1009`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Pick the code for the client",
+          "text": "The code tells the client whether to ==retry==: 1012/1013 → back off and return; 1008 → **stop** and re-auth."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 7. Resume & Stable Reset",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "last_id = None",
+            "def handle(m):",
+            "  global last_id",
+            "  msg = json.loads(m)",
+            "  last_id = msg[\"id\"]  # cursor",
+            "  process(msg)"
+          ],
+          "note": "send last_id on every reconnect"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Record `connected_at` right after each handshake",
+            "Reset `attempt = 0` only once up **60s+**",
+            "A flapping link keeps the ==backoff== growing",
+            "Ceiling stays capped at 30s; jitter still applies"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 8. Reconnect Checklist",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Retry only 1001 · 1006 · 1011 · 1012 · 1013",
+            "Full jitter, capped: ==no thundering herd==",
+            "Re-auth **and** re-subscribe on every new socket",
+            "Replay from `last_id`, then go live"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "green"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "close, retry, resume"
+    },
+    {
+      "page_title": "Server-Sent Events: Wire Format & FastAPI",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. What is SSE",
+          "ink": "green"
+        },
+        {
+          "type": "paragraph",
+          "text": "==SSE== is **one** HTTP response with `Content-Type: text/event-stream` that stays open. The server keeps pushing text events down it.",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Browser `EventSource` reconnects **automatically** after the `retry:` delay",
+            "On reconnect it sends a ==Last-Event-ID== header with the last `id:`",
+            "Server resumes from that id, so no events are lost"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Wire Format"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            ": keepalive   <- comment",
+            "retry: 3000",
+            "id: 42",
+            "event: token",
+            "data: hello",
+            ""
+          ],
+          "note": "a blank line ends each event"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Line",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`event:`",
+              "event type name"
+            ],
+            [
+              "`data:`",
+              "payload text"
+            ],
+            [
+              "`id:`",
+              "resume cursor"
+            ],
+            [
+              "`retry:`",
+              "reconnect delay, ms"
+            ],
+            [
+              "`: ...`",
+              "comment = ==heartbeat=="
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 3. FastAPI Template",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def gen(req):",
+            "  try:",
+            "    while not await req.is_disconnected():",
+            "      yield f\"data: {await nxt()}\\n\\n\"",
+            "  finally:",
+            "    await cleanup()  # always runs"
+          ],
+          "note": "finally runs on CancelledError/GeneratorExit"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "@app.get(\"/stream\")",
+            "async def stream(req: Request):",
+            "  return StreamingResponse(",
+            "    gen(req),",
+            "    media_type=\"text/event-stream\")"
+          ],
+          "note": "gen must be an async generator"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Libraries & Proxies"
+        },
+        {
+          "type": "sidebox",
+          "title": "sse-starlette",
+          "items": [
+            "`return EventSourceResponse(gen())`",
+            "sends **ping** comments for you",
+            "handles disconnects automatically",
+            "formats `event:`/`data:`/`id:` from yielded dicts"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "# aiohttp equivalent",
+            "resp = web.StreamResponse()",
+            "await resp.prepare(req)",
+            "await resp.write(b\"data: x\\n\\n\")",
+            "return resp"
+          ],
+          "note": "set content_type before prepare()"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Proxies **buffer** by default: send `X-Accel-Buffering: no`",
+            "Forgetting `Cache-Control: no-cache` on the stream",
+            "Leaving ==gzip== on, which batches the events",
+            "HTTP/1.1: only **6** connections per domain, so the 7th tab hangs",
+            "Fix: ==HTTP/2== multiplexing removes the cap"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Rule of thumb",
+          "text": "If only the server talks, use ==SSE==: it works through HTTP infrastructure and reconnects by itself. If the client talks back too, use a WebSocket."
+        }
+      ],
+      "hero": "fastapi",
+      "subtitle": "one-way HTTP push"
+    },
+    {
+      "page_title": "SSE vs WebSocket, Resume & LLM Token Streams",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 5. SSE vs WebSocket",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "SSE",
+            "WebSocket"
+          ],
+          "rows": [
+            [
+              "Direction",
+              "server → client",
+              "both ways"
+            ],
+            [
+              "Data",
+              "text only",
+              "text + binary"
+            ],
+            [
+              "Infra / auth",
+              "plain HTTP, cookies",
+              "Upgrade, token in query"
+            ],
+            [
+              "Reconnect",
+              "**built-in**",
+              "DIY backoff (p.8)"
+            ],
+            [
+              "Best for",
+              "LLM tokens, alerts",
+              "chat, games"
+            ]
+          ],
+          "highlightRow": 4,
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 6. Resume with Last-Event-ID",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def replay(req):",
+            "  last = req.headers.get(",
+            "    \"last-event-id\", \"0\")",
+            "  for e in since(int(last)):",
+            "    yield (f\"id: {e.id}\\n\"",
+            "           f\"data: {e.data}\\n\\n\")"
+          ],
+          "note": "then continue with live events"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Give **every** event an `id:` line",
+            "`EventSource` sends ==Last-Event-ID== on reconnect",
+            "Replay events after that id, then go live",
+            "Tune the reconnect wait with `retry: 3000`"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 7. Example: LLM Token Stream",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def tokens(prompt):",
+            "  async for t in llm(prompt):",
+            "    yield f\"data: {t}\\n\\n\"",
+            "  yield \"data: [DONE]\\n\\n\""
+          ],
+          "note": "[DONE] tells the client to close"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Tab closed → generator gets ==CancelledError==",
+            "Cancel the upstream LLM call in **finally**",
+            "Escape newlines in a token: each line needs `data:`",
+            "Send JSON per event for token + metadata"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Heartbeat idle streams",
+          "text": "Yield a `: ping\\n\\n` ==comment== every ~15s so proxies don't cut a quiet stream. Browsers **ignore** comment lines."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 8. Browser Client",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "js",
+          "lines": [
+            "const es = new EventSource(",
+            "  \"/stream\");",
+            "es.onmessage = e => show(e.data);",
+            "es.addEventListener(\"token\",",
+            "  e => add(e.data));",
+            "// call es.close() on [DONE]"
+          ],
+          "note": "named events need addEventListener"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "{icon:fastapi} Push notifications and alerts",
+            "LLM / chat-bot token streaming",
+            "Live dashboards, build or job logs",
+            "Progress bars for long server tasks"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "blue"
+        }
+      ],
+      "hero": "fastapi",
+      "subtitle": "one-way HTTP push"
+    },
+    {
+      "page_title": "Cheatsheet: Async WebSockets & Streaming",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. Servers & Receive Loops"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Lib",
+            "Server one-liner",
+            "Loop"
+          ],
+          "rows": [
+            [
+              "websockets",
+              "`serve(handler, host, port)`",
+              "`async for m in ws`"
+            ],
+            [
+              "aiohttp",
+              "`WebSocketResponse().prepare(req)`",
+              "`async for m in ws`"
+            ],
+            [
+              "FastAPI",
+              "`@app.websocket` + ==accept()==",
+              "`websocket.iter_text()`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "@app.websocket(\"/ws\")",
+            "async def ep(ws: WebSocket):",
+            "    await ws.accept()  # first!",
+            "    try:",
+            "        async for m in ws.iter_text(): ...",
+            "    except WebSocketDisconnect: ..."
+          ],
+          "note": "websockets/aiohttp: catch ConnectionClosed instead"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Keepalive & Backpressure"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Ping== every **20–30s**, pong timeout about 20s",
+            "Proxy idle timeout **longer** than the ping interval",
+            "No heartbeat → a proxy silently drops idle links"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Always** `await ws.send()`, never fire-and-forget",
+            "Bounded `asyncio.Queue(maxsize=N)`, never unbounded",
+            "Each consumer gets a ==drop / disconnect== policy",
+            "`await asyncio.wait_for(ws.send(m), 5)` for slow peers"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 3. Broadcast"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Registry `set`: add in try, `discard` in **finally**",
+            "Per-client queue + its own ==writer task==",
+            "`json.dumps` **once**, before the fan-out loop",
+            "{icon:redis} Redis pub/sub fans out across workers"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Close Codes"
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "1000 ok",
+                "1001 going away",
+                "1006 dropped*"
+              ],
+              [
+                "1008 policy",
+                "1009 too big",
+                "1011 error"
+              ],
+              [
+                "1012 restart",
+                "4xxx app-defined",
+                "* local only, never sent"
+              ]
+            ],
+            "highlight": [
+              [
+                0,
+                2
+              ],
+              [
+                1,
+                0
+              ]
+            ],
+            "caption": "retry 1001/1006/1011/1012 · don't retry 1008/4xxx auth"
+          }
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. Reconnect & SSE"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Sleep `random(0, min(cap, base·2ⁿ))`: ==full jitter==",
+            "Cap it (e.g. 30s), reset n after a stable connect",
+            "**No** retry on auth failures: fix credentials first",
+            "Back online: re-subscribe, resume from ==last id=="
+          ],
+          "style": "number"
+        },
+        {
+          "type": "sidebox",
+          "title": "SSE in 4 lines",
+          "items": [
+            "`text/event-stream`; each event is `data: ...\\n\\n`",
+            "`id:` + ==Last-Event-ID== header → resume",
+            "`: ping` comment line = heartbeat",
+            "Disable proxy buffering (`X-Accel-Buffering: no`)"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Blocking** calls (`time.sleep`, `requests`) in handlers",
+            "Unbounded queues on a hot path",
+            "Sequential `await` per client when broadcasting",
+            "Forgetting `accept()` in FastAPI",
+            "No heartbeat behind a proxy"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Pick one"
+          ],
+          "rows": [
+            [
+              "two-way, low latency",
+              "**WebSocket**"
+            ],
+            [
+              "server push over plain HTTP",
+              "**SSE**"
+            ],
+            [
+              "rare updates",
+              "HTTP polling"
+            ]
+          ],
+          "frame": "solid"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Revision sheet"
+    }
+  ],
+  "caption": {
+    "text": "Your WebSocket works fine on localhost, then drops connections in production. Part 2 of ASYNC WEBSOCKETS & STREAMING IN PYTHON covers Ping/Pong Heartbeats and Keepalive, Backpressure and Bounded Queues, Broadcasting to Many Clients, Graceful Close Codes & Reconnect, Server-Sent Events & Async Streaming and Cheatsheet: Async WebSockets & Streaming.",
+    "hashtags": [
+      "#python",
+      "#asyncio",
+      "#websockets",
+      "#fastapi",
+      "#aiohttp",
+      "#backenddevelopment",
+      "#realtime",
+      "#serversentevents",
+      "#pythonprogramming",
+      "#softwareengineering",
+      "#codingnotes",
+      "#learnpython"
+    ]
+  },
+  "spilledFrom": 1
+}

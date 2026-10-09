@@ -10,7 +10,7 @@ import { MAX_SLIDES, type Post } from '@/lib/schema';
  * drop the ones you do not want, then accept the cut and package it.
  */
 export default function ReviewPanel({
-  subject, chapter, part, post, version, fill, open, onClose, onApplied,
+  subject, chapter, part, post, version, fill, open, filling = false, onClose, onApplied,
 }: {
   subject: string;
   chapter: string;
@@ -19,6 +19,8 @@ export default function ReviewPanel({
   version: number;
   fill: Record<number, number>;
   open: boolean;
+  /** Thin pages are being filled; the pages shown are about to change. */
+  filling?: boolean;
   onClose: () => void;
   onApplied: (p: Post) => void | Promise<void>;
 }) {
@@ -85,7 +87,7 @@ export default function ReviewPanel({
           {dirty && <Tag color="orange">reordered — not saved</Tag>}
           <Button onClick={() => setOrder(null)} disabled={!dirty || busy}>Reset order</Button>
           <Button onClick={onClose} disabled={busy}>Keep editing</Button>
-          <Button type="primary" icon={<CheckCircleOutlined />} loading={busy} onClick={accept}>
+          <Button type="primary" icon={<CheckCircleOutlined />} loading={busy || filling} onClick={accept}>
             Accept final cut ({current.length} pages)
           </Button>
         </Space>
@@ -95,6 +97,7 @@ export default function ReviewPanel({
         Drag a page to reorder it. Remove one with the bin. Accepting saves the order and writes
         the export folder.
       </Typography.Paragraph>
+      {filling && <Alert type="info" showIcon style={{ marginBottom: 12 }} title="Filling thin pages, one page at a time. The pages below change when it finishes." />}
 
       {current.length > MAX_SLIDES && (
         <Alert

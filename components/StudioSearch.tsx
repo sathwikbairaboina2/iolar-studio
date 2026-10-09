@@ -10,6 +10,7 @@ const DEBOUNCE_MS = 180;
 const KIND_COLOR: Record<SearchHit['kind'], string> = {
   subject: 'magenta',
   chapter: 'blue',
+  topic: 'cyan',
   explainer: 'purple',
   reel: 'volcano',
 };

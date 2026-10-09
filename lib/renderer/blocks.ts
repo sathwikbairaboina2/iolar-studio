@@ -24,6 +24,8 @@ function sameTitle(a: string, b: string): boolean {
 export const CODE_SMALL_AT = 35;
 export const CODE_TINY_AT = 41;
 export const CODE_FULL_AT = 46;
+/** The longest unbroken token a half-width table cell holds before it overflows. */
+export const TABLE_TOKEN_FULL_AT = 30;
 export const CODE_TRUNCATE_AT = 80;
 
 const CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
@@ -33,8 +35,30 @@ function inkVar(ink?: string) {
 }
 
 function heading(b: Extract<Block, { type: 'heading' }>) {
-  const cls = b.ink ? ` ink-${b.ink}` : '';
-  return `<div class="b-heading${cls}" data-jitter>${e(b.text)}</div>`;
+  const ink = b.ink ? ` ink-${b.ink}` : '';
+  // A ribbon is two elements: the outer one carries the outline, the inner one the notched fill.
+  if (b.style === 'ribbon') return `<div class="b-heading hd-ribbon${ink}"><span class="hd-ribbon-in" data-jitter>${e(b.text)}</span></div>`;
+  return `<div class="b-heading${ink}" data-jitter>${e(b.text)}</div>`;
+}
+
+/** The listicle opener: a huge zero-padded numeral, the concept on a band beside it. */
+function concept(b: Extract<Block, { type: 'concept' }>) {
+  const tagline = b.tagline ? `<div class="cn-tagline" data-jitter>${t(b.tagline)}</div>` : '';
+  return (
+    `<div class="b-concept">` +
+    `<div class="cn-num" data-jitter>${String(b.number).padStart(2, '0')}</div>` +
+    `<div class="cn-body"><div class="cn-title" data-jitter>${t(b.title)}</div>${tagline}</div></div>`
+  );
+}
+
+/** "What it is: ...": each row an icon in a ring, the label in marker, then the text. */
+function labelrows(b: Extract<Block, { type: 'labelrows' }>) {
+  const rows = b.rows
+    .map((r) =>
+      `<div class="lr-row"><span class="lr-icon">${iconSvg(r.icon)}</span>` +
+      `<div class="lr-body"><span class="lr-label" data-jitter>${t(r.label)}</span> <span class="lr-text" data-jitter>${t(r.text)}</span></div></div>`)
+    .join('');
+  return `<div class="b-labelrows">${rows}</div>`;
 }
 
 function paragraph(b: Extract<Block, { type: 'paragraph' }>) {
@@ -80,7 +104,12 @@ function code(b: Extract<Block, { type: 'code' }>) {
   const cls = ['b-code', size, b.note ? 'has-note' : ''].filter(Boolean).join(' ');
   // The note is a chip under the last line, so a short snippet keeps its column.
   const note = b.note ? `<div class="code-note co-sticky"><span class="co-pin">📌</span>${t(b.note)}</div>` : '';
-  return `<div class="${cls}" data-lang="${e(b.lang)}"><pre>${lines.map((l) => highlightLine(b.lang, l)).join('\n')}</pre>${note}</div>`;
+  const box = `<div class="${cls}" data-lang="${e(b.lang)}"><pre>${lines.map((l) => highlightLine(b.lang, l)).join('\n')}</pre>${note}</div>`;
+  if (!b.result) return box;
+  // The result sits beside the code and drops under it when the column is too narrow for both.
+  const head = `<tr>${b.result.headers.map((h) => `<th>${t(h)}</th>`).join('')}</tr>`;
+  const rows = b.result.rows.map((r) => `<tr>${r.map((c) => `<td>${t(c)}</td>`).join('')}</tr>`).join('');
+  return `<div class="code-with-result">${box}<table class="b-table code-result">${head}${rows}</table></div>`;
 }
 
 function callout(b: Extract<Block, { type: 'callout' }>) {
@@ -90,6 +119,14 @@ function callout(b: Extract<Block, { type: 'callout' }>) {
       `<span class="co-pin">📌</span>` +
       `<div class="co-title" data-jitter>${t(b.title)}</div>` +
       `<div class="co-text" data-jitter>${t(b.text)}</div></div>`
+    );
+  }
+  if (b.style === 'banner') {
+    return (
+      `<div class="b-callout co-banner">` +
+      `<span class="co-bulb">${iconSvg('lightbulb')}</span>` +
+      `<div class="co-banner-body"><div class="co-title" data-jitter><mark class="hl">${t(b.title)}</mark></div>` +
+      `<div class="co-text" data-jitter>${t(b.text)}</div></div></div>`
     );
   }
   const icon = b.style === 'tip' ? '💡 ' : b.style === 'takeaway' ? '★ ' : '';
@@ -106,10 +143,13 @@ function qa(b: Extract<Block, { type: 'qa' }>) {
   const codeHtml = b.example_code?.length
     ? `<div class="b-code"><pre>${b.example_code.map((l) => highlightLine('python', l)).join('\n')}</pre></div>`
     : '';
+  // "Q5. What is..." becomes a numbered badge and the bare question.
+  const m = /^\s*Q(\d+)\s*[.:)]\s*([\s\S]*)$/i.exec(b.q);
+  const badge = m ? `<span class="qa-badge">Q${m[1]}</span>` : '';
   return (
     `<div class="b-qa">` +
-    `<div class="qa-q" data-jitter>${t(b.q)}</div>` +
-    `<div class="qa-a"><span class="qa-ans-label" data-jitter>Ans→</span>` +
+    `<div class="qa-q" data-jitter>${badge}<span class="qa-text">${t(m ? m[2] : b.q)}</span></div>` +
+    `<div class="qa-a">` +
     `<ul data-jitter>${b.a_bullets.map((i) => `<li>${t(i)}</li>`).join('')}</ul></div>` +
     codeHtml +
     `</div>`
@@ -143,6 +183,8 @@ export function renderBlockHtml(block: Block, opts?: RenderOpts): string {
     case 'diagram': inner = renderDiagram(block); break;
     case 'callout': inner = callout(block); break;
     case 'qa': inner = qa(block); break;
+    case 'concept': inner = concept(block); break;
+    case 'labelrows': inner = labelrows(block); break;
   }
   return withFrame(block, inner, opts);
 }
@@ -151,8 +193,14 @@ export function forcesFullWidth(block: Block): boolean {
   if (block.type === 'table') {
     // Five columns always need the width; four do only when a cell is long enough to wrap badly.
     const longest = Math.max(...block.headers.map((h) => h.length), ...block.rows.flat().map((c) => c.length));
-    return block.headers.length >= 5 || (block.headers.length === 4 && longest > 12) || (block.headers.length === 3 && longest > 18);
+    // A cell wraps only at spaces, so one long unbroken token (a qualified call in code) runs
+    // past a half-width column into its neighbour whatever the column count.
+    const token = Math.max(0, ...[...block.headers, ...block.rows.flat()].flatMap((c) => c.replace(/[`*_=]/g, '').split(/\s+/)).map((w) => w.length));
+    return token > TABLE_TOKEN_FULL_AT || block.headers.length >= 5 || (block.headers.length === 4 && longest > 12) || (block.headers.length === 3 && longest > 18);
   }
+  // The opener, its label rows and a banner are page-wide by design: a half column would stack them tall.
+  if (block.type === 'concept' || block.type === 'labelrows') return true;
+  if (block.type === 'callout') return block.style === 'banner';
   if (block.type === 'code') return longestLine(block.lines) > CODE_FULL_AT;
   if (block.type === 'diagram') {
     switch (block.kind) {

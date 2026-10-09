@@ -49,6 +49,13 @@ export class FakeGraph implements GraphStore {
     return (hit?.rows ?? []) as T[];
   }
 
+  async pruneOrphans(space: Space) {
+    const linked = new Set([...this.edges.values()].flatMap((e) => [e.from, e.to]));
+    let n = 0;
+    for (const [id, node] of this.nodes) if (node.props.space === space && !linked.has(id)) { this.nodes.delete(id); n++; }
+    return n;
+  }
+
   async wipe(space: Space) {
     for (const [id, n] of this.nodes) if (n.props.space === space) this.nodes.delete(id);
     for (const [id, e] of this.edges) if (!this.nodes.has(e.from) || !this.nodes.has(e.to)) this.edges.delete(id);

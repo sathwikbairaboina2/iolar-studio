@@ -140,6 +140,30 @@ export function uncoveredPoints(book: Book, post: Post): string[] {
   return missing;
 }
 
+/**
+ * The page that teaches most of one book section, so a search hit can land on it. A section's
+ * pages carry no back-reference to it, and spills and polish move content between parts, so it
+ * is found the same way coverage is: by which slide's words its points survive in.
+ */
+export function locateSection(
+  book: Book,
+  section: number,
+  parts: { part: number; post: Post }[]
+): { part: number; page: number } | null {
+  const points = book.chapters[section]?.points ?? [];
+  if (!points.length) return null;
+  const { df, points: n } = documentFrequency(book);
+  let best = { part: 0, page: 0, score: 0 };
+  for (const { part, post } of parts) {
+    for (let i = 0; i < post.slides.length; i++) {
+      const body = new Set(terms(postText({ ...post, slides: [post.slides[i]] })));
+      const score = points.reduce((sum, p) => sum + (coverageScore(p, body, df, n) ?? 0), 0);
+      if (score > best.score) best = { part, page: i + 1, score };
+    }
+  }
+  return best.score > 0 ? { part: best.part, page: best.page } : null;
+}
+
 /** How much of one page each authored slide needs. Over 100% spills onto the next page. */
 export async function measureSlides(post: Post): Promise<SlideFit[]> {
   const out: SlideFit[] = [];

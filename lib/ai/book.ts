@@ -1,14 +1,32 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { z } from 'zod';
-import { MAX_SLIDES } from '../schema';
+import { MAX_SLIDES, BOOK_PAGES } from '../schema';
 import { bookFile, chapterDir } from '../paths';
 import { thinker } from './runner';
 import { extractJson } from './revise';
+import { categoryOf } from '../handbookCategories';
+
+/** The chapter's category, cut into the book prompt: what a chapter is and the shape every page takes. */
+export async function categoryBookRules(subject: string, chapter: string): Promise<string> {
+  const { chapterCategory } = await import('../store');
+  const c = categoryOf(await chapterCategory(subject, chapter).catch(() => undefined));
+  return [
+    `CATEGORY "${c.name}": each chapter is ${c.content.unit}. ${c.content.bookGuidance}`,
+    `Every item chapter's "shape" is: ${c.content.pageShape.join(' → ')}. A cover chapter is shaped ["cover"]; intro and closing chapters (requirements, architecture, summary, cheatsheet) get shapes of their own.`,
+    `Rules: ${c.content.rules.join(' ')}`,
+  ].join('\n');
+}
 
 export const BookSchema = z.object({
   title: z.string(),
   summary: z.string(),
+  /** Drills only: the one schema and every sample row all the tasks run against. */
+  dataset: z
+    .object({
+      tables: z.array(z.object({ name: z.string(), columns: z.array(z.string()), rows: z.array(z.array(z.string())) })).min(1),
+    })
+    .optional(),
   chapters: z
     .array(
       z.object({
@@ -33,6 +51,23 @@ export const BookSchema = z.object({
 });
 
 export type Book = z.infer<typeof BookSchema>;
+
+/**
+ * A drills chapter runs every task on one dataset, or each page invents rows of its own and the
+ * results contradict each other. Returned for a drills chapter whose book carries one, else empty,
+ * so the other categories' prompts never see it.
+ */
+export function datasetRules(book: Book, category?: string): string {
+  if (category !== 'drills' || !book.dataset) return '';
+  const tables = book.dataset.tables
+    .map((t) => `${t.name}(${t.columns.join(', ')})\n${t.rows.map((r) => `  ${r.join(' | ')}`).join('\n')}`)
+    .join('\n');
+  return [
+    'SAMPLE DATASET for the whole chapter:',
+    tables,
+    'Use ONLY these tables and rows. Every result is computed from exactly these rows; never invent names, ids or values. The intro or schema page shows this dataset in full.',
+  ].join('\n');
+}
 
 export function bookPath(subject: string, chapter: string) {
   return bookFile(subject, chapter);
@@ -77,19 +112,30 @@ const BOOK_SHAPE = `Return ONLY this JSON object, no prose and no markdown fence
 }
 Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Aim for 6-12 points per chapter so a chapter fills a dense handwritten page.`;
 
+/** Asked for in a drills book only: the single schema and sample rows every task runs on. */
+const DATASET_SHAPE = `Also add a top-level "dataset": the full schema and EVERY sample row the tasks will use, as
+{ "dataset": { "tables": [ { "name": string, "columns": [string, ...], "rows": [[string, ...], ...] } ] } }
+Keep it small: at most about 8 rows per table, only the tables the tasks need. Every task is written and answered against exactly these rows, so make them rich enough for joins, aggregates and subqueries to return real results.`;
+
 /** Measured over 60 chapters: one rendered page carries about 12.6 book points. */
 const POINTS_PER_PAGE = 12;
 
 /**
+ * The category passes its own numbers (notebook pages hold far fewer points than study-sheet ones);
+ * without one the globals apply.
+ *
  * A chapter becomes a page and a part holds MAX_SLIDES pages, so a book longer than that
- * guarantees a spillover part nobody asked for. Depth goes into points per chapter instead.
+ * guarantees a spillover part nobody asked for. It aims at BOOK_PAGES, below the limit, so
+ * the pages polish grows have room. Depth goes into points per chapter instead.
  */
-const PART_BUDGET = `SIZE — both limits are hard:
-- at most ${MAX_SLIDES} chapters, because one carousel part holds ${MAX_SLIDES} pages and a chapter is a page;
-- at most ${MAX_SLIDES * POINTS_PER_PAGE} points in the whole book, because a page holds about ${POINTS_PER_PAGE} of them.
-That is about ${POINTS_PER_PAGE} points per chapter. Going over does not add depth — it spills the
+export function partBudget(pointsPerPage = POINTS_PER_PAGE, bookPages = BOOK_PAGES): string {
+  return `SIZE — both limits are hard:
+- at most ${bookPages} chapters, because one carousel holds ${MAX_SLIDES} pages, a chapter is a page, and polishing grows some pages;
+- at most ${bookPages * pointsPerPage} points in the whole book, because a page holds about ${pointsPerPage} of them.
+That is about ${pointsPerPage} points per chapter. Going over does not add depth — it spills the
 chapter into a second post. Cut the weakest points instead, and keep the ones that teach something
 specific.`;
+}
 
 async function generateBook(prompt: string, allowedTools?: string[], needsTools?: string): Promise<Book> {
   const first = await thinker({ needsTools })(prompt, { timeoutMs: 900_000, allowedTools });
@@ -121,15 +167,30 @@ export async function bookFromReferences(subject: string, chapter: string, files
 }
 
 export async function bookFromTopic(subject: string, chapter: string, topic: string): Promise<Book> {
+  const { chapterCategory: categoryId } = await import('../store');
+  const category = categoryOf(await categoryId(subject, chapter).catch(() => undefined));
   const prompt = [
     'You are building the syllabus for a tech handbook published as an Instagram carousel of dense handwritten notes pages.',
     `Topic: ${topic}`,
     'Cover the topic thoroughly, the way a strong study-notes series would: fundamentals, mechanics/internals, practical usage, comparisons, complexity or trade-offs, common mistakes, and a closing summary.',
     'Give every chapter a "shape": the ordered section roles its page should have (definition, mechanism, example, comparison, mistakes, summary, cheatsheet). A platform or service family (AWS, Docker, Kubernetes) starts with a chapter shaped ["cover"]; the last chapter of any series is shaped ["cheatsheet"].',
-    PART_BUDGET,
+    await categoryBookRules(subject, chapter),
+    partBudget(category.presentation.pointsPerPage, category.presentation.bookPages),
+    category.id === 'drills' ? DATASET_SHAPE : '',
     BOOK_SHAPE,
-  ].join('\n\n');
-  return saveBook(subject, chapter, await generateBook(prompt));
+  ].filter(Boolean).join('\n\n');
+  let book = await generateBook(prompt);
+  // The category's book rules are checkable: a count the title promises, no repeated page or
+  // item. A book that breaks them gets one regeneration told exactly what broke; what comes back
+  // is kept either way, and the review reports anything still wrong.
+  const { chapterCategory } = await import('../store');
+  const { bookGates } = await import('../verify/categoryGates');
+  const broken = bookGates(book, await chapterCategory(subject, chapter).catch(() => undefined));
+  if (broken.length) {
+    book = await generateBook(`${prompt}\n\nYour previous book broke these rules. Fix every one and return the whole corrected book:\n${broken
+      .map((f) => `- ${f.summary} ${f.fix}`).join('\n')}\nPrevious book:\n${JSON.stringify(book)}`);
+  }
+  return saveBook(subject, chapter, book);
 }
 
 export async function reviseBook(subject: string, chapter: string, book: Book, request: string): Promise<Book> {
@@ -142,5 +203,7 @@ export async function reviseBook(subject: string, chapter: string, book: Book, r
     'Apply the request. Keep everything else unchanged.',
     BOOK_SHAPE,
   ].join('\n\n');
-  return generateBook(prompt);
+  const revised = await generateBook(prompt);
+  // The dataset is the chapter's fixed ground: a revision that leaves it out has not removed it.
+  return book.dataset && !revised.dataset ? { ...revised, dataset: book.dataset } : revised;
 }

@@ -34,9 +34,9 @@ declare global {
 
 export type RenderResult = { overflowPx: number; fillPct: number; spillIndexes: number[]; neededPct: number; warnings: string[] };
 
-export async function renderSlide(post: Post, slideIndex: number, outPath: string): Promise<RenderResult> {
+export async function renderSlide(post: Post, slideIndex: number, outPath: string, opts: { pageCount?: number } = {}): Promise<RenderResult> {
   const [w, h] = RATIOS[post.ratio];
-  const html = buildSlideHtml(post, slideIndex);
+  const html = buildSlideHtml(post, slideIndex, opts);
   const manifest = templateManifest(post.template);
 
   // Temp file inside the template dir so ../_shared relative paths resolve.
@@ -118,6 +118,69 @@ export function leadingRun(queue: FlowItem[]): FlowItem[] {
   return queue.slice(0, end);
 }
 
+/**
+ * A continuation page that would hold only "Key takeaways" callouts. The takeaway repeats the
+ * page it closes, and the model cannot know how much room is left, so it is the block that falls
+ * off the foot; a page of nothing but it is the worst outcome, so it is dropped instead.
+ */
+export function isStrandedTakeaway(run: FlowItem[]): boolean {
+  return run.length > 0 && run.every(({ block }) => block.type === 'callout' && /takeaway/i.test(block.title));
+}
+
+/**
+ * Fits an overflowing page that holds code by cutting it: whole blocks first, then the first
+ * block that no longer fits is cut along its lines (code only) until the page is full.
+ *
+ * Consecutive code blocks are one unit to the packer, so a stack of them is "one block" taller
+ * than the page and renders clipped (sql-drills page 16 at 135%). Growing the page block by block
+ * keeps it as full as the flow would have made it had the stack been splittable. Only the end of
+ * the code carries its note and result, so a cut drops both from the first part. Blocks after
+ * the cut move on with it, so the authored order holds. Returns null when nothing can be cut
+ * (no code on the page, or even one line does not fit): the page keeps its overflow and the
+ * polish step condenses it instead.
+ */
+async function splitCodeToFit(
+  post: Post,
+  slides: Post['slides'],
+  page: Post['slides'][number],
+  pageIndex: number,
+  file: string,
+  first: RenderResult
+): Promise<{ page: Post['slides'][number]; rest: Post['slides'][number]['blocks']; result: RenderResult } | null> {
+  if (!page.blocks.some((b) => b.type === 'code' && b.lines.length > 1)) return null;
+  const draw = (blocks: Post['slides'][number]['blocks']) => renderSlide({ ...post, slides: [...slides, { ...page, blocks }] }, pageIndex, file);
+  const prefix: Post['slides'][number]['blocks'] = [];
+  let result: RenderResult | null = null;
+  let rest: Post['slides'][number]['blocks'] = page.blocks;
+
+  for (let j = 0; j < page.blocks.length; j++) {
+    const block = page.blocks[j];
+    const whole = j === 0 && page.blocks.length === 1 ? first : await draw([...prefix, block]);
+    if (whole.overflowPx === 0) { prefix.push(block); result = whole; rest = page.blocks.slice(j + 1); continue; }
+    if (block.type === 'code' && block.lines.length > 1) {
+      let keep = block.lines.length;
+      let tried = whole;
+      for (let attempt = 0; attempt < 10 && tried.overflowPx > 0 && keep > 1; attempt++) {
+        // fillPct is used/usable, so the share that overflows is 1 - 100/fillPct; round up, a line of margin after the first try.
+        keep = Math.max(1, keep - Math.max(1, Math.ceil(keep * (1 - 100 / Math.max(tried.fillPct, 101))) + (attempt ? 1 : 0)));
+        tried = await draw([...prefix, { type: 'code', lang: block.lang, lines: block.lines.slice(0, keep) }]);
+      }
+      if (tried.overflowPx === 0) {
+        prefix.push({ type: 'code', lang: block.lang, lines: block.lines.slice(0, keep) });
+        result = tried;
+        rest = [{ ...block, lines: block.lines.slice(keep) }, ...page.blocks.slice(j + 1)];
+      }
+    }
+    break;
+  }
+  if (!result) return null;
+  // A heading is bound to the block after it; left last on a page it is drawn alone.
+  while (prefix.length > 1 && prefix[prefix.length - 1].type === 'heading') rest = [prefix.pop()!, ...rest], result = null;
+  // The file on disk is the last thing drawn, which is not always the page that was kept.
+  result = await draw(prefix);
+  return result.overflowPx > 0 ? null : { page: { ...page, blocks: prefix }, rest, result };
+}
+
 export async function renderAll(
   post: Post,
   outDir: string
@@ -169,6 +232,12 @@ export async function renderAll(
     const source = run[0].from;
     const base = authored[source].page_title.replace(/ \(cont\.\)$/, '');
     const isCont = started.has(source);
+    if (isCont && isStrandedTakeaway(run)) {
+      queue = queue.slice(run.length);
+      results[results.length - 1].warnings.push('dropped stranded takeaway');
+      page--; // no page was drawn; the loop's own step puts it back
+      continue;
+    }
 
     const src = authored[source];
     const candidate: Post['slides'][number] = {
@@ -180,6 +249,8 @@ export async function renderAll(
       // The chapter's hero logo and subtitle belong to every page cut from it.
       ...(src.hero ? { hero: src.hero } : {}),
       ...(src.subtitle ? { subtitle: src.subtitle } : {}),
+      // The corner note belongs to the chapter's first page only.
+      ...(src.aside && !isCont ? { aside: src.aside } : {}),
     };
 
     const file = path.join(outDir, `slide-${String(page + 1).padStart(2, '0')}.png`);
@@ -195,12 +266,24 @@ export async function renderAll(
     // Every kept block came from `source` — the run guarantees it — so the page's owner is
     // known before it is measured. The old majority-owner tally and its re-measure under a
     // corrected title existed only because a page could straddle two chapters; it cannot now.
-    const finished = { ...candidate, blocks: kept.map((k) => k.block) };
+    let finished = { ...candidate, blocks: kept.map((k) => k.block) };
+    let result = r;
+    // A unit taller than a page is placed alone and overflows, clipped at the foot. A code block
+    // can be cut along its lines: fit as many as the page holds and send the rest on.
+    if (r.overflowPx > 0) {
+      const cut = await splitCodeToFit(post, slides, finished, page, file, r);
+      if (cut) {
+        finished = cut.page;
+        result = cut.result;
+        queue = [...cut.rest.map((block) => ({ block, from: source })), ...queue.filter((q) => !keptSet.has(q.block))];
+        keptSet.clear();
+      }
+    }
     started.add(source);
     owners.push(source);
 
     slides.push(finished);
-    results.push({ slide: page + 1, overflowPx: r.overflowPx, fillPct: r.fillPct, file, warnings: r.warnings });
+    results.push({ slide: page + 1, overflowPx: result.overflowPx, fillPct: result.fillPct, file, warnings: result.warnings });
     queue = queue.filter((q) => !keptSet.has(q.block));
   }
   }
@@ -211,6 +294,13 @@ export async function renderAll(
     const at = slides.length - 1 - pair;
     if (at < 1 || results[at].fillPct >= TAIL_FLOOR) break;
     if (!(await balanceTail(post, outDir, slides, results, at, owners))) break;
+  }
+
+  // While the flow runs, a page only knows how many pages exist so far. A family that prints
+  // "of N" in its chrome gets every page drawn again once N is final; the layout is identical,
+  // so fills and spills stay as measured.
+  if (templateManifest(post.template).pageCountInChrome && slides.length > 1) {
+    for (let i = 0; i < slides.length; i++) await renderSlide({ ...post, slides }, i, results[i].file);
   }
 
   return { results, slides };

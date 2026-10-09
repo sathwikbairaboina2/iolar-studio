@@ -305,3 +305,130 @@ describe('set 2/3 blocks render', () => {
     expect(slides[1].subtitle).toBe('Identity and Access Management');
   }, 300_000);
 });
+
+describe('flow keeps authored order', () => {
+  // Questions 33-44 with answers of very different heights and a small table after some of them:
+  // the shapes that used to leave a gap a later, smaller block slipped into, so a page ended on
+  // Q34 while Q33 opened the next one.
+  const numbered = () => {
+    const out: Post['slides'][number]['blocks'] = [];
+    const bullets = [4, 5, 2, 5, 3, 5, 2, 4, 5, 3, 2, 5];
+    bullets.forEach((n, i) => {
+      out.push({
+        type: 'qa', q: `Q${33 + i}. Question number ${33 + i} asked in the interview?`,
+        a_bullets: Array.from({ length: n }, (_, k) => `Answer point ${k + 1} for question ${33 + i}, a sentence long enough to wrap onto a second line of the column.`),
+      });
+      if (i % 3 === 1) out.push({ type: 'table', headers: ['Key', 'Meaning'], rows: [['a', 'first'], ['b', 'second']] });
+    });
+    return out;
+  };
+
+  it.each(['study-sheet', 'notebook'])('%s: no block is printed ahead of one authored before it', async (template) => {
+    const post = validatePost({
+      brand: 'iolar', template, ratio: '3:4', seed: 7, series: 'ORDER', date: 'd',
+      slides: [{ page_title: 'Questions', blocks: numbered() }],
+      caption: { text: '', hashtags: [] },
+    });
+    const dir = path.join(tmpdir(), `iolar-order-${template}-${Date.now()}`);
+    const { slides } = await renderAll(post, dir);
+    expect(slides.length).toBeGreaterThan(1);
+    const flat = slides.flatMap((s) => s.blocks);
+    expect(flat.length).toBe(numbered().length);
+    expect(flat.map((b) => JSON.stringify(b))).toEqual(numbered().map((b) => JSON.stringify(b)));
+    const qs = flat.filter((b) => b.type === 'qa').map((b) => Number(/^Q(\d+)/.exec((b as { q: string }).q)![1]));
+    expect(qs).toEqual([...qs].sort((a, b) => a - b));
+  }, 300_000);
+});
+
+describe('notebook family', () => {
+  const listicle = () => validatePost({
+    brand: 'iolar', template: 'notebook', ratio: '3:4', seed: 42, series: '10 DATABASE CONCEPTS', date: 'd',
+    slides: [
+      { page_title: 'cover', kind: 'cover', hero: 'database', aside: 'Build. Learn. Grow', blocks: [], cover: {
+        title: "Database Concepts You Can't Skip", subtitle: 'in System Design Interviews', tagline: '10 core concepts',
+        icons: [{ icon: 'table', label: 'Data' }, { icon: 'server', label: 'Storage' }, { icon: 'users', label: 'Users' }],
+        pills: ['Clear explanations.', 'Practical diagrams.', 'Better interview answers.'] } },
+      { page_title: 'Indexing', aside: 'Big Performance', blocks: [
+        { type: 'concept', number: 1, title: 'Indexing', tagline: 'find fast' },
+        { type: 'labelrows', rows: [
+          { icon: 'lightbulb', label: 'What it is:', text: 'A structure that helps the database find rows faster.' },
+          { icon: 'shield-check', label: 'Why it exists:', text: 'Avoid scanning the whole table for every query.' },
+          { icon: 'settings', label: 'Used for:', text: 'Fast lookups, filtering, sorting, joins.' }] },
+        { type: 'heading', text: 'How it works', style: 'ribbon' },
+        { type: 'code', lang: 'sql', lines: ['SELECT n FROM t WHERE k = 7;'], result: { headers: ['n'], rows: [['1'], ['2']] } },
+        { type: 'qa', q: 'Q1. What is an index?', a_bullets: ['A sorted lookup structure.'] },
+        { type: 'callout', style: 'banner', title: 'Interview takeaway:', text: 'Index what you filter and join on.' },
+      ] },
+    ],
+    caption: { text: '', hashtags: [] },
+  });
+
+  it('draws the cover and a concept page with no overflow, no warnings', async () => {
+    const post = listicle();
+    for (const i of [0, 1]) {
+      const r = await renderSlide(post, i, path.join(tmpdir(), `iolar-notebook-${i + 1}.png`));
+      expect(r.overflowPx, `slide ${i + 1}`).toBe(0);
+      expect(r.spillIndexes, `slide ${i + 1}`).toEqual([]);
+      expect(r.warnings).toEqual([]);
+    }
+  }, 120_000);
+
+  it('re-stamps "of N" once the flow knows the page count', async () => {
+    // A part that flows to more pages than it was authored with must come out with the final count in every page.
+    const post = listicle();
+    post.slides[1].blocks = Array.from({ length: 24 }, () => ({ type: 'paragraph' as const, text: 'Filler sentence that makes the page long enough to spill. '.repeat(3) }));
+    const dir = path.join(tmpdir(), `iolar-nb-count-${Date.now()}`);
+    const { slides, results } = await renderAll(post, dir);
+    expect(slides.length).toBeGreaterThan(2);
+    const { buildSlideHtml } = await import('@/lib/renderer/page');
+    expect(buildSlideHtml({ ...post, slides }, 0)).toContain(`"pageCount":${slides.length}`);
+    expect(results.every((r) => r.overflowPx === 0)).toBe(true);
+  }, 300_000);
+});
+
+describe('a block taller than a page', () => {
+  const longCode = () => Array.from({ length: 90 }, (_, i) => `SELECT col_${i}, other_${i} FROM table_${i} WHERE id = ${i};`);
+
+  it.each(['study-sheet', 'notebook'])('%s: a code block taller than the page splits across pages, in order, with nothing clipped', async (template) => {
+    const post = validatePost({
+      brand: 'iolar', template, ratio: '3:4', seed: 3, series: 'LONG CODE', date: 'd',
+      slides: [{ page_title: 'Schema', blocks: [
+        { type: 'heading', text: '1. The whole schema' },
+        { type: 'code', lang: 'sql', lines: longCode(), note: 'ends here', result: { headers: ['n'], rows: [['1']] } },
+      ] }],
+      caption: { text: '', hashtags: [] },
+    });
+    const dir = path.join(tmpdir(), `iolar-longcode-${template}-${Date.now()}`);
+    const { slides, results } = await renderAll(post, dir);
+    expect(slides.length).toBeGreaterThan(1);
+    expect(results.every((r) => r.overflowPx === 0)).toBe(true);
+    const codes = slides.flatMap((s) => s.blocks).filter((b) => b.type === 'code') as Extract<Post['slides'][number]['blocks'][number], { type: 'code' }>[];
+    expect(codes.flatMap((c) => c.lines)).toEqual(longCode());
+    // The note and the result belong to the end of the code, so they ride on the last part only.
+    expect(codes.slice(0, -1).every((c) => !c.note && !c.result)).toBe(true);
+    expect(codes[codes.length - 1].note).toBe('ends here');
+  }, 300_000);
+});
+
+describe('a stranded takeaway', () => {
+  const filler = (n: number) => Array.from({ length: n }, (_, i) => ({ type: 'bullets' as const, items: [`point ${i} carrying a line of real length`, 'a second line of the same'] }));
+  const banner = { type: 'callout' as const, style: 'banner' as const, title: 'Key takeaways', text: 'The page, said again.' };
+  const build = (blocks: unknown[]) => validatePost({
+    brand: 'iolar', template: 'spiral-notes', ratio: '3:4', seed: 5, series: 'TAKEAWAY', date: 'd',
+    slides: [{ page_title: 'Page', blocks }], caption: { text: '', hashtags: [] },
+  });
+
+  it('is dropped, with a warning, instead of opening a page of its own', async () => {
+    // The largest filler that leaves the banner as the only block off the page.
+    let n = 8;
+    for (; n < 40; n++) {
+      const probe = await renderSlide(build([...filler(n), banner]), 0, path.join(tmpdir(), `iolar-strand-probe-${Date.now()}.png`));
+      if (probe.spillIndexes.length === 1 && probe.spillIndexes[0] === n) break;
+    }
+    expect(n).toBeLessThan(40);
+    const { slides, results } = await renderAll(build([...filler(n), banner]), path.join(tmpdir(), `iolar-strand-${Date.now()}`));
+    expect(slides).toHaveLength(1);
+    expect(slides[0].blocks.some((b) => b.type === 'callout')).toBe(false);
+    expect(results[0].warnings).toContain('dropped stranded takeaway');
+  }, 300_000);
+});

@@ -1,0 +1,208 @@
+{
+  "title": "Python asyncio Patterns: Handwritten Notes",
+  "summary": "A dense study-notes series on real-world asyncio: producer/consumer queues, rate limiting with semaphores, Lock and Event coordination, TCP streams, async iterators, async context managers and async generators. It also covers the trade-offs between these tools and the bugs that trip up most async code.",
+  "chapters": [
+    {
+      "title": "Event Loop and Coroutine Fundamentals",
+      "points": [
+        "Coroutine: defined with async def. Calling it returns a coroutine object and runs nothing until it is awaited or scheduled",
+        "Event loop: a single-threaded scheduler that runs ready callbacks, then polls I/O with a selector (epoll/kqueue/IOCP)",
+        "await hands control back to the loop until the awaitable finishes. It is the only place a coroutine can be switched out (cooperative multitasking)",
+        "asyncio.run(main()) creates a loop, runs main, cancels leftover tasks, shuts down async generators and closes the loop",
+        "asyncio.create_task(coro) schedules a coroutine to run concurrently and returns a Task, which is a Future subclass",
+        "await asyncio.sleep(0) yields to the loop once. It is the simplest cooperative checkpoint",
+        "asyncio.gather(*aws) runs awaitables concurrently and returns results in input order. return_exceptions=True collects errors instead of raising the first",
+        "asyncio.TaskGroup (3.11+): structured concurrency. If one child fails, its siblings are cancelled and the errors are raised as an ExceptionGroup",
+        "asyncio.timeout(s) (3.11+) and asyncio.wait_for(aw, s) cancel work that runs past a deadline and raise TimeoutError",
+        "Example: two sleep(1) tasks inside a TaskGroup finish in about 1s total, not 2s"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "asyncio.Queue: Producer/Consumer",
+      "points": [
+        "asyncio.Queue(maxsize=n): a FIFO for coroutines, not thread-safe. maxsize=0 means unbounded",
+        "await q.put(item) blocks when the queue is full. That blocking is backpressure: it slows fast producers down",
+        "await q.get() blocks when the queue is empty. put_nowait/get_nowait raise QueueFull/QueueEmpty instead of waiting",
+        "q.task_done() after each processed item, plus await q.join(), which waits until every item put has been marked done",
+        "Pattern: N worker tasks run `while True: item = await q.get(); try: process(item) finally: q.task_done()`",
+        "Shutdown: await q.join(), then cancel the workers, or send one None sentinel per worker",
+        "q.shutdown() (3.13+) makes further put/get raise QueueShutDown, so no sentinels are needed",
+        "Variants: PriorityQueue takes (priority, item) tuples; LifoQueue is a stack",
+        "Bounded vs unbounded: an unbounded queue with a fast producer grows memory without limit",
+        "Mistake: forgetting task_done() inside a finally block makes join() hang forever after an exception"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Semaphore for Rate Limiting",
+      "points": [
+        "asyncio.Semaphore(n): an internal counter. acquire decrements it and waits at 0; release increments it",
+        "Use `async with sem:` so the permit is released even when the body raises an exception",
+        "Caps concurrency (at most n requests in flight at once), not requests per second",
+        "Example: sem = Semaphore(10), and each fetch(url) runs inside `async with sem`, then gather over 1000 URLs keeps only 10 sockets open at a time",
+        "BoundedSemaphore raises ValueError if release() is called more times than acquire(), which catches permit leaks",
+        "True rate limiting (requests/sec): hold the permit and add `await asyncio.sleep(1/rate)`, or use a token bucket",
+        "Semaphore(1) is roughly a Lock, but it has no owner and does not guard against double release",
+        "Create the semaphore inside the running loop's context, such as in main(). Loop-bound primitives fail in older Pythons if created at import time",
+        "Semaphore vs worker pool with a Queue: the semaphore is simplest for gather-style fan-out, while the pool reuses N long-lived tasks"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Lock and Event",
+      "points": [
+        "asyncio.Lock: mutual exclusion between coroutines. Use `async with lock:` to guard a critical section that contains an await",
+        "A lock is only needed when an await sits between reading shared state and writing it. Pure synchronous code never interleaves",
+        "asyncio.Lock is not reentrant: acquiring it twice in the same task deadlocks",
+        "Example: an async cache uses a lock so two tasks don't fetch the same missing key at once (thundering herd)",
+        "asyncio.Event: a boolean flag. await ev.wait() blocks until ev.set(). ev.clear() resets it and ev.is_set() checks it",
+        "Event.set() wakes all waiters at once, which makes it a broadcast signal (e.g. 'server ready', 'shutdown requested')",
+        "asyncio.Condition: a lock plus wait()/notify(n)/notify_all() for waiting on a predicate. wait_for(pred) re-checks the condition",
+        "asyncio primitives are not thread-safe. Use loop.call_soon_threadsafe(ev.set) to signal from another thread",
+        "Comparison: Lock = one at a time; Semaphore = n at a time; Event = wait for a signal; Condition = wait for state plus notify"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Streams: open_connection and start_server",
+      "points": [
+        "reader, writer = await asyncio.open_connection(host, port) returns a StreamReader and StreamWriter pair",
+        "writer.write(data) is not a coroutine. Follow it with await writer.drain() to respect flow control (backpressure)",
+        "Reading: await reader.read(n) reads up to n bytes (b'' means EOF); readline() reads through \\n; readuntil(sep) reads through sep",
+        "await reader.readexactly(n) raises IncompleteReadError if EOF arrives first. It suits length-prefixed protocols",
+        "Closing: writer.close() followed by await writer.wait_closed()",
+        "server = await asyncio.start_server(handle, host, port), where handle(reader, writer) runs as a new task per client",
+        "`async with server: await server.serve_forever()` keeps the server running and closes it cleanly on exit",
+        "TLS: pass ssl=ssl_context to either call. Unix sockets: open_unix_connection / start_unix_server",
+        "Example: an echo server whose handler loops `data = await reader.readline()`, then `writer.write(data)`, then `await writer.drain()`",
+        "Mistake: skipping drain() on large writes lets the send buffer grow without limit"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Async Iterators and Async Context Managers",
+      "points": [
+        "Async iterator protocol: __aiter__ (a plain method returning self) and async def __anext__, which raises StopAsyncIteration at the end",
+        "`async for x in aiter_obj:` awaits __anext__ on every step, so it can do I/O between items",
+        "Built-ins aiter() and anext() (3.10+). anext(it, default) avoids StopAsyncIteration",
+        "Async comprehensions: [x async for x in src] and [await f(x) for x in xs], valid only inside async def",
+        "Async context manager: async def __aenter__ / __aexit__(exc_type, exc, tb), used with `async with`",
+        "A truthy return from __aexit__ suppresses the exception, the same as the sync protocol",
+        "@contextlib.asynccontextmanager turns an async generator into an async context manager: setup, then yield resource, then cleanup inside finally",
+        "contextlib.AsyncExitStack manages a dynamic number of async context managers (enter_async_context)",
+        "Example: a paginated API client whose __anext__ fetches the next page when the current buffer runs out",
+        "Mistake: using plain `with` or `for` on an async object raises TypeError (\"does not support the context manager protocol\" or \"is not iterable\")"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Async Generators",
+      "points": [
+        "Async generator: an async def containing yield. It supports `async for` automatically without writing __aiter__/__anext__",
+        "It can await between yields, e.g. `async def ticks(): while True: await asyncio.sleep(1); yield time.time()`",
+        "`yield from` is not allowed inside an async generator, and `return value` is a SyntaxError (only a bare return)",
+        "Methods: asend(v), athrow(exc) and aclose(). aclose() raises GeneratorExit at the paused yield so finally blocks run",
+        "Breaking out of `async for` early does not finalize the generator right away, because cleanup waits for the GC or loop shutdown",
+        "Fix: `async with contextlib.aclosing(gen) as g:` (3.10+) guarantees aclose() runs deterministically",
+        "asyncio.run calls loop.shutdown_asyncgens() to close generators still pending at exit",
+        "Pipeline pattern: chain async generators (source, then filter, then map), each doing `async for` over the previous one",
+        "Async generator vs Queue: a generator is pull-based with one consumer; a Queue is push-based and supports many producers and consumers"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Choosing the Right Tool: Trade-offs",
+      "points": [
+        "Queue + workers vs gather + Semaphore: the queue works for streaming or unbounded input with backpressure; gather needs every task created up front, which costs O(n) memory",
+        "gather vs TaskGroup: gather lets siblings keep running after a failure unless you cancel them yourself; TaskGroup cancels siblings and groups the errors",
+        "asyncio.wait(aws, return_when=FIRST_COMPLETED) returns (done, pending) sets and gives finer control than gather",
+        "asyncio.as_completed(aws) yields results in completion order, so the fastest results arrive first",
+        "asyncio vs threads: asyncio switches only at await, with cheap tasks (~KB each) and deterministic points; threads are preemptive and still need the GIL for CPU work",
+        "CPU-bound work: asyncio gives no speed-up. Offload it with loop.run_in_executor(ProcessPoolExecutor(), fn)",
+        "Blocking library calls: await asyncio.to_thread(fn, *args) (3.9+) runs them in the default thread pool",
+        "Streams vs Protocols: streams are high-level and readable; asyncio.Protocol callbacks are lower overhead for high-throughput servers",
+        "Task switch cost is roughly microseconds, and one loop comfortably handles about 10k+ idle connections"
+      ],
+      "shape": [
+        "comparison",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "Common Bugs and How to Catch Them",
+      "points": [
+        "Forgotten await: calling fetch() without await returns a coroutine object and emits 'RuntimeWarning: coroutine ... was never awaited'",
+        "Blocking the loop: time.sleep(), requests.get() or heavy CPU work freezes every task. Use asyncio.sleep, aiohttp/httpx or to_thread",
+        "Debug mode: asyncio.run(main(), debug=True) or PYTHONASYNCIODEBUG=1 logs callbacks slower than 100ms and never-awaited coroutines",
+        "Unclosed sessions: an aiohttp.ClientSession that is never closed warns 'Unclosed client session'. Use `async with ClientSession() as s:` and create one per app, not one per request",
+        "Lost tasks: the loop keeps only weak references to tasks, so an unreferenced create_task() can be garbage-collected mid-run. Keep the tasks in a set or use a TaskGroup",
+        "'Task exception was never retrieved' means a background task failed silently. Await it or add a done-callback",
+        "Swallowing CancelledError (a bare except or `except BaseException` that never re-raises) breaks cancellation and timeouts",
+        "Calling asyncio.run() inside an already running loop (e.g. Jupyter) raises RuntimeError. Use `await main()` there instead",
+        "Sharing a primitive or session across different event loops raises 'attached to a different loop'",
+        "Race: check-then-act across an await (if key not in cache: await fetch) without a Lock produces duplicate work"
+      ],
+      "shape": [
+        "mistakes",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "asyncio Patterns Cheatsheet",
+      "points": [
+        "Run: asyncio.run(main()); concurrency: TaskGroup, gather, create_task (keep a reference)",
+        "Deadlines: async with asyncio.timeout(5) / await asyncio.wait_for(aw, 5)",
+        "Producer/consumer: Queue(maxsize), put/get, task_done + join, shutdown() in 3.13",
+        "Limit concurrency: sem = Semaphore(n); async with sem: ...",
+        "Mutual exclusion: async with Lock(); broadcast signal: Event.set()/wait(); predicate: Condition",
+        "TCP: open_connection returns (reader, writer); write + await drain; close + await wait_closed; start_server + serve_forever",
+        "Async iterator: __aiter__ returns self, async __anext__ raises StopAsyncIteration; aiter()/anext()",
+        "Async context manager: __aenter__/__aexit__ or @asynccontextmanager; AsyncExitStack for many",
+        "Async generator: async def + yield; wrap in contextlib.aclosing() for deterministic cleanup",
+        "Blocking work: await asyncio.to_thread(fn); CPU work: run_in_executor(ProcessPoolExecutor())",
+        "Debug: debug=True, watch for 'never awaited', 'Unclosed client session' and 'exception never retrieved'"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

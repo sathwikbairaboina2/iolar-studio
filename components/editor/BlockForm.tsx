@@ -9,7 +9,7 @@ import { INKS, DIAGRAM_KINDS } from '@/lib/schema';
 const { TextArea } = Input;
 
 const INK_OPTS = INKS.map((v) => ({ value: v }));
-const CALLOUT_OPTS = ['tip', 'takeaway', 'cloud', 'sticky', 'sticky-pink'].map((v) => ({ value: v }));
+const CALLOUT_OPTS = ['tip', 'takeaway', 'cloud', 'sticky', 'sticky-pink', 'banner'].map((v) => ({ value: v }));
 // Bullet styles and diagram kinds come from the schema so the editor never lags the renderer.
 const DIAGRAM_OPTS = DIAGRAM_KINDS.map((v) => ({ value: v }));
 
@@ -165,6 +165,30 @@ export default function BlockForm({
       );
       break;
     }
+    case 'concept':
+      body = (
+        <>
+          <Space.Compact block style={{ marginBottom: 6 }}>
+            <Input value={String(block.number)} onChange={(e) => set({ number: Number(e.target.value) || 0 })} style={{ width: 70 }} placeholder="No." />
+            <Input value={block.title} onChange={(e) => set({ title: e.target.value })} placeholder="Concept name" />
+          </Space.Compact>
+          <Input value={block.tagline ?? ''} onChange={(e) => set({ tagline: e.target.value || undefined })} placeholder="Hand aside (optional)" />
+        </>
+      );
+      break;
+    case 'labelrows':
+      body = (
+        <TextArea
+          rows={3}
+          defaultValue={JSON.stringify(block.rows)}
+          onBlur={(e) => {
+            try { set({ rows: JSON.parse(e.target.value) }); } catch { /* keep old rows on bad JSON */ }
+          }}
+          style={{ fontFamily: 'monospace' }}
+          placeholder='[{"icon":"lightbulb","label":"What it is:","text":"..."}]'
+        />
+      );
+      break;
   }
 
   return (

@@ -1,0 +1,2629 @@
+{
+  "brand": "iolar",
+  "template": "notebook",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "CHAT APP SYSTEM DESIGN (WHATSAPP-STYLE)",
+  "date": "08/10/2026",
+  "slides": [
+    {
+      "page_title": "System Design: WhatsApp-style Chat App",
+      "blocks": [],
+      "hero": "network",
+      "kind": "cover",
+      "cover": {
+        "title": "Chat App System Design",
+        "subtitle": "Design a scalable WhatsApp-style chat",
+        "tagline": "1:1 + group chat, receipts, presence, media, push, E2E · 500M DAU · 40B msgs/day · ~460K msgs/s",
+        "icons": [
+          {
+            "icon": "network",
+            "label": "Gateway",
+            "sub": "WebSockets"
+          },
+          {
+            "icon": "zap",
+            "label": "Messages",
+            "sub": "flow + receipts"
+          },
+          {
+            "icon": "database",
+            "label": "Storage",
+            "sub": "order + history"
+          },
+          {
+            "icon": "users",
+            "label": "Groups",
+            "sub": "fan-out"
+          },
+          {
+            "icon": "bell",
+            "label": "Push",
+            "sub": "APNs + FCM"
+          },
+          {
+            "icon": "lock",
+            "label": "Crypto",
+            "sub": "E2E"
+          }
+        ],
+        "pills": [
+          "Requirements and scale",
+          "High-level architecture",
+          "WebSocket gateway",
+          "Message flow and receipts",
+          "Storage and ordering",
+          "Group fan-out",
+          "Presence and last seen",
+          "Media upload",
+          "Push notifications",
+          "E2E encryption",
+          "Failures, trade-offs, interview Qs"
+        ]
+      }
+    },
+    {
+      "page_title": "Scope, Requirements and Scale",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Scope: what we build",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==1:1 chat== and groups up to **1,024** members",
+            "Sent / delivered / read receipts",
+            "Media: photos, video and files",
+            "Last seen and presence",
+            "Push alerts for offline devices"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "sidebox",
+          "title": "Out of scope",
+          "items": [
+            "Voice and video calls",
+            "Stories",
+            "Payments"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. Non-functional targets",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Goal",
+            "Target"
+          ],
+          "rows": [
+            [
+              "Delivery latency",
+              "p99 < **200 ms** online"
+            ],
+            [
+              "Durability",
+              "**no** message loss"
+            ],
+            [
+              "Ordering",
+              "==per-chat== order"
+            ],
+            [
+              "Availability",
+              "99.99% (~52 min/yr down)"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Estimate the scale",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "msgs_day = 40e9",
+            "avg = msgs_day / 86400",
+            "peak = 2 * avg"
+          ],
+          "note": "peak is 2x the average",
+          "result": {
+            "headers": [
+              "Metric",
+              "Value"
+            ],
+            "rows": [
+              [
+                "Average",
+                "~460K msgs/s"
+              ],
+              [
+                "Peak",
+                "~1M msgs/s"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Resource",
+            "Math",
+            "Result"
+          ],
+          "rows": [
+            [
+              "Users",
+              "500M DAU",
+              "~100M sockets"
+            ],
+            [
+              "Gateways",
+              "100M / 50K",
+              "~**2,000** nodes"
+            ],
+            [
+              "Text/day",
+              "40B x 100 B",
+              "~4 TB"
+            ],
+            [
+              "Text/year",
+              "4 TB x 365",
+              "~1.5 PB, pre-replication"
+            ],
+            [
+              "Media/day",
+              "10% x 40B x 200 KB",
+              "~**800 TB**"
+            ]
+          ],
+          "highlightRow": 4
+        },
+        {
+          "type": "paragraph",
+          "text": "Example: media is ==200x== the text volume (800 TB vs 4 TB per day), so files go to **blob storage and a CDN**, never the DB.",
+          "frame": "dashed",
+          "ink": "pink"
+        },
+        {
+          "type": "diagram",
+          "kind": "cards",
+          "spec": {
+            "cards": [
+              {
+                "title": "460K/s",
+                "lines": [],
+                "text": "average msgs, 1M/s peak",
+                "icon": "zap",
+                "ink": "blue"
+              },
+              {
+                "title": "2,000",
+                "lines": [],
+                "text": "gateways at 50K sockets",
+                "icon": "server",
+                "ink": "green"
+              },
+              {
+                "title": "4 TB/day",
+                "lines": [],
+                "text": "text, ~1.5 PB a year",
+                "icon": "database",
+                "ink": "orange"
+              },
+              {
+                "title": "800 TB/day",
+                "lines": [],
+                "text": "media via S3 and CDN",
+                "icon": "cloud",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "State your assumptions, then do the math out loud: media dwarfs text, so it never touches the message DB."
+        }
+      ],
+      "aside": "do the math!",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "High-Level Architecture",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. The Message Path",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Chat App: one message",
+            "rows": [
+              [
+                "client",
+                "lb",
+                "gw"
+              ],
+              [
+                "chat",
+                "bus",
+                "store"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Client",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "lb": {
+                "text": "L4 LB",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "gw": {
+                "text": "WS Gateway",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "chat": {
+                "text": "Chat Service",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "bus": {
+                "text": "Message Bus",
+                "shape": "icon",
+                "icon": "layers"
+              },
+              "store": {
+                "text": "Storage",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "lb"
+              },
+              {
+                "from": "lb",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "chat"
+              },
+              {
+                "from": "chat",
+                "to": "bus"
+              },
+              {
+                "from": "bus",
+                "to": "store"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tier",
+            "Holds",
+            "Scales by"
+          ],
+          "rows": [
+            [
+              "==Gateway==",
+              "sockets (**stateful**)",
+              "~50K/node"
+            ],
+            [
+              "==Chat service==",
+              "logic (**stateless**)",
+              "replicas"
+            ]
+          ],
+          "frame": "none"
+        },
+        {
+          "type": "heading",
+          "text": "2. Registry and Bus",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "SET user:42 gw17:phone1 EX 60",
+            "GET user:42",
+            "GET user:99"
+          ],
+          "note": "30s heartbeat, 60s TTL, 1 miss ok",
+          "result": {
+            "headers": [
+              "Key",
+              "Value"
+            ],
+            "rows": [
+              [
+                "user:42",
+                "gw17:phone1"
+              ],
+              [
+                "user:99",
+                "(nil)"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "{icon:kafka} ==Kafka== by `chat_id`: **order** holds",
+            "Consumers: send, persist, fan-out, push",
+            "Slow push never blocks sending"
+          ],
+          "style": "dot",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "3. Which Store Holds What",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Store",
+            "Holds",
+            "Why"
+          ],
+          "rows": [
+            [
+              "{icon:cassandra} Cassandra",
+              "messages",
+              "writes"
+            ],
+            [
+              "{icon:mysql} MySQL/Postgres",
+              "users, groups",
+              "relational"
+            ],
+            [
+              "{icon:redis} Redis",
+              "presence, registry",
+              "TTL"
+            ],
+            [
+              "{icon:s3} S3",
+              "media",
+              "cheap"
+            ]
+          ],
+          "frame": "none"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Gateways: shard by `user_id`",
+            "Kafka, Cassandra: `chat_id`",
+            "Add nodes: ==consistent hashing=="
+          ],
+          "style": "check",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "4. Offline Path",
+          "style": "ribbon"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Lookup `user:{id}`: **no socket**",
+            "Persist, wait in ==inbox==",
+            "Push wakes device, syncs"
+          ],
+          "style": "number",
+          "ink": "orange"
+        }
+      ],
+      "hero": "network",
+      "aside": "stateful vs stateless!",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Connection Layer: WebSockets",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "1. Responsibilities",
+          "items": [
+            "==One duplex connection== per device",
+            "**Authenticate** once, at connect",
+            "Route frames: client ↔ chat service"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "2. High Level Design",
+            "rows": [
+              [
+                "client",
+                "lb"
+              ],
+              [
+                "gw"
+              ],
+              [
+                "reg",
+                "chat"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Client (ping 30 s)",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "lb": {
+                "text": "L4 LB, no sticky",
+                "shape": "icon",
+                "icon": "nlb"
+              },
+              "gw": {
+                "text": "Gateway, ~50K sockets",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "reg": {
+                "text": "Session registry",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "chat": {
+                "text": "Chat service",
+                "shape": "icon",
+                "icon": "server"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "lb",
+                "label": "wss"
+              },
+              {
+                "from": "lb",
+                "to": "gw",
+                "label": "any node"
+              },
+              {
+                "from": "gw",
+                "to": "reg",
+                "label": "register"
+              },
+              {
+                "from": "gw",
+                "to": "chat",
+                "label": "frames"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "3. Connection Lifecycle",
+            "rows": [
+              [
+                "up",
+                "auth"
+              ],
+              [
+                "reg",
+                "live"
+              ],
+              [
+                "closed"
+              ]
+            ],
+            "nodes": {
+              "up": {
+                "text": "HTTP Upgrade",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "auth": {
+                "text": "JWT Auth",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "reg": {
+                "text": "Registered",
+                "shape": "box",
+                "ink": "purple"
+              },
+              "live": {
+                "text": "Active frames",
+                "shape": "box",
+                "ink": "green"
+              },
+              "closed": {
+                "text": "Closed",
+                "shape": "box",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "up",
+                "to": "auth",
+                "label": "101"
+              },
+              {
+                "from": "auth",
+                "to": "reg",
+                "label": "token ok"
+              },
+              {
+                "from": "reg",
+                "to": "live",
+                "label": "SET user:{id}"
+              },
+              {
+                "from": "live",
+                "to": "closed",
+                "label": "DEL key"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "conn_id",
+              "uuid",
+              "socket id"
+            ],
+            [
+              "user_id, device_id",
+              "bigint, str",
+              "owner, device"
+            ],
+            [
+              "gateway_id",
+              "string",
+              "socket node"
+            ],
+            [
+              "last_ping",
+              "timestamp",
+              "each heartbeat"
+            ],
+            [
+              "user:{id}",
+              "key, TTL 60 s",
+              "registry entry"
+            ]
+          ],
+          "highlightRow": 4
+        },
+        {
+          "type": "heading",
+          "text": "5. API Frames",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "C>S send{client_msg_id,chat_id,",
+            "       body}",
+            "S>C ack{msg_id}",
+            "C>S receipt{msg_id, type}",
+            "C>S sync{since_seq}"
+          ],
+          "note": "client_msg_id makes retries safe"
+        },
+        {
+          "type": "sidebox",
+          "title": "6. Failures",
+          "items": [
+            "Gateway crash drops ==50K== sockets",
+            "**Jittered** exponential backoff reconnect",
+            "Then `sync{since_seq}` fetches missed"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "sidebox",
+          "title": "Key Metrics",
+          "items": [
+            "Connections, reconnect rate",
+            "Connect p99, frame errors/s",
+            "Memory per socket: ~10 KB"
+          ],
+          "ink": "orange"
+        },
+        {
+          "type": "heading",
+          "text": "7. Design Considerations",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Long polling: ==10x== more requests",
+            "SSE is one-way, cannot carry sends",
+            "WebSocket plus **binary** protocol saves bandwidth",
+            "WhatsApp: XMPP-derived binary protocol"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Gateways hold sockets; a crash costs a reconnect and sync, never a message."
+        }
+      ],
+      "hero": "network",
+      "aside": "one socket per device",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Message Flow and Delivery Receipts",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Accept== the send from the client socket",
+            "==Dedupe== retries, then ==persist== before any ack",
+            "==Route== to the recipient's gateway or inbox",
+            "Track **sent / delivered / read** state per user"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "2. High Level Design",
+            "rows": [
+              [
+                "ca",
+                "ga",
+                "cs"
+              ],
+              [
+                "db",
+                "rg",
+                "gb"
+              ],
+              [
+                "cb"
+              ]
+            ],
+            "nodes": {
+              "ca": {
+                "text": "Client A",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "ga": {
+                "text": "Gateway A",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "cs": {
+                "text": "Chat service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "db": {
+                "text": "Persist",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "rg": {
+                "text": "Registry lookup",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "gb": {
+                "text": "Gateway B",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "cb": {
+                "text": "Client B",
+                "shape": "icon",
+                "icon": "smartphone"
+              }
+            },
+            "edges": [
+              {
+                "from": "ca",
+                "to": "ga",
+                "label": "send"
+              },
+              {
+                "from": "ga",
+                "to": "cs"
+              },
+              {
+                "from": "cs",
+                "to": "db",
+                "label": "1 tick ack"
+              },
+              {
+                "from": "cs",
+                "to": "rg"
+              },
+              {
+                "from": "rg",
+                "to": "gb",
+                "label": "push"
+              },
+              {
+                "from": "gb",
+                "to": "cb",
+                "label": "2 ticks on ack"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "3. Receipt State Machine",
+            "rows": [
+              [
+                "s",
+                "d",
+                "r"
+              ]
+            ],
+            "nodes": {
+              "s": {
+                "text": "SENT (1 tick)",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "d": {
+                "text": "DELIVERED (2 ticks)",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "r": {
+                "text": "READ (blue ticks)",
+                "shape": "pill",
+                "ink": "green"
+              }
+            },
+            "edges": [
+              {
+                "from": "s",
+                "to": "d",
+                "label": "B acks"
+              },
+              {
+                "from": "d",
+                "to": "r",
+                "label": "chat opened"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "message.msg_id",
+              "UUID",
+              "primary key, returned on send"
+            ],
+            [
+              "message.chat_id, seq",
+              "UUID, int64",
+              "chat partition, order inside it"
+            ],
+            [
+              "message.sender, body, ts",
+              "id, blob, ms",
+              "who, ciphertext, server time"
+            ],
+            [
+              "receipt.msg_id, user_id",
+              "UUID, id",
+              "composite key, one row per reader"
+            ],
+            [
+              "receipt.state, ts",
+              "enum, ms",
+              "stored per (msg_id, user_id)"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. APIs and Idempotency",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "POST or WS send returns `{msg_id, seq}`",
+            "Client makes `client_msg_id` (UUID); server dedupes for ==24 h==",
+            "Receipts batched: up to ==1 per 100 ms== per chat",
+            "State only moves **forward**, so late acks are ignored"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "6. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Recipient offline: message waits in inbox queue, delivered on reconnect (at-least-once)",
+            "Ack lost: client resends same `client_msg_id`, gets original `msg_id`"
+          ],
+          "style": "cross",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "WATCH THESE:",
+          "text": "send-to-deliver p99 under 200 ms, duplicate rate, undelivered backlog, receipt lag"
+        }
+      ],
+      "hero": "zap",
+      "aside": "ticks only go forward",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Storage Design and Seq Ordering",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "labelrows",
+          "rows": [
+            {
+              "icon": "database",
+              "label": "Store:",
+              "text": "**durable**, 3 replicas"
+            },
+            {
+              "icon": "list-ordered",
+              "label": "Order:",
+              "text": "==per-chat order==, always"
+            },
+            {
+              "icon": "refresh-cw",
+              "label": "Serve:",
+              "text": "history, offline sync"
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Write Path",
+            "rows": [
+              [
+                "gw",
+                "svc",
+                "own"
+              ],
+              [
+                "cas",
+                "inb"
+              ]
+            ],
+            "nodes": {
+              "gw": {
+                "text": "Gateway",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "svc": {
+                "text": "Chat service",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "own": {
+                "text": "Seq owner",
+                "shape": "icon",
+                "icon": "lock"
+              },
+              "cas": {
+                "text": "Cassandra",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "inb": {
+                "text": "Inbox",
+                "shape": "icon",
+                "icon": "mail"
+              }
+            },
+            "edges": [
+              {
+                "from": "gw",
+                "to": "svc",
+                "label": "send"
+              },
+              {
+                "from": "svc",
+                "to": "own",
+                "label": "seq"
+              },
+              {
+                "from": "own",
+                "to": "cas",
+                "label": "quorum"
+              },
+              {
+                "from": "own",
+                "to": "inb",
+                "label": "offline"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Ordering by Seq",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Approach",
+            "Layout",
+            "Ordered?"
+          ],
+          "rows": [
+            [
+              "Timestamp",
+              "wall clock ms",
+              "**No**"
+            ],
+            [
+              "Snowflake",
+              "41b ms, 10b node, 12b seq",
+              "Per node"
+            ],
+            [
+              "Per-chat seq",
+              "partition counter +1",
+              "**Yes**"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "heading",
+          "text": "4. Table Schema",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Table",
+            "Key",
+            "Columns"
+          ],
+          "rows": [
+            [
+              "messages",
+              "`(chat_id, bucket)`, `seq DESC`",
+              "msg_id, sender, body, type, ts"
+            ],
+            [
+              "inbox",
+              "`user_id`, `seq`",
+              "msg_id, undelivered"
+            ],
+            [
+              "Replication",
+              "RF 3, month bucket",
+              "quorum 2/3"
+            ]
+          ],
+          "highlightRow": 0
+        }
+      ],
+      "hero": "database",
+      "aside": "seq beats clocks!",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "History Sync APIs and Storage Failures",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Key APIs",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "GET /chats/42/messages",
+            "  ?before_seq=981&limit=50",
+            "sync(since_seq=975)"
+          ],
+          "note": "sync returns every missed message",
+          "result": {
+            "headers": [
+              "seq",
+              "msg_id"
+            ],
+            "rows": [
+              [
+                "980",
+                "m_88a"
+              ],
+              [
+                "979",
+                "m_88b"
+              ],
+              [
+                "976",
+                "m_871"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. Failures and Metrics",
+          "ink": "pink"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Node down: ==quorum== 2/3 continues",
+            "Huge group: split by **time bucket**",
+            "Delivered: leave inbox; history on devices",
+            "p99 write <10 ms, read <50 ms; partition <100 MB, watch lag"
+          ],
+          "style": "dot"
+        }
+      ],
+      "hero": "database",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Group Chats and Fan-out",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "{icon:users} **Membership**: owner, admins add/remove",
+            "==One copy== per message",
+            "Deliver to **every** member"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Group Fan-out on Write",
+            "rows": [
+              [
+                "sender",
+                "chat",
+                "kafka"
+              ],
+              [
+                "worker",
+                "redis"
+              ],
+              [
+                "gw",
+                "members"
+              ]
+            ],
+            "nodes": {
+              "sender": {
+                "text": "Sender",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "chat": {
+                "text": "Chat service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "kafka": {
+                "text": "Kafka topic",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "worker": {
+                "text": "Fan-out worker",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "redis": {
+                "text": "Member list",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "gw": {
+                "text": "Gateways",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "members": {
+                "text": "Members",
+                "shape": "icon",
+                "icon": "users"
+              }
+            },
+            "edges": [
+              {
+                "from": "sender",
+                "to": "chat",
+                "label": "POST"
+              },
+              {
+                "from": "chat",
+                "to": "kafka",
+                "label": "write once"
+              },
+              {
+                "from": "kafka",
+                "to": "worker",
+                "label": "consume"
+              },
+              {
+                "from": "worker",
+                "to": "redis",
+                "label": "members"
+              },
+              {
+                "from": "worker",
+                "to": "gw",
+                "label": "route"
+              },
+              {
+                "from": "gw",
+                "to": "members",
+                "label": "deliver"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Fan-out on write==: 1 message, N inbox pointers plus pushes",
+            "Up to **1,024** members: 1 write, 1,023 deliveries; lookups batched per gateway"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "3. Data Model and APIs",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "group.group_id, name, owner",
+              "uuid, text, user_id",
+              "identity, title, owner"
+            ],
+            [
+              "member.group_id, user_id",
+              "composite PK",
+              "row per member"
+            ],
+            [
+              "member.role, joined_seq",
+              "enum, bigint",
+              "role; join point"
+            ],
+            [
+              "Redis members:{group_id}",
+              "set",
+              "cached members"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "POST /groups",
+            "PUT  /groups/{id}/members",
+            "POST /groups/{id}/messages"
+          ],
+          "note": "messages returns msg_id, seq",
+          "result": {
+            "headers": [
+              "Call",
+              "Returns"
+            ],
+            "rows": [
+              [
+                "POST /groups",
+                "group_id"
+              ],
+              [
+                "PUT members",
+                "ok"
+              ],
+              [
+                "POST messages",
+                "msg_id, seq"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Worker crash: offset uncommitted, Kafka **replays**; dedupe on `(msg_id, user)`",
+            "Metrics: fan-out lag p99, deliveries/message, queue depth, group-size histogram"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "COMMON MISTAKE:",
+          "text": "Fan-out on read adds latency; per-member media copies waste storage. Store one blob reference."
+        }
+      ],
+      "hero": "users",
+      "aside": "write once, deliver N",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Presence Design and Data Model",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Online/offline== status for every contact",
+            "==Last seen== timestamp shown when offline",
+            "==Typing indicator== inside an open chat",
+            "All three obey per-user **privacy** settings"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "2. High Level Design",
+            "rows": [
+              [
+                "client",
+                "gw"
+              ],
+              [
+                "redis",
+                "pres"
+              ],
+              [
+                "db",
+                "subs"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Phone",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "gw": {
+                "text": "WS gateway",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "redis": {
+                "text": "Redis presence",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "pres": {
+                "text": "Presence service",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "db": {
+                "text": "users DB",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "subs": {
+                "text": "Open-chat contacts",
+                "shape": "icon",
+                "icon": "users"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "gw",
+                "label": "ping every 30 s"
+              },
+              {
+                "from": "gw",
+                "to": "redis",
+                "label": "refresh TTL 45 s"
+              },
+              {
+                "from": "redis",
+                "to": "pres",
+                "label": "expiry = offline"
+              },
+              {
+                "from": "pres",
+                "to": "db",
+                "label": "last_seen"
+              },
+              {
+                "from": "pres",
+                "to": "subs",
+                "label": "presence_update"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "3. State Machine",
+            "rows": [
+              [
+                "offline",
+                "online"
+              ],
+              [
+                "pending"
+              ]
+            ],
+            "nodes": {
+              "offline": {
+                "text": "OFFLINE",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "online": {
+                "text": "ONLINE",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "pending": {
+                "text": "PENDING (5 s)",
+                "shape": "pill",
+                "ink": "orange"
+              }
+            },
+            "edges": [
+              {
+                "from": "offline",
+                "to": "online",
+                "label": "connect: set key"
+              },
+              {
+                "from": "online",
+                "to": "pending",
+                "label": "disconnect or TTL expiry"
+              },
+              {
+                "from": "pending",
+                "to": "online",
+                "label": "reconnect under 5 s"
+              },
+              {
+                "from": "pending",
+                "to": "offline",
+                "label": "5 s: write last_seen"
+              }
+            ]
+          }
+        },
+        {
+          "type": "paragraph",
+          "text": "Example: Alice's phone drops in a tunnel. The key expires at 45 s, the ==5 s== debounce passes, then `last_seen` is written once.",
+          "frame": "dashed",
+          "ink": "pink"
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "`presence:{user_id}`",
+              "Redis string",
+              "gateway_id, TTL 45 s"
+            ],
+            [
+              "`users.last_seen`",
+              "timestamp",
+              "persisted at most 1/min"
+            ],
+            [
+              "`users.privacy`",
+              "enum",
+              "everyone, contacts, nobody"
+            ],
+            [
+              "`presence_subs`",
+              "Redis set",
+              "watchers with chat open"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "code",
+          "lang": "redis",
+          "lines": [
+            "SET presence:42 gw17 EX 45",
+            "EXPIRE presence:42 45",
+            "GET presence:99"
+          ],
+          "note": "each ping refreshes the TTL",
+          "result": {
+            "headers": [
+              "Key",
+              "Value"
+            ],
+            "rows": [
+              [
+                "presence:42",
+                "gw17"
+              ],
+              [
+                "presence:99",
+                "(nil)"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "sidebox",
+          "title": "5. Key APIs",
+          "items": [
+            "`subscribe_presence{user_ids}`",
+            "`presence_update{user_id, status, ts}`",
+            "`typing{chat_id}` (never stored, expires fast)"
+          ],
+          "ink": "blue"
+        }
+      ],
+      "hero": "wifi",
+      "aside": "alive = heartbeat",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Presence Failures and Trade-offs",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "6. Failure Scenarios",
+          "items": [
+            "Flapping link causes a **presence storm** of updates",
+            "Fix: debounce offline events by ==5 s==",
+            "Gateway crash: key expires, offline after 45 s",
+            "Redis node loss: contacts look offline until next 30 s ping"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "TIP:",
+          "text": "Honor privacy first: check `users.privacy` before sending any presence_update."
+        },
+        {
+          "type": "heading",
+          "text": "1. Design Considerations",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Publish only to contacts with the chat open: ~5 of 500, **100x** less load",
+            "Trade-off: accuracy vs cost; 100M users / 30 s is ==3.3M writes/s==",
+            "So batch heartbeat writes and sample idle contacts",
+            "Persist `last_seen` once per minute, not per ping"
+          ],
+          "style": "check",
+          "ink": "green"
+        },
+        {
+          "type": "sidebox",
+          "title": "8. Key Metrics",
+          "items": [
+            "Heartbeat QPS: about 3.3M/s at peak",
+            "Redis memory: 100 B x 100M = **10 GB**",
+            "Presence staleness p99: target under 50 s"
+          ],
+          "ink": "purple"
+        }
+      ],
+      "hero": "wifi",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Media Upload and Download",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Accept images, video, files up to ==100 MB==",
+            "Store durably, serve fast via CDN",
+            "**Never** block chat: bytes skip chat service",
+            "Message carries `media_id` plus small thumbnail"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "2. High Level Design",
+            "rows": [
+              [
+                "client",
+                "media"
+              ],
+              [
+                "s3",
+                "chat"
+              ],
+              [
+                "cdn",
+                "recipient"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Sender app",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "media": {
+                "text": "Media service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "s3": {
+                "text": "S3 blobs",
+                "shape": "icon",
+                "icon": "s3"
+              },
+              "chat": {
+                "text": "Chat service",
+                "shape": "icon",
+                "icon": "message-circle"
+              },
+              "cdn": {
+                "text": "CDN",
+                "shape": "icon",
+                "icon": "cloudfront"
+              },
+              "recipient": {
+                "text": "Recipient app",
+                "shape": "icon",
+                "icon": "smartphone"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "media",
+                "label": "1 get URL"
+              },
+              {
+                "from": "client",
+                "to": "s3",
+                "label": "2 presigned PUT"
+              },
+              {
+                "from": "client",
+                "to": "chat",
+                "label": "3 media_id+thumb"
+              },
+              {
+                "from": "s3",
+                "to": "cdn",
+                "label": "origin"
+              },
+              {
+                "from": "chat",
+                "to": "recipient",
+                "label": "msg"
+              },
+              {
+                "from": "cdn",
+                "to": "recipient",
+                "label": "4 download"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "3. Upload State Machine",
+            "rows": [
+              [
+                "req",
+                "upl",
+                "ver"
+              ],
+              [
+                "ready",
+                "exp"
+              ]
+            ],
+            "nodes": {
+              "req": {
+                "text": "REQUESTED",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "upl": {
+                "text": "UPLOADING (5 MB chunks)",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "ver": {
+                "text": "VERIFYING",
+                "shape": "pill",
+                "ink": "purple"
+              },
+              "ready": {
+                "text": "READY",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "exp": {
+                "text": "EXPIRED",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "req",
+                "to": "upl",
+                "label": "first chunk"
+              },
+              {
+                "from": "upl",
+                "to": "ver",
+                "label": "complete"
+              },
+              {
+                "from": "ver",
+                "to": "ready",
+                "label": "sha256 ok"
+              },
+              {
+                "from": "ready",
+                "to": "exp",
+                "label": "TTL 30 d"
+              },
+              {
+                "from": "upl",
+                "to": "exp",
+                "label": "24 h orphan"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Table Schema",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "media_id",
+              "uuid PK",
+              "public handle"
+            ],
+            [
+              "owner",
+              "bigint",
+              "uploader user_id"
+            ],
+            [
+              "size, sha256",
+              "int, char(64)",
+              "same hash = dedupe"
+            ],
+            [
+              "s3_key",
+              "string",
+              "S3 object path"
+            ],
+            [
+              "expires_at",
+              "timestamp",
+              "TTL cutoff"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "heading",
+          "text": "5. Key APIs",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "POST /media/upload-url",
+            "  -> {url, media_id}",
+            "PUT {url}   # 5 MB chunks",
+            "POST /media/{id}/complete",
+            "GET cdn/m/{id}?sig=..&exp=.."
+          ],
+          "note": "download = CDN signed URL"
+        },
+        {
+          "type": "heading",
+          "text": "6. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Broken upload resumes from **last** acked chunk",
+            "Orphan blobs: ==24 h== S3 lifecycle rule",
+            "Upload success above **99%**, plus p95 time",
+            "CDN hit ratio above **90%**",
+            "Track storage growth per day"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "7. Design Considerations",
+          "ink": "orange"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Client encrypts, random **AES-256** key; server sees ciphertext",
+            "Key rides inside E2E message, never to S3",
+            "Same sha256 on forward: one blob",
+            "800 TB/day at $0.023/GB-month: ==compress==",
+            "TTL, e.g. 30 days if undownloaded"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Bytes bypass chat: presigned S3 upload, client-side encryption, CDN download, TTL."
+        }
+      ],
+      "hero": "s3",
+      "aside": "never block chat!",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "Push Notifications",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Wake offline devices via ==APNs== and ==FCM==",
+            "Payload: **new message** only, no plaintext (E2E)",
+            "App decrypts after syncing by `seq`",
+            "Rule suppresses duplicate pushes per chat"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Offline Push Path",
+            "rows": [
+              [
+                "chat",
+                "registry",
+                "queue"
+              ],
+              [
+                "worker",
+                "provider",
+                "device"
+              ]
+            ],
+            "nodes": {
+              "chat": {
+                "text": "Chat",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "registry": {
+                "text": "Offline?",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "queue": {
+                "text": "Job queue",
+                "shape": "icon",
+                "icon": "list"
+              },
+              "worker": {
+                "text": "Worker",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "provider": {
+                "text": "APNs / FCM",
+                "shape": "icon",
+                "icon": "cloud"
+              },
+              "device": {
+                "text": "Phone",
+                "shape": "icon",
+                "icon": "smartphone"
+              }
+            },
+            "edges": [
+              {
+                "from": "chat",
+                "to": "registry",
+                "label": "lookup"
+              },
+              {
+                "from": "registry",
+                "to": "queue",
+                "label": "offline"
+              },
+              {
+                "from": "queue",
+                "to": "worker"
+              },
+              {
+                "from": "worker",
+                "to": "provider",
+                "label": "token+payload"
+              },
+              {
+                "from": "provider",
+                "to": "device",
+                "label": "wake"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Push Job States",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Job Lifecycle",
+            "rows": [
+              [
+                "persisted",
+                "enqueued"
+              ],
+              [
+                "sent",
+                "retry"
+              ],
+              [
+                "synced",
+                "deleted"
+              ]
+            ],
+            "nodes": {
+              "persisted": {
+                "text": "PERSISTED",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "enqueued": {
+                "text": "ENQUEUED",
+                "shape": "pill",
+                "ink": "purple"
+              },
+              "sent": {
+                "text": "SENT",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "retry": {
+                "text": "RETRY",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "synced": {
+                "text": "SYNCED",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "deleted": {
+                "text": "TOKEN DELETED",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "persisted",
+                "to": "enqueued",
+                "label": "no socket"
+              },
+              {
+                "from": "enqueued",
+                "to": "sent",
+                "label": "send"
+              },
+              {
+                "from": "sent",
+                "to": "retry",
+                "label": "429 / 5xx"
+              },
+              {
+                "from": "retry",
+                "to": "sent",
+                "label": "backoff"
+              },
+              {
+                "from": "sent",
+                "to": "synced",
+                "label": "sync seq"
+              },
+              {
+                "from": "sent",
+                "to": "deleted",
+                "label": "410"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Device Table",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "user_id",
+              "BIGINT",
+              "device owner"
+            ],
+            [
+              "device_id",
+              "UUID",
+              "one per install"
+            ],
+            [
+              "platform",
+              "ENUM",
+              "ios / android"
+            ],
+            [
+              "push_token",
+              "TEXT",
+              "APNs/FCM address"
+            ],
+            [
+              "last_active",
+              "TIMESTAMP",
+              "last online"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Key APIs",
+          "ink": "pink"
+        },
+        {
+          "type": "code",
+          "lang": "text",
+          "lines": [
+            "POST /devices/token",
+            "{ \"device_id\": \"d9\",",
+            "  \"platform\": \"ios\",",
+            "  \"push_token\": \"a1b2\" }",
+            "notify{user_id, chat_id, badge}"
+          ],
+          "note": "notify is internal, never public",
+          "result": {
+            "headers": [
+              "Call",
+              "Caller"
+            ],
+            "rows": [
+              [
+                "POST /devices/token",
+                "client app"
+              ],
+              [
+                "notify{...}",
+                "chat service"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "6. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**410**: token invalid, delete device row",
+            "**429** or **5xx**: exponential backoff retry",
+            "==Collapse keys== merge pending pushes",
+            "Mistake: pushing to active or muted chats wastes cost",
+            "Track success rate, send p99 < 1 s, invalid tokens, opens"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Push is a doorbell: skip active sockets and muted chats, no plaintext, device syncs by seq."
+        }
+      ],
+      "hero": "bell",
+      "aside": "doorbell only!",
+      "subtitle": "(Chat App)"
+    },
+    {
+      "page_title": "End-to-End Encryption Overview",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Server stores only ==ciphertext==; devices read content",
+            "**X3DH** on first contact, then Double Ratchet",
+            "Double Ratchet: fresh key per message",
+            "Groups: sender keys, encrypt once",
+            "Rotate sender keys on membership change"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "First message A to B",
+            "rows": [
+              [
+                "A",
+                "KS"
+              ],
+              [
+                "ENC",
+                "RELAY"
+              ],
+              [
+                "B"
+              ]
+            ],
+            "nodes": {
+              "A": {
+                "text": "Alice",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "KS": {
+                "text": "Key server",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "ENC": {
+                "text": "AES-256",
+                "shape": "icon",
+                "icon": "lock"
+              },
+              "RELAY": {
+                "text": "Relay",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "B": {
+                "text": "Bob decrypts",
+                "shape": "icon",
+                "icon": "smartphone"
+              }
+            },
+            "edges": [
+              {
+                "from": "A",
+                "to": "KS",
+                "label": "GET /keys/bob"
+              },
+              {
+                "from": "A",
+                "to": "ENC",
+                "label": "X3DH secret"
+              },
+              {
+                "from": "ENC",
+                "to": "RELAY",
+                "label": "ciphertext"
+              },
+              {
+                "from": "RELAY",
+                "to": "B",
+                "label": "relay"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Session state machine",
+            "rows": [
+              [
+                "NONE",
+                "BUNDLE"
+              ],
+              [
+                "ACTIVE",
+                "REKEY"
+              ]
+            ],
+            "nodes": {
+              "NONE": {
+                "text": "NO SESSION",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "BUNDLE": {
+                "text": "BUNDLE FETCHED",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "ACTIVE": {
+                "text": "RATCHETING",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "REKEY": {
+                "text": "REKEY",
+                "shape": "pill",
+                "ink": "purple"
+              }
+            },
+            "edges": [
+              {
+                "from": "NONE",
+                "to": "BUNDLE",
+                "label": "first contact"
+              },
+              {
+                "from": "BUNDLE",
+                "to": "ACTIVE",
+                "label": "X3DH done"
+              },
+              {
+                "from": "ACTIVE",
+                "to": "REKEY",
+                "label": "new device"
+              },
+              {
+                "from": "REKEY",
+                "to": "BUNDLE",
+                "label": "refetch"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Keys and APIs",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key",
+            "Type",
+            "Role"
+          ],
+          "rows": [
+            [
+              "Identity",
+              "long term",
+              "device identity"
+            ],
+            [
+              "Signed prekey",
+              "medium term",
+              "fallback"
+            ],
+            [
+              "One-time prekeys",
+              "~100 batch",
+              "used once"
+            ],
+            [
+              "Chain key",
+              "per message",
+              "ratchets"
+            ],
+            [
+              "Sender key",
+              "per group",
+              "encrypt once"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "PUT /keys        # publish bundle",
+            "{identity, signed_prekey,",
+            "  one_time: [~100]}",
+            "GET /keys/{user} # fetch bundle",
+            "-> identity, spk, 1 one-time"
+          ],
+          "note": "safety number = out-of-band check"
+        },
+        {
+          "type": "heading",
+          "text": "4. Failures and Trade-offs",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Prekeys run out: signed prekey, trigger refill",
+            "New device: fresh session, never reuse old",
+            "No server-side search or spam scanning",
+            "Backups need own client-side key",
+            "Mistake: logging plaintext, reusing nonces/keys; metadata visible"
+          ],
+          "style": "cross"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "TAKEAWAY:",
+          "text": "Server relays ciphertext only. Watch prekey pool, decrypt failures."
+        }
+      ],
+      "hero": "shield-check",
+      "aside": "server sees only ciphertext",
+      "subtitle": "(WhatsApp-style Chat App)"
+    },
+    {
+      "page_title": "Scale, Failures and Interview Qs",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Cheatsheet numbers",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "Number"
+          ],
+          "rows": [
+            [
+              "Throughput",
+              "==460K== msgs/s"
+            ],
+            [
+              "Sockets",
+              "==100M==, 50K/gateway"
+            ],
+            [
+              "Text storage",
+              "==4 TB/day=="
+            ],
+            [
+              "Media storage",
+              "==800 TB/day=="
+            ],
+            [
+              "Latency",
+              "p99 **<200 ms**"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Scale-out and regions",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Shard `user_id`: gateways, session registry",
+            "Shard `chat_id`: messages, Kafka partitions",
+            "==Consistent hashing== moves few keys",
+            "Users pinned to **home region**; replicated bus",
+            "RPO: **under 1 s**"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "3. Failures and herds",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Retry with **same** `client_msg_id`",
+            "At-least-once + dedupe = ==exactly-once==",
+            "Circuit breakers on APNs/FCM",
+            "Gateway dies: 50K reconnect (herd)",
+            "Fix: jittered backoff, connection rate limits"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "4. Trade-offs",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choice",
+            "We pick",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Push vs pull",
+              "Push + sync",
+              "pull heals gaps"
+            ],
+            [
+              "Fan-out",
+              "Write; read if huge",
+              "1M breaks write"
+            ],
+            [
+              "Consistency",
+              "Strong per chat",
+              "global order costly"
+            ],
+            [
+              "Presence",
+              "Approximate",
+              "exact ~100x load"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Interview questions",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "Answer"
+          ],
+          "rows": [
+            [
+              "Ordering?",
+              "per-chat `seq`, one owner"
+            ],
+            [
+              "Avoid loss?",
+              "persist, ack, retry, dedupe"
+            ],
+            [
+              "1M members?",
+              "==fan-out on read=="
+            ],
+            [
+              "Find gateway?",
+              "registry: `user_id`"
+            ],
+            [
+              "Celebrity group?",
+              "split partition, cache members"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Say numbers, shard by chat_id, retry idempotently, name trade-offs."
+        }
+      ],
+      "hero": "zap",
+      "aside": "know the numbers!",
+      "subtitle": "(Chat App)"
+    }
+  ],
+  "caption": {
+    "text": "How would you design a WhatsApp-style chat app for millions of users? 💬\n\nThis is one of the most common system design interview questions, and the answer is a set of subsystems that fit together. Here are the notes, in order:\n\n1. Scope, requirements and scale estimates\n2. High-level architecture\n3. Connection layer: WebSockets\n4. Message flow and delivery receipts\n5. Message storage and ordering\n6. Group chats and fan-out\n7. Presence and last seen\n8. Media upload and download\n9. Push notifications\n10. End-to-end encryption overview\n11. Scale, failures, trade-offs and interview questions\n\nSwipe through, save it for your next interview, and send it to a friend who's prepping.\n\nComment “chat” to get the full system design PDF.",
+    "hashtags": [
+      "#systemdesign",
+      "#systemdesigninterview",
+      "#chatappdesign",
+      "#whatsapp",
+      "#websockets",
+      "#softwareengineering",
+      "#backenddevelopment",
+      "#codinginterview",
+      "#distributedsystems",
+      "#techcareers",
+      "#learntocode",
+      "#iolar"
+    ]
+  }
+}

@@ -35,3 +35,20 @@ describe('leadingRun', () => {
     expect(run[0].from).toBe(3);
   });
 });
+
+describe('isStrandedTakeaway', () => {
+  const callout = (title: string, from = 0): FlowItem => ({ block: { type: 'callout', style: 'banner', title, text: 't' }, from } as FlowItem);
+
+  it('is true for a run of nothing but takeaway callouts', async () => {
+    const { isStrandedTakeaway } = await import('@/lib/renderer/capture');
+    expect(isStrandedTakeaway([callout('Key takeaways')])).toBe(true);
+    expect(isStrandedTakeaway([callout('Key takeaways'), callout('Takeaway: joins')])).toBe(true);
+  });
+
+  it('is false when another block shares the page, or the callout is not a takeaway', async () => {
+    const { isStrandedTakeaway } = await import('@/lib/renderer/capture');
+    expect(isStrandedTakeaway([callout('Key takeaways'), item(0, 'more')])).toBe(false);
+    expect(isStrandedTakeaway([callout('A tip')])).toBe(false);
+    expect(isStrandedTakeaway([])).toBe(false);
+  });
+});

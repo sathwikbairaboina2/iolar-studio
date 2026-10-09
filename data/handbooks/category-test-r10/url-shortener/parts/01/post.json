@@ -1,0 +1,2326 @@
+{
+  "brand": "iolar",
+  "template": "notebook",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "URL SHORTENER SYSTEM DESIGN",
+  "date": "08/10/2026",
+  "slides": [
+    {
+      "page_title": "URL Shortener System Design",
+      "blocks": [],
+      "hero": "link",
+      "kind": "cover",
+      "cover": {
+        "title": "Design a scalable URL Shortener",
+        "subtitle": "A bit.ly-style case study",
+        "tagline": "Long URL in, 7-character link out: 100M new URLs/month, 100:1 reads, 6B links in 5 years",
+        "icons": [
+          {
+            "icon": "link",
+            "label": "Short codes",
+            "sub": "7-char base62"
+          },
+          {
+            "icon": "database",
+            "label": "Storage",
+            "sub": "sharded KV"
+          },
+          {
+            "icon": "zap",
+            "label": "Redirect + cache",
+            "sub": "p99 < 50 ms"
+          },
+          {
+            "icon": "chart",
+            "label": "Analytics",
+            "sub": "async clicks"
+          },
+          {
+            "icon": "shield-check",
+            "label": "Abuse control",
+            "sub": "rate limits"
+          },
+          {
+            "icon": "server",
+            "label": "Scale + failures",
+            "sub": "multi-region"
+          }
+        ],
+        "pills": [
+          "Requirements and estimates",
+          "High-level architecture",
+          "API design",
+          "Code generation",
+          "Data model and storage",
+          "Redirect and caching",
+          "Analytics pipeline",
+          "Aliases and expiry",
+          "Rate limiting",
+          "Failures and interview Qs"
+        ]
+      }
+    },
+    {
+      "page_title": "Requirements and Scale Estimates",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Requirements",
+          "ink": "blue"
+        },
+        {
+          "type": "sidebox",
+          "title": "Functional",
+          "items": [
+            "==Shorten== a long URL into a code",
+            "==Redirect== a code to the long URL",
+            "Custom alias and expiry date",
+            "Click analytics per link",
+            "Delete a link"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "sidebox",
+          "title": "Non-functional",
+          "items": [
+            "Redirect **p99 under 50 ms**",
+            "**99.99%** availability",
+            "Codes unpredictable, never reused"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "sidebox",
+          "title": "Out of scope",
+          "items": [
+            "Link-in-bio pages",
+            "QR codes",
+            "A/B redirect targets"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. Traffic estimates",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "Average",
+            "Peak"
+          ],
+          "rows": [
+            [
+              "Writes (100M/month)",
+              "~40/s",
+              "~120/s"
+            ],
+            [
+              "Reads (100:1 ratio)",
+              "~4,000/s",
+              "~12,000/s (3x)"
+            ]
+          ],
+          "highlightRow": 1
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "100M/month",
+                "sub": "new links",
+                "ink": "blue"
+              },
+              {
+                "text": "~40 writes/s",
+                "sub": "average",
+                "ink": "green"
+              },
+              {
+                "text": "x100 reads",
+                "sub": "4,000/s",
+                "ink": "orange"
+              },
+              {
+                "text": "x3 peak",
+                "sub": "12,000/s",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Storage, cache, codes",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "writes = 1e8 / 2.6e6   # per sec",
+            "reads = 40 * 100",
+            "disk = 6e9 * 500       # bytes",
+            "cache = 4000*86400*.2*500",
+            "codes = 62 ** 7"
+          ],
+          "note": "20% hot links, 500 B each",
+          "result": {
+            "headers": [
+              "Item",
+              "Value"
+            ],
+            "rows": [
+              [
+                "writes/s",
+                "~40"
+              ],
+              [
+                "disk, 5 yr",
+                "~3 TB"
+              ],
+              [
+                "cache",
+                "~35 GB"
+              ],
+              [
+                "codes",
+                "~3.5T"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "6B links x 500 B: metadata fits a ==sharded store==",
+            "35 GB hot set fits one ==Redis cluster==",
+            "base62, 7 chars: 62^7 is far above 6B"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "TAKEAWAY:",
+          "text": "Reads are 100x writes: size the redirect path for 12,000/s peak, p99 under 50 ms."
+        }
+      ],
+      "hero": "lightbulb",
+      "aside": "estimate first!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "High-Level Architecture",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Two Paths, Two Services",
+          "ink": "blue"
+        },
+        {
+          "type": "labelrows",
+          "rows": [
+            {
+              "icon": "pencil",
+              "label": "Write path:",
+              "text": "shorten service, ==40/s=="
+            },
+            {
+              "icon": "zap",
+              "label": "Read path:",
+              "text": "redirect service, ==4,000/s=="
+            },
+            {
+              "icon": "server",
+              "label": "Why split:",
+              "text": "reads **100x** writes"
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. How a Request Flows",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Write Path",
+            "rows": [
+              [
+                "c",
+                "g",
+                "s",
+                "d"
+              ]
+            ],
+            "nodes": {
+              "c": {
+                "text": "Client",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "g": {
+                "text": "API gateway",
+                "shape": "icon",
+                "icon": "apigateway"
+              },
+              "s": {
+                "text": "Shorten service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "d": {
+                "text": "KV store",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "c",
+                "to": "g"
+              },
+              {
+                "from": "g",
+                "to": "s"
+              },
+              {
+                "from": "s",
+                "to": "d",
+                "label": "code, insert, warm"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Read Path",
+            "rows": [
+              [
+                "c",
+                "e",
+                "r"
+              ],
+              [
+                "x",
+                "d",
+                "h"
+              ]
+            ],
+            "nodes": {
+              "c": {
+                "text": "Client",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "e": {
+                "text": "CDN / edge",
+                "shape": "icon",
+                "icon": "cloudfront"
+              },
+              "r": {
+                "text": "Redirect service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "x": {
+                "text": "Redis GET",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "d": {
+                "text": "DB on miss",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "h": {
+                "text": "301 or 302",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "c",
+                "to": "e"
+              },
+              {
+                "from": "e",
+                "to": "r",
+                "label": "miss"
+              },
+              {
+                "from": "r",
+                "to": "x"
+              },
+              {
+                "from": "x",
+                "to": "d",
+                "label": "miss"
+              },
+              {
+                "from": "d",
+                "to": "h"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Click events go ==async== to Kafka, **never** on the critical path",
+            "Kafka down? Redirects work, counts lag"
+          ],
+          "style": "check",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "3. 301 vs 302",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Browser",
+            "Clicks counted"
+          ],
+          "rows": [
+            [
+              "301",
+              "Caches it",
+              "Lost after 1st"
+            ],
+            [
+              "302",
+              "Asks again",
+              "Every click"
+            ]
+          ],
+          "highlightRow": 1
+        },
+        {
+          "type": "heading",
+          "text": "4. Components",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Component",
+            "Role",
+            "Estimate"
+          ],
+          "rows": [
+            [
+              "LB + app tier",
+              "Stateless",
+              "12k/s peak"
+            ],
+            [
+              "Redis",
+              "Hot cache",
+              "~35 GB"
+            ],
+            [
+              "Sharded KV",
+              "Truth",
+              "16 shards, 3 TB"
+            ],
+            [
+              "Kafka",
+              "Click buffer",
+              "~4,000/s"
+            ],
+            [
+              "Analytics",
+              "Roll-ups",
+              "Column store"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "DESIGN TAKEAWAY:",
+          "text": "Split reads, keep clicks async, pick 302."
+        }
+      ],
+      "hero": "network",
+      "aside": "split reads from writes!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "API Design",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Create, resolve, inspect, delete links",
+            "==Auth== via API key on management endpoints",
+            "==Idempotency==: retried POSTs mint one code",
+            "Redirect path: one lookup, one header"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "API Request Flow",
+            "rows": [
+              [
+                "client"
+              ],
+              [
+                "gw"
+              ],
+              [
+                "shorten",
+                "redirect"
+              ],
+              [
+                "db"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Client",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "gw": {
+                "text": "Gateway: auth + limits",
+                "shape": "icon",
+                "icon": "apigateway"
+              },
+              "shorten": {
+                "text": "Create service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "redirect": {
+                "text": "Redirect service",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "db": {
+                "text": "Redis + link store",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "shorten",
+                "label": "POST"
+              },
+              {
+                "from": "gw",
+                "to": "redirect",
+                "label": "GET"
+              },
+              {
+                "from": "shorten",
+                "to": "db"
+              },
+              {
+                "from": "redirect",
+                "to": "db"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Create Flow",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "POST /v1/links",
+            "Idempotency-Key: k-81f2",
+            "{\"long_url\":\"https://a.com/x\",",
+            "\"alias\":\"spring\",",
+            "\"expires_at\":\"2026-12-31\"}"
+          ],
+          "note": "Same key retried returns same code",
+          "result": {
+            "headers": [
+              "Field",
+              "Value"
+            ],
+            "rows": [
+              [
+                "status",
+                "201"
+              ],
+              [
+                "code",
+                "spring"
+              ],
+              [
+                "short_url",
+                "iol.ar/spring"
+              ],
+              [
+                "retry, same key",
+                "same code"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Key APIs",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Endpoint",
+            "Auth",
+            "Returns"
+          ],
+          "rows": [
+            [
+              "POST /v1/links",
+              "key or IP",
+              "201 short_url, code"
+            ],
+            [
+              "GET /{code}",
+              "none",
+              "302, or 404/410"
+            ],
+            [
+              "DELETE /v1/links/{code}",
+              "{red:API key}",
+              "204"
+            ],
+            [
+              "GET /v1/links/{code}/stats",
+              "{red:API key}",
+              "200 series"
+            ]
+          ],
+          "highlightRow": 1
+        },
+        {
+          "type": "heading",
+          "text": "5. Errors and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Meaning",
+            "Client action"
+          ],
+          "rows": [
+            [
+              "400",
+              "Bad URL",
+              "fix input"
+            ],
+            [
+              "409",
+              "Alias taken",
+              "pick another"
+            ],
+            [
+              "429",
+              "Rate limited",
+              "wait Retry-After"
+            ],
+            [
+              "410",
+              "Expired",
+              "stop using"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Create ==p99 under 200 ms==",
+            "Redirect ==p99 under 50 ms==",
+            "4xx/5xx rates **per endpoint**"
+          ],
+          "style": "check"
+        }
+      ],
+      "hero": "network",
+      "aside": "retry-safe POSTs!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Short-Code Generation",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==base62==: 7 chars ≈ **3.5T**, 6 ≈ 56B",
+            "==Counter==: no collisions, **guessable**",
+            "==Hash==: first 7 of MD5/SHA; retry on collision",
+            "==Snowflake== 64-bit: no counter, **11 chars**",
+            "6B links in 5 years: 7 chars, 40 writes/s"
+          ],
+          "style": "dot",
+          "frame": "solid",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Code Generation Path",
+            "rows": [
+              [
+                "s",
+                "l",
+                "p"
+              ],
+              [
+                "b",
+                "d"
+              ]
+            ],
+            "nodes": {
+              "s": {
+                "text": "Shorten service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "l": {
+                "text": "Leased ID range",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "p": {
+                "text": "Bijective shuffle",
+                "shape": "icon",
+                "icon": "lock"
+              },
+              "b": {
+                "text": "base62 encode",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "d": {
+                "text": "Links table",
+                "shape": "icon",
+                "icon": "dynamodb"
+              }
+            },
+            "edges": [
+              {
+                "from": "s",
+                "to": "l",
+                "label": "next ID"
+              },
+              {
+                "from": "l",
+                "to": "p"
+              },
+              {
+                "from": "p",
+                "to": "b",
+                "label": "scrambled"
+              },
+              {
+                "from": "b",
+                "to": "d",
+                "label": "conditional put"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Range Lease: No Per-Request Coordination",
+            "rows": [
+              [
+                "a",
+                "b"
+              ],
+              [
+                "d",
+                "c"
+              ]
+            ],
+            "nodes": {
+              "a": {
+                "text": "Lease 1,000 IDs (ZooKeeper/DB)",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "b": {
+                "text": "Serve IDs from memory",
+                "shape": "box",
+                "ink": "green"
+              },
+              "c": {
+                "text": "Range exhausted",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "d": {
+                "text": "Lease next range",
+                "shape": "box",
+                "ink": "purple"
+              }
+            },
+            "edges": [
+              {
+                "from": "a",
+                "to": "b"
+              },
+              {
+                "from": "b",
+                "to": "c",
+                "label": "after 1,000"
+              },
+              {
+                "from": "c",
+                "to": "d"
+              },
+              {
+                "from": "d",
+                "to": "a"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Approach",
+            "Collisions",
+            "Guessable",
+            "Length"
+          ],
+          "rows": [
+            [
+              "Counter",
+              "none",
+              "yes",
+              "7"
+            ],
+            [
+              "Hash first 7",
+              "retry",
+              "no",
+              "7"
+            ],
+            [
+              "Lease + shuffle",
+              "none",
+              "no",
+              "7"
+            ],
+            [
+              "Snowflake",
+              "none",
+              "partly",
+              "11"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "heading",
+          "text": "3. Anti-Guessing Shuffle",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "M = 62**7  # 3.5T codes",
+            "P = 2654435761  # gcd(P,62)=1",
+            "def code(n):",
+            "    n = n * P % M  # shuffle",
+            "    return b62(n).rjust(7,'0')"
+          ],
+          "note": "XOR key also works; keep it secret"
+        },
+        {
+          "type": "heading",
+          "text": "4. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Truncated hash, no check: two URLs, one code",
+            "Same URL, one code: breaks per-user links",
+            "Hash collision: insert fails, retry with salt",
+            "ID service down: leased range covers ~25 s"
+          ],
+          "style": "cross",
+          "frame": "solid",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Range lease plus bijective shuffle: no collisions, no sequential codes. Alert: retries >0.1% or <100 IDs left."
+        }
+      ],
+      "hero": "zap",
+      "aside": "no collisions!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Data Model and Storage",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==code== to `long_url`, **4,000** reads/s",
+            "~40 writes/s, no contention",
+            "3 TB over 5 years, sharded"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Storage Path",
+            "rows": [
+              [
+                "app",
+                "cache"
+              ],
+              [
+                "router"
+              ],
+              [
+                "shard",
+                "gsi"
+              ],
+              [
+                "replicas"
+              ]
+            ],
+            "nodes": {
+              "app": {
+                "text": "Redirect service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "cache": {
+                "text": "Cache",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "router": {
+                "text": "hash(code) to 1 of 16",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "shard": {
+                "text": "Shard primary",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "gsi": {
+                "text": "user_id index",
+                "shape": "icon",
+                "icon": "table"
+              },
+              "replicas": {
+                "text": "2 replicas (RF 3)",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "app",
+                "to": "cache",
+                "label": "GET code"
+              },
+              {
+                "from": "cache",
+                "to": "router",
+                "label": "miss"
+              },
+              {
+                "from": "router",
+                "to": "shard",
+                "label": "key lookup"
+              },
+              {
+                "from": "shard",
+                "to": "gsi",
+                "label": "async"
+              },
+              {
+                "from": "shard",
+                "to": "replicas",
+                "label": "copy"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Data Model",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "`code` (PK)",
+              "string(7)",
+              "shard key"
+            ],
+            [
+              "`long_url`",
+              "string",
+              "target, ~200 B"
+            ],
+            [
+              "`user_id`",
+              "bigint",
+              "owner, indexed"
+            ],
+            [
+              "`created_at` / `expires_at`",
+              "timestamp",
+              "expiry nullable"
+            ],
+            [
+              "`is_active`",
+              "bool",
+              "**false** after takedown"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "~500 B/row: 3 TB in 5 years, so shard",
+            "`hash(code)`: 16 shards x ==~200 GB==",
+            "Pure key lookup: ==KV store== (DynamoDB, Cassandra)",
+            "SQL: transactions, unique keys. NoSQL: easy scale",
+            "`user_id` index serves 'my links', off hot path"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "4. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "RF 3, quorum reads: one node can die",
+            "Viral hot code: cache absorbs it",
+            "Index lag delays 'my links', never redirects"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Click counters in links row: write contention",
+            "Count clicks in analytics store"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Quorum read p99 under 10 ms",
+            "Shard size alert at 160 GB (80%)",
+            "Cache hit above 95%, DB ~200 reads/s"
+          ],
+          "style": "check",
+          "ink": "green"
+        }
+      ],
+      "hero": "database",
+      "aside": "keys, not joins!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Redirect Path and Caching",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cache-aside, ==TTL 24 h==; LRU evicts coldest codes",
+            "35 GB hot set, **95%** hits: DB ~200 reads/s",
+            "Negative cache, unknown codes, **60 s**: blocks scans",
+            "CDN caches 301s for static hot links, clicks lost",
+            "Delete or expiry change: cache delete; TTL bounds staleness"
+          ],
+          "style": "dot",
+          "frame": "solid",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Redirect Read Path",
+            "rows": [
+              [
+                "client",
+                "edge"
+              ],
+              [
+                "svc"
+              ],
+              [
+                "cache",
+                "db"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Client",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "edge": {
+                "text": "Edge cache",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "svc": {
+                "text": "Redirect service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "cache": {
+                "text": "Redis cache",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "db": {
+                "text": "Sharded DB",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "edge",
+                "label": "GET /code"
+              },
+              {
+                "from": "edge",
+                "to": "svc",
+                "label": "miss"
+              },
+              {
+                "from": "svc",
+                "to": "cache",
+                "label": "GET code"
+              },
+              {
+                "from": "cache",
+                "to": "db",
+                "label": "miss"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Redirect Flow",
+          "ink": "purple"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Edge cache hit: answer, no origin trip",
+            "Redis `GET code`: hit returns long URL",
+            "Miss: read DB, `SET` with TTL",
+            "Unknown code: 60 s negative entry, 404",
+            "Reply **302** with `Location`"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "v = redis.get(code)",
+            "if v is None:",
+            "  v = flight.do(code, db_read)",
+            "  ttl = 86400 + randint(0, 3600)",
+            "  redis.set(code, v, ex=ttl)"
+          ],
+          "note": "one DB read per key, jittered TTL",
+          "result": {
+            "headers": [
+              "Hit rate",
+              "DB reads/s"
+            ],
+            "rows": [
+              [
+                "95%",
+                "200"
+              ],
+              [
+                "90%",
+                "400"
+              ],
+              [
+                "80%",
+                "800"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Failure Scenarios",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Viral stampede: single-flight merges misses, one DB read",
+            "Jittered TTL (24 h + up to 1 h) avoids synchronized expiry",
+            "Random-code scans: 60 s negative cache shields DB",
+            "Deleted link cached: `DEL code`, TTL caps staleness 24 h",
+            "CDN 301 hides repeat clicks: static hot links only"
+          ],
+          "style": "cross",
+          "frame": "solid",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "5. Key Metrics",
+          "ink": "orange"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Cache hit rate over **95%**",
+            "Redirect p99 under **50 ms**",
+            "DB read QPS, ~200/s",
+            "Cache memory, hot set ~35 GB"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "TAKEAWAY:",
+          "text": "Hit rate is the lever: 95% turns 4,000/s into ~200 DB reads/s."
+        }
+      ],
+      "hero": "zap",
+      "aside": "cache the hot 20%!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Analytics Pipeline",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Count clicks; capture ==referrer==, country, device without slowing redirects",
+            "Redirect service publishes a click to {icon:apachekafka} **Kafka**, fire-and-forget",
+            "About 4,000 events/s x 300 B is about ==100 GB/day== raw",
+            "Flink aggregates per code per minute into ClickHouse",
+            "Raw events kept 30 days; roll-ups kept **2 years**"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Click Analytics Path",
+            "rows": [
+              [
+                "redirect",
+                "kafka",
+                "flink"
+              ],
+              [
+                "ch",
+                "api"
+              ]
+            ],
+            "nodes": {
+              "redirect": {
+                "text": "Redirect service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "kafka": {
+                "text": "Kafka",
+                "shape": "icon",
+                "icon": "apachekafka"
+              },
+              "flink": {
+                "text": "Flink",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "ch": {
+                "text": "ClickHouse",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "api": {
+                "text": "Stats API",
+                "shape": "icon",
+                "icon": "apigateway"
+              }
+            },
+            "edges": [
+              {
+                "from": "redirect",
+                "to": "kafka",
+                "label": "click event"
+              },
+              {
+                "from": "kafka",
+                "to": "flink",
+                "label": "consume"
+              },
+              {
+                "from": "flink",
+                "to": "ch",
+                "label": "per minute"
+              },
+              {
+                "from": "ch",
+                "to": "api",
+                "label": "roll-ups"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Event Flow",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Click Event Lifecycle",
+            "rows": [
+              [
+                "emit",
+                "kafka"
+              ],
+              [
+                "consume",
+                "seen"
+              ],
+              [
+                "count",
+                "skip"
+              ]
+            ],
+            "nodes": {
+              "emit": {
+                "text": "Emitted",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "kafka": {
+                "text": "Queued in Kafka",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "consume": {
+                "text": "Consumed by Flink",
+                "shape": "box",
+                "ink": "purple"
+              },
+              "seen": {
+                "text": "event_id seen?",
+                "shape": "diamond",
+                "ink": "red"
+              },
+              "count": {
+                "text": "Counted per minute",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "skip": {
+                "text": "Ignored duplicate",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "emit",
+                "to": "kafka",
+                "label": "fire-and-forget"
+              },
+              {
+                "from": "kafka",
+                "to": "consume",
+                "label": "at-least-once"
+              },
+              {
+                "from": "consume",
+                "to": "seen"
+              },
+              {
+                "from": "seen",
+                "to": "count",
+                "label": "no"
+              },
+              {
+                "from": "seen",
+                "to": "skip",
+                "label": "yes"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Table Schema",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "event_id",
+              "UUID",
+              "dedupe key"
+            ],
+            [
+              "code",
+              "String(7)",
+              "short link"
+            ],
+            [
+              "country, device",
+              "String",
+              "click dimensions"
+            ],
+            [
+              "referrer",
+              "String",
+              "source site"
+            ],
+            [
+              "clicks",
+              "UInt32",
+              "count per minute"
+            ]
+          ],
+          "frame": "none"
+        },
+        {
+          "type": "heading",
+          "text": "5. Stats API",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "GET /stats?code=aB3xK9q",
+            "    &range=7d",
+            "200 OK  (under 300 ms)"
+          ],
+          "note": "reads roll-ups, never raw events",
+          "result": {
+            "headers": [
+              "day",
+              "clicks"
+            ],
+            "rows": [
+              [
+                "Mon",
+                "41,200"
+              ],
+              [
+                "Tue",
+                "38,900"
+              ],
+              [
+                "Wed",
+                "44,750"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "6. Failures and Metrics",
+          "ink": "pink"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Kafka down: buffer locally, ==drop clicks== rather than fail redirects",
+            "Retries duplicate events; dedupe on `event_id` keeps counts consistent",
+            "Consumer lag under **30 s**",
+            "Track drop rate; event loss under **0.1%**"
+          ],
+          "style": "check"
+        }
+      ],
+      "hero": "zap",
+      "aside": "never block redirects",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Custom Aliases and Expiry",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Alias== 3-30 chars, `[a-zA-Z0-9-]`",
+            "Reserved (`api`, `admin`, `login`) **blocked**",
+            "Taken alias: PK conditional insert, **409**",
+            "Shares namespace with generated codes",
+            "Store `expires_at`; later reads **410 Gone**"
+          ],
+          "style": "dot",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Alias and Expiry Path",
+            "rows": [
+              [
+                "client",
+                "shorten",
+                "sweeper"
+              ],
+              [
+                "redirect",
+                "redis",
+                "db"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Client",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "shorten": {
+                "text": "Shorten",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "sweeper": {
+                "text": "Sweeper",
+                "shape": "icon",
+                "icon": "clock"
+              },
+              "db": {
+                "text": "Links KV",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "redirect": {
+                "text": "Redirect",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "redis": {
+                "text": "Redis",
+                "shape": "icon",
+                "icon": "redis"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "shorten",
+                "label": "POST alias"
+              },
+              {
+                "from": "shorten",
+                "to": "db",
+                "label": "insert if absent"
+              },
+              {
+                "from": "sweeper",
+                "to": "db",
+                "label": "purge expired"
+              },
+              {
+                "from": "redirect",
+                "to": "redis",
+                "label": "GET code"
+              },
+              {
+                "from": "redis",
+                "to": "db",
+                "label": "miss"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Link Lifecycle",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "rows": [
+              [
+                "created",
+                "active",
+                "expired",
+                "tombstone"
+              ]
+            ],
+            "nodes": {
+              "created": {
+                "text": "Created 201",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "active": {
+                "text": "Active 302",
+                "shape": "box",
+                "ink": "green"
+              },
+              "expired": {
+                "text": "Expired 410",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "tombstone": {
+                "text": "Row gone, code kept",
+                "shape": "box",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "created",
+                "to": "active",
+                "label": "TTL = min(24 h, expiry)"
+              },
+              {
+                "from": "active",
+                "to": "expired",
+                "label": "expires_at passes"
+              },
+              {
+                "from": "expired",
+                "to": "tombstone",
+                "label": "lazy read or sweeper"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "code",
+              "string, PK",
+              "alias or generated"
+            ],
+            [
+              "long_url",
+              "text",
+              "redirect target"
+            ],
+            [
+              "expires_at",
+              "timestamp, null",
+              "null = never; TTL key"
+            ],
+            [
+              "origin",
+              "enum",
+              "alias or generated"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Failure Scenarios",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two claim `promo`: PK admits one, 409 other",
+            "Alias equals generated code: reserve space",
+            "Expired row lingers: lazy delete, sweeper",
+            "Cache outlives expiry: TTL `min(24 h, expiry)`",
+            "**Mistake**: recycling expired codes opens old URLs"
+          ],
+          "style": "cross",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "PK decides uniqueness; check expiry on read; retire codes forever."
+        }
+      ],
+      "hero": "clock",
+      "aside": "never reuse codes!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Rate Limiting and Abuse Prevention",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Creates: ==100/hour== per API key, anonymous ==10/hour== per IP",
+            "Redirects capped near **100/s** per IP at the edge",
+            "Scan targets with Safe Browsing at create, re-scan nightly",
+            "Block-list bad domains; reject loops and shortener self-links",
+            "Disable a flagged link in under **1 minute**, cache purged"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Limit, Scan, Store",
+            "rows": [
+              [
+                "client",
+                "edge"
+              ],
+              [
+                "gw",
+                "redis"
+              ],
+              [
+                "svc",
+                "sb"
+              ],
+              [
+                "db"
+              ]
+            ],
+            "nodes": {
+              "client": {
+                "text": "Client",
+                "shape": "icon",
+                "icon": "laptop"
+              },
+              "edge": {
+                "text": "Edge: 100/s per IP",
+                "shape": "icon",
+                "icon": "cloudfront"
+              },
+              "gw": {
+                "text": "API gateway",
+                "shape": "icon",
+                "icon": "apigateway"
+              },
+              "redis": {
+                "text": "Redis token bucket",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "svc": {
+                "text": "Shorten service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "sb": {
+                "text": "Safe Browsing + block-list",
+                "shape": "icon",
+                "icon": "shield-check"
+              },
+              "db": {
+                "text": "Links DB",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "client",
+                "to": "edge",
+                "label": "redirect"
+              },
+              {
+                "from": "client",
+                "to": "gw",
+                "label": "create"
+              },
+              {
+                "from": "gw",
+                "to": "redis",
+                "label": "INCR"
+              },
+              {
+                "from": "gw",
+                "to": "svc",
+                "label": "allowed"
+              },
+              {
+                "from": "svc",
+                "to": "sb",
+                "label": "scan"
+              },
+              {
+                "from": "svc",
+                "to": "db",
+                "label": "store"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Link Takedown States",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Link Safety States",
+            "rows": [
+              [
+                "scan"
+              ],
+              [
+                "active",
+                "rejected"
+              ],
+              [
+                "flagged"
+              ],
+              [
+                "disabled"
+              ]
+            ],
+            "nodes": {
+              "scan": {
+                "text": "Scan at create",
+                "shape": "diamond",
+                "ink": "blue"
+              },
+              "active": {
+                "text": "Active",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "rejected": {
+                "text": "Rejected 422",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "flagged": {
+                "text": "Flagged",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "disabled": {
+                "text": "Disabled + cache purged",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "scan",
+                "to": "active",
+                "label": "clean"
+              },
+              {
+                "from": "scan",
+                "to": "rejected",
+                "label": "bad domain or loop"
+              },
+              {
+                "from": "active",
+                "to": "flagged",
+                "label": "nightly hit or report"
+              },
+              {
+                "from": "flagged",
+                "to": "disabled",
+                "label": "confirmed, under 1 min"
+              },
+              {
+                "from": "flagged",
+                "to": "active",
+                "label": "false alarm"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Create Limiter API",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "lua",
+          "lines": [
+            "local n=redis.call('INCR',K[1])",
+            "if n==1 then",
+            "  redis.call('EXPIRE',K[1],3600)",
+            "end",
+            "return n  -- 101 > 100 => 429"
+          ],
+          "note": "fixed window, atomic in Lua",
+          "result": {
+            "headers": [
+              "Count",
+              "Reply"
+            ],
+            "rows": [
+              [
+                "1-100",
+                "201 Created"
+              ],
+              [
+                "101+",
+                "429 + Retry-After"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "5. Failures and Metrics",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Signal",
+            "Rule"
+          ],
+          "rows": [
+            [
+              "Limiter store down",
+              "**fail open**, local cap 20/min per IP"
+            ],
+            [
+              "429 rate",
+              "alert above 5% of creates"
+            ],
+            [
+              "Abuse reports/day",
+              "trend, triage queue"
+            ],
+            [
+              "Time-to-takedown",
+              "target under 1 min"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "TAKEAWAY:",
+          "text": "Limit the cheap write, scan the target, and fail open so a Redis outage never stops redirects."
+        }
+      ],
+      "hero": "shield-check",
+      "aside": "fail open!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Scale-Out and Failure Matrix",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Scale-out",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stateless app tier behind ==LB==",
+            "{icon:redis} Redis split by **consistent hashing**",
+            "DB shards `hash(code)`: 16 x ~200 GB",
+            "==Active-active reads== via geo-DNS",
+            "Writes to **home region**, async replication"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. Failure matrix",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Failure",
+            "Effect",
+            "Fallback"
+          ],
+          "rows": [
+            [
+              "Redis down",
+              "DB ~20x load",
+              "rate-limit + DB"
+            ],
+            [
+              "DB shard down",
+              "1/16 of codes",
+              "replica reads"
+            ],
+            [
+              "ID service down",
+              "no new ranges",
+              "prefetched 1,000 IDs"
+            ],
+            [
+              "Region down",
+              "reads fail",
+              "geo-DNS reroute"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "paragraph",
+          "text": "Why 20x: 95% hits leave DB ~200 reads/s; Redis gone, all **4,000/s**. 1,000 IDs last ~**25 s** at 40 writes/s."
+        },
+        {
+          "type": "heading",
+          "text": "3. Multi-region",
+          "ink": "purple"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Geo-DNS sends each reader to the ==nearest region==",
+            "Writes route to the **home region** of the owner",
+            "Async replication: a new link may 404 briefly elsewhere",
+            "Region down: geo-DNS reroutes reads to the next closest"
+          ],
+          "style": "check",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "4. Scale triggers",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Signal",
+            "Threshold",
+            "Action"
+          ],
+          "rows": [
+            [
+              "Shard size",
+              "160 GB (80%)",
+              "split shards"
+            ],
+            [
+              "Cache hit",
+              "under 95%",
+              "add Redis nodes"
+            ],
+            [
+              "Consumer lag",
+              "over 30 s",
+              "scale Flink"
+            ],
+            [
+              "429 rate",
+              "over 5%",
+              "review limits"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "heading",
+          "text": "5. Degrade gracefully",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Kafka down: buffer locally, ==drop clicks==",
+            "Limiter store down: **fail open**, local cap",
+            "Shard down: replica reads, quorum holds",
+            "Redirects stay up; analytics and creates lag first"
+          ],
+          "style": "check",
+          "ink": "green"
+        }
+      ],
+      "hero": "lightbulb",
+      "aside": "know your numbers!",
+      "subtitle": "(URL Shortener)"
+    },
+    {
+      "page_title": "Trade-offs and Interview Questions",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Shed load in order",
+          "text": "Scans first, then creates, never redirects."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Skipping the ID prefetch: ID outage stops creates",
+            "Retrying Redis misses blindly: DB meltdown"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Redis outage tip",
+          "text": "DB takes ~20x load, so rate-limit and shed scans first."
+        },
+        {
+          "type": "heading",
+          "text": "1. Trade-offs",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choice",
+            "We pick",
+            "Why"
+          ],
+          "rows": [
+            [
+              "301 vs 302",
+              "302",
+              "counts clicks"
+            ],
+            [
+              "Counter vs hash",
+              "bijective counter",
+              "no collisions"
+            ],
+            [
+              "SQL vs NoSQL",
+              "NoSQL KV",
+              "easy scale-out"
+            ],
+            [
+              "Sync vs async stats",
+              "async (Kafka)",
+              "off redirect path"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Interview questions",
+          "ink": "green"
+        },
+        {
+          "type": "qa",
+          "q": "Q1. How do you avoid collisions across servers?",
+          "a_bullets": [
+            "==Range leasing==: 1,000 IDs per server",
+            "Or **bijective** counter: unique, unguessable"
+          ]
+        },
+        {
+          "type": "qa",
+          "q": "Q2. How do you handle a viral link?",
+          "a_bullets": [
+            "**CDN** absorbs repeat hits",
+            "==Single-flight== on miss, jittered TTL",
+            "Replicate hot key across Redis nodes"
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Cheatsheet numbers",
+          "items": [
+            "**40** writes/s, **4,000** reads/s",
+            "**3 TB** over 5 years",
+            "**35 GB** hot cache, one Redis cluster",
+            "**7** char base62, p99 **under 50 ms**"
+          ],
+          "ink": "orange"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "LB, Redis, sharded KV, Kafka, ClickHouse. Numbers first, then failure fallback."
+        }
+      ],
+      "hero": "lightbulb",
+      "subtitle": "(URL Shortener)"
+    }
+  ],
+  "caption": {
+    "text": "\"How would you design a URL shortener for millions of users?\"\n\nThis is a classic system design interview question, and it's easy to ramble on. Here's the bit.ly-style design, about 40 writes/s and 4,000 redirects/s on average, as handwritten notes.\n\nWhat's inside, in order:\n\n1. Problem, requirements and scale estimates\n2. High-level architecture\n3. API design\n4. Short-code generation: base62, counters, hashing\n5. Data model and storage\n6. Redirect path and caching\n7. Analytics pipeline\n8. Custom aliases and expiry\n9. Rate limiting and abuse prevention\n10. Scaling, failure handling and interview questions\n\nSave this for your next system design round and share it with a friend who's prepping.\n\nComment “url” to get the full system design PDF.",
+    "hashtags": [
+      "#systemdesign",
+      "#systemdesigninterview",
+      "#urlshortener",
+      "#softwareengineering",
+      "#backenddevelopment",
+      "#codinginterview",
+      "#techinterview",
+      "#scalability",
+      "#distributedsystems",
+      "#softwarearchitecture",
+      "#learntocode",
+      "#iolar"
+    ]
+  }
+}

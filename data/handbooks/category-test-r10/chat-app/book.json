@@ -1,0 +1,252 @@
+{
+  "title": "Chat App System Design (WhatsApp-style)",
+  "summary": "An end-to-end system design of a WhatsApp-like chat app. It covers requirements and scale, WebSocket gateways, message flow and receipts, storage and ordering, group fan-out, presence, media, push, E2E encryption and failure handling.",
+  "chapters": [
+    {
+      "title": "System Design: WhatsApp-style Chat App",
+      "points": [
+        "Case study: 1:1 and group chat, receipts, presence, media, push, E2E encryption",
+        "Scale target: 500M DAU, 40B messages/day, about 460K msgs/s average",
+        "Subsystems covered: gateway, message service, storage, groups, presence, media, push, crypto",
+        "Interview framing: clarify, estimate, draw, deep-dive, then failures and trade-offs"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Scope, Requirements and Scale Estimates (Chat App)",
+      "points": [
+        "Functional: 1:1 chat, groups up to 1,024 members, sent/delivered/read receipts, media, last seen, push",
+        "Out of scope: voice and video calls, stories, payments",
+        "Non-functional: p99 delivery under 200 ms online, no message loss, per-chat ordering, 99.99% availability",
+        "Traffic: 40B msgs/day / 86,400 is about 460K msgs/s average, peak 2x is about 1M msgs/s",
+        "Connections: 500M DAU with about 100M concurrent sockets; at 50K sockets per server that is about 2,000 gateways",
+        "Storage: 40B msgs x 100 B is about 4 TB/day of text, about 1.5 PB/year before replication",
+        "Media: 10% of messages x 200 KB is about 800 TB/day, so it goes to blob storage and a CDN, not the DB"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Chat App)",
+      "points": [
+        "Path: client, L4 load balancer, WebSocket gateway, chat service, message bus, storage",
+        "Stateful gateways hold sockets; stateless chat services hold the business logic",
+        "Session registry in Redis maps user_id to gateway_id and device with a TTL",
+        "Kafka partitioned by chat_id decouples send, persist, fan-out and push",
+        "Stores: Cassandra for messages, MySQL/Postgres for users and groups, Redis for presence, S3 for media",
+        "Offline path: user not in the registry means the message waits in the inbox and a push is sent"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Connection Layer: WebSockets (Chat App)",
+      "points": [
+        "Responsibilities: keep one long-lived duplex connection per device, authenticate it, route frames",
+        "Design: gateway tier on L4 LB (no sticky HTTP needed), about 50K sockets per node, heartbeat ping every 30 s",
+        "Lifecycle flow: HTTP upgrade, JWT auth, register in session registry, receive/send frames, close and deregister",
+        "Data model: conn(conn_id, user_id, device_id, gateway_id, last_ping); registry key user:{id} with a 60 s TTL",
+        "API frames: send{client_msg_id, chat_id, body}, ack{msg_id}, receipt{msg_id, type}, sync{since_seq}",
+        "Failures: gateway crash drops 50K sockets, clients reconnect with jittered exponential backoff and sync since last seq",
+        "Alternatives: long polling wastes about 10x more requests, SSE is one-way, WebSocket plus a binary protocol (WhatsApp uses XMPP-derived) saves bandwidth",
+        "Metrics: concurrent connections, reconnect rate, connect p99, frame errors per second, memory per socket (about 10 KB)"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Message Flow and Delivery Receipts (Chat App)",
+      "points": [
+        "Responsibilities: accept, dedupe, persist, route to recipient, and track the sent/delivered/read state",
+        "Flow: A sends, gateway A, chat service, persist, server ack (one tick), lookup the registry, push to gateway B, B acks (two ticks), read (blue ticks)",
+        "Idempotency: the client generates client_msg_id (UUID) and the server dedupes on it for 24 h, so retries are safe",
+        "Receipt state machine: SENT, DELIVERED, READ; it only moves forward and is stored per (msg_id, user_id)",
+        "Data model: message(msg_id, chat_id, sender, seq, body, ts); receipt(msg_id, user_id, state, ts)",
+        "API: POST/WS send returns {msg_id, seq}; receipts are batched, up to 1 per 100 ms per chat",
+        "Failure: the recipient is offline, so the message goes to the inbox queue and is delivered on reconnect with at-least-once delivery",
+        "Failure: the ack is lost, so the client resends with the same client_msg_id and gets the original msg_id back",
+        "Metrics: send-to-deliver p99 under 200 ms, duplicate rate, undelivered backlog, receipt lag"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Message Storage and Ordering (Chat App)",
+      "points": [
+        "Responsibilities: durably store history, give a per-chat order, serve paged history and offline sync",
+        "Design: Cassandra with partition key chat_id and bucket (month), clustering key seq DESC, replication factor 3",
+        "Ordering: a per-chat monotonic seq from the single owner partition; wall clocks drift, so never sort by timestamp",
+        "Alternative: Snowflake-style 64-bit IDs (41-bit ms, 10-bit node, 12-bit seq) are roughly time-sortable but only ordered per node",
+        "Data model: messages((chat_id, bucket), seq, msg_id, sender, body, type, ts); inbox(user_id, seq, msg_id) holds undelivered items",
+        "API: GET /chats/{id}/messages?before_seq=&limit=50; sync(since_seq) returns missed messages",
+        "Failure: a node is down, so quorum reads/writes (2 of 3) continue; a hot partition (huge group) is split by time bucket",
+        "Retention: delete from the server inbox once delivered, and keep chat history only on devices (WhatsApp model)",
+        "Metrics: write p99 under 10 ms, history read p99 under 50 ms, partition size under 100 MB, replication lag"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Group Chats and Fan-out (Chat App)",
+      "points": [
+        "Responsibilities: membership, admin roles, store one copy of each message, deliver to every member",
+        "Fan-out on write: one stored message, N inbox pointers plus pushes; fine for groups up to 1,024 members",
+        "Flow: the sender posts to the group, the chat service writes it once, a Kafka fan-out worker reads the member list, and per-member gateway routing delivers it",
+        "Cost: a 1,024-member group is 1 write plus 1,023 deliveries; fan-out lookups are batched per gateway, not per user",
+        "Data model: group(group_id, name, owner); member(group_id, user_id, role, joined_seq); the member list is cached in Redis",
+        "API: POST /groups, PUT /groups/{id}/members, POST /groups/{id}/messages",
+        "Failure: a fan-out worker crash means the Kafka offset is not committed, so it replays and the dedupe on (msg_id, user) avoids doubles",
+        "Mistake: fan-out on read for chat adds read latency; per-member copies of media waste storage, so store a single blob reference",
+        "Metrics: fan-out lag p99, deliveries per message, queue depth, group-size histogram"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Presence and Last Seen (Chat App)",
+      "points": [
+        "Responsibilities: online/offline status, last seen timestamp, typing indicator, all with privacy settings",
+        "Design: the heartbeat every 30 s refreshes Redis key presence:{user} with a 45 s TTL; expiry means offline",
+        "Flow: connect sets online, disconnect or TTL expiry writes last_seen to the DB, and subscribers get the update",
+        "Fan-out limit: publish presence only to contacts who have the chat open, not all 500 contacts, which cuts load by about 100x",
+        "Data model: Redis presence:{user_id}=gateway_id with TTL; users.last_seen persisted at most once per minute",
+        "API: subscribe_presence{user_ids}, presence_update{user_id, status, ts}, typing{chat_id}",
+        "Failure: flapping connections cause presence storms, so debounce offline events by 5 s",
+        "Trade-off: accuracy vs cost; at 100M online users with 30 s heartbeats that is about 3.3M writes/s, so batch and sample",
+        "Metrics: heartbeat QPS, Redis memory (about 100 B x 100M is 10 GB), presence staleness p99"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Media Upload and Download (Chat App)",
+      "points": [
+        "Responsibilities: accept images, video and files up to 100 MB, store them, serve them fast, never block the chat path",
+        "Design: the client uploads straight to S3 with a presigned URL, and the chat message carries only the media_id plus a thumbnail",
+        "Flow: request an upload URL, upload in 5 MB chunks (resumable), the server verifies, the message with the media reference is sent, the recipient downloads from the CDN",
+        "Encryption: the client encrypts the file with a random AES-256 key and the key travels inside the E2E message, so the server only sees ciphertext",
+        "Data model: media(media_id, owner, size, sha256, s3_key, expires_at); the same hash allows dedupe of forwarded files",
+        "API: POST /media/upload-url returns {url, media_id}; POST /media/{id}/complete; GET via CDN signed URL",
+        "Failure: a broken upload resumes from the last chunk; orphan blobs are cleaned up by a 24 h lifecycle rule",
+        "Cost: 800 TB/day at $0.023/GB-month is large, so apply a TTL (for example 30 days for undownloaded media) and compress",
+        "Metrics: upload success rate above 99%, p95 upload time, CDN hit ratio above 90%, storage growth per day"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Push Notifications (Chat App)",
+      "points": [
+        "Responsibilities: wake offline devices with a new-message alert via APNs (iOS) and FCM (Android)",
+        "Design: when the registry says the user is offline, the chat service enqueues a notification job and a push worker calls APNs/FCM",
+        "Flow: message persisted, no socket found, enqueue, worker sends the token plus a minimal payload, the device wakes and syncs by seq",
+        "Privacy: the payload carries no plaintext (E2E), only 'new message', and the app decrypts locally after sync",
+        "Data model: device(user_id, device_id, platform, push_token, last_active); a rule suppresses duplicate pushes per chat",
+        "API: POST /devices/token (register); internal notify{user_id, chat_id, badge}",
+        "Failure: APNs/FCM returns 410 for an invalid token, so delete it; on 429 or 5xx retry with backoff; collapse keys merge pending pushes",
+        "Mistake: pushing to a user with an active socket, or to muted chats, causes noise and wasted cost",
+        "Metrics: push success rate, enqueue-to-send p99 under 1 s, invalid token rate, and push-to-open rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "End-to-End Encryption Overview (Chat App)",
+      "points": [
+        "Goal: only sender and recipient devices can read content, and the server stores only ciphertext",
+        "Signal protocol: X3DH key agreement on first contact, then the Double Ratchet gives a fresh key per message",
+        "Keys: identity key (long term), signed prekey, and a batch of one-time prekeys (about 100) uploaded to the server",
+        "Flow: A fetches B's prekey bundle, derives the shared secret, encrypts with AES-256, and the server just relays the ciphertext",
+        "Groups: sender keys, where each member shares one chain key and the sender encrypts once, then rotates the keys on membership change",
+        "API: PUT /keys (publish bundle), GET /keys/{user} (fetch bundle), and a safety number for out-of-band verification",
+        "Failure: prekeys run out, so fall back to the signed prekey and trigger a refill; a new device requires a fresh session",
+        "Trade-off: no server-side search or spam scanning, and backups need their own client-side encryption key",
+        "Mistake: logging plaintext, or reusing nonces/keys; metadata (who, when) is still visible to the server"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scale, Failures, Trade-offs and Interview Qs (Chat App)",
+      "points": [
+        "Scale-out: shard by user_id for the gateways and registry, by chat_id for messages and Kafka; add nodes through consistent hashing",
+        "Multi-region: users are pinned to a home region, cross-region messages go over a replicated bus, and the RPO target is under 1 s",
+        "Failure handling: retries with the same client_msg_id, at-least-once delivery plus dedupe equals effective exactly-once, and circuit breakers on push providers",
+        "Thundering herd: after a gateway outage 50K clients reconnect at once, so add jittered backoff and connection rate limits",
+        "Trade-offs: push vs pull, fan-out on write vs read, strong vs eventual consistency (chat order strong per chat only), cost of presence accuracy",
+        "Interview Q: how do you guarantee ordering, how do you avoid loss, how do you handle a 1M-member channel (switch to fan-out on read)",
+        "Interview Q: how to find the right gateway for a user (the session registry), how to handle a celebrity group (a hot partition)",
+        "Cheatsheet numbers: 460K msgs/s, 100M sockets, 50K per gateway, 4 TB/day text, 800 TB/day media, p99 under 200 ms"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

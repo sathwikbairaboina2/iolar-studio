@@ -1,0 +1,214 @@
+{
+  "title": "Low-Level asyncio: Futures, Callbacks, Transports & Protocols",
+  "summary": "Covers the machinery under async/await: Future objects, loop callbacks and thread-safe scheduling, the transport/protocol model behind create_connection and create_server, flow control, how StreamReader/StreamWriter sit on top of protocols, and asyncio subprocesses.",
+  "chapters": [
+    {
+      "title": "The Two Layers of asyncio",
+      "points": [
+        "High-level API (asyncio.run, tasks, streams, create_subprocess_exec) is for application code; low-level API (loop methods, Futures, transports, protocols) is for library and framework authors",
+        "The event loop is a scheduler: it runs a ready queue of callbacks and polls a selector (epoll/kqueue/IOCP) for I/O readiness",
+        "One loop iteration (_run_once): compute timeout, poll selector, move due timers and I/O callbacks into the ready queue, run everything in it",
+        "A coroutine only runs when a Task wraps it; a Task is a Future subclass that steps the coroutine from a callback",
+        "await on a Future suspends the Task; the Future's completion schedules the Task's next step via call_soon",
+        "asyncio.get_running_loop() is the right way to get the loop inside a coroutine; get_event_loop() is deprecated there",
+        "SelectorEventLoop (Unix default) vs ProactorEventLoop (Windows default): readiness-based vs completion-based I/O",
+        "Layer diagram: coroutine → Task → Future → loop callbacks → transport → protocol → socket"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Future Objects and loop.create_future",
+      "points": [
+        "An asyncio.Future is a placeholder for a result not yet available; it has three states: pending, cancelled, finished",
+        "Create with loop.create_future(), not asyncio.Future() directly, so alternative loops (uvloop) can supply an optimised implementation",
+        "fut.set_result(v) and fut.set_exception(e) finish it; calling either twice raises InvalidStateError",
+        "fut.result() raises InvalidStateError if still pending, CancelledError if cancelled, or re-raises the stored exception",
+        "fut.cancel(msg=None) returns False if already done; fut.done() and fut.cancelled() report state",
+        "A Future is awaitable: __await__ yields the Future to the Task, which parks until the Future completes",
+        "Example: bridging a callback API with fut = loop.create_future(); api.start(on_done=fut.set_result); return await fut",
+        "Guard against late callbacks with 'if not fut.done(): fut.set_result(x)' when a timeout or cancel may have finished it first",
+        "asyncio.Future is not thread-safe and differs from concurrent.futures.Future; wrap_future() converts one to the other",
+        "An exception set on a Future nobody retrieves logs 'Future exception was never retrieved' when it is garbage-collected",
+        "Futures are bound to the loop that created them; awaiting one from another loop raises RuntimeError"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Callbacks: add_done_callback and the Scheduling API",
+      "points": [
+        "fut.add_done_callback(cb) calls cb(fut) once the Future completes; the callback receives the Future, not the result",
+        "Done callbacks never run inline: set_result schedules them with loop.call_soon, so they run on a later loop iteration",
+        "Adding a callback to an already-done Future still schedules it via call_soon rather than calling it immediately",
+        "Pass extra arguments with functools.partial, since add_done_callback accepts only the Future argument (plus context=)",
+        "fut.remove_done_callback(cb) removes every registration of cb and returns the count removed",
+        "loop.call_soon(cb, *args) appends to the ready queue and runs callbacks in FIFO order on the next iteration",
+        "loop.call_later(delay, cb) and loop.call_at(when, cb) use the loop's monotonic clock, loop.time()",
+        "call_soon returns a Handle and call_later/call_at return a TimerHandle; handle.cancel() prevents the run",
+        "Callbacks run inside a contextvars.Context copy (context= argument), so context variables propagate",
+        "An exception in a callback does not crash the loop: it goes to loop.call_exception_handler and gets logged",
+        "A slow callback blocks the entire loop; debug mode warns about callbacks slower than loop.slow_callback_duration (100 ms)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "call_soon vs call_soon_threadsafe",
+      "points": [
+        "loop.call_soon is not thread-safe: it only touches the ready queue and assumes the loop's own thread is calling",
+        "Calling call_soon from another thread can race on the queue, and a loop sleeping in select() will not wake up",
+        "loop.call_soon_threadsafe(cb) appends the callback and then writes a byte to the loop's self-pipe (_write_to_self) to wake the selector",
+        "Setting a Future from a worker thread: loop.call_soon_threadsafe(fut.set_result, value), never fut.set_result directly",
+        "asyncio.run_coroutine_threadsafe(coro, loop) submits a coroutine from another thread and returns a concurrent.futures.Future",
+        "loop.run_in_executor(None, fn) / asyncio.to_thread(fn) go the other way: blocking work runs in a thread and the loop gets back an awaitable Future",
+        "Debug mode (PYTHONASYNCIODEBUG=1) raises RuntimeError when a non-threadsafe loop method is called from the wrong thread",
+        "Signal handlers set with signal.signal must use call_soon_threadsafe too; loop.add_signal_handler handles this for you on Unix",
+        "Comparison table: call_soon (same thread, no wakeup, cheaper) vs call_soon_threadsafe (any thread, self-pipe wakeup)"
+      ],
+      "shape": [
+        "comparison",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Transports and Protocols: The Model",
+      "points": [
+        "A transport owns the socket and does the I/O (how bytes move); a protocol holds your logic (what to do with the bytes)",
+        "Transports and protocols come in pairs: the loop builds the transport and calls protocol methods as events arrive",
+        "asyncio.Protocol callbacks: connection_made(transport), data_received(data), eof_received(), connection_lost(exc)",
+        "Callback order is guaranteed: connection_made → data_received* → eof_received? → connection_lost, and connection_lost is called exactly once",
+        "connection_lost(exc) receives None on a clean close or the exception on an error",
+        "If eof_received returns a truthy value the transport stays half-open; returning None/False closes it",
+        "data_received gets arbitrary chunks: one message can arrive split or several can arrive together, so the protocol must frame and buffer",
+        "Transport methods: write(data), writelines(), write_eof(), close(), abort(), get_extra_info('peername'/'socket'/'sslcontext')",
+        "Protocol methods are plain synchronous functions; you cannot await inside data_received, so spawn tasks with loop.create_task",
+        "BufferedProtocol (get_buffer/buffer_updated) receives into a preallocated buffer with no copy; DatagramProtocol and SubprocessProtocol cover other transport types"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "create_connection and create_server in Practice",
+      "points": [
+        "transport, protocol = await loop.create_connection(lambda: MyProto(), host, port) opens a client connection",
+        "The first argument is a protocol factory (a callable), not an instance, because servers need a fresh protocol per connection",
+        "create_connection options: ssl=, server_hostname=, local_addr=, happy_eyeballs_delay= (RFC 8305), sock= for an existing socket",
+        "server = await loop.create_server(factory, host, port) returns an asyncio.Server listening on one or more sockets",
+        "Server lifecycle: async with server: await server.serve_forever(); server.close() plus await server.wait_closed() for shutdown",
+        "create_server options: reuse_address, reuse_port, backlog (default 100), start_serving=False to delay accepting",
+        "Echo server example: connection_made stores the transport; data_received calls self.transport.write(data)",
+        "Getting a result out of a protocol: pass a Future into the factory (lambda: Proto(on_done=fut)) and set it in connection_lost",
+        "Also available: loop.create_unix_connection/create_unix_server for Unix sockets and create_datagram_endpoint for UDP",
+        "Comparison: raw protocols are fastest with the least overhead, but you must handle framing, backpressure and shutdown yourself"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Flow Control: Backpressure Both Ways",
+      "points": [
+        "transport.write() never blocks: bytes the socket cannot send yet are queued in the transport's write buffer",
+        "Write buffer limits: the high-water mark (default 64 KiB) and low-water mark (default high/4) are set with transport.set_write_buffer_limits(high, low)",
+        "When the buffer rises above high the transport calls protocol.pause_writing(); once it drains below low it calls resume_writing()",
+        "The protocol must actually stop producing on pause_writing; if it ignores it, write() keeps buffering until memory runs out",
+        "get_write_buffer_size() and get_write_buffer_limits() let you inspect the buffer state",
+        "Read side: transport.pause_reading() stops calling data_received (the socket is removed from the selector); resume_reading() restarts it",
+        "Pausing reads fills the kernel receive buffer, which shrinks the TCP window and slows the remote sender (real backpressure)",
+        "transport.is_reading() reports read state; since 3.7, pausing or resuming twice is a no-op, not an error",
+        "Pattern: count queued work, call pause_reading above a limit and resume_reading below a lower one (hysteresis avoids flapping)",
+        "Diagram: fast producer → write buffer → high mark → pause_writing → drain → low mark → resume_writing"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "How Streams Are Built on Protocols",
+      "points": [
+        "asyncio.open_connection() calls loop.create_connection with a StreamReaderProtocol and returns (StreamReader, StreamWriter)",
+        "asyncio.start_server(client_cb, host, port) wraps create_server; each connection calls client_cb(reader, writer), and a coroutine client_cb runs as a Task",
+        "StreamReaderProtocol.data_received calls reader.feed_data(data); eof_received calls reader.feed_eof()",
+        "StreamReader keeps an internal bytearray buffer; read(n), readline(), readexactly(n) and readuntil(sep) await a waiter Future until enough data arrives",
+        "Read backpressure: when the reader's buffer exceeds 2 × limit (default limit 64 KiB) it calls transport.pause_reading(), and resumes once consumers drain it",
+        "StreamWriter.write() is a thin wrapper over transport.write(); await writer.drain() blocks while the protocol is paused (FlowControlMixin)",
+        "drain() awaits a Future that resume_writing completes, which turns pause_writing callbacks into await-style backpressure",
+        "readline() raises ValueError/LimitOverrunError when a line exceeds the limit; readexactly raises IncompleteReadError on early EOF",
+        "Close correctly: writer.close(), then await writer.wait_closed()",
+        "Comparison: streams give coroutine ergonomics and built-in backpressure; protocols avoid per-read Futures and are faster under heavy load"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Subprocesses with create_subprocess_exec",
+      "points": [
+        "proc = await asyncio.create_subprocess_exec('ls', '-l', stdout=asyncio.subprocess.PIPE) passes program and args separately, with no shell",
+        "create_subprocess_shell(cmd) goes through /bin/sh; any untrusted input needs shlex.quote or it becomes a shell-injection risk",
+        "Under the hood: loop.subprocess_exec(protocol_factory, ...) plus a SubprocessStreamProtocol that exposes proc.stdin/stdout/stderr as streams",
+        "The Process object provides pid, returncode (None while running), await proc.wait(), send_signal(), terminate(), kill()",
+        "stdout, stderr = await proc.communicate(input=b'...') writes stdin, reads both pipes to EOF, and waits for exit",
+        "Deadlock: await proc.wait() with PIPE output can hang once the OS pipe buffer (~64 KiB) fills; use communicate() or read the pipes concurrently",
+        "Stream line by line: async for line in proc.stdout, for live output from long-running commands",
+        "Add a timeout with asyncio.wait_for(proc.communicate(), 10); on TimeoutError, proc.kill() and then await proc.wait() to reap the child",
+        "stderr=asyncio.subprocess.STDOUT merges the two streams; DEVNULL discards output",
+        "Windows needs ProactorEventLoop (the default since 3.8) for subprocesses; on Unix a child watcher / pidfd reaps exited children"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Low-Level asyncio Cheatsheet",
+      "points": [
+        "Future: loop.create_future() → set_result/set_exception → await fut; guard with 'if not fut.done()'",
+        "Callbacks: add_done_callback(cb) passes the Future; use functools.partial for extra args; callbacks are always scheduled with call_soon",
+        "Scheduling: call_soon (same thread) | call_soon_threadsafe (other thread, wakes the loop) | call_later/call_at (timers)",
+        "Cross-thread: run_coroutine_threadsafe (thread → loop) | to_thread / run_in_executor (loop → thread)",
+        "Protocol order: connection_made → data_received* → eof_received → connection_lost (exactly once)",
+        "Client/server: create_connection(factory, host, port) | create_server(factory, host, port) → serve_forever",
+        "Write backpressure: set_write_buffer_limits → pause_writing/resume_writing; in streams: await writer.drain()",
+        "Read backpressure: transport.pause_reading()/resume_reading(); StreamReader pauses automatically above 2 × limit",
+        "Streams = StreamReaderProtocol + StreamReader.feed_data + StreamWriter over the transport",
+        "Subprocess: create_subprocess_exec + communicate(); never wait() while PIPE output is unread",
+        "Top mistakes: no awaiting inside data_received, no Future calls from threads, never assume data_received gets whole messages",
+        "Pick streams by default; drop to protocols for maximum throughput or custom framing"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

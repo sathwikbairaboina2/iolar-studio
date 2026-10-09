@@ -36,7 +36,7 @@ export async function reindexKnowledge(opts: { spaces: Space[]; wipe: boolean; l
         for (const part of await store.listParts(meta.slug, chapter.slug)) {
           try {
             const post = await store.loadPost(meta.slug, chapter.slug, part);
-            await hb.syncChapter(meta.slug, chapter.slug, post, await store.partStatus(meta.slug, chapter.slug, part));
+            await hb.syncChapter(meta.slug, chapter.slug, post, await store.partStatus(meta.slug, chapter.slug, part), chapter.title);
             out.handbooks++;
           } catch {
             /* a part without a readable post */
@@ -107,5 +107,9 @@ export async function reindexKnowledge(opts: { spaces: Space[]; wipe: boolean; l
       log(`jobs skipped: ${String(err instanceof Error ? err.message : err)}`);
     }
   }
+  // Topics are shared, so wiping a space leaves the ones only it used behind, linked to
+  // nothing. Once every asked-for space is rebuilt, whatever is still unlinked is stale.
+  if (opts.wipe) log(`pruned ${await graph.pruneOrphans('shared')} orphaned shared node(s)`);
+
   return out;
 }

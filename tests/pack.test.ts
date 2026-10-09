@@ -56,27 +56,37 @@ describe('packUnits (column flow)', () => {
     expect(later.spill.map((s: { index: number }) => s.index)).toEqual([2, 3]);
   });
 
-  it('looks ahead: a later unit that still fits is placed, the unfit one spills first', () => {
+  it('keeps authored order across pages: nothing after the first unit that does not fit is placed', () => {
+    // Q33 (index 2) does not fit; the small Q34 (index 3) would, and used to be printed on this
+    // page while Q33 was pushed to the next one: Q34 before Q33.
     const { placed, spill } = packUnits([u(0, 600, 600), u(1, 600, 600), u(2, 600, 600), u(3, 300, 300)], opts);
-    expect(placed.map((p: P) => p.unit.index)).toEqual([0, 1, 3]);
-    expect(spill.map((s: { index: number }) => s.index)).toEqual([2]);
-    expect((placed[2] as P).y).toBe(610);
+    expect(placed.map((p: P) => p.unit.index)).toEqual([0, 1]);
+    expect(spill.map((s: { index: number }) => s.index)).toEqual([2, 3]);
   });
 
-  it('stops looking ahead after six skipped units so a far block never jumps pages', () => {
+  it('never places a unit after one that spilled, however small it is', () => {
     const units = [u(0, 900, 900), ...Array.from({ length: 7 }, (_, i) => u(i + 1, 900, 900)), u(8, 50, 50)];
     const { placed, spill } = packUnits(units, opts);
     expect(placed.map((p: P) => p.unit.index)).toEqual([0, 1]);
     expect(spill.map((s: { index: number }) => s.index)).toEqual([2, 3, 4, 5, 6, 7, 8]);
   });
 
-  it('fills the shorter column with upcoming half units before a full-width unit', () => {
-    // left 300 tall, right 100 tall; unit 2 is full-width; unit 3 (80) fits the right column's gap.
+  it('a numbered sequence stays in order on both sides of the page break, whatever the heights', () => {
+    // Questions 33..40 with mixed heights, most of them small enough to slip into a gap.
+    const heights = [380, 430, 520, 120, 90, 480, 60, 410];
+    const units = heights.map((h, i) => u(i, h, h, { number: 33 + i }));
+    const { placed, spill } = packUnits(units, opts);
+    const order = [...placed.map((p: P) => p.unit.index), ...spill.map((s: { index: number }) => s.index)];
+    expect(order).toEqual(units.map((x) => x.index));
+    const lastPlaced = Math.max(...placed.map((p: P) => p.unit.index));
+    expect(Math.min(...spill.map((s: { index: number }) => s.index))).toBeGreaterThan(lastPlaced);
+  });
+
+  it('a full-width unit does not let later units jump above it into the shorter column', () => {
+    // left 300 tall, right 100 tall; unit 2 is full-width. Unit 3 would fit the right column's
+    // gap but comes after unit 2 in the authored order, so it stays below it.
     const { placed } = packUnits([u(0, 300, 300), u(1, 100, 100), u(2, 60, 60, { forceFull: true }), u(3, 80, 80), u(4, 50, 50)], opts);
-    expect(placed.map((p: P) => [p.unit.index, p.span, p.col, p.y])).toEqual([[0, 'half', 0, 0], [1, 'half', 1, 0], [3, 'half', 1, 110], [4, 'half', 1, 200], [2, 'full', 0, 310]]);
-    // A heading-bound unit never jumps above the full-width block.
-    const bound = packUnits([u(0, 300, 300), u(1, 100, 100), u(2, 60, 60, { forceFull: true }), u(3, 80, 80, { boundIndexes: [3, 4] })], opts);
-    expect(bound.placed.map((p: P) => p.unit.index)).toEqual([0, 1, 2, 3]);
+    expect(placed.map((p: P) => [p.unit.index, p.span, p.col, p.y])).toEqual([[0, 'half', 0, 0], [1, 'half', 1, 0], [2, 'full', 0, 310], [3, 'half', 0, 380], [4, 'half', 1, 380]]);
   });
 
   it('never spills the very first unit, even one taller than the page', () => {

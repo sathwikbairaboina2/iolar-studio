@@ -15,6 +15,8 @@ function rawBlockText(b?: Block): string {
     case 'diagram': return `${b.kind} diagram`;
     case 'callout': return `${b.title}: ${b.text}`;
     case 'qa': return `${b.q} → ${b.a_bullets.join(' · ')}`;
+    case 'concept': return `${String(b.number).padStart(2, '0')} ${b.title}`;
+    case 'labelrows': return b.rows.map((r) => `${r.label} ${r.text}`).join(' · ');
   }
 }
 

@@ -1,4 +1,4 @@
-import { MAX_SLIDES, TEMPLATES } from '../schema';
+import { BOOK_PAGES, TEMPLATES } from '../schema';
 import { ICON_VOCAB } from '../renderer/icons';
 
 /**
@@ -15,20 +15,22 @@ export const SCHEMA_RULES = `Return ONLY a complete post JSON object (no prose, 
   "slides": [ Slide, ... ],
   "caption": { "text": string, "hashtags": [string, ...] }
 }
-Slide = {"page_title":string,"subtitle"?:string,"hero"?:IconName,"blocks":[Block,...]}
+Slide = {"page_title":string,"subtitle"?:string,"hero"?:IconName,"aside"?:string,"blocks":[Block,...]}
      | {"kind":"cover","page_title":string,"hero"?:IconName,"blocks":[],"cover":{"title":string,"subtitle"?:string,"tagline"?:string,"icons"?:[{"icon":IconName,"label":string,"sub"?:string}],"pills"?:[string]}}
-"subtitle" is the smaller line after the title ("Identity and Access Management"); "hero" is the logo drawn top right of the page (the service's own icon, or "aws").
+"subtitle" is the smaller line after the title ("Identity and Access Management"); "hero" is the logo drawn top right of the page (the service's own icon, or "aws"); "aside" is a 2-4 word handwritten note (at most 40 characters) in the page corner, under the page number ("think B-tree!").
 A cover slide is a whole page of its own (giant title, logo, tagline, an icon strip of 4-6 families, a pill list of names): use it as slide 1 when the series is a complete-notes style handbook.
 Ink = "blue"|"red"|"green"|"black"|"accent"|"purple"|"orange"|"pink". Frame = "none"|"solid"|"dashed".
 Block types (discriminated by "type"):
-- {"type":"heading","text":string,"ink"?:Ink}
+- {"type":"heading","text":string,"ink"?:Ink,"style"?:"ribbon"} ("ribbon" draws the text as a red-outlined banner label: "HOW IT WORKS")
+- {"type":"concept","number":number,"title":string,"tagline"?:string} (a listicle page's opener: huge numeral "01" and the concept name on a highlighter band, a small hand aside as tagline)
+- {"type":"labelrows","rows":[{"icon":IconName,"label":string,"text":string},...]} (1-4 rows: an icon in a ring, the label in red marker "What it is:", then one line of text)
 - {"type":"paragraph","text":string,"frame"?:Frame,"ink"?:Ink}
 - {"type":"bullets","items":[string,...],"style"?:"dot"|"number"|"check"|"cross"|"checkbox"|"star","frame"?:Frame,"ink"?:Ink}
 - {"type":"sidebox","title":string,"items":[string,...],"ink"?:Ink}
 - {"type":"table","headers":[string,...],"rows":[[string,...],...],"highlightRow"?:integer,"frame"?:Frame}
-- {"type":"code","lang":string,"lines":[string,...],"note"?:string}
-- {"type":"callout","style":"tip"|"takeaway"|"cloud"|"sticky"|"sticky-pink","title":string,"text":string}
-- {"type":"qa","q":string,"a_bullets":[string,...],"example_code"?:[string,...]}
+- {"type":"code","lang":string,"lines":[string,...],"note"?:string,"result"?:{"headers":[string,...],"rows":[[string,...],...]}} ("result" is what the code returns, drawn as a small table beside it; at most 4 rows)
+- {"type":"callout","style":"tip"|"takeaway"|"cloud"|"sticky"|"sticky-pink"|"banner","title":string,"text":string} ("banner" is a full-width box with a lightbulb and a highlighted title: "INTERVIEW TAKEAWAY:")
+- {"type":"qa","q":string,"a_bullets":[string,...],"example_code"?:[string,...]} (start q with "Q<n>. " and it becomes a numbered badge)
 - {"type":"diagram","kind":"flow","spec":{"nodes":[string | {"text":string,"sub"?:string,"ink"?:Ink},...]}}
 - {"type":"diagram","kind":"array","spec":{"cells":[string,...],"indices"?:boolean,"pointers"?:[{"index":integer,"label":string,"ink"?:Ink}],"highlight"?:[integer],"dim"?:[integer],"caption"?:string}}
 - {"type":"diagram","kind":"flowchart","spec":{"title"?:string,"rows":[[nodeId,...],...],"nodes":{nodeId:{"text":string,"shape"?:"box"|"diamond"|"pill"|"icon","icon"?:IconName,"ink"?:Ink}},"edges":[{"from":nodeId,"to":nodeId,"label"?:string}]}}
@@ -73,6 +75,9 @@ Per-block ceilings — treat these as hard:
 - paragraph: at most 2 short sentences. Prefer bullets; use paragraph sparingly.
 - table: 3-5 rows, 2-4 columns, cells of 1-3 words. Terse ("O(1) avg", not "on average constant time").
 - code: 3-6 lines, each under 34 characters, with a short trailing comment where it teaches something.
+  Code must be valid in its language: a Dockerfile, JSON or INI takes comments only on a line of
+  their own, never after an instruction. A comment that states an output, an inferred type or an
+  error must be exactly what the real tool gives (TypeScript infers 'a', not string, for id('a')).
 - sidebox / callout: title plus 2-4 one-line items.
 - heading: a 2-5 word section label; number them (1., 2., 3. ...).
 - array: at most 12 cells; flowchart: at most 12 nodes; cards: 2-4 cards of 2-3 lines.
@@ -83,8 +88,8 @@ split it into two blocks or cut words.
 PER-SLIDE TARGET: 12-16 blocks, i.e. 4-6 numbered sections each followed by its bullets,
 table, code or diagram. Fewer than 10 blocks means the page will render half empty.
 
-SLIDE COUNT: exactly ${MAX_SLIDES} slides unless the book truly cannot fit. Divide the book's
-points evenly — with N points that is about N/${MAX_SLIDES} points per slide, and each point
+SLIDE COUNT: about ${BOOK_PAGES} slides unless the book truly cannot fit. Divide the book's
+points evenly — with N points that is about N/${BOOK_PAGES} points per slide, and each point
 should become one short bullet, one table row, or one code line, NOT a paragraph.`;
 
 export const RECIPE_GUIDANCE = `If the subject is an algorithm or coding pattern family, shape it the way an interview study sheet is shaped:

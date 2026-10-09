@@ -56,7 +56,19 @@ export const ICON_VOCAB: string[] = [
   ...UI_NAMES,
 ];
 
-const SPECIAL: Record<string, string> = { aws: 'builtin:aws', 'aws-cloud': 'group:AWSCloud', windows: 'ui:monitor', oracle: 'ui:database', azure: 'ui:cloud' };
+// Names with no mark in any source, pointed at the generic icon that says what they are.
+const SPECIAL: Record<string, string> = {
+  aws: 'builtin:aws', 'aws-cloud': 'group:AWSCloud', windows: 'ui:monitor', oracle: 'ui:database', azure: 'ui:cloud',
+  uvicorn: 'ui:server', hypercorn: 'ui:server', daphne: 'ui:server', httpx: 'ui:globe', asyncio: 'brand:python',
+  // Concept words. The fuzzy name search below would send each one to whichever brand has the word
+  // in its title (Index → Podcast Index, Cache → Cachet, Query → jQuery), so a page about a
+  // concept would wear a vendor's logo. They draw the generic icon unless a real name is given.
+  index: 'ui:list', indexing: 'ui:list', indexes: 'ui:list', cache: 'ui:zap', caching: 'ui:zap',
+  data: 'ui:database', query: 'ui:search', queries: 'ui:search', storage: 'ui:hard-drive',
+  replication: 'ui:refresh-cw', replica: 'ui:copy', replicas: 'ui:copy', sharding: 'ui:layers', partitioning: 'ui:layers',
+  transaction: 'ui:arrow-left-right', transactions: 'ui:arrow-left-right', locking: 'ui:lock', latency: 'ui:clock',
+  join: 'ui:link', joins: 'ui:link', orders: 'ui:package', scaling: 'ui:trending-up',
+};
 
 /**
  * Marks no package ships. The AWS wordmark: "aws" in a heavy sans plus the orange smile

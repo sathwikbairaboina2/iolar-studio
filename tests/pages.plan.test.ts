@@ -15,7 +15,7 @@ const book = {
 
 beforeEach(() => {
   process.env.IOLAR_DATA_DIR = mkdtempSync(path.join(tmpdir(), 'iolar-pages-'));
-  writeFileSync(path.join(process.env.IOLAR_DATA_DIR, 'settings.json'), JSON.stringify({ llmProvider: 'claude', brand: 'iolar', defaultTemplate: 'sketchnote' }));
+  writeFileSync(path.join(process.env.IOLAR_DATA_DIR, 'settings.json'), JSON.stringify({ llmProvider: 'claude', brand: 'iolar', defaultTemplate: 'spiral-notes' }));
 });
 
 describe('chapterPrompt', () => {

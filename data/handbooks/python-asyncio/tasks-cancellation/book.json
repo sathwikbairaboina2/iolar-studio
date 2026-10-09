@@ -1,0 +1,218 @@
+{
+  "title": "Python asyncio Tasks: Structured Concurrency, Cancellation & Timeouts",
+  "summary": "Dense study notes on running concurrent work safely with asyncio tasks. Covers create_task and task references, gather vs TaskGroup and exception groups, cancellation and CancelledError, shield, timeouts, and structured concurrency patterns in Python 3.11+.",
+  "chapters": [
+    {
+      "title": "Coroutines, Tasks and the Event Loop",
+      "points": [
+        "A coroutine function (async def) returns a coroutine object when called, and none of its body runs until the object is awaited or scheduled",
+        "Awaiting a coroutine directly runs it inline and sequentially: `await a(); await b()` gives no concurrency",
+        "A Task wraps a coroutine and schedules it on the event loop so it runs concurrently with the caller",
+        "Task is a subclass of Future: it has .done(), .result(), .exception(), .cancel(), .cancelled() and add_done_callback()",
+        "The event loop is single-threaded and cooperative: tasks switch only at an await that actually suspends",
+        "A blocking call such as time.sleep() or CPU-bound code freezes every task, so use await asyncio.sleep() or asyncio.to_thread() instead",
+        "asyncio.run(main()) creates the loop, runs main to completion, cancels the tasks still pending, then closes the loop",
+        "asyncio.current_task() returns the running Task, and asyncio.all_tasks() returns the set of tasks that are not done",
+        "Example: two `await asyncio.sleep(1)` calls take 2s sequentially but 1s as two tasks",
+        "Mistake: calling a coroutine function without awaiting it makes Python warn 'coroutine ... was never awaited', and the work never runs"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "create_task and Keeping References",
+      "points": [
+        "asyncio.create_task(coro, *, name=None, context=None) schedules coro on the running loop and returns a Task at once",
+        "The task starts at the next await point of the caller, not inside the create_task call",
+        "The event loop keeps only weak references to tasks, so a task with no strong reference can be garbage-collected mid-run",
+        "Fire-and-forget bug: `asyncio.create_task(send_email())` with the result discarded can vanish silently",
+        "Fix pattern: `background = set(); t = create_task(c); background.add(t); t.add_done_callback(background.discard)`",
+        "An exception in a task that is never awaited is only logged as 'Task exception was never retrieved' when the task is garbage-collected",
+        "Use name= or task.set_name() so tasks are identifiable in debug output and in asyncio.all_tasks() dumps",
+        "context= (3.11+) runs the task in a specific contextvars.Context; by default it gets a copy of the current context",
+        "Python 3.12 added asyncio.eager_task_factory: the task runs synchronously until its first suspension, which saves a loop iteration",
+        "Prefer TaskGroup.create_task over bare create_task: the group holds the reference and awaits the task for you"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "asyncio.gather",
+      "points": [
+        "`await asyncio.gather(*aws, return_exceptions=False)` runs awaitables concurrently and returns their results as a list",
+        "Results come back in argument order, not in completion order",
+        "Bare coroutines passed to gather are wrapped in Tasks automatically",
+        "With return_exceptions=False, the first exception propagates to the awaiter, but the other tasks are not cancelled and keep running",
+        "With return_exceptions=True, exceptions are returned in the result list in place of values, and nothing is raised",
+        "If gather itself is cancelled, every child that has not finished is cancelled too",
+        "If one child is cancelled, it is treated as raising CancelledError, and the gather is not cancelled",
+        "The tasks left running after a failure become orphans: nobody awaits them, and their errors are lost",
+        "Example: `r1, r2 = await gather(fetch(a), fetch(b))` unpacks the results in order",
+        "Still fine for simple fan-out when you want partial results via return_exceptions=True"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "TaskGroup (Python 3.11+)",
+      "points": [
+        "`async with asyncio.TaskGroup() as tg: t = tg.create_task(coro())` starts child tasks bound to the block",
+        "Leaving the async with block waits for every child task to finish, so no task outlives the block",
+        "When the first child raises a non-CancelledError exception, the group cancels all the remaining children and the body",
+        "All child failures are collected and raised together as an ExceptionGroup (a BaseExceptionGroup if a BaseException is involved)",
+        "KeyboardInterrupt and SystemExit raised in a child are re-raised directly, not wrapped",
+        "Read results after the block with t.result(); each task object is the handle",
+        "An exception raised in the async with body also cancels the children",
+        "Calling tg.create_task on a group that has already finished raises RuntimeError",
+        "Comparison: gather leaves siblings running on failure, while TaskGroup cancels them and reports every error",
+        "Comparison: gather returns an ordered list, while TaskGroup gives you the Task handles and collects results explicitly"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Exception Groups and except*",
+      "points": [
+        "ExceptionGroup(msg, [excs]) (PEP 654, 3.11) carries several unrelated exceptions at once, and .exceptions holds the tuple",
+        "BaseExceptionGroup is the base; ExceptionGroup can only contain Exception subclasses",
+        "`except* ValueError as eg:` matches the ValueError leaves, and eg is an ExceptionGroup of just those",
+        "Several except* clauses can run for one group, one per matching type, unlike plain except",
+        "Unmatched leaves are re-raised automatically as a smaller group after the except* clauses run",
+        "You cannot mix except and except* in the same try statement, and except* cannot use break, continue or return",
+        "Plain `except ValueError` does not catch an ExceptionGroup that contains a ValueError, which is a common TaskGroup trap",
+        "eg.subgroup(pred) keeps the matching leaves, and eg.split(pred) returns a (match, rest) pair",
+        "Groups can nest; traceback printing shows a tree of every sub-exception",
+        "Example: `try: async with TaskGroup()... except* TimeoutError: retry() except* ValueError: log()`"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Cancellation and CancelledError",
+      "points": [
+        "task.cancel(msg=None) requests cancellation: CancelledError is thrown into the coroutine at its next await",
+        "cancel() returns False if the task is already done; otherwise it returns True, and the request is not yet completed",
+        "CancelledError subclasses BaseException (since 3.8), so a bare `except Exception` does not swallow it",
+        "Do cleanup in try/finally or in `except CancelledError: cleanup(); raise`, always re-raising",
+        "Swallowing CancelledError makes the task ignore the cancellation, which breaks TaskGroup, timeout() and shutdown",
+        "task.cancelled() is True only if the task ended by raising CancelledError",
+        "Awaiting a cancelled task raises CancelledError in the awaiter",
+        "task.cancelling() (3.11) counts the pending cancel requests, and task.uncancel() decrements the count",
+        "TaskGroup and asyncio.timeout use cancelling() and uncancel() to tell their own cancellations from outside ones",
+        "Example: `t.cancel(); try: await t except CancelledError: pass` is the standard way to stop a background task"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "asyncio.shield",
+      "points": [
+        "`await asyncio.shield(aw)` protects the inner awaitable from being cancelled when the outer task is cancelled",
+        "If the outer task is cancelled, the outer await still raises CancelledError, but the inner task keeps running",
+        "shield wraps a coroutine in a Task, so keep a strong reference to the inner task or it may be garbage-collected",
+        "shield does not protect against cancelling the inner task directly (inner.cancel())",
+        "Use case: finishing a DB commit or payment write that must not be torn half-way through",
+        "Pattern: `t = create_task(commit()); try: await shield(t) except CancelledError: await t; raise`",
+        "Comparison: shield hides the cancellation from the inner work, while try/finally runs cleanup after the cancellation",
+        "Mistake: shielding everything turns tasks into uncancellable zombies that block shutdown and TaskGroup exit",
+        "At shutdown, asyncio.run still cancels leftover shielded tasks, so shield is not durability"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Timeouts: asyncio.timeout vs wait_for",
+      "points": [
+        "`async with asyncio.timeout(5):` (3.11+) bounds everything inside the block, and None means no deadline",
+        "Mechanism: at the deadline it cancels the current task, then turns CancelledError into TimeoutError when the block exits",
+        "Catch TimeoutError outside the async with block; inside the block you only ever see CancelledError",
+        "asyncio.TimeoutError is an alias of the builtin TimeoutError since 3.11",
+        "asyncio.timeout_at(when) takes an absolute loop.time() deadline, and cm.reschedule(new_when) moves the deadline",
+        "`await asyncio.wait_for(aw, timeout)` wraps one awaitable, cancels it on timeout, waits for the cancellation to finish, then raises TimeoutError",
+        "Since 3.12, wait_for is implemented on top of asyncio.timeout",
+        "`asyncio.wait(tasks, timeout=, return_when=FIRST_COMPLETED)` never cancels anything and returns a (done, pending) pair",
+        "Comparison: timeout() covers a block of several awaits, wait_for covers one awaitable, and wait covers many without cancelling",
+        "Mistake: a task that swallows CancelledError makes the timeout hang or never fire",
+        "Nested timeouts: the innermost expiry raises; an outer expiry is distinguished via the task's cancelling() count"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Structured Concurrency in Practice",
+      "points": [
+        "Structured concurrency: every task's lifetime is bounded by a lexical scope, and the scope does not exit until its children finish",
+        "Guarantees: no orphaned tasks, errors always propagate to the parent, and cancelling a parent cancels its subtree",
+        "Origin: Trio nurseries (Nathaniel J. Smith's 'go statement considered harmful'); TaskGroup is asyncio's nursery",
+        "Pass the tg into helpers (`def spawn_workers(tg): tg.create_task(...)`) instead of spawning free-floating tasks",
+        "Long-lived background services belong in a TaskGroup opened in main() so they shut down with the app",
+        "Limit fan-out by combining asyncio.Semaphore(n) with TaskGroup: `async with sem: await fetch(u)`",
+        "Producer/consumer: an asyncio.Queue plus a TaskGroup of workers, with queue.join() and a sentinel for shutdown",
+        "Blocking or CPU work goes through `await asyncio.to_thread(fn)` so the loop stays responsive",
+        "Trade-off: gather with return_exceptions=True gives partial results, while TaskGroup gives fail-fast and clean cancellation",
+        "Checklist: no bare create_task, re-raise CancelledError, shield sparingly, catch errors with except*"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "asyncio Tasks Cheatsheet",
+      "points": [
+        "Spawn: `async with asyncio.TaskGroup() as tg: t = tg.create_task(c())`, then read t.result() after the block",
+        "Fire-and-forget: keep the task in a set and add `add_done_callback(set.discard)`",
+        "gather: ordered results; siblings are not cancelled on error; return_exceptions=True gives partial results",
+        "TaskGroup: fail-fast, cancels siblings, raises an ExceptionGroup",
+        "Handle groups: `except* ValueError as eg:` and eg.exceptions; plain except misses a group",
+        "Cancel: `t.cancel()`, then `await t` inside `except CancelledError`",
+        "CancelledError is a BaseException, so clean up and re-raise",
+        "Protect a critical write: keep a reference to the inner task, then `await asyncio.shield(t)`",
+        "Deadline for a block: `async with asyncio.timeout(s)`, catching TimeoutError outside",
+        "Deadline for one awaitable: `await asyncio.wait_for(aw, s)`; wait without cancelling: `asyncio.wait(..., timeout=s)`",
+        "Blocking or CPU work: `await asyncio.to_thread(fn)`; bounded fan-out: Semaphore",
+        "Version map: 3.8 CancelledError becomes a BaseException; 3.11 adds TaskGroup, timeout and except*; 3.12 adds eager_task_factory and moves wait_for onto timeout"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

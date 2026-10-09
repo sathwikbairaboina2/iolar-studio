@@ -93,6 +93,36 @@ describe('fixHeadings', () => {
     expect(out.slides[1].blocks.map((b) => b.type)).toEqual(['heading', 'table']);
   });
 
+  it('renumbers the sections of a page that became its own chapter from 1', async () => {
+    const carried = (): Post => validatePost({
+      ...base(),
+      slides: [
+        { page_title: 'Tools', blocks: [{ type: 'heading', text: '1. A' }, { type: 'heading', text: '3. C' }, { type: 'bullets', items: ['c'] }] },
+        { page_title: 'Tools (cont.)', cont: true, blocks: [
+          { type: 'heading', text: '4. Which One? Decision Rule' }, { type: 'bullets', items: ['x'] }, { type: 'heading', text: '5. Migrating' },
+        ] },
+      ],
+    });
+    const proposal = carried();
+    proposal.slides[1].page_title = 'Picking a Class Tool';
+    vi.doMock('@/lib/ai/claude', () => ({
+      runClaude: vi.fn().mockResolvedValue(JSON.stringify(proposal)),
+      ClaudeUnavailableError: class extends Error {},
+    }));
+
+    const { createSubject, createChapter, savePost } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'head6');
+    await savePost('python', 'head6', 1, carried());
+    const { fixHeadings } = await import('@/lib/ai/headings');
+    const out = await fixHeadings('python', 'head6', 1);
+
+    // The page is a chapter of its own now; "4." under a fresh title reads as missing pages.
+    const heads = (i: number) => out.slides[i].blocks.flatMap((b) => (b.type === 'heading' ? [b.text] : []));
+    expect(heads(1)).toEqual(['1. Which One? Decision Rule', '2. Migrating']);
+    expect(heads(0)).toEqual(['1. A', '3. C']);
+  });
+
   it('keeps the flag on a page it left as a continuation', async () => {
     const proposal = base();
     vi.doMock('@/lib/ai/claude', () => ({

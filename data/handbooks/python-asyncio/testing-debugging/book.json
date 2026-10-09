@@ -1,0 +1,213 @@
+{
+  "title": "Testing & Debugging asyncio: The Handwritten Field Guide",
+  "summary": "How to test async Python with pytest-asyncio, IsolatedAsyncioTestCase and AsyncMock, and how to debug event-loop problems with debug mode, slow-callback logs, never-awaited warnings, tracemalloc, task inspection and deterministic timeout tests.",
+  "chapters": [
+    {
+      "title": "Why Async Code Needs Special Testing",
+      "points": [
+        "Calling an async def function only creates a coroutine object. Nothing runs until an event loop drives it, so a plain test function that calls it checks nothing.",
+        "Plain pytest does not run async def tests. It skips them with a PytestUnhandledCoroutineWarning ('async def functions are not natively supported'), and older versions reported them as passing even though they never ran.",
+        "A test runner for async code has three jobs: create a loop, run the test coroutine until it finishes, then cancel leftover tasks and close the loop.",
+        "Behind every runner is asyncio.run(main()) or asyncio.Runner (3.11+). Each creates a fresh loop, runs the coroutine, shuts down async generators and the default executor, then closes the loop.",
+        "Awaiting interleaves tasks, so order bugs, races and missed awaits only show up under particular schedules. Tests should control scheduling instead of trusting timing.",
+        "Main bug types: a missing await, a task that is never awaited and gets lost, a blocking call that stalls the loop, a timeout that never fires, and an object used from a different loop.",
+        "Main tools: pytest-asyncio or IsolatedAsyncioTestCase run tests, AsyncMock replaces dependencies, debug mode and tracemalloc diagnose problems, and all_tasks/print_stack inspect what is running.",
+        "Mistake: calling asyncio.run() inside a test that is already running on a loop raises 'asyncio.run() cannot be called from a running event loop'.",
+        "Mistake: creating asyncio primitives (Lock, Queue, Future) at import time. They can end up bound to a different loop than the one the test uses."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "pytest-asyncio: Markers and Modes",
+      "points": [
+        "Install pytest-asyncio and mark tests with @pytest.mark.asyncio on an async def test. The plugin runs the coroutine to completion on an event loop.",
+        "Strict mode is the default (asyncio_mode = strict). Only marked tests are handled, and async fixtures must use @pytest_asyncio.fixture. This lets it coexist with trio or anyio plugins.",
+        "Auto mode (asyncio_mode = auto in pytest.ini or pyproject) treats every async def test and fixture as asyncio, so no markers are needed. Use it only when asyncio is your sole async library.",
+        "Apply the marker to a whole module with pytestmark = pytest.mark.asyncio. On a class, decorate the class and every async method is covered.",
+        "Example: @pytest.mark.asyncio async def test_fetch(): assert await fetch(1) == {'id': 1}",
+        "Comparison: strict mode is explicit and safe with multiple async libraries. Auto mode has less boilerplate but claims every coroutine test.",
+        "Mixing sync and async tests in one file is fine. Sync tests never touch the loop.",
+        "Mistake: decorating an async fixture with a plain @pytest.fixture in strict mode. The test receives an un-awaited coroutine or async generator instead of the value.",
+        "Mistake: forgetting the marker in strict mode. The test is skipped with a warning and your CI stays green without running it.",
+        "Tip: pytest -W error turns the 'unhandled coroutine' warning into a failure, so an unmarked test can't slip through."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Event Loop Scope and Async Fixtures",
+      "points": [
+        "loop_scope sets how long one event loop lives: function (the default, a new loop per test), class, module, package or session.",
+        "Tests: @pytest.mark.asyncio(loop_scope='module') runs every test in the module on one shared loop.",
+        "Fixtures: @pytest_asyncio.fixture(loop_scope='session', scope='session') puts an expensive resource, such as a DB pool, on a long-lived loop. loop_scope may not be narrower than the fixture's caching scope.",
+        "Set asyncio_default_fixture_loop_scope in config. pytest-asyncio 0.24+ warns while it is unset.",
+        "Async generator fixture: async def client(): c = await connect(); yield c; await c.close(). Code after the yield is async teardown, run on the same loop.",
+        "The old pattern of overriding the event_loop fixture to change scope was deprecated in 0.22+ and removed in 1.0. Use loop_scope instead.",
+        "Mistake: a session-scoped fixture used by function-loop tests raises 'Future attached to a different loop' or 'got Future attached to a different loop'. Align the loop_scope values.",
+        "Trade-off: a shared loop is faster (setup happens once) but state leaks between tests. A per-test loop isolates tests but pays for setup every time.",
+        "Leftover tasks from one test can keep running into the next when the loop is shared. Cancel and await them in fixture teardown.",
+        "Custom loops (for example uvloop): pytest-asyncio 1.x takes a loop policy or loop factory through an event_loop_policy fixture instead of a replaced event_loop."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "unittest's IsolatedAsyncioTestCase",
+      "points": [
+        "unittest.IsolatedAsyncioTestCase (3.8+) is the standard-library runner for async tests. Test methods can be async def and are awaited automatically.",
+        "Every test gets a brand-new event loop that is closed afterwards. That is where the 'Isolated' in the name comes from.",
+        "Lifecycle order: setUp, then asyncSetUp, then the test, then asyncTearDown, then tearDown, with cleanups last.",
+        "addAsyncCleanup(coro_fn, *args) registers an async cleanup that runs in LIFO order, even if the test fails.",
+        "The loop runs with debug=True, so slow callbacks and never-awaited coroutines are logged without extra setup.",
+        "When the test ends, the runner cancels still-pending tasks and awaits them, then shuts down async generators before closing the loop.",
+        "3.13+: set the class attribute loop_factory (for example uvloop.new_event_loop) to choose the loop implementation.",
+        "Example: class T(IsolatedAsyncioTestCase): async def asyncSetUp(self): self.db = await connect(); async def test_q(self): self.assertEqual(await self.db.get(1), 'a')",
+        "Comparison with pytest-asyncio: no extra dependency and a fixed per-test loop, but no fixture graph and no shared loop scope. pytest can still collect and run these classes.",
+        "Mistake: doing async work in setUpClass. It is synchronous and runs outside the loop, so shared async state has no class-level async hook."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Mocking Coroutines with AsyncMock",
+      "points": [
+        "unittest.mock.AsyncMock (3.8+): calling it returns an awaitable, and awaiting that awaitable produces return_value.",
+        "side_effect options: an exception is raised when awaited; an iterable returns its next item on each await; an async function is awaited with the call's arguments.",
+        "Await-specific assertions: assert_awaited(), assert_awaited_once_with(...), assert_any_await, assert_has_awaits, plus the await_count and await_args attributes.",
+        "assert_called() versus assert_awaited(): a mock that was called but never awaited passes assert_called and fails assert_awaited, which is how you catch a missing await.",
+        "patch('mod.fetch') produces an AsyncMock automatically when the target is an async def. So does create_autospec on an async function.",
+        "MagicMock (3.8+) supports __aenter__/__aexit__ and __aiter__. Example: m.__aenter__.return_value = conn for 'async with pool.acquire() as conn'.",
+        "Mocking an async iterator: mock.__aiter__.return_value = [1, 2, 3], so 'async for' yields 1, 2, 3.",
+        "Example: fetch = AsyncMock(return_value={'id': 1}); assert await service(fetch) == 1; fetch.assert_awaited_once_with(1)",
+        "Mistake: using a plain Mock or MagicMock for a coroutine gives TypeError: object MagicMock can't be used in 'await' expression.",
+        "Mistake: return_value=asyncio.sleep(0) or another coroutine object. Awaiting the mock returns the coroutine itself, not its result, and the coroutine then leaks as never-awaited."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "asyncio Debug Mode and Slow Callbacks",
+      "points": [
+        "Four ways to turn debug mode on: asyncio.run(main(), debug=True), the environment variable PYTHONASYNCIODEBUG=1, python -X dev (Python Development Mode), or loop.set_debug(True).",
+        "Debug mode logs never-awaited coroutines together with the traceback of where they were created, using coroutine origin tracking.",
+        "Debug mode makes non-thread-safe calls such as loop.call_soon from another thread raise RuntimeError instead of silently corrupting the loop.",
+        "Slow callbacks: any callback or task step that takes longer than loop.slow_callback_duration (default 0.1 s) is logged as 'Executing <Task ...> took 0.253 seconds'.",
+        "Tune the threshold, for example loop.slow_callback_duration = 0.05, to catch smaller blocking calls such as time.sleep, sync I/O or heavy CPU work.",
+        "Debug mode also emits ResourceWarning for unclosed transports and event loops, and logs the source of the offending object.",
+        "Messages go to the 'asyncio' logger, so they only appear once logging is configured: logging.basicConfig(level=logging.DEBUG). Also enable warnings with -W default.",
+        "Fix for a slow callback: move blocking work to await asyncio.to_thread(fn) or loop.run_in_executor. Never block inside a coroutine.",
+        "Trade-off: debug mode adds noticeable overhead (tracebacks, extra checks). Keep it in tests and CI, not in production hot paths."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Never-Awaited Coroutines and tracemalloc",
+      "points": [
+        "'RuntimeWarning: coroutine 'fetch' was never awaited' is emitted when a coroutine object is garbage-collected without having run. It almost always means a missing await.",
+        "The warning fires at GC time, so it may appear far from the bug or be attributed to a different test.",
+        "The warning says 'Enable tracemalloc to get the object allocation traceback'. Run python -X tracemalloc=25 or set PYTHONTRACEMALLOC=25 to see where the coroutine was created.",
+        "tracemalloc records allocation stacks, and the number is the frame depth. It uses more memory and runs slower, so enable it only while debugging.",
+        "Debug mode sets sys.set_coroutine_origin_tracking_depth, which gives a similar creation traceback without tracemalloc.",
+        "'Task was destroyed but it is pending!' means a task was GC'd mid-flight. Keep a strong reference, for example tasks.add(t); t.add_done_callback(tasks.discard).",
+        "'Task exception was never retrieved' means a task failed and nobody awaited it or called .exception(), so the error was silently lost.",
+        "Make these warnings fail CI with pytest -W error::RuntimeWarning, or filterwarnings = error::RuntimeWarning in config.",
+        "Mistake: silencing the warning with a filter. The un-awaited call never ran, so the side effect it was supposed to have is missing."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Inspecting Live Tasks",
+      "points": [
+        "asyncio.all_tasks() returns the set of not-yet-done tasks for the running loop. Call it from inside the loop, because without a running loop it raises RuntimeError.",
+        "asyncio.current_task() returns the task running the current coroutine, which is useful for logging and for excluding itself from all_tasks().",
+        "Name your tasks: asyncio.create_task(coro, name='poller') or t.set_name(). Names appear in reprs, logs and task dumps instead of 'Task-17'.",
+        "task.get_stack(limit=None) returns the frames where the task is suspended. task.print_stack(limit, file) prints them, which shows exactly which await it is stuck on.",
+        "task.get_coro() returns the wrapped coroutine. task.done(), cancelled() and exception() show its state.",
+        "Hang dump example: for t in asyncio.all_tasks(): if t is not asyncio.current_task(): t.print_stack()",
+        "Leak check in teardown: assert no tasks remain besides the current one after the test. Leftover tasks point to fire-and-forget bugs.",
+        "Python 3.14: python -m asyncio ps PID and python -m asyncio pstree PID inspect the task tree of a running process from outside.",
+        "Python 3.14: asyncio.print_call_graph() and capture_call_graph() show the chain of tasks awaiting one another, beyond a single task's stack.",
+        "Mistake: expecting all_tasks() to include finished tasks, or calling it from another thread. It only reports pending tasks of the running loop."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Deterministic Tests for Timeouts",
+      "points": [
+        "Goal: assert on the outcome (a TimeoutError was raised, cleanup ran), never on real elapsed seconds. Wall-clock assertions are flaky under CI load.",
+        "Primitives: async with asyncio.timeout(delay) (3.11+) and asyncio.wait_for(aw, timeout). Since 3.11, asyncio.TimeoutError is the builtin TimeoutError.",
+        "Force a timeout deterministically by awaiting something that never finishes: await asyncio.Event().wait() under asyncio.timeout(0.01), then pytest.raises(TimeoutError).",
+        "asyncio.timeout(0), or a deadline already in the past, cancels at the next await, which gives an instant timeout with no sleeping.",
+        "Use Events or Futures that the test controls to decide when a dependency finishes, instead of sleep(0.5) and hoping the order works out.",
+        "Patch asyncio.sleep (for example with AsyncMock) so retry and backoff loops run instantly, then assert on the delays passed to it via await_args_list.",
+        "Virtual time: inject a clock, or use a fake-time plugin such as looptime that fast-forwards loop.time(). A 60 s timeout then runs in milliseconds.",
+        "Also check cancellation handling: after a timeout the inner task should be cancelled and its finally or cleanup should have run. Assert on that side effect.",
+        "Use asyncio.sleep(0) to yield exactly one scheduling step, letting pending callbacks run before an assertion.",
+        "Mistake: catching CancelledError and swallowing it inside the timed code. asyncio.timeout can then no longer convert it into TimeoutError, so the timeout silently fails."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Cheatsheet: Async Testing & Debugging",
+      "points": [
+        "Run async tests: @pytest.mark.asyncio (strict mode) or asyncio_mode = auto. Standard-library alternative: IsolatedAsyncioTestCase with asyncSetUp and addAsyncCleanup.",
+        "Share a loop: @pytest.mark.asyncio(loop_scope='module') and @pytest_asyncio.fixture(loop_scope='session'). Keep test and fixture loop scopes aligned.",
+        "Mock async code with AsyncMock(return_value=..., side_effect=...), then assert_awaited_once_with(...). Use MagicMock for 'async with' and 'async for'.",
+        "Debug mode: asyncio.run(debug=True), PYTHONASYNCIODEBUG=1 or -X dev, plus logging.basicConfig(level=logging.DEBUG).",
+        "Blocking calls: tune loop.slow_callback_duration and move work to asyncio.to_thread().",
+        "Missing awaits: -X tracemalloc=25 plus -W error::RuntimeWarning.",
+        "Hangs: loop over asyncio.all_tasks() and call t.print_stack(). Name tasks with create_task(name=...). On 3.14, use python -m asyncio pstree PID.",
+        "Timeouts: under asyncio.timeout(0.01), await an Event that is never set; patch sleep; use virtual time; assert outcomes, not durations.",
+        "Warning decoder: 'never awaited' means a missing await; 'destroyed but pending' means a lost reference; 'different loop' means a loop_scope mismatch; 'exception never retrieved' means an unobserved task."
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

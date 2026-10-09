@@ -1,5 +1,7 @@
 import { MAX_SLIDES, Post, validatePost } from '../schema';
-import { createPart, loadPost, nextPartNumber, savePost } from '../store';
+import { promises as fs } from 'fs';
+import { createPart, deletePart, listParts, loadPost, nextPartNumber, savePost } from '../store';
+import { exportDir } from '../paths';
 import { mergeContinuations } from '../renderer/capture';
 
 /** "AWS VPC (cont.)" and "AWS VPC" are the same chapter. */
@@ -26,7 +28,7 @@ export function followUpCaption(parentText: string, series: string, part: number
 }
 
 /**
- * Content is never trimmed to fit a carousel. When a part renders past the 10-image limit,
+ * Content is never trimmed to fit a carousel. When a part renders past the carousel limit,
  * the surplus pages move into the NEXT PART of the same chapter — the book and reference
  * list already belong to the chapter, so the follow-up inherits them for free.
  */
@@ -71,4 +73,34 @@ export async function splitIntoFollowUp(
     : post.caption;
   await savePost(subject, chapter, part, { ...post, slides: kept, caption });
   return { moved: moved.length, part: next };
+}
+
+/**
+ * A spill that polish later undoes (pull-backs shrink the part) leaves a small follow-up that
+ * nothing moves back. When the next part was made by a spill from this one, has nobody after it,
+ * was never packaged, and both fit one carousel, its pages return to the end of this part and
+ * the part is deleted. The caller re-renders this part.
+ */
+export async function reclaimFollowUp(
+  subject: string, chapter: string, part: number, limit = MAX_SLIDES
+): Promise<{ part: number; moved: number } | null> {
+  const parts = await listParts(subject, chapter);
+  const n = part + 1;
+  if (!parts.includes(n)) return null;
+  const following = await loadPost(subject, chapter, n).catch(() => null);
+  if (!following || following.spilledFrom !== part) return null;
+  for (const m of parts.filter((x) => x > n)) {
+    if ((await loadPost(subject, chapter, m).catch(() => null))?.spilledFrom === n) return null;
+  }
+  if (await fs.stat(exportDir(subject, chapter, n)).then(() => true, () => false)) return null;
+  const post = await loadPost(subject, chapter, part);
+  if (post.slides.length + following.slides.length > limit) return null;
+  const slides = [...post.slides, ...following.slides];
+  const series = post.series.replace(/ — PART \d+$/i, '');
+  const caption = post.spilledFrom !== undefined
+    ? { ...post.caption, text: followUpCaption(post.caption.text, series, part, chaptersOf(slides)) }
+    : post.caption;
+  await savePost(subject, chapter, part, { ...post, slides, caption });
+  await deletePart(subject, chapter, n);
+  return { part: n, moved: following.slides.length };
 }

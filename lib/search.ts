@@ -13,7 +13,7 @@ import { getDb } from './db';
  */
 
 export type SearchHit = {
-  kind: 'subject' | 'chapter' | 'explainer' | 'reel';
+  kind: 'subject' | 'chapter' | 'topic' | 'explainer' | 'reel';
   label: string;
   /** The line under the label: where the hit lives, or what state it is in. */
   sub: string;
@@ -77,7 +77,28 @@ export function searchHandbooks(query: string): SearchHit[] {
     rank: best(query, c.title, c.slug),
   }));
 
-  return [...take(subjectHits), ...take(chapterHits)];
+  // A topic is one section of a chapter's book, found by its title or any point it teaches,
+  // so "TaskGroup" lands on the chapter that covers it even when no title says so.
+  const titleOf = new Map(chapters.map((c) => [`${c.subject}/${c.slug}`, c.title ?? c.slug]));
+  const books = db
+    .prepare('SELECT subject, chapter, book_json FROM books')
+    .all() as { subject: string; chapter: string; book_json: string }[];
+  const topicHits: Scored[] = books.flatMap((b) => {
+    let sections: { title: string; points?: string[] }[] = [];
+    try { sections = JSON.parse(b.book_json).chapters ?? []; } catch { /* unreadable row: no topics */ }
+    return sections.map((sec, i) => ({
+      kind: 'topic' as const,
+      label: sec.title,
+      sub: titleOf.get(`${b.subject}/${b.chapter}`) ?? b.chapter,
+      // The chapter page turns the section into the part and page that teach it; it also keeps
+      // two topics of one chapter from sharing a link (the box keys its options by href).
+      href: `/handbooks/${b.subject}/${b.chapter}?topic=${i}`,
+      // A point that mentions it counts for less than the section being named after it.
+      rank: Math.max(best(query, sec.title), Math.min(1, best(query, ...(sec.points ?? [])))),
+    }));
+  });
+
+  return [...take(subjectHits), ...take(chapterHits), ...take(topicHits)];
 }
 
 export function searchExplainers(

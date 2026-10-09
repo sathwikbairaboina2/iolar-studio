@@ -13,11 +13,19 @@ import ReferencePanel from '@/components/editor/ReferencePanel';
 import BookPanel from '@/components/editor/BookPanel';
 import ReviewPanel from '@/components/editor/ReviewPanel';
 import VerifyDrawer from '@/components/editor/VerifyDrawer';
+import { ChapterCategory } from '@/components/handbooks/CategorySelect';
 
 const RATIO_OPTS = ['3:4', '4:5', '1:1'].map((v) => ({ value: v, label: `Ratio ${v}` }));
 
-export default function ChapterPage({ params }: { params: Promise<{ subject: string; chapter: string }> }) {
+export default function ChapterPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ subject: string; chapter: string }>;
+  searchParams: Promise<{ topic?: string }>;
+}) {
   const { subject, chapter } = use(params);
+  const { topic } = use(searchParams);
   const [part, setPart] = useState(1);
   const [parts, setParts] = useState<number[]>([1]);
   const [post, setPost] = useState<Post | null>(null);
@@ -28,6 +36,8 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
   const [rendering, setRendering] = useState(false);
   const [overflow, setOverflow] = useState<Record<number, number>>({});
   const [fill, setFill] = useState<Record<number, number>>({});
+  // Blocks a single-slide render could not fit; a whole-part render flows them on, so it clears them.
+  const [undrawn, setUndrawn] = useState<Record<number, number>>({});
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrefill, setAiPrefill] = useState('');
   const [refUrls, setRefUrls] = useState<string[]>([]);
@@ -39,10 +49,14 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
   const [compareRefs, setCompareRefs] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
+  // A render that spills mints a follow-up part; re-read the list so its tab appears.
+  const reloadParts = () =>
     fetch(`/api/handbooks/${subject}/${chapter}`).then((r) => r.json()).then((d) => {
       if (Array.isArray(d.parts) && d.parts.length) setParts(d.parts);
     });
+
+  useEffect(() => {
+    reloadParts();
     fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((r) => r.json()).then((p) => {
       setPost(p);
       if (openReviewOnLoad.current) {
@@ -52,6 +66,19 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
     });
     fetch('/api/handbooks').then((r) => r.json()).then((d) => setTemplates(d.templates ?? []));
   }, [subject, chapter, part]);
+
+  // A search hit for a topic (`?topic=N`, a book section) opens on the page that teaches it.
+  useEffect(() => {
+    if (topic === undefined) return;
+    fetch(`/api/handbooks/${subject}/${chapter}/locate?section=${encodeURIComponent(topic)}`)
+      .then((r) => r.json())
+      .then((at: { part: number | null; page: number | null }) => {
+        if (!at.part || !at.page) return;
+        setPart(at.part);
+        setSlide(at.page - 1);
+      })
+      .catch(() => { /* unplaceable: stay on the first page */ });
+  }, [subject, chapter, topic]);
 
   const save = useCallback(async (p: Post) => {
     const r = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`, {
@@ -78,18 +105,27 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(which !== undefined ? { slide: which } : polish ? { polish: true } : {}),
+        // Polish page by page: a whole-part densify is all-or-nothing, and one page that spills
+        // rolls back the rest, so it often changes nothing at all.
+        body: JSON.stringify(which !== undefined ? { slide: which } : polish ? { polish: true, perSlide: true } : {}),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error);
+      if (body.followUp) {
+        await reloadParts();
+        message.info(`Content continued in part ${body.followUp.part}`);
+      }
       const ovf: Record<number, number> = { ...overflow };
       const fl: Record<number, number> = { ...fill };
+      const ud: Record<number, number> = which !== undefined ? { ...undrawn } : {};
       for (const res of body.results) {
         ovf[res.slide] = res.overflowPx;
         fl[res.slide] = res.fillPct;
+        ud[res.slide] = res.undrawn ?? 0;
       }
       setOverflow(ovf);
       setFill(fl);
+      setUndrawn(ud);
       setVersion(Date.now());
       // A render can succeed and still have something to say: a block left undrawn, an icon
       // that resolved to nothing, a code line cut. Those warnings were being thrown away.
@@ -114,6 +150,18 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
           const { proposal } = await h.json();
           setPost(proposal);
           await save(proposal);
+          // The PNGs still carry the old "(cont.)" titles; draw them again so the preview matches.
+          const again = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({}),
+          });
+          if (again.ok) {
+            const redrawn = (await again.json()).results as { slide: number; overflowPx: number; fillPct: number }[];
+            setOverflow(Object.fromEntries(redrawn.map((x) => [x.slide, x.overflowPx])));
+            setFill(Object.fromEntries(redrawn.map((x) => [x.slide, x.fillPct])));
+            setVersion(Date.now());
+          }
           message.success('Page titles updated for the new pages');
         }
       } else {
@@ -125,6 +173,43 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
       setRendering(false);
     }
   };
+
+  // The first review of a part fills its thin pages, one page per AI call. The server keeps a
+  // marker so later reviews skip it; this ref only stops a second request while the first runs.
+  const autoFillAsked = useRef<number | null>(null);
+  const autoFill = async () => {
+    if (!post || autoFillAsked.current === part) return;
+    autoFillAsked.current = part;
+    setRendering(true);
+    if (dirty) await save(post);
+    try {
+      const r = await fetchWithRetry(`/api/handbooks/${subject}/${chapter}/parts/${part}/render`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ autoFill: true }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error);
+      if (body.skipped) return;
+      if (body.followUp) await reloadParts();
+      setPost(await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((x) => x.json()));
+      setOverflow(Object.fromEntries(body.results.map((x: { slide: number; overflowPx: number }) => [x.slide, x.overflowPx])));
+      setFill(Object.fromEntries(body.results.map((x: { slide: number; fillPct: number }) => [x.slide, x.fillPct])));
+      setUndrawn({});
+      setVersion(Date.now());
+      if (body.polish?.length) message.success(`Filled: ${body.polish.join(', ')}`);
+      else message.info('Every page already full; nothing to fill');
+    } catch (err) {
+      message.error(String(err));
+    } finally {
+      setRendering(false);
+    }
+  };
+
+  useEffect(() => {
+    if (reviewOpen) autoFill();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewOpen, part]);
 
   const reloadAndRender = async () => {
     const p = await fetch(`/api/handbooks/${subject}/${chapter}/parts/${part}`).then((r) => r.json());
@@ -171,6 +256,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
   return (
     <div>
       <Space style={{ marginBottom: 14, flexWrap: 'wrap' }}>
+        <ChapterCategory subject={subject} chapter={chapter} />
         <Select
           value={post.template}
           options={templates.map((t) => ({ value: t, label: t }))}
@@ -248,6 +334,8 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
             version={version}
             overflowPx={currentOverflow}
             fillPct={fill[slide + 1] ?? null}
+            undrawn={undrawn[slide + 1] ?? 0}
+            onRenderAll={() => render()}
             onDensify={densify}
             rendering={rendering}
             referenceUrl={compareRefs ? refUrls[slide] : undefined}
@@ -268,6 +356,7 @@ export default function ChapterPage({ params }: { params: Promise<{ subject: str
         version={version}
         fill={fill}
         open={reviewOpen}
+        filling={rendering}
         onClose={() => setReviewOpen(false)}
         onApplied={async (p) => { setPost(p); await render(); }}
       />

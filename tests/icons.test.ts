@@ -15,6 +15,11 @@ describe('iconSvg', () => {
     expect(iconSvg('aws')).toContain('#ff9900');
     expect(resolveIcon('aws-cloud')?.file).toMatch(/AWSCloud\.svg$/);
   });
+  it('names with no logo anywhere draw the generic icon for what they are', () => {
+    expect(resolveIcon('uvicorn')?.file).toMatch(/server\.svg$/);
+    expect(resolveIcon('httpx')?.file).toMatch(/globe\.svg$/);
+    expect(resolveIcon('asyncio')?.source).toBe('brand');
+  });
   it('explicit prefixes reach every source', () => {
     expect(resolveIcon('aws:AmazonRDS')?.source).toBe('aws');
     expect(resolveIcon('aws:res:AmazonEC2Instance')?.file).toMatch(/resource[\\/]AmazonEC2Instance\.svg$/);

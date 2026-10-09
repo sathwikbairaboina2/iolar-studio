@@ -1,0 +1,357 @@
+{
+  "title": "Docker Complete Handbook",
+  "summary": "A start-to-production tour of Docker. It covers architecture and internals, images and containers, Dockerfile and build optimization, storage, networking, Compose, registries, security, debugging, orchestration, and interview prep.",
+  "chapters": [
+    {
+      "title": "Docker at a Glance",
+      "points": [
+        "Docker packages an app plus its dependencies into an image that runs the same on a laptop, in CI and in production",
+        "Container vs VM: containers share the host kernel and start in milliseconds, while VMs boot a full guest OS",
+        "Core nouns: image (read-only template), container (running instance), registry (image store), Dockerfile (build recipe)",
+        "Handbook map: architecture, images, Dockerfile, storage, networking, Compose, registries, security, debugging, production",
+        "Docker's value: reproducible builds, immutable artifacts, fast startup, dense packing of workloads",
+        "Docker is not a security boundary equal to a VM, because all containers share one kernel"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Docker Architecture and Internals",
+      "points": [
+        "Client-server model: the docker CLI talks to the dockerd daemon over a REST API on /var/run/docker.sock",
+        "dockerd delegates to containerd (lifecycle and image management), which calls runc (the OCI runtime that creates the container)",
+        "containerd-shim keeps a container running even if dockerd or containerd restarts",
+        "Namespaces isolate what a process sees: pid, net, mnt, uts, ipc, user, cgroup",
+        "cgroups limit and account for resources: CPU, memory, block I/O, PIDs",
+        "Union filesystem (overlay2) stacks read-only image layers under one writable container layer",
+        "OCI specs standardize the image format and runtime, so images run on Docker, Podman or containerd alike",
+        "Docker Desktop on Mac and Windows runs dockerd inside a hidden Linux VM, since containers need a Linux kernel",
+        "Example: docker run alpine echo hi triggers CLI → dockerd → containerd → shim → runc → process exits",
+        "Mistake: mounting docker.sock into a container hands it root-equivalent control of the host",
+        "Interview Point: What does runc do? How do namespaces differ from cgroups? Why does a container die when its PID 1 exits?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Images and Layers",
+      "points": [
+        "An image is an immutable stack of layers plus a JSON config (env, entrypoint, cmd, exposed ports)",
+        "Each Dockerfile instruction that changes the filesystem (RUN, COPY, ADD) creates a layer",
+        "Layers are content-addressed by SHA256 digest, so identical layers are stored once and shared across images",
+        "A tag like nginx:1.27 is a movable pointer, while a digest like nginx@sha256:... is immutable",
+        "Copy-on-write: a container changing a lower-layer file copies it into its writable layer first",
+        "Deleting a file in a later layer only hides it, and the bytes still ship in the earlier layer",
+        "Base images compared: ubuntu (large, familiar), alpine (~5 MB, musl libc), debian-slim, distroless (no shell), scratch (empty)",
+        "Example: docker history myapp shows each layer with its size, and docker image inspect shows the config",
+        "Mistake: using :latest in production, which makes deployments non-reproducible",
+        "Mistake: leaving secrets or build caches in a layer, where they stay recoverable with docker history",
+        "Interview Point: How are layers shared between images? Why does deleting a file in a later layer not shrink the image? Tag vs digest?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Containers: Lifecycle and Runtime",
+      "points": [
+        "A container is a running (or stopped) instance of an image with its own writable layer, namespaces and cgroups",
+        "States: created, running, paused, stopped (exited), removed",
+        "docker run = create + start, and -d detaches, -it attaches an interactive TTY, --rm removes the container on exit",
+        "docker stop sends SIGTERM, waits (default 10s), then sends SIGKILL, whereas docker kill sends SIGKILL immediately",
+        "The main process is PID 1, which does not get default signal handlers, so apps must handle SIGTERM themselves",
+        "Use --init (tini) to reap zombie processes and forward signals properly",
+        "Resource limits: --memory 512m, --cpus 1.5, --pids-limit 200, and exceeding memory means an OOM kill (exit 137)",
+        "Restart policies: no, on-failure[:N], always, unless-stopped",
+        "docker exec runs a new process in a running container, while docker attach connects to the main process's stdio",
+        "Example: docker run -d --name web -p 8080:80 --restart unless-stopped nginx",
+        "Mistake: expecting data in the writable layer to survive docker rm",
+        "Interview Point: What does exit code 137 mean? Difference between exec and attach? Why does PID 1 matter?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Dockerfile Essentials",
+      "points": [
+        "A Dockerfile is a text recipe of instructions that BuildKit executes top to bottom to produce an image",
+        "FROM sets the base image, WORKDIR sets the directory, and COPY adds files from the build context",
+        "RUN executes at build time, while CMD and ENTRYPOINT define what runs at container start",
+        "CMD vs ENTRYPOINT: ENTRYPOINT is the fixed executable, CMD supplies default arguments that docker run can override",
+        "Exec form [\"node\",\"app.js\"] runs without a shell and receives signals, whereas shell form wraps in /bin/sh -c",
+        "COPY vs ADD: prefer COPY, because ADD also extracts tarballs and fetches URLs, which is surprising behavior",
+        "ARG exists only at build time, while ENV persists into the running container",
+        "EXPOSE only documents a port and does not publish it, so -p is what publishes",
+        "USER switches to a non-root user, and HEALTHCHECK defines a liveness command",
+        "Example: FROM node:22-alpine, WORKDIR /app, COPY package*.json ./, RUN npm ci, COPY . ., CMD [\"node\",\"server.js\"]",
+        "Mistake: using shell-form CMD so SIGTERM never reaches the app and shutdown hangs for 10s",
+        "Interview Point: CMD vs ENTRYPOINT? ARG vs ENV? Does EXPOSE publish a port?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Build Optimization and Caching",
+      "points": [
+        "Layer cache: Docker reuses a layer if the instruction and its inputs are unchanged, and one miss invalidates every layer after it",
+        "Order instructions from least to most frequently changing: base, system deps, dependency manifests, install, source",
+        "Copy dependency manifests first (package.json, requirements.txt), install, then copy the source so installs stay cached",
+        "A .dockerignore (node_modules, .git, logs, .env) shrinks the build context and avoids needless cache busts",
+        "Multi-stage builds compile in a fat builder stage and COPY --from=builder only the artifacts into a slim runtime stage",
+        "Combine related RUN commands with && and clean up in the same layer (rm -rf /var/lib/apt/lists/*)",
+        "BuildKit cache mounts: RUN --mount=type=cache,target=/root/.cache/pip keeps package caches between builds",
+        "Secret mounts: RUN --mount=type=secret,id=npmrc keeps credentials out of image layers",
+        "docker buildx builds multi-platform images (amd64 and arm64) and supports remote cache export (--cache-to, --cache-from)",
+        "Example: a Go multi-stage build can shrink an image from ~1 GB to ~15 MB on scratch or distroless",
+        "Mistake: COPY . . before installing dependencies, which re-installs on every code edit",
+        "Interview Point: Why does instruction order matter? What does a multi-stage build buy you? How do you pass a secret at build time safely?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Volumes and Storage",
+      "points": [
+        "The container's writable layer is ephemeral, so data written there is lost when the container is removed",
+        "Named volumes are managed by Docker under /var/lib/docker/volumes and are the preferred way to persist data",
+        "Bind mounts map a host path into the container, which suits development hot-reload but couples you to host layout",
+        "tmpfs mounts live in memory only and are never written to disk, which suits secrets and scratch data",
+        "Comparison: volume (Docker-managed, portable, driver support), bind (host path, full host access), tmpfs (RAM, non-persistent)",
+        "Mount syntax: -v name:/data (short) vs --mount type=volume,src=name,dst=/data (explicit, errors on typos)",
+        "A bind mount to a missing host path is auto-created by -v but errors with --mount",
+        "An empty named volume is seeded with the image's existing content at that path, while a bind mount hides it",
+        "Volume lifecycle: docker volume create, ls, inspect, rm, prune, and volumes outlive containers",
+        "Backup pattern: run a throwaway container that mounts the volume and tars it to a bind-mounted directory",
+        "Mistake: running docker system prune --volumes and deleting a database volume by accident",
+        "Interview Point: Volume vs bind mount? How does data persist across container recreation? When do you use tmpfs?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Docker Networking",
+      "points": [
+        "Network drivers: bridge (default, single host), host, none, overlay (multi-host), macvlan",
+        "Default bridge docker0 gives containers IPs but no name-based DNS, whereas user-defined bridges add automatic DNS by container name",
+        "Host mode shares the host network stack, which removes NAT overhead but gives no port isolation",
+        "Publishing ports: -p 8080:80 maps host:container via iptables NAT rules, and -P publishes all EXPOSEd ports to random host ports",
+        "Containers on the same user-defined network reach each other by name and container port, with no publishing needed",
+        "Embedded DNS server at 127.0.0.11 resolves container and service names",
+        "Network isolation: containers on different user-defined networks cannot talk unless one is attached to both",
+        "Overlay networks use VXLAN to connect containers across Swarm nodes",
+        "Inspect with docker network ls, docker network inspect, and docker exec ... nslookup or curl",
+        "Example: docker network create app-net, then run db and api on it, and api connects to db:5432",
+        "Mistake: publishing a database port like -p 5432:5432 on a public host, which exposes it to the internet",
+        "Interview Point: Bridge vs host vs overlay? Why use a user-defined bridge? How does container-to-container DNS work?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Docker Compose",
+      "points": [
+        "Compose defines a multi-container app in one compose.yaml with services, networks and volumes",
+        "docker compose up -d builds, creates and starts everything, and down stops and removes (add -v to drop volumes)",
+        "Compose creates a default project network, and services resolve each other by service name",
+        "depends_on controls start order, and with condition: service_healthy it waits for a healthcheck to pass",
+        "env_file and the environment key inject configuration, and ${VAR:-default} interpolates from .env",
+        "Named volumes are declared at top level and mounted per service, so data survives down without -v",
+        "Profiles let you mark optional services (debug tools, seeders) and start them with --profile",
+        "docker compose watch syncs or rebuilds on file change for a fast dev loop",
+        "Override files: compose.override.yaml is applied automatically, and -f compose.prod.yaml merges production settings",
+        "Example: web (build ., ports 8080:80), db (postgres:16, volume pgdata, healthcheck pg_isready)",
+        "Mistake: assuming depends_on alone waits for the database to be ready to accept connections",
+        "Interview Point: depends_on vs healthchecks? Compose vs Swarm vs Kubernetes? How do you manage dev vs prod configs?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Registries and Image Distribution",
+      "points": [
+        "A registry stores and serves images, and an image name is registry/namespace/repo:tag",
+        "Docker Hub is the default registry, with rate limits for anonymous and free pulls",
+        "Private options: GitHub Container Registry, AWS ECR, Google Artifact Registry, Azure ACR, and a self-hosted registry:2",
+        "Workflow: docker login, docker tag app:1.0 registry.example.com/team/app:1.0, then docker push",
+        "docker pull downloads only the layers you do not already have, and each layer is checked by digest",
+        "Tagging strategy: immutable version tags (1.4.2), the git SHA for traceability, and a moving tag like stable only deliberately",
+        "Pin by digest (image@sha256:...) in production to guarantee the exact bytes",
+        "Multi-arch images use a manifest list that serves the right platform per client",
+        "Image signing with cosign or Docker Content Trust verifies who published the image",
+        "Cleanup: registries need retention and garbage-collection policies, since layers pile up",
+        "Mistake: pushing images with embedded secrets to a public repository",
+        "Interview Point: What is a manifest list? Why pin by digest? How do private registry credentials work in CI?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Container Security",
+      "points": [
+        "Containers share the host kernel, so a kernel exploit or misconfiguration can lead to host compromise",
+        "Run as non-root with USER in the Dockerfile or --user, since root in a container maps to root on the host by default",
+        "User namespaces and rootless mode remap container root to an unprivileged host UID",
+        "Drop capabilities with --cap-drop ALL and add back only what is needed, because the default set is broader than most apps need",
+        "Never use --privileged, which disables most isolation and exposes host devices",
+        "Read-only root filesystem (--read-only) plus tmpfs for scratch blocks runtime tampering",
+        "--security-opt no-new-privileges blocks privilege escalation via setuid binaries",
+        "Default seccomp and AppArmor or SELinux profiles restrict syscalls and file access, and custom profiles tighten them further",
+        "Scan images for CVEs with Trivy, Grype or Docker Scout, and fail CI on critical findings",
+        "Smaller base images (distroless, alpine) mean less attack surface",
+        "Secrets: use Docker/Compose secrets or a secret manager, and never bake them into ENV or layers",
+        "Interview Point: Why is --privileged dangerous? How do you run containers rootless? Where should secrets live?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Debugging and Troubleshooting",
+      "points": [
+        "First step: docker ps -a to see state and exit code, then docker logs --tail 100 -f <container>",
+        "Exit codes: 0 clean, 1 app error, 125-127 docker or command errors, 137 SIGKILL or OOM, 143 SIGTERM",
+        "docker inspect shows config, mounts, network settings, health status and the OOMKilled flag",
+        "docker exec -it <c> sh to get inside, and for shell-less images use a debug sidecar or docker debug",
+        "docker stats shows live CPU, memory and I/O per container, and docker top lists processes",
+        "docker events streams daemon activity such as die, oom and health_status",
+        "Crash loop: override the entrypoint (docker run --entrypoint sh -it image) to inspect the image directly",
+        "Port problems: the app must bind to 0.0.0.0, because 127.0.0.1 inside the container is unreachable from outside",
+        "Build failures: use docker build --progress=plain --no-cache to see full output and rule out stale cache",
+        "Disk full: docker system df shows usage, and docker system prune cleans stopped containers, dangling images and networks",
+        "Mistake: debugging only from the host when the issue is DNS or permissions inside the container's namespace",
+        "Interview Point: A container exits immediately, so how do you debug it? What does 137 mean? App runs but is unreachable, so what do you check?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Production and Orchestration",
+      "points": [
+        "Production needs scheduling, scaling, self-healing, rolling updates and service discovery, which one-host Docker does not provide",
+        "Docker Swarm is built in (docker swarm init, docker service create) and is simple but has a smaller ecosystem",
+        "Kubernetes is the industry standard, with pods, deployments, services and ingress, and a steeper learning curve",
+        "Comparison: plain Docker/Compose (one host, simple), Swarm (small clusters), Kubernetes (large scale, rich ecosystem), managed (ECS, Cloud Run)",
+        "Healthchecks drive orchestration decisions such as restarts and routing traffic only to healthy instances",
+        "Set memory and CPU limits and requests for every container so one service cannot starve its neighbors",
+        "Logging: write to stdout/stderr, and pick a log driver (json-file with rotation, or fluentd/gelf) to ship logs centrally",
+        "Set --log-opt max-size and max-file, because unbounded json-file logs fill disks",
+        "Rolling updates and rollbacks: replace instances gradually and revert on failed health",
+        "Graceful shutdown: handle SIGTERM, drain connections, and set a stop grace period that matches your app",
+        "Pin image digests and keep containers stateless, with state in external volumes or managed databases",
+        "Interview Point: Why orchestrate at all? Swarm vs Kubernetes? How do you do zero-downtime deploys?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Interview Questions and Best Practices",
+      "points": [
+        "Q: Container vs VM? A: containers share the host kernel and isolate with namespaces and cgroups, while VMs virtualize hardware with a full guest OS",
+        "Q: Image vs container? A: an image is an immutable template, and a container is a running instance with a writable layer",
+        "Q: How do you reduce image size? A: multi-stage builds, slim or distroless bases, .dockerignore, and cleanup in the same RUN layer",
+        "Q: How do containers persist data? A: named volumes, bind mounts, or external storage, never the writable layer",
+        "Q: How do containers talk to each other? A: a shared user-defined network with DNS by name",
+        "Q: COPY vs ADD, and CMD vs ENTRYPOINT? A: prefer COPY, and ENTRYPOINT is the fixed command while CMD supplies default arguments",
+        "Best practice: one process per container, stateless design, and configuration through environment variables",
+        "Best practice: pin versions and digests, scan images, run as non-root, and add a HEALTHCHECK",
+        "Best practice: keep images small and builds reproducible, and use CI to build once and promote the same image",
+        "Common mistakes recap: :latest tags, secrets in layers, running as root, no log rotation, and a missing .dockerignore",
+        "Interview Point: Walk through what happens on docker run. How would you harden and ship a production image? How do you debug a failing container?"
+      ],
+      "shape": [
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Docker Cheatsheet",
+      "points": [
+        "Containers: docker run -d --name n -p 8080:80 img, ps -a, stop, rm, logs -f, exec -it n sh",
+        "Images: docker build -t app:1.0 ., images, pull, push, tag, rmi, history, image inspect",
+        "Cleanup: docker system df, system prune, volume prune, image prune -a",
+        "Volumes: docker volume create/ls/inspect/rm, run with -v name:/data or --mount type=volume",
+        "Networks: docker network create/ls/inspect/connect, run with --network, and publish with -p host:ctr",
+        "Compose: docker compose up -d, down -v, ps, logs -f, exec, build, config",
+        "Dockerfile order: FROM, WORKDIR, COPY manifests, RUN install, COPY src, USER, HEALTHCHECK, CMD",
+        "Limits and safety flags: --memory, --cpus, --read-only, --cap-drop ALL, --user, --init, --restart",
+        "Exit codes: 0 ok, 1 app error, 137 SIGKILL or OOM, 143 SIGTERM",
+        "Registry flow: login, tag registry/ns/app:ver, push, pull by digest"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

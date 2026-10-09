@@ -1,0 +1,790 @@
+{
+  "brand": "iolar",
+  "template": "study-sheet",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "PYTHON ASYNCIO TASKS — PART 2",
+  "date": "26/09/2026",
+  "slides": [
+    {
+      "page_title": "Timeouts: asyncio.timeout, wait_for & wait",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is asyncio.timeout",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`async with asyncio.timeout(5):` bounds the whole ==block== (3.11+)",
+            "Every await inside shares **one** deadline",
+            "`timeout(None)` means no deadline (set one later)",
+            "`asyncio.TimeoutError` is an alias of builtin `TimeoutError` (3.11+)"
+          ],
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "try:",
+            "    async with asyncio.timeout(5):",
+            "        a = await fetch()",
+            "        await save(a)",
+            "except TimeoutError:",
+            "    log(\"too slow\")"
+          ],
+          "note": "catch it OUTSIDE the async with"
+        },
+        {
+          "type": "heading",
+          "text": "2. Mechanism",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "deadline hits",
+                "sub": "loop timer"
+              },
+              {
+                "text": "task.cancel()",
+                "sub": "current task",
+                "ink": "purple"
+              },
+              {
+                "text": "CancelledError",
+                "sub": "seen inside block"
+              },
+              {
+                "text": "TimeoutError",
+                "sub": "raised on exit",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "At the deadline it **cancels** the current task",
+            "Inside the block you only see ==CancelledError==",
+            "On exit, `__aexit__` converts it to `TimeoutError`",
+            "So `except TimeoutError` belongs **outside** the block"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "heading",
+          "text": "3. Absolute deadlines",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "end = loop.time() + 10",
+            "async with timeout_at(end) as cm:",
+            "    await step1()",
+            "    cm.reschedule(end + 5) # +5s",
+            "    await step2()"
+          ],
+          "note": "when uses loop.time(), not time.time()"
+        },
+        {
+          "type": "heading",
+          "text": "4. wait_for and wait",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "try:",
+            "    r = await asyncio.wait_for(",
+            "        fetch(), timeout=3)",
+            "except TimeoutError:",
+            "    r = None  # fetch cancelled"
+          ],
+          "note": "wraps ONE awaitable only"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "On timeout, `wait_for` **cancels** the awaitable",
+            "It ==waits== for the cancellation to finish",
+            "Then it raises `TimeoutError`",
+            "Since 3.12, built on top of `asyncio.timeout`"
+          ],
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "done, pending = await wait(",
+            "    tasks, timeout=2,",
+            "    return_when=FIRST_COMPLETED)",
+            "for t in pending:",
+            "    t.cancel()  # your job!"
+          ],
+          "note": "wait() never cancels anything"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Swallowing `CancelledError` makes the timeout ==hang== or never fire",
+            "`except TimeoutError` **inside** the block never matches",
+            "Assuming `wait()` cancels the slow tasks: it does not",
+            "Passing `time.time()` to `timeout_at`: wrong clock"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Nested timeouts",
+          "text": "The **innermost** expiry raises `TimeoutError` first. An outer timeout detects its own expiry through the task's ==cancelling()== count."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The **innermost** expired deadline raises first",
+            "Each timeout checks the task's ==cancelling()== count",
+            "Its own cancel is undone via `uncancel()`",
+            "An outside `cancel()` still propagates as CancelledError"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "purple"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "bounding await time"
+    },
+    {
+      "page_title": "Choosing a Timeout Tool & Nested Deadlines",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "5. Which one?",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Covers",
+            "On timeout"
+          ],
+          "rows": [
+            [
+              "`timeout()`",
+              "block, many awaits",
+              "cancel → TimeoutError"
+            ],
+            [
+              "`wait_for()`",
+              "**one** awaitable",
+              "cancel, wait, raise"
+            ],
+            [
+              "`wait()`",
+              "many tasks",
+              "no cancel; (done, pending)"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "6. Nested timeouts",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with asyncio.timeout(10):",
+            "    try:",
+            "        async with timeout(1):",
+            "            await slow()",
+            "    except TimeoutError:",
+            "        await fallback()"
+          ],
+          "note": "inner expiry caught, outer keeps running"
+        },
+        {
+          "type": "heading",
+          "text": "7. Set the deadline later",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with timeout(None) as cm:",
+            "    cfg = await load()",
+            "    end = loop.time() + cfg.limit",
+            "    cm.reschedule(end)",
+            "    await run(cfg)"
+          ],
+          "note": "None = no deadline until rescheduled"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Multi-step job, one budget → ==timeout()==",
+            "One slow call, want a value or error → `wait_for()`",
+            "Race many, keep the **winners** → `wait(FIRST_COMPLETED)`",
+            "Absolute deadline across steps → `timeout_at(when)`"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Timeout rules",
+          "text": "Catch `TimeoutError` **outside** the block, never swallow ==CancelledError== inside it, and cancel `wait()`'s pending tasks yourself."
+        }
+      ],
+      "hero": "python",
+      "subtitle": "bounding await time"
+    },
+    {
+      "page_title": "Structured Concurrency: TaskGroup, Fan-out & Queues",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is it",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Structured concurrency==: a task's lifetime is bounded by a **lexical** scope",
+            "The scope does not exit until all its children finish",
+            "Code shape = task tree: indentation shows who owns what"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No **orphaned** tasks: nothing outlives its block",
+            "Errors always propagate up to the parent",
+            "Cancel the parent → its whole __subtree__ is cancelled"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "sidebox",
+          "title": "Origin",
+          "items": [
+            "Trio ==nurseries== (Nathaniel J. Smith)",
+            "Essay: 'Go statement considered harmful'",
+            "`TaskGroup` = asyncio's nursery (3.11+)"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "2. Mechanism: own every task",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "def spawn_workers(tg, n):",
+            "  for i in range(n):",
+            "    tg.create_task(work(i))",
+            "async def main():",
+            "  async with TaskGroup() as tg:",
+            "    spawn_workers(tg, 4)  # owned"
+          ],
+          "note": "pass tg in, never spawn free"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Helpers take ==tg== as a parameter, not a bare `create_task`",
+            "Long-lived services (heartbeat, metrics) → TaskGroup in `main()`",
+            "They **shut down** with the app when main's block exits",
+            "Blocking/CPU work: `await asyncio.to_thread(fn)` keeps the loop live"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "3. Examples: fan-out & queues",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def get(u):",
+            "  async with sem:  # ≤10 at once",
+            "    return await fetch(u)",
+            "async with TaskGroup() as tg:",
+            "  for u in urls:",
+            "    tg.create_task(get(u))"
+          ],
+          "note": "sem = asyncio.Semaphore(10) caps fan-out"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def worker(q):",
+            "  while (x := await q.get()):",
+            "    await handle(x)",
+            "    q.task_done()  # for join()"
+          ],
+          "note": "None sentinel ends the loop"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "producer",
+                "sub": "q.put(item)",
+                "ink": "blue"
+              },
+              {
+                "text": "asyncio.Queue",
+                "sub": "buffer"
+              },
+              {
+                "text": "N workers",
+                "sub": "in one tg",
+                "ink": "purple"
+              },
+              {
+                "text": "await q.join()",
+                "sub": "all done"
+              },
+              {
+                "text": "put None × N",
+                "sub": "sentinel",
+                "ink": "red"
+              },
+              {
+                "text": "tg exits",
+                "sub": "clean",
+                "ink": "green"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No bare `create_task`: spawn via a ==tg==",
+            "**Re-raise** `CancelledError` after cleanup",
+            "`shield` sparingly: only commits/payments",
+            "Catch group errors with `except*`"
+          ],
+          "style": "checkbox"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Start N workers **inside** the group",
+            "Producer fills the queue, then `await q.join()`",
+            "`join()` returns once every item hit ==task_done()==",
+            "Send N sentinels; workers return, tg exits cleanly"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "blue"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "TaskGroup as a nursery"
+    },
+    {
+      "page_title": "gather vs TaskGroup, Queue Shutdown & except*",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. gather vs TaskGroup",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "gather(return_exc=True)",
+            "TaskGroup"
+          ],
+          "rows": [
+            [
+              "On error",
+              "keeps going",
+              "**fail-fast**"
+            ],
+            [
+              "Siblings",
+              "keep running",
+              "cancelled"
+            ],
+            [
+              "Result",
+              "partial list",
+              "all or ExceptionGroup"
+            ],
+            [
+              "Handle via",
+              "isinstance check",
+              "`except*`"
+            ],
+            [
+              "Best for",
+              "best-effort batch",
+              "all-must-succeed"
+            ]
+          ],
+          "highlightRow": 1
+        },
+        {
+          "type": "heading",
+          "text": "5. Mistakes & checklist",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Helper calls bare `create_task` → **orphan** task",
+            "`time.sleep` / CPU loop inside a task freezes all",
+            "Unbounded fan-out over 10k URLs, no Semaphore",
+            "No sentinel → workers block on `q.get()` forever"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "6. Queue shutdown, end to end",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with TaskGroup() as tg:",
+            "  for _ in range(N):",
+            "    tg.create_task(worker(q))",
+            "  await produce(q); await q.join()",
+            "  for _ in range(N):",
+            "    q.put_nowait(None)  # stop"
+          ],
+          "note": "one None per worker, after join()"
+        },
+        {
+          "type": "heading",
+          "text": "7. Errors at the top",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "try:",
+            "  async with TaskGroup() as tg:",
+            "    tg.create_task(serve())",
+            "    tg.create_task(heartbeat())",
+            "except* OSError as eg:",
+            "  for e in eg.exceptions: log(e)"
+          ],
+          "note": "one failure cancels every sibling"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Graceful Ctrl+C",
+          "text": "`asyncio.run` cancels `main()` → the TaskGroup cancels its children → every `finally` runs. No ==orphans== left behind."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "You want **partial** results despite failures",
+            "Simple fan-out with no sibling cancellation needed",
+            "Code must still run on Python < 3.11"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "orange"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "TaskGroup as a nursery"
+    },
+    {
+      "page_title": "Tasks Cheatsheet: Spawn, gather & Cancel",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Spawn & Keep Refs",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with TaskGroup() as tg:",
+            "    t = tg.create_task(c())",
+            "    u = tg.create_task(d())",
+            "# block exit = all children done",
+            "print(t.result(), u.result())"
+          ],
+          "note": "read .result() only AFTER the block"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "bg = set()",
+            "t = asyncio.create_task(job())",
+            "bg.add(t)  # strong ref",
+            "t.add_done_callback(bg.discard)"
+          ],
+          "note": "fire-and-forget: loop keeps WEAK refs"
+        },
+        {
+          "type": "heading",
+          "text": "2. gather vs TaskGroup",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "gather",
+            "TaskGroup"
+          ],
+          "rows": [
+            [
+              "Results",
+              "list, **arg order**",
+              "`t.result()` after"
+            ],
+            [
+              "On error",
+              "first exc raised",
+              "**fail-fast**"
+            ],
+            [
+              "Siblings",
+              "keep running",
+              "{red:cancelled}"
+            ],
+            [
+              "Raises",
+              "one exception",
+              "==ExceptionGroup=="
+            ],
+            [
+              "Partial results",
+              "`return_exceptions=True`",
+              "no"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "try:",
+            "  async with TaskGroup() as tg:",
+            "    ...  # spawn children",
+            "except* ValueError as eg:",
+            "  for e in eg.exceptions: log(e)"
+          ],
+          "note": "plain except MISSES a group"
+        },
+        {
+          "type": "heading",
+          "text": "3. Cancel & Shield",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "t.cancel()  # only a request",
+            "try:",
+            "    await t  # let it finish",
+            "except asyncio.CancelledError:",
+            "    print('t is cancelled')"
+          ],
+          "note": "cancel() then await t"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "revision sheet"
+    },
+    {
+      "page_title": "Tasks Cheatsheet: Shield, Deadlines & Debugging",
+      "blocks": [
+        {
+          "type": "bullets",
+          "items": [
+            "CancelledError is a **BaseException**: `except Exception` misses it",
+            "Clean up in `finally` / `except CancelledError:`, then ==re-raise==",
+            "Swallowing it breaks TaskGroup, timeout() and shutdown",
+            "`shield(coro())` with no ref: inner task can be GC'd"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "t = create_task(commit())  # ref",
+            "try:",
+            "    await asyncio.shield(t)",
+            "except asyncio.CancelledError:",
+            "    await t; raise  # finish write"
+          ],
+          "note": "outer cancelled, inner t runs on"
+        },
+        {
+          "type": "heading",
+          "text": "4. Deadlines & Blocking",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "try:",
+            "    async with asyncio.timeout(5):",
+            "        await fetch_all()",
+            "except TimeoutError:",
+            "    print('deadline hit')"
+          ],
+          "note": "catch TimeoutError OUTSIDE the block"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Goal",
+            "Call",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "One awaitable",
+              "`wait_for(aw, s)`",
+              "cancels aw, TimeoutError"
+            ],
+            [
+              "Wait, no cancel",
+              "`wait(aws, timeout=s)`",
+              "→ (done, pending)"
+            ],
+            [
+              "Blocking / CPU",
+              "`await to_thread(fn)`",
+              "runs in a thread"
+            ],
+            [
+              "Bounded fan-out",
+              "`Semaphore(n)`",
+              "≤ n in flight"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "5. Version Map",
+          "ink": "accent"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Python",
+            "What changed"
+          ],
+          "rows": [
+            [
+              "3.8",
+              "CancelledError → **BaseException**"
+            ],
+            [
+              "3.11",
+              "==TaskGroup==, `timeout()`, `except*`"
+            ],
+            [
+              "3.12",
+              "`eager_task_factory`; wait_for uses timeout"
+            ]
+          ],
+          "highlightRow": 1,
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "6. Inspect & Debug",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "t = tg.create_task(c(), name=\"db\")",
+            "for t in asyncio.all_tasks():",
+            "    print(t.get_name(), t.done())",
+            "me = asyncio.current_task()"
+          ],
+          "note": "name tasks so dumps are readable"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "revision sheet"
+    }
+  ],
+  "caption": {
+    "text": "Your asyncio code might be leaking tasks and swallowing errors without you ever knowing 👀 These handwritten notes walk you from create_task and keeping references through gather vs TaskGroup, except*, cancellation, shield and timeouts, all the way to structured concurrency in Python 3.11+. Part 2 of PYTHON ASYNCIO TASKS covers Timeouts: asyncio.timeout vs wait_for, Structured Concurrency in Practice and asyncio Tasks Cheatsheet.",
+    "hashtags": [
+      "#python",
+      "#asyncio",
+      "#pythonprogramming",
+      "#concurrency",
+      "#python3",
+      "#asyncprogramming",
+      "#backenddeveloper",
+      "#softwareengineering",
+      "#codingnotes",
+      "#studynotes",
+      "#learnpython",
+      "#devcommunity"
+    ]
+  },
+  "spilledFrom": 1
+}

@@ -43,13 +43,14 @@ async function rebuildShared(subject: string, chapter: string) {
   );
 }
 
-export async function syncChapter(subject: string, chapter: string, post: Post, status: string): Promise<void> {
+/** `title` is the chapter's own name; without it the node falls back to the part's header. */
+export async function syncChapter(subject: string, chapter: string, post: Post, status: string, title?: string): Promise<void> {
   await safely('handbooks.syncChapter', async () => {
     const { graph } = getStores();
     await graph.mergeNode(
       'Chapter',
       { subject, slug: chapter },
-      { space: 'handbooks', title: post.series, status, parts: 1, weight: post.slides.length }
+      { space: 'handbooks', title: title ?? post.series, status, parts: 1, weight: post.slides.length }
     );
     await graph.mergeEdge(subjectRef(subject), 'HAS_CHAPTER', chapterRef(subject, chapter));
     for (const slide of post.slides) {

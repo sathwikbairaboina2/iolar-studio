@@ -1,0 +1,326 @@
+{
+  "title": "Food Delivery App System Design (Zomato/Swiggy)",
+  "summary": "An end-to-end system design of a Zomato/Swiggy-style food delivery app: scope, requirements and scale, architecture, then one chapter per subsystem (discovery and search, cart, orders, payments, dispatch, tracking, notifications, ETA and pricing), closing with scaling, failure handling and interview questions.",
+  "chapters": [
+    {
+      "title": "Food Delivery App System Design: Cover",
+      "points": [
+        "Running example: a Zomato/Swiggy-style three-sided marketplace of customers, restaurants and delivery partners (Food Delivery App)",
+        "Target scale used throughout: 30M monthly users, 3M orders/day, 300K restaurants, 400K active delivery partners",
+        "Chapter map: scope, requirements, architecture, discovery and search, cart, orders, payments, dispatch, tracking, notifications, ETA and pricing, scaling",
+        "Every subsystem chapter follows the same order: responsibilities, design, flow, data model, APIs, failures, metrics",
+        "Design goal: place an order in under 3 seconds, deliver in about 30 minutes, never charge twice, never lose an order",
+        "Interview angle: the final chapter lists trade-offs and questions to rehearse"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement and Scope (Food Delivery App)",
+      "points": [
+        "Three-sided marketplace: customers order, restaurants prepare, delivery partners carry; each side has its own app and SLA",
+        "Core loop: browse, search, add to cart, pay, restaurant accepts, partner picks up, delivers, rating",
+        "In scope: discovery, search, cart, checkout, payments, order lifecycle, dispatch, live tracking, notifications, ETA",
+        "Out of scope for this design: restaurant onboarding KYC, partner payroll, ads auction, grocery quick-commerce",
+        "Hyperlocal constraint: supply is geo-bound, a restaurant serves a roughly 5-7 km radius, so most systems shard by city or geo cell",
+        "Peak shape: lunch (12-2pm) and dinner (7-10pm) concentrate about 60% of daily orders in 5 hours",
+        "Marketplace vs inventory model: restaurants are independent suppliers with live availability, unlike a fixed-stock e-commerce catalog",
+        "Success metrics: order success rate above 99%, delivery within 35 minutes for 90% of orders, cancellation rate below 3%",
+        "Clarifying questions to ask first: single city or national, own fleet or gig partners, scheduled orders, multi-restaurant carts"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Requirements and Scale Estimates (Food Delivery App)",
+      "points": [
+        "Functional: search restaurants, view menu, cart, pay, track order, cancel, rate, reorder",
+        "Functional (restaurant side): accept or reject order, mark food ready, toggle item availability, edit menu",
+        "Functional (partner side): go online, receive offers, accept, navigate, confirm pickup and drop",
+        "Non-functional: availability 99.95% for ordering, p99 search latency under 300 ms, p99 checkout under 2 s",
+        "Consistency needs: payments and order state are strongly consistent; search and menus are eventually consistent (seconds)",
+        "Traffic estimate: 3M orders/day is about 35 orders/sec average and about 300 orders/sec at peak (roughly 8x)",
+        "Browse traffic: about 30x orders, so peak search and menu reads reach about 10K QPS",
+        "Location pings: 400K partners x 1 ping/4 s is 100K writes/sec at peak, the largest write stream",
+        "Storage: 3M orders/day x 5 KB is about 15 GB/day, about 5.5 TB/year; menus and images about 2 TB",
+        "Tracking data: 100K pings/sec x 100 bytes is about 10 MB/s, about 860 GB/day raw, retained 7 days hot",
+        "Notifications: about 6 per order is roughly 18M/day, peaking near 1.5K/sec",
+        "Back-of-envelope rule: derive QPS from daily volume x peak factor / 86,400 seconds"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Food Delivery App)",
+      "points": [
+        "Edge: CDN for images and static menus, API gateway for auth, rate limiting and routing",
+        "Core services: User, Catalog/Menu, Search, Cart, Order, Payment, Dispatch, Tracking, Notification, Pricing/ETA",
+        "Sync calls (REST/gRPC) for the user-facing path; async events (Kafka) for everything downstream of order placed",
+        "Kafka topics: order-events, payment-events, location-updates, notification-requests; partitioned by order_id or geo cell",
+        "Data stores: PostgreSQL for orders and payments, Redis for cart and live state, Elasticsearch for search, Cassandra for location history",
+        "Polyglot persistence rule: each service owns its database, no cross-service joins",
+        "Geo sharding: partition by city so a Bengaluru incident does not affect Mumbai",
+        "Monolith vs microservices: start with a modular monolith; split out the services with different scaling profiles (search, tracking)",
+        "Order placement flow: gateway, cart, order service, payment, publish order-placed, restaurant and dispatch consume",
+        "Common mistake: synchronous chain of 6 services in checkout multiplies latency and failure probability",
+        "Common mistake: sharing one database between order and payment services couples their deploys and outages"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Restaurant Discovery and Search (Food Delivery App)",
+      "points": [
+        "Responsibilities: list serviceable restaurants near a location, text search for dishes and cuisines, filter and rank",
+        "Serviceability first: filter restaurants whose delivery polygon contains the user and that are open now",
+        "Geo index: geohash or H3 cells; query the user's cell plus neighbours to fetch candidates in under 50 ms",
+        "Elasticsearch index per city with geo_point, cuisine, rating, price band and an items nested field",
+        "Ranking signals: relevance, distance, rating, ETA, promotions, personalization; score is a weighted blend plus ML re-rank",
+        "Autocomplete: prefix trie or edge n-gram index, p99 under 100 ms, typo tolerance with edit distance 1-2",
+        "Index freshness: menu and availability changes flow through Kafka (CDC) and appear in search within 10 seconds",
+        "Data model: restaurant(id, geo, cuisines[], rating, is_open, avg_prep_min), item(id, restaurant_id, name, price, in_stock)",
+        "API: GET /v1/restaurants?lat=&lng=&cuisine=&sort=&cursor= returns 20 results per page with a cursor",
+        "API: GET /v1/search?q=biryani&lat=&lng= returns restaurant and dish hits",
+        "Failure: Elasticsearch down, fall back to a cached top-50 list per geo cell served from Redis",
+        "Failure: stale index shows a closed restaurant; the cart and order steps re-verify availability",
+        "Metrics: search p99 latency, zero-result rate below 3%, click-through rate, index lag in seconds"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Cart and Checkout (Food Delivery App)",
+      "points": [
+        "Responsibilities: hold items, enforce single-restaurant rule, price the cart, validate availability, apply coupons",
+        "Storage: cart in Redis hash keyed by user_id with 24-hour TTL; fast reads and writes, loss is tolerable",
+        "Price breakdown: item total, packaging, delivery fee, taxes (GST 5%), platform fee, discount, final payable",
+        "Server recomputes every price at checkout; never trust prices sent by the client",
+        "Checkout validation: restaurant open, items in stock, address serviceable, coupon valid, price unchanged",
+        "Price-changed handling: show a diff to the user and require reconfirmation before payment",
+        "Coupon rules: per-user usage limit, min order value, expiry; redeem atomically using a Redis Lua script",
+        "Data model: cart(user_id, restaurant_id, items[{item_id, qty, addons}], coupon, updated_at)",
+        "API: PUT /v1/cart/items, GET /v1/cart, POST /v1/checkout/quote returns a signed quote valid for 5 minutes",
+        "Quote token: signed payload of price and expiry so the order service can verify the amount without recomputing",
+        "Failure: Redis loss empties carts; acceptable, but log it and rebuild from client state when possible",
+        "Failure: coupon double redemption under concurrency; fixed by atomic decrement",
+        "Metrics: cart-to-order conversion about 35%, checkout p99 under 2 s, price-mismatch rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Order Service and State Machine (Food Delivery App)",
+      "points": [
+        "Responsibilities: own the order lifecycle, be the source of truth, emit events on every transition",
+        "States: CREATED, PAYMENT_PENDING, PLACED, ACCEPTED, PREPARING, READY, PICKED_UP, DELIVERED, plus CANCELLED and REJECTED",
+        "Legal transitions are an explicit table; anything else is rejected, e.g. DELIVERED cannot go back to PREPARING",
+        "Optimistic concurrency: UPDATE orders SET status=? WHERE id=? AND version=? prevents lost updates",
+        "Idempotency: client sends Idempotency-Key on POST /orders; a unique constraint returns the same order on retry",
+        "Outbox pattern: write the order row and the event row in one DB transaction; a relay publishes to Kafka, so no dual-write loss",
+        "Restaurant acceptance timeout: 3 minutes with no response auto-rejects, refunds the customer and may reroute",
+        "Cancellation rules: free before ACCEPTED, partial fee after PREPARING, none after PICKED_UP",
+        "Data model: orders(id, user_id, restaurant_id, status, version, total_paise, created_at), order_items, order_status_history",
+        "API: POST /v1/orders, GET /v1/orders/{id}, POST /v1/orders/{id}/cancel, PATCH /v1/orders/{id}/status for restaurant and partner",
+        "Failure: duplicate event delivery from Kafka; consumers dedupe by event_id and transitions are idempotent",
+        "Failure: order stuck in PAYMENT_PENDING for over 15 minutes; a reaper job reconciles with the payment provider",
+        "Metrics: order success rate, acceptance rate, time in each state, cancellation reasons, stuck-order count"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Payments (Food Delivery App)",
+      "points": [
+        "Responsibilities: collect money, support UPI, cards, wallets and COD, refund, reconcile, stay PCI-safe",
+        "Never store raw card data; use gateway tokenization so the PCI scope stays at the gateway",
+        "Payment states: INITIATED, PENDING, SUCCESS, FAILED, REFUND_INITIATED, REFUNDED",
+        "Flow: create payment intent, redirect or UPI collect, gateway callback (webhook), mark SUCCESS, order moves to PLACED",
+        "Webhook handling: verify the HMAC signature, dedupe by gateway_txn_id, always return 200 quickly and process async",
+        "Idempotency key per payment attempt prevents double charge on client retries",
+        "Pending problem: UPI timeouts leave an unknown status; poll the gateway status API at 10 s, 30 s, 2 min, then reconcile",
+        "Multi-gateway routing: route by success rate per bank and fail over from Razorpay to Paytm style backups",
+        "Data model: payments(id, order_id, amount_paise, method, gateway, gateway_txn_id, status, idempotency_key); amounts as integer paise",
+        "API: POST /v1/payments, POST /v1/webhooks/{gateway}, POST /v1/payments/{id}/refund",
+        "Refund flow: partial or full refund on cancel; ledger entries are append-only double entry",
+        "Failure: money debited but order not placed; the reconciliation job finds it and auto-refunds within 24 hours",
+        "Metrics: payment success rate above 95%, p99 gateway latency, double-charge count of 0, refund TAT"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Delivery Partner Assignment (Food Delivery App)",
+      "points": [
+        "Responsibilities: pick the best partner for each order, minimize wait and delivery time, balance earnings",
+        "Supply index: Redis GEO (GEOADD/GEOSEARCH) or H3 cells hold online, free partners by location",
+        "Trigger timing: start dispatch when prep time minus travel time is about 0, so the partner arrives as food is ready",
+        "Candidate set: partners within 3 km, free or about to finish a drop, with a battery and vehicle check",
+        "Scoring: pickup ETA, partner rating, acceptance history, order batching fit, fairness of earnings",
+        "Greedy vs batched matching: greedy assigns instantly; batching every 5 s and solving the Hungarian problem gives better global cost",
+        "Offer protocol: push the offer to one partner with a 15 s timeout; on decline or timeout go to the next candidate",
+        "Batching: one partner may carry 2 orders from nearby restaurants if the detour is under 5 minutes",
+        "Data model: partner(id, status, lat, lng, vehicle, active_order_ids[]), assignment(order_id, partner_id, offered_at, state)",
+        "API: POST /v1/dispatch/offers (internal), POST /v1/partners/{id}/offers/{offer}/accept, PUT /v1/partners/{id}/status",
+        "Race condition: two orders offered to the same partner; claim with an atomic compare-and-set on partner status",
+        "Failure: no partner available at peak; widen the radius, raise the incentive, extend the ETA shown to the user",
+        "Failure: partner goes offline mid-order; auto-reassign with a priority boost for the affected order",
+        "Metrics: assignment time p90 under 60 s, offer acceptance rate, partner idle time, orders per partner per hour"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Real-Time Order Tracking (Food Delivery App)",
+      "points": [
+        "Responsibilities: ingest partner GPS, show a live map to the customer, push ETA updates",
+        "Ingest: partner app sends a ping every 4 s (every 10 s when stationary), about 100K writes/sec at peak",
+        "Pipeline: location gateway, Kafka location-updates (partitioned by partner_id), stream processor, Redis latest-position",
+        "Hot store: Redis key partner:{id}:loc with 30 s TTL; history goes to Cassandra, TTL 7 days",
+        "Delivery to client: WebSocket or SSE channel per active order, with fallback to a 5 s long-poll",
+        "Fan-out: subscribe by order_id; only partners with active orders are streamed, not all 400K",
+        "Battery and bandwidth: adaptive ping rate, batch pings on poor networks, compress payload to about 60 bytes",
+        "Map matching: snap noisy GPS to the road network and smooth with a Kalman filter",
+        "Data model: location(partner_id, ts, lat, lng, speed, bearing, accuracy), tracking_session(order_id, partner_id)",
+        "API: WS /v1/orders/{id}/track emits {lat,lng,eta_s,status}; POST /v1/partners/{id}/locations accepts batches",
+        "Failure: partner loses connectivity; the client shows the last known position and a 'reconnecting' badge after 20 s",
+        "Failure: WebSocket node dies; clients reconnect with backoff and jitter and get the latest state from Redis",
+        "Metrics: ping-to-screen latency p99 under 3 s, dropped-ping rate, concurrent sockets (about 300K at peak)"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Notifications (Food Delivery App)",
+      "points": [
+        "Responsibilities: tell customers, restaurants and partners about state changes through push, SMS, in-app and email",
+        "Event-driven: the notification service consumes order-events and maps each to a template and audience",
+        "Channels: FCM and APNs push first, SMS fallback for critical events (OTP, delivery PIN), email for receipts",
+        "Priority lanes: transactional (order accepted, partner arrived) separate from promotional, so marketing never blocks them",
+        "Dedupe and idempotency: key = event_id + user_id + channel, stored in Redis with 24 h TTL",
+        "Rate limiting and preferences: at most 3 promotional pushes per day, honor opt-out and quiet hours",
+        "Restaurant alerts: a new-order ring on the tablet app repeats every 30 s until accepted",
+        "Retries: exponential backoff 1 s, 5 s, 30 s with a dead-letter queue after 3 failures",
+        "Data model: notification(id, user_id, event_id, channel, template, status, sent_at), device_token(user_id, token, platform)",
+        "API: POST /v1/notifications (internal), PUT /v1/users/{id}/preferences, POST /v1/devices",
+        "Failure: invalid or expired device tokens; prune on provider error codes",
+        "Failure: provider outage; fail over from push to SMS for critical events only, to control cost",
+        "Metrics: delivery rate, end-to-end latency p95 under 5 s for transactional, opt-out rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "ETA Prediction and Dynamic Pricing (Food Delivery App)",
+      "points": [
+        "ETA = restaurant prep time + partner pickup travel + dropoff travel + handover buffer",
+        "Prep time model: per-restaurant history by hour and order size; a kitchen-load signal (open orders) adds delay",
+        "Travel time: road graph routing with live traffic, p50 and p90 estimates, shown to users as a range such as 28-35 min",
+        "Worked example: prep 12 min + pickup 6 min + drop 11 min + 2 min handover = 31 min",
+        "Model choice: gradient boosted trees give a first version; retrain daily on completed orders, serve in under 20 ms",
+        "Delivery fee depends on distance slab (0-2 km, 2-4 km, 4+ km) plus a demand multiplier",
+        "Surge pricing: demand/supply ratio per geo cell over a 5-minute window; cap the multiplier at 2x and smooth it to avoid flapping",
+        "Rain and peak-hour handling: add a small fee and a longer ETA instead of rejecting orders",
+        "Under-promise policy: show the p80 estimate so most orders arrive early, since late delivery costs more trust than a long ETA",
+        "Common mistake: using straight-line distance instead of road distance, which underestimates by 30-40%",
+        "Common mistake: ignoring restaurant prep time, the largest source of ETA error"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (Food Delivery App)",
+      "points": [
+        "Scale reads first: CDN, Redis cache for menus (TTL 60 s), search replicas; reads outnumber writes about 30:1",
+        "Shard by city or geo cell for orders, dispatch and tracking; hot cities get dedicated clusters",
+        "Peak readiness: pre-scale before 12 pm and 7 pm, autoscale on queue lag and QPS, load-shed non-critical features first",
+        "Backpressure and load shedding order: drop recommendations, then promotions, then ratings; keep checkout and tracking alive",
+        "Resilience patterns: timeouts, retries with jitter, circuit breakers, bulkheads per dependency",
+        "Degraded modes: search falls back to cached lists, tracking shows a static ETA, payments reroute gateways",
+        "Multi-AZ active-active within a region; database failover target RTO 60 s and RPO 0 for orders",
+        "Consistency trade-off: strong for orders and payments, eventual for search, menus and ratings",
+        "Build vs buy: buy maps, payments and push providers; build dispatch and pricing as the differentiators",
+        "Interview question: how do you avoid assigning one partner two orders at once?",
+        "Interview question: how do you avoid charging twice on a retry or timeout?",
+        "Interview question: how would you handle a restaurant that never accepts?",
+        "Interview question: how does the design change for 10x scale or a new country?",
+        "Cheatsheet numbers: 300 orders/s peak, 100K pings/s, 99.95% availability, 15 s offer timeout, 3 min acceptance timeout"
+      ],
+      "shape": [
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary",
+        "cheatsheet"
+      ]
+    }
+  ]
+}

@@ -95,3 +95,27 @@ describe('uncoveredPoints ignores inline markers', () => {
     expect(uncoveredPoints(book, post)).toEqual([]);
   });
 });
+
+describe('locateSection', () => {
+  it('finds the part and page that teach a section, across parts', async () => {
+    const { locateSection } = await import('@/lib/ai/fit');
+    const book = {
+      title: 't', summary: 's',
+      chapters: [
+        { title: 'Heartbeats', points: ['ping frames detect dead peers'] },
+        { title: 'Close codes', points: ['close code 1011 means internal server error'] },
+      ],
+    } as never;
+    const one = base();
+    one.slides[0].blocks = [{ type: 'paragraph', text: 'Ping frames detect dead peers' }];
+    const two = base();
+    two.slides = [
+      { ...two.slides[0], blocks: [{ type: 'paragraph', text: 'Backpressure and queues' }] },
+      { ...two.slides[0], blocks: [{ type: 'paragraph', text: 'Close code 1011: internal server error' }] },
+    ];
+    const parts = [{ part: 1, post: one }, { part: 2, post: two }];
+    expect(locateSection(book, 1, parts)).toEqual({ part: 2, page: 2 });
+    expect(locateSection(book, 0, parts)).toEqual({ part: 1, page: 1 });
+    expect(locateSection(book, 7, parts)).toBeNull();
+  });
+});

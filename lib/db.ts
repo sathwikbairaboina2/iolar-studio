@@ -173,6 +173,8 @@ export function getDb(): DatabaseSync {
   mkdirSync(path.dirname(want), { recursive: true });
   db = new DatabaseSync(want);
   db.exec('PRAGMA journal_mode = WAL;');
+  // The dev server and build scripts write at once; wait for the lock instead of failing.
+  db.exec('PRAGMA busy_timeout = 5000;');
   dropLegacySchema(db);
   db.exec(SCHEMA);
   dbPath = want;

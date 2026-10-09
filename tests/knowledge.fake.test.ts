@@ -58,6 +58,18 @@ describe('the fake graph', () => {
     await g.wipe('reels');
     expect(g.nodes.size).toBe(1);
   });
+
+  it('prunes the shared topics a wipe left linked to nothing, and keeps the rest', async () => {
+    const { FakeGraph } = await import('@/lib/knowledge/fake');
+    const g = new FakeGraph();
+    const chapter = { label: 'Chapter', key: { subject: 's', slug: 'c' } };
+    await g.mergeNode('Chapter', chapter.key, { space: 'handbooks' });
+    await g.mergeNode('Topic', { key: 'kept' }, { space: 'shared' });
+    await g.mergeNode('Topic', { key: 'stale' }, { space: 'shared' });
+    await g.mergeEdge(chapter, 'COVERS', { label: 'Topic', key: { key: 'kept' } });
+    expect(await g.pruneOrphans('shared')).toBe(1);
+    expect([...g.nodes.values()].map((n) => n.key.key ?? n.label)).toEqual(['Chapter', 'kept']);
+  });
 });
 
 describe('the fake vectors', () => {

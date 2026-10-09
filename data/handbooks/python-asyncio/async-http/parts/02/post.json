@@ -1,0 +1,1042 @@
+{
+  "brand": "iolar",
+  "template": "study-sheet",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "ASYNC HTTP IN PYTHON — PART 2",
+  "date": "26/09/2026",
+  "slides": [
+    {
+      "page_title": "Streaming Responses",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is streaming",
+          "ink": "green"
+        },
+        {
+          "type": "paragraph",
+          "text": "==Streaming== reads the body chunk by chunk. Large downloads, SSE and NDJSON feeds are **never** loaded into memory whole.",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. aiohttp: r.content",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with s.get(url) as r:",
+            "  r.raise_for_status()",
+            "  src = r.content  # StreamReader",
+            "  async for b in src.iter_chunked(",
+            "      64 * 1024):",
+            "    out(b)"
+          ],
+          "note": "body stays in the socket, not RAM"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Reader",
+            "Gives",
+            "Use"
+          ],
+          "rows": [
+            [
+              "`iter_chunked(n)`",
+              "fixed-size bytes",
+              "files"
+            ],
+            [
+              "`iter_any()`",
+              "whatever arrived",
+              "low latency"
+            ],
+            [
+              "`readline()`",
+              "one line",
+              "==line protocols=="
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "3. httpx: c.stream()",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with c.stream(\"GET\",u) as r:",
+            "  r.raise_for_status()",
+            "  async for b in r.aiter_bytes():",
+            "    out(b)"
+          ],
+          "note": "c.get() always buffers the FULL body"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Yields"
+          ],
+          "rows": [
+            [
+              "`aiter_bytes()`",
+              "decoded bytes"
+            ],
+            [
+              "`aiter_text()`",
+              "str chunks"
+            ],
+            [
+              "`aiter_lines()`",
+              "one text line"
+            ],
+            [
+              "`aiter_raw()`",
+              "raw, still gzipped"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "4. Rules inside the stream",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`r.raise_for_status()` **before** iterating, so an error page isn't saved as data",
+            "`await r.aread()` loads the body on demand, e.g. only on 4xx/5xx",
+            "The read timeout is ==per chunk==, so a slow trickle never times out",
+            "Hard cap: wrap it in `async with asyncio.timeout(60):`"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "5. Examples: file, feed, upload",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "f = await aiofiles.open(p, \"wb\")",
+            "async with c.stream(\"GET\",u) as r:",
+            "  r.raise_for_status()",
+            "  async for b in r.aiter_bytes():",
+            "    await f.write(b)  # no block",
+            "await f.close()"
+          ],
+          "note": "or batch writes via asyncio.to_thread"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with c.stream(\"GET\",u) as r:",
+            "  async for ln in r.aiter_lines():",
+            "    if ln:  # skip keep-alives",
+            "      event = json.loads(ln)"
+          ],
+          "note": "SSE: strip the 'data: ' prefix first"
+        },
+        {
+          "type": "heading",
+          "text": "6. Common mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`c.get()` on a 2 GB file → httpx **buffers** it all",
+            "Half-read stream, never exiting `async with` → connection ==leaked==",
+            "Plain `f.write()` in the loop → **blocks** the event loop",
+            "No `raise_for_status()` → the 500 HTML page saved as your file",
+            "Trusting the read timeout as a total → the download hangs for hours"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Chunks, not whole bodies"
+    },
+    {
+      "page_title": "Async Web Servers: Handlers & Lifespan",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Mechanism: loop vs threadpool"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "FastAPI/Starlette run on an ==ASGI server== ({icon:uvicorn} uvicorn)",
+            "**One** event loop per worker process",
+            "`async def` endpoint runs ON the loop: await non-blocking I/O only",
+            "Plain `def` endpoint runs in the ==anyio threadpool== (40 threads)",
+            "So blocking calls are **safe** in `def`, and `def` dependencies go there too"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. aiohttp.web handler"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def handle(request):",
+            "    body = await request.json()",
+            "    return web.json_response(body)",
+            "app.router.add_get('/x', handle)",
+            "web.run_app(app)"
+          ],
+          "note": "handlers MUST be async def"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Path params: `request.match_info['id']` for `/x/{id}`",
+            "Body: `await request.json()` (the read is I/O, so await it)",
+            "==cleanup_ctx==: code before `yield` runs at startup, code after runs at shutdown"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "S = web.AppKey('s', ClientSession)",
+            "async def http_ctx(app):",
+            "    app[S] = ClientSession()",
+            "    yield",
+            "    await app[S].close()",
+            "app.cleanup_ctx.append(http_ctx)"
+          ],
+          "note": "typed AppKey, not a bare string"
+        },
+        {
+          "type": "heading",
+          "text": "3. FastAPI lifespan + proxy"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "@asynccontextmanager",
+            "async def lifespan(app):",
+            "    app.state.client = httpx.AsyncClient()",
+            "    yield",
+            "    await app.state.client.aclose()",
+            "app = FastAPI(lifespan=lifespan)"
+          ],
+          "note": "one client, reused by every request"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def up(c):",
+            "  async with c.stream('GET', U) as r:",
+            "    async for b in r.aiter_bytes():",
+            "      yield b",
+            "# endpoint: c = request.app.state.client",
+            "return StreamingResponse(up(c))"
+          ],
+          "note": "proxies upstream without buffering"
+        },
+        {
+          "type": "sidebox",
+          "title": "Multi-core",
+          "items": [
+            "`uvicorn app:app --workers N`",
+            "`gunicorn -k uvicorn.workers.UvicornWorker`",
+            "Each worker has **its own** loop and its own lifespan client"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Stuck with sync code?",
+          "text": "Offload it with `run_in_threadpool` or `to_thread`, covered on page 9."
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "@app.get('/b')",
+            "def b():  # runs in threadpool",
+            "    r = requests.get(U)",
+            "    return r.json()"
+          ],
+          "note": "safe, but capped at 40 threads"
+        }
+      ],
+      "hero": "fastapi",
+      "subtitle": "handlers, lifespan, workers"
+    },
+    {
+      "page_title": "Async Server Best Practices",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "7. Server best practices"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`async def` only awaits: httpx, asyncpg, `asyncio.sleep`",
+            "Blocking library? Plain `def` endpoint or `to_thread`",
+            "==One lifespan client== per worker, reused everywhere",
+            "Proxy upstream bodies with `StreamingResponse`, **never** buffer"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "8. Deadline on upstream calls"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "@app.get('/p')",
+            "async def p(request: Request):",
+            "  c = request.app.state.client",
+            "  async with asyncio.timeout(5):",
+            "    r = await c.get(U)",
+            "  return r.json()"
+          ],
+          "note": "a hung upstream can't hold the handler"
+        },
+        {
+          "type": "heading",
+          "text": "9. Deploy knobs"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Knob",
+            "Where",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`--workers N`",
+              "uvicorn",
+              "use all cores"
+            ],
+            [
+              "`-k UvicornWorker`",
+              "gunicorn",
+              "ASGI workers"
+            ],
+            [
+              "`--timeout-graceful-shutdown`",
+              "uvicorn",
+              "bounded drain"
+            ],
+            [
+              "`limit_per_host`",
+              "client pool",
+              "protect upstream"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Budget sockets per worker",
+          "text": "N workers × `max_connections` = total sockets to one upstream, so split the budget across workers."
+        },
+        {
+          "type": "sidebox",
+          "title": "Pre-deploy check",
+          "items": [
+            "No `requests` / `time.sleep` in `async def`",
+            "Client closed after `yield` in lifespan",
+            "Drain timeout **below** K8s grace (30s)"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "10. Raise the threadpool cap"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "from anyio.to_thread import (",
+            "  current_default_thread_limiter",
+            "  as limiter)",
+            "async def lifespan(app):",
+            "  limiter().total_tokens = 100",
+            "  yield"
+          ],
+          "note": "default is 40 threads per worker"
+        },
+        {
+          "type": "heading",
+          "text": "11. Map upstream errors"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "except httpx.TimeoutException:",
+            "  raise HTTPException(504)",
+            "except httpx.HTTPStatusError:",
+            "  raise HTTPException(502)"
+          ],
+          "note": "never leak a raw 500 to callers"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Upstream error",
+            "Return",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`HTTPStatusError`",
+              "502",
+              "bad gateway"
+            ],
+            [
+              "`ReadTimeout`",
+              "504",
+              "upstream slow"
+            ],
+            [
+              "`PoolTimeout`",
+              "==503==",
+              "**shed** load"
+            ],
+            [
+              "`ConnectError`",
+              "502",
+              "upstream down"
+            ]
+          ],
+          "frame": "dashed"
+        }
+      ],
+      "hero": "fastapi",
+      "subtitle": "handlers, lifespan, workers"
+    },
+    {
+      "page_title": "FastAPI Endpoints: async def vs def",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Endpoint × client"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Endpoint",
+            "Calls",
+            "Result"
+          ],
+          "rows": [
+            [
+              "`async def`",
+              "`await httpx`",
+              "{green:✓ best}"
+            ],
+            [
+              "`async def`",
+              "requests / time.sleep",
+              "{red:blocks EVERY request}"
+            ],
+            [
+              "`def`",
+              "requests",
+              "OK ≤ 40 concurrent"
+            ],
+            [
+              "`def` dependency",
+              "blocking I/O",
+              "threadpool too"
+            ]
+          ],
+          "highlightRow": 0,
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "5. Common mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`AsyncClient()` per request: **no** pooling, extra handshakes",
+            "`requests.get()` inside `async def`: freezes the loop",
+            "`time.sleep()` in async code: use `await asyncio.sleep()`",
+            "Plain `def` handler in aiohttp: it must be `async def`",
+            "Forgetting `aclose()` / `close()` after `yield`: leaked sockets"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "6. Same endpoint, two ways"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "@app.get('/a')",
+            "async def a(request: Request):",
+            "    c = request.app.state.client",
+            "    r = await c.get(U)",
+            "    return r.json()"
+          ],
+          "note": "loop stays free while it waits"
+        }
+      ],
+      "hero": "fastapi",
+      "subtitle": "handlers, lifespan, workers"
+    },
+    {
+      "page_title": "Offloading Blocking Code & Shutdown Order",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Spotting a Blocked Loop",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Blocked loop==: one sync call freezes **every** coroutine",
+            "Symptom: latency spikes on __all endpoints at once__",
+            "`PYTHONASYNCIODEBUG=1` logs callbacks slower than 100ms",
+            "Usual culprits: `requests.get`, `time.sleep`, sync DB drivers"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Offloading Blocking Work",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Runs in",
+            "Use for"
+          ],
+          "rows": [
+            [
+              "`asyncio.to_thread(f, *a)`",
+              "default executor",
+              "blocking I/O (3.9+)"
+            ],
+            [
+              "`loop.run_in_executor(pool, f)`",
+              "own ThreadPoolExecutor",
+              "cap `max_workers`"
+            ],
+            [
+              "`ProcessPoolExecutor`",
+              "worker processes",
+              "**CPU** work (GIL)"
+            ],
+            [
+              "`run_in_threadpool(f)` / `anyio.to_thread.run_sync(f)`",
+              "anyio threadpool",
+              "Starlette / FastAPI"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "# default executor (3.9+)",
+            "rows = await asyncio.to_thread(",
+            "    load_csv, path)",
+            "pool = ThreadPoolExecutor(8)",
+            "lp = asyncio.get_running_loop()",
+            "await lp.run_in_executor(pool, f)"
+          ],
+          "note": "a timeout abandons the await, not the thread"
+        },
+        {
+          "type": "heading",
+          "text": "3. Graceful Shutdown Order",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "Stop accepting",
+                "sub": "close listener",
+                "ink": "red"
+              },
+              {
+                "text": "Finish in-flight",
+                "sub": "drain requests",
+                "ink": "orange"
+              },
+              {
+                "text": "Cancel bg tasks",
+                "sub": "cancel + gather",
+                "ink": "purple"
+              },
+              {
+                "text": "Close clients",
+                "sub": "session / client",
+                "ink": "blue"
+              },
+              {
+                "text": "Exit",
+                "ink": "green"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Runtime",
+            "On SIGTERM",
+            "Knob"
+          ],
+          "rows": [
+            [
+              "uvicorn",
+              "stop accepting, drain",
+              "`--timeout-graceful-shutdown N`"
+            ],
+            [
+              "aiohttp",
+              "drain in-flight",
+              "`run_app(shutdown_timeout=60)`"
+            ],
+            [
+              "aiohttp hooks",
+              "close resources",
+              "`on_shutdown` / `on_cleanup`"
+            ],
+            [
+              "{icon:kubernetes} K8s",
+              "SIGKILL after grace",
+              "`terminationGracePeriodSeconds: 30`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def close(app):",
+            "    await app[SESSION].close()",
+            "app.on_cleanup.append(close)",
+            "web.run_app(app,",
+            "    shutdown_timeout=60)  # default"
+          ],
+          "note": "httpx: await client.aclose() in lifespan"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Dev/staging only: debug mode adds **overhead**",
+            "Also warns on ==never-awaited== coroutines",
+            "Flags non-threadsafe loop calls from other threads"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Stop threads cooperatively",
+          "text": "Threads can't be cancelled: pass a `threading.Event` and check it inside the worker loop."
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Offload, drain, close"
+    },
+    {
+      "page_title": "Clean Teardown & SIGTERM Handling",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "4. Example: Clean Teardown",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "t = asyncio.create_task(job())",
+            "tasks.add(t)  # tasks = set()",
+            "t.add_done_callback(tasks.discard)",
+            "for t in tasks: t.cancel()",
+            "await asyncio.gather(*tasks,",
+            "    return_exceptions=True)"
+          ],
+          "note": "keep refs in a set, cancel, gather"
+        },
+        {
+          "type": "heading",
+          "text": "5. Common Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`wait_for(to_thread(f), 5)`: the **thread** keeps running after timeout",
+            "CPU work on threads: GIL means no parallel bytecode",
+            "App drain ≥ 30s K8s grace → SIGKILL mid-request",
+            "Never closing ClientSession/AsyncClient → ==Unclosed== warnings, leaked sockets",
+            "Untracked fire-and-forget tasks → never cancelled, shutdown hangs"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "6. Catching Slow Callbacks",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "asyncio.run(main(), debug=True)",
+            "lp = asyncio.get_running_loop()",
+            "lp.slow_callback_duration = 0.05",
+            "# logs: Executing <Task..> took",
+            "#   0.312 seconds"
+          ],
+          "note": "same as PYTHONASYNCIODEBUG=1"
+        },
+        {
+          "type": "heading",
+          "text": "7. Handling SIGTERM Yourself",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "stop = asyncio.Event()",
+            "lp = asyncio.get_running_loop()",
+            "lp.add_signal_handler(",
+            "    signal.SIGTERM, stop.set)",
+            "await stop.wait()  # then drain"
+          ],
+          "note": "Unix only; uvicorn does this already"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Phase",
+            "Budget"
+          ],
+          "rows": [
+            [
+              "Drain in-flight",
+              "≤ 20s"
+            ],
+            [
+              "Cancel bg tasks",
+              "≤ 3s"
+            ],
+            [
+              "Close clients",
+              "≤ 2s"
+            ],
+            [
+              "==Total== vs K8s grace",
+              "25s < **30s**"
+            ]
+          ],
+          "highlightRow": 3,
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "8. Summary",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Blocking I/O → `to_thread` or own pool; CPU → processes",
+            "Shutdown: stop → drain → cancel → close → exit",
+            "App drain (e.g. 25s) **below** K8s grace (30s)",
+            "Close clients in cleanup/lifespan: pooled sockets closed cleanly"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "blue"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Offload, drain, close"
+    },
+    {
+      "page_title": "Async HTTP Cheatsheet",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. aiohttp vs httpx quick ref",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Knob",
+            "aiohttp",
+            "httpx"
+          ],
+          "rows": [
+            [
+              "==One client==",
+              "`ClientSession` opened in `cleanup_ctx`",
+              "`AsyncClient` opened in `lifespan`"
+            ],
+            [
+              "Timeouts",
+              "`ClientTimeout(total=10, sock_connect=3)`",
+              "`Timeout(10, connect=3)`"
+            ],
+            [
+              "Pool",
+              "`TCPConnector(limit=100, limit_per_host=10)`",
+              "`Limits(max_connections=100, max_keepalive_connections=20)`"
+            ],
+            [
+              "Stream",
+              "`r.content.iter_chunked()`",
+              "`c.stream()` + `aiter_bytes()`"
+            ],
+            [
+              "Errors",
+              "`ClientError` / `ClientResponseError`",
+              "`RequestError` / `HTTPStatusError` / `TimeoutException`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "# startup: c = AsyncClient(...)",
+            "async with asyncio.timeout(15):",
+            "  async with c.stream('GET', u) as r:",
+            "    async for b in r.aiter_bytes():",
+            "      f.write(b)",
+            "# block exit → conn back to pool",
+            "# shutdown: await c.aclose()"
+          ],
+          "note": "asyncio.timeout() = hard total cap"
+        },
+        {
+          "type": "heading",
+          "text": "2. Fan-out and retries",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`Semaphore(n)` + `gather`/`TaskGroup` → at most **n** in flight",
+            "Huge input → `Queue` + N workers, flat memory",
+            "Rate cap → `aiolimiter.AsyncLimiter(10, 1)` = 10 req/s"
+          ],
+          "style": "number",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Retry ==transient== + idempotent only (GET/PUT/DELETE)",
+            "Sleep `uniform(0, min(cap, base*2**n))` = full jitter",
+            "429/503 → honor `Retry-After` header",
+            "`except CancelledError: raise`, **never** swallow"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "3. Server rule and shutdown",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Where does handler code run?",
+            "rows": [
+              [
+                "q1",
+                "a1"
+              ],
+              [
+                "q2",
+                "a2"
+              ],
+              [
+                "a3"
+              ]
+            ],
+            "nodes": {
+              "q1": {
+                "text": "Only awaits?",
+                "shape": "diamond"
+              },
+              "a1": {
+                "text": "async def",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "q2": {
+                "text": "Blocking I/O?",
+                "shape": "diamond"
+              },
+              "a2": {
+                "text": "def endpoint / asyncio.to_thread",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "a3": {
+                "text": "CPU-bound → ProcessPoolExecutor",
+                "shape": "box",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "q1",
+                "to": "a1",
+                "label": "yes"
+              },
+              {
+                "from": "q1",
+                "to": "q2",
+                "label": "no"
+              },
+              {
+                "from": "q2",
+                "to": "a2",
+                "label": "yes"
+              },
+              {
+                "from": "q2",
+                "to": "a3",
+                "label": "no, CPU"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Top mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A new session **per request**, so nothing is pooled",
+            "`requests.get()` inside `async def` blocks the loop",
+            "Unbounded `gather()` over 10k URLs",
+            "**No timeout**, so a hung server hangs you",
+            "Unreleased responses leak pool connections"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "SIGTERM",
+                "sub": "grace clock starts",
+                "ink": "red"
+              },
+              {
+                "text": "Stop accepting"
+              },
+              {
+                "text": "Drain in-flight"
+              },
+              {
+                "text": "Cancel bg tasks"
+              },
+              {
+                "text": "Close clients",
+                "sub": "before grace ends",
+                "ink": "green"
+              }
+            ]
+          }
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Revision sheet"
+    }
+  ],
+  "caption": {
+    "text": "Your async code isn't slow; it's leaking sockets, waiting on requests that never time out, and blocking the event loop. Part 2 of ASYNC HTTP IN PYTHON covers Streaming Responses, Async Web Servers: aiohttp & FastAPI, Blocking Code & Graceful Shutdown and Async HTTP Cheatsheet.",
+    "hashtags": [
+      "#python",
+      "#asyncio",
+      "#aiohttp",
+      "#httpx",
+      "#fastapi",
+      "#backenddevelopment",
+      "#asyncprogramming",
+      "#webdevelopment",
+      "#pythonprogramming",
+      "#softwareengineering",
+      "#codingnotes",
+      "#iolar"
+    ]
+  }
+}

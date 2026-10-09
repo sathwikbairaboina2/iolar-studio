@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import path from 'path';
-import { loadPost } from '../store';
+import { listParts, loadPost } from '../store';
 import { partDir, rendersDir } from '../paths';
 import { loadBook } from '../ai/book';
 import { runClaude } from '../ai/claude';
@@ -20,6 +20,33 @@ export function reviewFile(subject: string, chapter: string, part: number) {
 }
 
 const SEVERITIES: Severity[] = ['blocker', 'major', 'minor'];
+
+/**
+ * A part passes when nothing blocks it and no major factual error stands. Wrong content must
+ * not publish; a thin page or a teaching-order nit is worth fixing but may ship.
+ */
+export function reviewPassed(findings: Finding[]): boolean {
+  return !findings.some((f) => f.severity === 'blocker' || (f.severity === 'major' && f.pass === 'facts'));
+}
+
+/**
+ * What the chapter's other parts cover, by page title. A part judged alone reads its own
+ * caption and syllabus as promises, and reports topics the next part teaches as missing.
+ */
+async function siblingParts(subject: string, chapter: string, part: number): Promise<string> {
+  const others = (await listParts(subject, chapter)).filter((n) => n !== part);
+  const lines = await Promise.all(others.map(async (n) => {
+    try {
+      return `- Part ${n}: ${(await loadPost(subject, chapter, n)).slides.map((s) => s.page_title).join('; ')}`;
+    } catch {
+      return '';
+    }
+  }));
+  const known = lines.filter(Boolean);
+  return known.length
+    ? `This is part ${part} of a chapter split across parts. The other parts cover the topics below, so do not report them as missing here:\n${known.join('\n')}`
+    : '';
+}
 
 const SHAPE = `Return ONLY a JSON object, no prose and no markdown fences:
 {"findings":[{"severity":"blocker"|"major"|"minor","page":number,"summary":string,"evidence":string,"fix":string}]}
@@ -77,6 +104,7 @@ export async function reviewPart(subject: string, chapter: string, part: number)
   const postJson = JSON.stringify(post);
 
   const gates = await runGates(subject, chapter, part);
+  const siblings = await siblingParts(subject, chapter, part);
 
   const pages = await fs.readdir(rendersDir(subject, chapter, part)).catch(() => [] as string[]);
   const pngs = pages
@@ -109,15 +137,17 @@ export async function reviewPart(subject: string, chapter: string, part: number)
       'Report only: a term used before it is defined, a page that depends on a later page, a section in an order that would confuse a learner, or a claim asserted with no supporting example where one is needed.',
       'Do not report wording style or density.',
       book ? `The syllabus this was written from:\n${JSON.stringify(book)}` : '',
+      siblings,
       'Content:', postJson, SHAPE,
     ].filter(Boolean).join('\n\n')),
 
     askClaude('brand', [
       'You are reviewing the caption and titles of an Instagram carousel before publication.',
       'Report only: a caption with no hook in the first sentence, a title that misdescribes its page, hashtags irrelevant to the content, or an inconsistent series title.',
+      siblings,
       'Content:', JSON.stringify({ series: post.series, caption: post.caption, titles: post.slides.map((s) => s.page_title) }),
       SHAPE,
-    ].join('\n\n')),
+    ].filter(Boolean).join('\n\n')),
   ]);
 
   const order = { blocker: 0, major: 1, minor: 2 } as const;
@@ -128,7 +158,7 @@ export async function reviewPart(subject: string, chapter: string, part: number)
     generatedAt: new Date().toISOString(),
     part,
     findings,
-    passed: !findings.some((f) => f.severity === 'blocker'),
+    passed: reviewPassed(findings),
   };
 
   await fs.mkdir(partDir(subject, chapter, part), { recursive: true });

@@ -1,0 +1,1652 @@
+{
+  "brand": "iolar",
+  "template": "study-sheet",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "DOCKER MULTI-STAGE BUILDS",
+  "date": "06/10/2026",
+  "slides": [
+    {
+      "page_title": "Docker Multi-Stage Builds",
+      "blocks": [],
+      "hero": "docker",
+      "kind": "cover",
+      "cover": {
+        "title": "Docker Multi-Stage Builds",
+        "subtitle": "Build once, ship a small image",
+        "tagline": "Multi-stage builds separate build tools from the runtime. One Dockerfile, a builder stage and a slim stage, typically cutting Go/Node/Java images from ~1 GB to 10–200 MB.",
+        "icons": [
+          {
+            "icon": "linux",
+            "label": "The problem",
+            "sub": "single-stage ships compilers, source, package caches, dev deps"
+          },
+          {
+            "icon": "docker",
+            "label": "The promise",
+            "sub": "~1 GB → 10–200 MB for Go, Node, Java"
+          },
+          {
+            "icon": "nodedotjs",
+            "label": "Running example",
+            "sub": "web app: builder stage, slim run stage"
+          },
+          {
+            "icon": "git",
+            "label": "Prerequisites",
+            "sub": "image, layer, build context, instruction, registry"
+          },
+          {
+            "icon": "github",
+            "label": "Series map",
+            "sub": "10 pages, stages to cheatsheet"
+          }
+        ],
+        "pills": [
+          "1 Cover",
+          "2 Stages",
+          "3 COPY --from",
+          "4 Cache",
+          "5 BuildKit mounts",
+          "6 Final images",
+          "7 Targets",
+          "8 ARG",
+          "9 Security",
+          "10 .dockerignore + cheatsheet"
+        ]
+      }
+    },
+    {
+      "page_title": "Why Multi-Stage",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is it?",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A ==multi-stage== Dockerfile has several `FROM` lines",
+            "Each `FROM` starts a new stage with a **fresh** filesystem",
+            "Only the last stage (or the `--target` stage) is the final image",
+            "Earlier stages are discarded from the shipped image"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Example",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM golang:1.22 AS build",
+            "RUN go build -o /app ./cmd/server",
+            "",
+            "FROM alpine",
+            "COPY --from=build /app /app"
+          ],
+          "note": "Only the alpine stage ships"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Read it as",
+          "text": "Stage 1 compiles the binary. Stage 2 copies only /app out of it."
+        },
+        {
+          "type": "heading",
+          "text": "3. Before vs after",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "",
+            "Single-stage",
+            "Multi-stage"
+          ],
+          "rows": [
+            [
+              "Base",
+              "golang:1.22",
+              "alpine"
+            ],
+            [
+              "Size",
+              "~800 MB",
+              "small runtime"
+            ],
+            [
+              "Contains",
+              "toolchain, source, module cache",
+              "binary only"
+            ],
+            [
+              "Files",
+              "1 Dockerfile",
+              "1 Dockerfile"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Old way: the ==builder pattern==, two Dockerfiles",
+            "A shell script copied artifacts out via `docker cp`",
+            "Multi-stage: one Dockerfile, one `docker build`"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Faster pull and faster deploy",
+            "Lower registry cost",
+            "Smaller **attack surface**"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "4. Measure the win",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker build -t app:fat .",
+            "docker images app",
+            "# REPOSITORY  TAG  SIZE",
+            "# app         fat  ~800MB"
+          ],
+          "note": "compare before and after"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Same app, same code, only the **final stage** changes",
+            "Typical Go service drops from ~800 MB to ~10 MB",
+            "Smaller images pull faster in CI and on cold nodes"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Inspect layers",
+          "text": "`docker history app:fat` shows which layer holds the toolchain bulk."
+        },
+        {
+          "type": "heading",
+          "text": "5. Common mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Leaving `gcc`, `git`, npm devDependencies in the final stage",
+            "Assuming earlier stages get pushed: they stay only in the local build cache",
+            "Forgetting intermediate stages still cost build time and cache space"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Key rule",
+          "text": "Build in one stage, ship from another. Next: naming stages and COPY --from."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "The single-stage problem"
+    },
+    {
+      "page_title": "Naming Stages and COPY --from",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is a stage name?",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`FROM image AS name` gives a ==stage== a name",
+            "Without `AS`, stages are numbered from **0**",
+            "Names are case-insensitive, lowercase by convention",
+            "Usual names: `build`, `deps`, `test`, `runtime`"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "# stage 0, named build",
+            "FROM node:20 AS build",
+            "FROM node:20-slim AS runtime",
+            "# stage 2, unnamed",
+            "FROM alpine"
+          ],
+          "note": "unnamed stages only get an index"
+        },
+        {
+          "type": "heading",
+          "text": "2. How COPY --from works",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "build stage",
+                "sub": "/src/out",
+                "ink": "blue"
+              },
+              {
+                "text": "COPY --from",
+                "sub": "files only",
+                "ink": "purple"
+              },
+              {
+                "text": "runtime stage",
+                "sub": "/app",
+                "ink": "green"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Source",
+            "Syntax"
+          ],
+          "rows": [
+            [
+              "Named stage",
+              "`--from=build`"
+            ],
+            [
+              "Stage index",
+              "`--from=0`"
+            ],
+            [
+              "External image",
+              "`--from=nginx:1.27`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "COPY --from=build /src/out /app",
+            "COPY --from=nginx:1.27 \\",
+            "  /etc/nginx/nginx.conf /tmp/"
+          ],
+          "note": "prefer names; index breaks on reorder"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Only files travel",
+          "text": "==ENV==, WORKDIR, USER and installed packages do **not** carry over from the source stage."
+        },
+        {
+          "type": "heading",
+          "text": "3. Example and options",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20 AS build",
+            "RUN npm ci && npm run build",
+            "FROM node:20-slim AS runtime",
+            "COPY --from=build /app/dist /app/dist",
+            "COPY --from=build /app/node_modules \\",
+            "  /app/node_modules"
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`FROM base AS dev` reuses base layers and ENV",
+            "`--chown=app:app` sets ownership during the copy",
+            "`--link` (BuildKit) makes the layer independent",
+            "With `--link`, base changes do not invalidate it"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "4. Reading the errors",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Error",
+            "Likely cause"
+          ],
+          "rows": [
+            [
+              "`invalid from flag value`",
+              "stage name not defined"
+            ],
+            [
+              "`pull access denied`",
+              "name treated as image"
+            ],
+            [
+              "`not found` on COPY",
+              "wrong path in source stage"
+            ],
+            [
+              "wrong files copied",
+              "index shifted by reorder"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "COPY --link --chown=app:app \\",
+            "  --from=build /app/dist /app/dist"
+          ],
+          "note": "combine both flags in one COPY"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Copy the **narrowest** path you need",
+            "Check the source stage with `--target build`",
+            "Name stages so reorders stay safe"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Peek inside a stage",
+          "text": "`docker build --target build -t dbg .` then `docker run --rm dbg ls /app` shows what a COPY can reach."
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rule",
+          "text": "Name every stage, copy narrow paths, and use `--chown` plus `--link`."
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Checklist",
+          "text": "Named stage, narrow path, one `COPY --from` per artifact. Next page: build cache."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "Naming stages"
+    },
+    {
+      "page_title": "COPY --from Mistakes and Stage Inheritance",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Common mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Unknown stage gives `invalid from flag value`",
+            "Or `pull access denied`: treated as an image name",
+            "`COPY --from=0` after reordering stages grabs the wrong one",
+            "COPY copies the **whole path**, build artifacts included"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. Fixing each mistake",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "Unknown stage name",
+              "add `AS name` to FROM"
+            ],
+            [
+              "`--from=0` after reorder",
+              "use `--from=build`"
+            ],
+            [
+              "Whole path copied",
+              "copy `/app/dist` only"
+            ],
+            [
+              "Typo in stage name",
+              "match `AS` exactly"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "# risky: index shifts on reorder",
+            "COPY --from=0 /app /app",
+            "# safe: the name never changes",
+            "COPY --from=build /app/dist /app"
+          ],
+          "note": "names survive stage reordering"
+        },
+        {
+          "type": "heading",
+          "text": "3. Copy only what ships",
+          "ink": "purple"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`COPY --from=build /app /app` also copies sources and caches",
+            "Narrow it: `/app/dist` holds the compiled output",
+            "Add `node_modules` only if the runtime needs it",
+            "Run `ls` in the build stage to confirm paths"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20 AS build",
+            "RUN npm ci && npm run build",
+            "FROM node:20-slim AS runtime",
+            "COPY --from=build /app/dist /app"
+          ],
+          "note": "runtime gets output, not sources"
+        },
+        {
+          "type": "heading",
+          "text": "4. Building on a stage",
+          "ink": "orange"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A stage can start `FROM` an earlier stage",
+            "`FROM base AS dev` reuses its layers and ==ENV==",
+            "Plain `COPY --from` brings files only, not ENV",
+            "Shared setup lives once in a `base` stage"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:20-slim AS base",
+            "ENV NODE_ENV=production",
+            "WORKDIR /app",
+            "FROM base AS runtime",
+            "COPY --from=build /app/dist ."
+          ],
+          "note": "runtime inherits ENV and WORKDIR"
+        },
+        {
+          "type": "heading",
+          "text": "5. Inherit vs copy",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Carries over",
+            "FROM stage",
+            "COPY --from"
+          ],
+          "rows": [
+            [
+              "Files",
+              "yes",
+              "chosen paths"
+            ],
+            [
+              "ENV",
+              "yes",
+              "**no**"
+            ],
+            [
+              "WORKDIR, USER",
+              "yes",
+              "**no**"
+            ],
+            [
+              "Installed packages",
+              "yes",
+              "**no**"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "External images",
+          "text": "`COPY --from=nginx:1.27` pulls one file from any image, no stage needed."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Use `FROM stage` to inherit the environment",
+            "Use `COPY --from` to ship only chosen files",
+            "Name the shared stage `base` for clarity"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Ownership",
+          "text": "`COPY --from --chown=app:app /app /app` sets the owner during the copy, with no extra `RUN chown` layer."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "Naming stages"
+    },
+    {
+      "page_title": "Build Cache and Layer Ordering",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is the cache?",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every `RUN`, `COPY` and `ADD` makes a ==layer==",
+            "Unchanged layers are reused from cache",
+            "Key = instruction text + file checksum (COPY/ADD)",
+            "One layer invalidated → **all later** layers rebuild"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Order: stable first",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "COPY package.json package-lock.json ./",
+            "# cached until the lockfile changes",
+            "RUN npm ci",
+            "# changes often, so it comes late",
+            "COPY . .",
+            "RUN npm run build"
+          ],
+          "note": "least → most frequently changing"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Go twin",
+          "text": "COPY go.mod go.sum ./ → RUN go mod download → COPY . . → RUN go build"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Change",
+            "Rebuilt from"
+          ],
+          "rows": [
+            [
+              "package-lock.json",
+              "npm ci onward"
+            ],
+            [
+              "src/app.js",
+              "COPY . . onward"
+            ],
+            [
+              "Base image tag",
+              "everything"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "3. Dry run: one edit",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Instruction",
+            "Cache"
+          ],
+          "rows": [
+            [
+              "1",
+              "FROM node:20-alpine",
+              "HIT"
+            ],
+            [
+              "2",
+              "COPY package*.json ./",
+              "HIT"
+            ],
+            [
+              "3",
+              "RUN npm ci",
+              "HIT"
+            ],
+            [
+              "4",
+              "COPY . .",
+              "MISS (src edited)"
+            ],
+            [
+              "5",
+              "RUN npm run build",
+              "MISS (follows)"
+            ]
+          ],
+          "highlightRow": 3
+        },
+        {
+          "type": "diagram",
+          "kind": "array",
+          "spec": {
+            "cells": [
+              "FROM",
+              "COPY pkg",
+              "npm ci",
+              "COPY .",
+              "build"
+            ],
+            "indices": true,
+            "pointers": [
+              {
+                "index": 3,
+                "label": "edit",
+                "ink": "red"
+              },
+              {
+                "index": 4,
+                "label": "rebuilt",
+                "ink": "red"
+              }
+            ],
+            "highlight": [
+              3,
+              4
+            ],
+            "dim": [
+              0,
+              1,
+              2
+            ],
+            "caption": "cached | invalidated from the edit down"
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stages cache independently: edit runtime, builder stays cached",
+            "BuildKit builds independent stages ==in parallel==",
+            "Stages not needed by the target are skipped"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN apt-get update \\",
+            "  && apt-get install -y curl \\",
+            "  && rm -rf /var/lib/apt/lists/*"
+          ],
+          "note": "clean in the SAME layer"
+        },
+        {
+          "type": "heading",
+          "text": "4. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`COPY . .` before `npm ci`: any edit reinstalls all deps",
+            "`RUN apt-get update` alone gets cached → **stale** lists",
+            "`rm` in a later layer: data stays in the earlier layer",
+            "Splitting install and cleanup into separate RUN lines"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Force a clean build",
+          "text": "`docker build --no-cache --pull .` rebuilds every layer and refreshes base images."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "Layers, keys, order"
+    },
+    {
+      "page_title": "BuildKit Cache Mounts",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What is it?",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==BuildKit== is the default builder in modern Docker",
+            "Turn on the syntax with `# syntax=docker/dockerfile:1` on line 1",
+            "A ==cache mount== is a directory that outlives the build step",
+            "It persists on the **builder host**, so a changed lockfile downloads only new packages"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Mechanism: RUN --mount",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "# syntax=docker/dockerfile:1",
+            "FROM node:22 AS build",
+            "COPY package*.json ./",
+            "RUN --mount=type=cache,\\",
+            "  target=/root/.npm npm ci"
+          ],
+          "note": "cache stays out of the image layer"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "What it does"
+          ],
+          "rows": [
+            [
+              "`id=`",
+              "names a cache"
+            ],
+            [
+              "`sharing=`",
+              "shared | private | locked"
+            ],
+            [
+              "`mode=` `uid=`",
+              "set mount permissions"
+            ],
+            [
+              "`target=`",
+              "path inside the build"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "3. Examples: Go, pip, apt",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN --mount=type=cache,target=/go/pkg/mod \\",
+            "  --mount=type=cache,target=/root/.cache/go-build \\",
+            "  go build ./...",
+            "RUN --mount=type=cache,target=/root/.cache/pip \\",
+            "  pip install -r requirements.txt"
+          ],
+          "note": "one RUN can hold many mounts"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \\",
+            "  --mount=type=cache,target=/var/lib/apt,sharing=locked \\",
+            "  apt-get update && apt-get install -y gcc"
+          ],
+          "note": "apt needs sharing=locked"
+        },
+        {
+          "type": "heading",
+          "text": "4. Cache mount vs layer cache",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Layer cache",
+            "Cache mount"
+          ],
+          "rows": [
+            [
+              "Granularity",
+              "whole instruction",
+              "inside a RUN"
+            ],
+            [
+              "File changed",
+              "rerun, redownload all",
+              "**only new** packages"
+            ],
+            [
+              "Lives in",
+              "image layers",
+              "builder host"
+            ],
+            [
+              "Ships in image",
+              "yes",
+              "no"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Both stages reuse the same downloaded tarballs",
+            "A second stage pays for **no** extra download",
+            "Different `id=` values keep caches fully apart"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "purple"
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "mount, cache, secret"
+    },
+    {
+      "page_title": "Cache Mount Tuning and Pitfalls",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "CI tip",
+          "text": "`--cache-from type=gha --cache-to type=gha` shares **layer** cache between runners; `--mount=type=cache` contents stay on each builder."
+        },
+        {
+          "type": "heading",
+          "text": "1. Tuning a cache mount",
+          "ink": "orange"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Name each cache with `id=` to keep projects apart",
+            "Same `id=` in two stages shares one cache",
+            "`sharing=locked` makes parallel builds take turns",
+            "`docker builder prune` clears mount caches too"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN --mount=type=cache,\\",
+            "  id=npm,target=/root/.npm \\",
+            "  npm ci"
+          ],
+          "note": "id names one shared cache"
+        },
+        {
+          "type": "heading",
+          "text": "2. Share one cache",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM node:22 AS deps",
+            "RUN --mount=type=cache,\\",
+            "  id=npm,target=/root/.npm \\",
+            "  npm ci --prefer-offline",
+            "FROM node:22 AS test",
+            "RUN --mount=type=cache,\\",
+            "  id=npm,target=/root/.npm \\",
+            "  npm ci --prefer-offline"
+          ],
+          "note": "same id, one cache for both stages"
+        },
+        {
+          "type": "heading",
+          "text": "3. Pick a sharing mode",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "sharing=",
+            "Behaviour",
+            "Use for"
+          ],
+          "rows": [
+            [
+              "`shared`",
+              "parallel writers (default)",
+              "npm, go, pip"
+            ],
+            [
+              "`private`",
+              "fresh copy per build",
+              "scratch dirs"
+            ],
+            [
+              "`locked`",
+              "one build at a time",
+              "apt, dpkg"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "apt cache vanishes?",
+          "text": "Debian images ship a `docker-clean` hook that empties apt caches. `rm /etc/apt/apt.conf.d/docker-clean` first to keep the mount useful."
+        },
+        {
+          "type": "heading",
+          "text": "4. Cache dirs by tool",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Cache target"
+          ],
+          "rows": [
+            [
+              "npm",
+              "`/root/.npm`"
+            ],
+            [
+              "pip",
+              "`/root/.cache/pip`"
+            ],
+            [
+              "go",
+              "`/go/pkg/mod`"
+            ],
+            [
+              "cargo",
+              "`/usr/local/cargo/registry`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN --mount=type=cache,\\",
+            "  target=/usr/local/cargo/registry \\",
+            "  cargo build --release"
+          ],
+          "note": "point target at the tool's cache"
+        },
+        {
+          "type": "heading",
+          "text": "5. Common mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Wrong `target=` path: the tool never touches the cache",
+            "Caching `node_modules` itself: it is **not** in the image",
+            "Expecting the cache on a fresh CI runner: it starts empty",
+            "Running apt without `sharing=locked` in parallel builds"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Key rule",
+          "text": "Layer cache is all-or-nothing per instruction; a cache mount is incremental inside the RUN and never ships."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "mount, cache, secret"
+    },
+    {
+      "page_title": "Secret Mounts and Leak Pitfalls",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \\",
+            "  npm ci",
+            "# pass it at build time:",
+            "# docker build --secret id=npmrc,src=$HOME/.npmrc ."
+          ],
+          "note": "secret never lands in a layer"
+        },
+        {
+          "type": "heading",
+          "text": "1. Bind mounts and secrets",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "RUN --mount=type=bind,source=package.json,target=package.json \\",
+            "  npm ls --depth=0"
+          ],
+          "note": "no COPY layer is created"
+        },
+        {
+          "type": "heading",
+          "text": "2. Mistakes and limits",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Tokens in `ARG` or `ENV`: **visible** in `docker history` and image metadata",
+            "Using `COPY .npmrc` bakes the credential into a layer",
+            "Cache mounts are __not shared__ across CI runners by default",
+            "`--cache-to` exports **layers** only, never mount contents: keep a persistent builder to reuse them"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "3. Where secrets can leak",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Leaks in image?"
+          ],
+          "rows": [
+            [
+              "`ARG TOKEN`",
+              "yes, `docker history`"
+            ],
+            [
+              "`ENV TOKEN`",
+              "yes, metadata"
+            ],
+            [
+              "`COPY .npmrc`",
+              "yes, a layer"
+            ],
+            [
+              "`--mount=type=secret`",
+              "**no**"
+            ]
+          ],
+          "highlightRow": 3,
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker build \\",
+            "  --cache-to type=registry,ref=r/app \\",
+            "  --cache-from type=registry,ref=r/app ."
+          ],
+          "note": "share cache across CI runners"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Rule of thumb",
+          "text": "Cache mounts speed builds up; secret mounts keep credentials out of every layer."
+        },
+        {
+          "type": "heading",
+          "text": "4. Secret mount details",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Piece",
+            "Role"
+          ],
+          "rows": [
+            [
+              "`id=npmrc`",
+              "name matched by --secret"
+            ],
+            [
+              "`target=`",
+              "file path during the RUN"
+            ],
+            [
+              "`--secret src=`",
+              "host file to read"
+            ],
+            [
+              "after the RUN",
+              "mount is gone"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Secret exists only for that one `RUN` instruction",
+            "Later `RUN` lines and the final image never see it",
+            "Use a ==secret mount== instead of `ARG` for tokens",
+            "Pin the id so each credential has its own name"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "docker history --no-trunc app:1.0",
+            "# search the output for your token"
+          ],
+          "note": "audit: a clean build shows nothing"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Audit habit",
+          "text": "Run `docker history --no-trunc` on every release image and look for credentials."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "mount, cache, secret"
+    },
+    {
+      "page_title": "Final Images: Alpine vs Distroless",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What Ships",
+          "ink": "green"
+        },
+        {
+          "type": "paragraph",
+          "text": "The ==final stage== decides what ships: pick the **smallest** base that still runs your binary. Everything else stays in the builder.",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`scratch`: empty image, ~0 MB, for fully static binaries",
+            "Go needs `CGO_ENABLED=0` to run on scratch",
+            "`alpine`: ~5–8 MB, musl libc, busybox, shell and `apk`",
+            "`distroless`: no shell, no package manager, only runtime + CA certs",
+            "`debian-slim`: ~30–75 MB, glibc, widest compatibility, easy debugging"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. Size Comparison",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Go service base",
+            "Size"
+          ],
+          "rows": [
+            [
+              "golang:1.22",
+              "~800 MB"
+            ],
+            [
+              "debian-slim",
+              "~85 MB"
+            ],
+            [
+              "alpine",
+              "~15 MB"
+            ],
+            [
+              "distroless/static",
+              "~8 MB"
+            ],
+            [
+              "scratch",
+              "~6 MB"
+            ]
+          ],
+          "highlightRow": 4,
+          "frame": "dashed"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Base",
+            "libc",
+            "Shell?"
+          ],
+          "rows": [
+            [
+              "scratch",
+              "none",
+              "no"
+            ],
+            [
+              "alpine",
+              "musl",
+              "yes (ash)"
+            ],
+            [
+              "distroless",
+              "glibc/none",
+              "no"
+            ],
+            [
+              "debian-slim",
+              "glibc",
+              "yes (bash)"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Security win",
+          "text": "Fewer packages means fewer CVEs in Trivy or Grype and a smaller attack surface."
+        },
+        {
+          "type": "heading",
+          "text": "3. Scratch Example",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM golang:1.22 AS build",
+            "RUN CGO_ENABLED=0 go build -o /app",
+            "FROM scratch",
+            "COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/",
+            "COPY --from=build /app /app"
+          ],
+          "note": "scratch has no CA certs for HTTPS"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "scratch lacks CA certs, `/etc/passwd`, timezone data",
+            "Copy all three from the ==builder stage==",
+            "The `COPY --from` line above enables HTTPS calls"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Debug distroless",
+          "text": "`docker exec -it c sh` fails. Use the `:debug` tag, `docker debug`, or ephemeral containers."
+        },
+        {
+          "type": "heading",
+          "text": "4. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**alpine** for a glibc binary built elsewhere: fails with 'not found' at exec",
+            "Alpine musl: some Python wheels, Node native addons fail or compile from source",
+            "Expecting a shell in distroless, then `exec sh` fails",
+            "Forgetting CA certs on scratch: HTTPS calls fail with x509 errors"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "Pick the base"
+    },
+    {
+      "page_title": "--target: Stage Graph and Stages",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What --target does",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`docker build --target test .` builds up to ==and including== the named stage",
+            "With BuildKit, stages the target doesn't need are ==skipped entirely==",
+            "No --target given? The **last** stage in the file is built"
+          ],
+          "style": "star",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "2. One file, many stages",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Common stage graph",
+            "rows": [
+              [
+                "base"
+              ],
+              [
+                "deps"
+              ],
+              [
+                "dev",
+                "test",
+                "build"
+              ],
+              [
+                "prod"
+              ]
+            ],
+            "nodes": {
+              "base": {
+                "text": "base",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "deps": {
+                "text": "deps",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "dev": {
+                "text": "dev",
+                "shape": "box",
+                "ink": "green"
+              },
+              "test": {
+                "text": "test",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "build": {
+                "text": "build",
+                "shape": "box",
+                "ink": "purple"
+              },
+              "prod": {
+                "text": "prod (last)",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "base",
+                "to": "deps"
+              },
+              {
+                "from": "deps",
+                "to": "dev"
+              },
+              {
+                "from": "deps",
+                "to": "test"
+              },
+              {
+                "from": "deps",
+                "to": "build"
+              },
+              {
+                "from": "build",
+                "to": "prod",
+                "label": "COPY --from"
+              }
+            ]
+          }
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Stage",
+            "Adds",
+            "Used by"
+          ],
+          "rows": [
+            [
+              "base / deps",
+              "OS, npm ci",
+              "all stages"
+            ],
+            [
+              "dev",
+              "hot-reload, devDeps",
+              "bind mounts"
+            ],
+            [
+              "test",
+              "npm test",
+              "CI"
+            ],
+            [
+              "build",
+              "compiled output",
+              "prod"
+            ],
+            [
+              "prod",
+              "runtime only",
+              "production"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "yaml",
+          "lines": [
+            "services:",
+            "  web:",
+            "    build:",
+            "      context: .",
+            "      target: dev"
+          ],
+          "note": "compose picks stage per env"
+        },
+        {
+          "type": "code",
+          "lang": "bash",
+          "lines": [
+            "# stage: FROM scratch AS export",
+            "docker build --target export \\",
+            "  --output type=local,\\",
+            "dest=./out ."
+          ],
+          "note": "files out, no image made"
+        },
+        {
+          "type": "heading",
+          "text": "4. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Dev stage last**: a plain `docker build` ships dev tooling to prod",
+            "Typo in --target: `target stage could not be found`",
+            "Reordering stages without checking which one is last"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Builds"
+          ],
+          "rows": [
+            [
+              "`build .`",
+              "last stage"
+            ],
+            [
+              "`--target test`",
+              "up to test"
+            ],
+            [
+              "`--target dev`",
+              "dev only"
+            ],
+            [
+              "`--target tset`",
+              "error"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Keep prod last",
+          "text": "Then a bare docker build is always the safe, shippable image."
+        },
+        {
+          "type": "heading",
+          "text": "3. Writing the stages",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "dockerfile",
+          "lines": [
+            "FROM deps AS dev",
+            "COPY . .",
+            "CMD [\"npm\",\"run\",\"dev\"]"
+          ],
+          "note": "run with a bind mount"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "One Dockerfile",
+          "text": "Same file serves laptop, CI and production. Only --target changes."
+        }
+      ],
+      "hero": "docker",
+      "subtitle": "one file, many images"
+    }
+  ],
+  "caption": {
+    "text": "Your Docker image is 1.2 GB and your app is 40 MB of it. 🐳 These handwritten notes walk through multi-stage builds: FROM ... AS stages, COPY --from, layer caching order, BuildKit cache mounts, and alpine vs distroless vs scratch finals. Plus --target for dev/test/prod, ARG scoping, non-root users and a .dockerignore cheatsheet, with the measured size savings. Save it for your next Dockerfile review.",
+    "hashtags": [
+      "#docker",
+      "#dockerfile",
+      "#multistagebuilds",
+      "#buildkit",
+      "#devops",
+      "#containers",
+      "#distroless",
+      "#alpine",
+      "#cloudnative",
+      "#backenddevelopment",
+      "#studynotes",
+      "#iolar"
+    ]
+  }
+}

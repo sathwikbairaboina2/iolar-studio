@@ -22,7 +22,7 @@ describe('splitIntoFollowUp', () => {
     await createSubject('s', { name: 'S' });
     await createChapter('s', 'c', 'C');
     await createPart('s', 'c', 1, post(13) as never);
-    const r = await splitIntoFollowUp('s', 'c', 1);
+    const r = await splitIntoFollowUp('s', 'c', 1, 10);
     expect(r).toEqual({ moved: 3, part: 2 });
     expect((await loadPost('s', 'c', 1)).slides.length).toBe(10);
     const follow = await loadPost('s', 'c', 2);
@@ -37,10 +37,10 @@ describe('splitIntoFollowUp', () => {
     await createSubject('s', { name: 'S' });
     await createChapter('s', 'c', 'C');
     await createPart('s', 'c', 1, post(13) as never);
-    await splitIntoFollowUp('s', 'c', 1);
+    await splitIntoFollowUp('s', 'c', 1, 10);
     // Re-planned: part 1 grows again and re-renders.
     await savePost('s', 'c', 1, post(14) as never);
-    const r = await splitIntoFollowUp('s', 'c', 1);
+    const r = await splitIntoFollowUp('s', 'c', 1, 10);
     expect(r).toEqual({ moved: 4, part: 2 });
     expect(await listParts('s', 'c')).toEqual([1, 2]);
     expect((await loadPost('s', 'c', 2)).slides.length).toBe(4);
@@ -52,10 +52,10 @@ describe('splitIntoFollowUp', () => {
     await createSubject('s', { name: 'S' });
     await createChapter('s', 'c', 'C');
     await createPart('s', 'c', 1, post(13) as never);
-    await splitIntoFollowUp('s', 'c', 1); // part 2 now holds P11, P12, P13
+    await splitIntoFollowUp('s', 'c', 1, 10); // part 2 now holds P11, P12, P13
     // Part 1 re-rendered denser: it still holds P1-P10 plus only P11 over the limit.
     await savePost('s', 'c', 1, post(11) as never);
-    const r = await splitIntoFollowUp('s', 'c', 1);
+    const r = await splitIntoFollowUp('s', 'c', 1, 10);
     expect(r).toEqual({ moved: 1, part: 2 });
     expect((await loadPost('s', 'c', 2)).slides.map((x) => x.page_title)).toEqual(['P11', 'P12', 'P13']);
   });
@@ -66,8 +66,8 @@ describe('splitIntoFollowUp', () => {
     await createSubject('s', { name: 'S' });
     await createChapter('s', 'c', 'C');
     await createPart('s', 'c', 1, { ...post(25), caption: { text: 'Hook.', hashtags: [] } } as never);
-    await splitIntoFollowUp('s', 'c', 1); // part 2 holds 15
-    await splitIntoFollowUp('s', 'c', 2); // part 3 holds 5
+    await splitIntoFollowUp('s', 'c', 1, 10); // part 2 holds 15
+    await splitIntoFollowUp('s', 'c', 2, 10); // part 3 holds 5
     const titles = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => `P${from + i}`);
     // Part 2 lost P21-P25 to part 3, so its caption stops promising them.
     expect((await loadPost('s', 'c', 2)).caption.text).toBe(`Hook. Part 2 of S covers ${titles(11, 19).join(', ')} and P20.`);
@@ -84,7 +84,7 @@ describe('splitIntoFollowUp', () => {
       text: '`depends_on` does not mean ready — it means started. This 8-page handbook goes keyword by keyword. Ten pages of notes.',
       hashtags: ['#x'],
     } } as never);
-    await splitIntoFollowUp('s', 'c', 1);
+    await splitIntoFollowUp('s', 'c', 1, 10);
     const cap = (await loadPost('s', 'c', 2)).caption;
     // The whole-handbook summary stays with part 1; a continuation title is named once.
     expect(cap.text).toBe('`depends_on` does not mean ready — it means started. Part 2 of S covers P11.');
@@ -104,7 +104,7 @@ describe('splitIntoFollowUp', () => {
     await createChapter('s', 'c', 'C');
     await createPart('s', 'c', 1, post(12) as never);
     await createPart('s', 'c', 2, post(3) as never); // hand-made, no spilledFrom
-    const r = await splitIntoFollowUp('s', 'c', 1);
+    const r = await splitIntoFollowUp('s', 'c', 1, 10);
     expect(r?.part).toBe(3);
     expect(await listParts('s', 'c')).toEqual([1, 2, 3]);
   });

@@ -1,0 +1,927 @@
+{
+  "brand": "iolar",
+  "template": "notebook",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "FOOD DELIVERY APP SYSTEM DESIGN (ZOMATO/SWIGGY) — PART 2",
+  "date": "07/10/2026",
+  "slides": [
+    {
+      "page_title": "Notification Pipeline and Schema",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "1. Responsibilities",
+          "items": [
+            "Tell **customer**, restaurant and rider about events",
+            "Channels: push, SMS and in-app inbox",
+            "Trigger: every Order state change and rider event, read from ==Kafka==",
+            "Transactional (order confirmed) goes out immediately",
+            "Promotional is batched, rate-limited, quiet-hour aware"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "2. High Level Design",
+            "rows": [
+              [
+                "kafka",
+                "consumer",
+                "prefs"
+              ],
+              [
+                "tmpl",
+                "router"
+              ],
+              [
+                "fcm",
+                "sms",
+                "inbox"
+              ]
+            ],
+            "nodes": {
+              "kafka": {
+                "text": "Kafka events",
+                "shape": "icon",
+                "icon": "apachekafka"
+              },
+              "consumer": {
+                "text": "Notify consumer + dedup",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "prefs": {
+                "text": "Preferences check",
+                "shape": "icon",
+                "icon": "shield-check"
+              },
+              "tmpl": {
+                "text": "Template service (i18n)",
+                "shape": "icon",
+                "icon": "file-text"
+              },
+              "router": {
+                "text": "Priority router",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "fcm": {
+                "text": "Push FCM/APNs",
+                "shape": "icon",
+                "icon": "bell"
+              },
+              "sms": {
+                "text": "SMS ~Rs 0.15",
+                "shape": "icon",
+                "icon": "message-square"
+              },
+              "inbox": {
+                "text": "In-app inbox",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "kafka",
+                "to": "consumer"
+              },
+              {
+                "from": "consumer",
+                "to": "prefs"
+              },
+              {
+                "from": "prefs",
+                "to": "tmpl"
+              },
+              {
+                "from": "tmpl",
+                "to": "router"
+              },
+              {
+                "from": "router",
+                "to": "fcm",
+                "label": "cheapest"
+              },
+              {
+                "from": "router",
+                "to": "sms",
+                "label": "fallback"
+              },
+              {
+                "from": "router",
+                "to": "inbox",
+                "label": "stored"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "3. Notification State Machine",
+            "rows": [
+              [
+                "queued",
+                "suppressed"
+              ],
+              [
+                "sent"
+              ],
+              [
+                "delivered",
+                "retrying"
+              ],
+              [
+                "smsfb",
+                "dead"
+              ]
+            ],
+            "nodes": {
+              "queued": {
+                "text": "QUEUED",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "suppressed": {
+                "text": "SUPPRESSED",
+                "shape": "pill",
+                "ink": "black"
+              },
+              "sent": {
+                "text": "SENT",
+                "shape": "pill",
+                "ink": "purple"
+              },
+              "delivered": {
+                "text": "DELIVERED",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "retrying": {
+                "text": "RETRYING",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "smsfb": {
+                "text": "SMS_FALLBACK",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "dead": {
+                "text": "DEAD_LETTER",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "queued",
+                "to": "suppressed",
+                "label": "opted out"
+              },
+              {
+                "from": "queued",
+                "to": "sent",
+                "label": "provider ack"
+              },
+              {
+                "from": "sent",
+                "to": "delivered",
+                "label": "receipt"
+              },
+              {
+                "from": "sent",
+                "to": "retrying",
+                "label": "error"
+              },
+              {
+                "from": "retrying",
+                "to": "sent",
+                "label": "backoff"
+              },
+              {
+                "from": "retrying",
+                "to": "smsfb",
+                "label": "push exhausted"
+              },
+              {
+                "from": "smsfb",
+                "to": "delivered",
+                "label": "SMS ok"
+              },
+              {
+                "from": "smsfb",
+                "to": "dead",
+                "label": "SMS fails"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Table Schema",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "Notification.id, user_id",
+              "uuid",
+              "PK; the recipient"
+            ],
+            [
+              "type, channel",
+              "enum",
+              "order_confirmed; push/sms/inapp"
+            ],
+            [
+              "payload, status",
+              "jsonb, enum",
+              "template vars; state above"
+            ],
+            [
+              "sent_at",
+              "timestamp",
+              "set on provider ack"
+            ],
+            [
+              "DeviceToken.user_id, token",
+              "text",
+              "one row per device"
+            ],
+            [
+              "DeviceToken.platform",
+              "enum",
+              "ios, android, web"
+            ]
+          ]
+        }
+      ],
+      "hero": "bell",
+      "aside": "loud for restaurants!",
+      "subtitle": "Food Delivery App"
+    },
+    {
+      "page_title": "Notification APIs, Dedup and Metrics",
+      "blocks": [
+        {
+          "type": "sidebox",
+          "title": "5. Key APIs",
+          "items": [
+            "Internal `POST /notify` with event, user, template",
+            "User `PUT /preferences` for channels and promo opt-out",
+            "Template service fills per-event variables, by locale",
+            "Provider feedback deletes **stale** DeviceToken rows"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "sidebox",
+          "title": "6. Idempotency and Consistency",
+          "items": [
+            "Dedup key: `order_id + event`, unique index",
+            "A retried consumer never **double-notifies**",
+            "Preferences checked before every promo send",
+            "Retry: exponential backoff, then DLQ, then SMS"
+          ],
+          "ink": "orange"
+        },
+        {
+          "type": "sidebox",
+          "title": "7. Failure Scenarios",
+          "items": [
+            "FCM outage: critical events fall back to SMS",
+            "Token expiry: push fails, token is purged",
+            "Restaurant silent 60 s: phone-call fallback",
+            "Poison message: parked in the DLQ for replay"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "sidebox",
+          "title": "8. Events Published",
+          "items": [
+            "`NotificationSent` and `NotificationDelivered`",
+            "`NotificationFailed` after retries are exhausted",
+            "`RestaurantEscalated` when the call fallback fires"
+          ],
+          "ink": "green"
+        },
+        {
+          "type": "sidebox",
+          "title": "9. Key Metrics",
+          "items": [
+            "Delivery rate above **97%**",
+            "Event-to-notification p99 under **3 s**",
+            "Opt-out rate, tracked per campaign"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "10. Design: push first, SMS only as fallback (cost)",
+            "Restaurant alert is louder: ring repeats until accept",
+            "Promo is batched and rate-limited; transactional never waits",
+            "Keep the in-app inbox as the always-stored record"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Cost tip",
+          "text": "SMS costs ~Rs 0.15 each, so reserve it for critical events."
+        }
+      ],
+      "hero": "bell",
+      "subtitle": "Food Delivery App"
+    },
+    {
+      "page_title": "Peak Load and Overload Shedding",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Peak and failure mechanisms",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Layer",
+            "Technique",
+            "Detail"
+          ],
+          "rows": [
+            [
+              "{icon:autoscaling} Stateless services",
+              "autoscale on QPS",
+              "pre-scale before 7 pm, IPL finals"
+            ],
+            [
+              "{icon:database} Orders DB",
+              "read replicas, then shard",
+              "`city_id` or `user_id`; archive >1 yr"
+            ],
+            [
+              "{icon:redis} Menus, restaurants",
+              "cache-aside",
+              "60 s TTL + jitter"
+            ]
+          ]
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "v = redis.get(key)",
+            "if v is None:",
+            "    v = db.load_menu(rid)",
+            "    ttl = 60 + rand(0, 15)",
+            "    redis.set(key, v, ex=ttl)"
+          ],
+          "note": "equal TTLs expire together: herd",
+          "result": {
+            "headers": [
+              "Key",
+              "TTL"
+            ],
+            "rows": [
+              [
+                "menu:101",
+                "63 s"
+              ],
+              [
+                "menu:102",
+                "71 s"
+              ],
+              [
+                "menu:103",
+                "66 s"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Overload Ladder",
+            "rows": [
+              [
+                "gw"
+              ],
+              [
+                "shed"
+              ],
+              [
+                "promo",
+                "order"
+              ],
+              [
+                "search",
+                "brk"
+              ],
+              [
+                "rating",
+                "fb"
+              ]
+            ],
+            "nodes": {
+              "gw": {
+                "text": "API gateway",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "shed": {
+                "text": "Overloaded?",
+                "shape": "diamond",
+                "ink": "orange"
+              },
+              "promo": {
+                "text": "Drop promos + recs",
+                "shape": "box",
+                "ink": "red"
+              },
+              "order": {
+                "text": "Protect order path",
+                "shape": "box",
+                "ink": "green"
+              },
+              "search": {
+                "text": "Search, 1 s timeout",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "brk": {
+                "text": "Circuit breaker opens",
+                "shape": "box",
+                "ink": "red"
+              },
+              "rating": {
+                "text": "Rating service down",
+                "shape": "box",
+                "ink": "red"
+              },
+              "fb": {
+                "text": "Show restaurants, no ratings",
+                "shape": "box",
+                "ink": "green"
+              }
+            },
+            "edges": [
+              {
+                "from": "gw",
+                "to": "shed"
+              },
+              {
+                "from": "shed",
+                "to": "promo",
+                "label": "yes: shed"
+              },
+              {
+                "from": "shed",
+                "to": "order",
+                "label": "always keep"
+              },
+              {
+                "from": "search",
+                "to": "brk",
+                "label": "slow"
+              },
+              {
+                "from": "rating",
+                "to": "fb",
+                "label": "degrade"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Multi-AZ** in one region; city-level failover for disaster recovery",
+            "Disaster recovery target: ==RPO of about 1 minute==",
+            "==Idempotency== on orders, payments and webhooks: safe to retry",
+            "Kafka partitions keyed by `order_id`; alert on consumer lag"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "2. Trade-offs",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choice",
+            "Option A",
+            "Option B",
+            "Pick"
+          ],
+          "rows": [
+            [
+              "Consistency",
+              "CP: payments, orders",
+              "AP: browse",
+              "both, per path"
+            ],
+            [
+              "Tracking",
+              "push (WebSocket)",
+              "pull (poll 5 s)",
+              "push, poll fallback"
+            ],
+            [
+              "Dispatch",
+              "greedy nearest",
+              "batched, 10 s",
+              "batched"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "sidebox",
+          "title": "3. Why shed promos first",
+          "items": [
+            "Promos earn nothing while the system is overloaded",
+            "Orders and payments are the revenue path",
+            "Recommendations can be recomputed after the peak"
+          ],
+          "ink": "orange"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Peak tip",
+          "text": "Lunch 12-2 pm and dinner 7-10 pm carry ~60% of orders, so pre-scale before them."
+        }
+      ],
+      "hero": "shield-check",
+      "aside": "protect the order path!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Scaling Mistakes and Interview Questions",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Same TTL on every menu key: one expiry stampedes the DB",
+            "No timeout on search: one slow call blocks every thread",
+            "Retrying a payment without an idempotency key: double charge",
+            "Promos and orders sharing capacity: promos starve checkout"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "sidebox",
+          "title": "Interview questions",
+          "items": [
+            "Design surge pricing",
+            "Add scheduled orders",
+            "Restaurant goes offline mid-order",
+            "Prevent coupon abuse"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Shed promos first, time out slow calls, degrade browse, and keep orders and payments consistent and idempotent."
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Interview tip",
+          "text": "For each question, name the **failure mode** first, then the fix."
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Surge pricing: demand/supply ratio per zone",
+            "Scheduled orders: delayed job releases at dispatch time"
+          ],
+          "style": "dot",
+          "ink": "purple"
+        }
+      ],
+      "hero": "shield-check",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Cheatsheet: Numbers and Service Rules",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Scale and latency",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Path",
+            "Load",
+            "Target"
+          ],
+          "rows": [
+            [
+              "Search",
+              "25K QPS",
+              "300 ms"
+            ],
+            [
+              "Checkout",
+              "2M orders/day",
+              "800 ms"
+            ],
+            [
+              "Order placement",
+              "~250 orders/s peak",
+              "2 s"
+            ],
+            [
+              "Tracking",
+              "75K location writes/s",
+              "5 s lag"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "sidebox",
+          "title": "Storage math",
+          "items": [
+            "Order record ~2 KB: 4 GB/day, ~1.5 TB/year",
+            "Location history: ~260 GB/day",
+            "Pings: 300K riders every 4 s = 75K/s"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "2. Order lifecycle",
+          "ink": "green"
+        },
+        {
+          "type": "paragraph",
+          "text": "`CREATED` → `PAYMENT_PENDING` → `PLACED` → `ACCEPTED` → `PREPARING` → `READY` → `PICKED_UP` → `DELIVERED`",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Side states: `CANCELLED`, `REJECTED`, `FAILED`, `REFUNDED`",
+            "Restaurant must accept within **3 minutes** or auto-reject",
+            "Stuck `PAYMENT_PENDING` swept at 15 minutes"
+          ],
+          "style": "dot",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "3. Browse side rules",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Service",
+            "Rule to remember"
+          ],
+          "rows": [
+            [
+              "Search",
+              "{icon:elasticsearch} geohash + Elasticsearch; open status in Redis; cursor pagination"
+            ],
+            [
+              "Cart",
+              "{icon:redis} Redis, 24 h TTL, one restaurant, quote valid 5 min"
+            ],
+            [
+              "Tracking",
+              "ping every 4 s; WebSocket push; Redis hot, Cassandra cold"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Consistency tip",
+          "text": "Strong for orders and payments; eventual for menu, search and ratings."
+        },
+        {
+          "type": "heading",
+          "text": "4. Order side rules",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Service",
+            "Rule to remember"
+          ],
+          "rows": [
+            [
+              "Orders",
+              "optimistic lock on `version`; outbox; saga with compensation"
+            ],
+            [
+              "Payments",
+              "idempotency key; webhook is truth; reconciler every 2 min"
+            ],
+            [
+              "Dispatch",
+              "Redis GEO within 3 km; batched matching; 20 s offer, 3 attempts"
+            ],
+            [
+              "Notifications",
+              "push first, SMS fallback; dedup key per event; priority tiers"
+            ]
+          ]
+        }
+      ],
+      "hero": "server",
+      "aside": "know your numbers!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Cheatsheet: Trade-offs and Interview Order",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Availability",
+          "text": "99.95% for browse; 99.99% for the order and payment path."
+        },
+        {
+          "type": "heading",
+          "text": "1. Mistakes to avoid",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Floats** for money: store integer paise",
+            "Trusting the **client** for payment success",
+            "**Shared** databases across services",
+            "Payment or order calls with no **idempotency**"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. Trade-offs table",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choice",
+            "Win",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Saga vs 2PC",
+              "no global lock",
+              "compensation code"
+            ],
+            [
+              "Batched dispatch",
+              "better matches",
+              "10 s wait"
+            ],
+            [
+              "Push vs SMS",
+              "cheap",
+              "needs fallback"
+            ],
+            [
+              "60 s menu cache",
+              "fast reads",
+              "stale menus"
+            ],
+            [
+              "Shard by city",
+              "local failures",
+              "cross-city queries"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "Tech stack",
+          "items": [
+            "{icon:postgresql} Postgres or MySQL: orders",
+            "{icon:redis} Redis: carts, GEO, open status",
+            "{icon:apachekafka} Kafka: order and rider events",
+            "Elasticsearch: search; Cassandra: history"
+          ],
+          "ink": "purple"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Architecture tip",
+          "text": "Sync up to payment, then event-driven; shard everything by city."
+        },
+        {
+          "type": "heading",
+          "text": "3. Interview order",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Scope** the three-sided marketplace",
+            "Do the **numbers**: orders/s, QPS",
+            "Draw the **architecture**",
+            "Deep-dive the **order and payment** path",
+            "Finish with **failures** and trade-offs"
+          ],
+          "style": "number"
+        },
+        {
+          "type": "heading",
+          "text": "4. Questions to expect",
+          "ink": "orange"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "How do you stop a double charge?",
+            "How do you assign a rider fairly?",
+            "What breaks at the 7 pm peak?",
+            "How do you track 75K pings/s?"
+          ],
+          "style": "star"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Peak is ~10x average, so ~250 orders/s",
+            "Rider offers: 20 s timer, 3 attempts",
+            "Menu cache hit rate above 95%"
+          ],
+          "style": "checkbox",
+          "ink": "blue"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Protect the order and payment path first: idempotent, versioned, and reconciled."
+        }
+      ],
+      "hero": "server",
+      "subtitle": "(Food Delivery App)"
+    }
+  ],
+  "caption": {
+    "text": "How would you design Swiggy for millions of orders? Part 2 of FOOD DELIVERY APP SYSTEM DESIGN (ZOMATO/SWIGGY) covers Notifications, Scaling and Failure Handling and Food Delivery System Design Cheatsheet.",
+    "hashtags": [
+      "#systemdesign",
+      "#systemdesigninterview",
+      "#foodDeliveryApp",
+      "#swiggy",
+      "#zomato",
+      "#softwareengineering",
+      "#backenddevelopment",
+      "#techinterview",
+      "#codinginterview",
+      "#handwrittennotes",
+      "#developers",
+      "#iolar"
+    ]
+  },
+  "spilledFrom": 1
+}

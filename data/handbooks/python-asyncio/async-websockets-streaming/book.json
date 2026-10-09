@@ -1,0 +1,208 @@
+{
+  "title": "Async WebSockets & Streaming in Python",
+  "summary": "Covers real-time connections in asyncio Python. It walks through the WebSocket protocol, then websockets, aiohttp and FastAPI/Starlette endpoints. It also covers heartbeats, backpressure, broadcasting, reconnecting with backoff, close codes, and streaming with Server-Sent Events from async generators.",
+  "chapters": [
+    {
+      "title": "WebSocket Fundamentals: Handshake, Frames, Full Duplex",
+      "points": [
+        "WebSocket (RFC 6455) = one long-lived, full-duplex TCP connection where client and server can each send at any time; ws:// runs on port 80, wss:// uses TLS on port 443",
+        "The handshake is a normal HTTP/1.1 GET with 'Upgrade: websocket', 'Connection: Upgrade', 'Sec-WebSocket-Key' and 'Sec-WebSocket-Version: 13'",
+        "The server replies '101 Switching Protocols' with Sec-WebSocket-Accept = base64(SHA1(key + fixed GUID)); after that the socket stops speaking HTTP",
+        "Frame opcodes: 0x0 continuation, 0x1 text (UTF-8), 0x2 binary, 0x8 close, 0x9 ping, 0xA pong; the last three are control frames",
+        "Client-to-server frames must be masked with a 4-byte key; server-to-client frames are unmasked",
+        "A message can be split across several frames (fragmentation); libraries reassemble them, so your code sees whole messages",
+        "Comparison: short polling (repeated requests), long polling (a held request per event), SSE (server-to-client only, over HTTP), WebSocket (two-way, low per-message overhead)",
+        "The asyncio model is one coroutine/task per connection; thousands of idle sockets cost only memory, not threads",
+        "Any blocking call (time.sleep, sync DB driver, CPU loop) freezes every connection in the event loop; offload it with asyncio.to_thread",
+        "Use WebSockets for chat, live collaboration, games and trading ticks; prefer SSE or plain HTTP when data only flows server → client"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "The websockets Library: Server and Client",
+      "points": [
+        "Modern API: 'from websockets.asyncio.server import serve'; 'async with serve(handler, \"\", 8765) as server: await server.serve_forever()'",
+        "The handler takes one argument, 'async def handler(ws)'; the request path is in ws.request.path (the old (ws, path) signature was removed)",
+        "Receive loop: 'async for message in ws:'; it ends cleanly on a normal close and raises ConnectionClosedError on an abnormal one",
+        "'await ws.send(x)': str → text frame, bytes → binary frame; an iterable of chunks → a fragmented message",
+        "'await ws.recv()' reads a single message; it raises ConnectionClosedOK (codes 1000/1001) or ConnectionClosedError (anything else)",
+        "Client: 'from websockets.asyncio.client import connect'; 'async with connect(\"ws://host:8765\") as ws:' closes the connection on exit",
+        "max_size defaults to 1 MiB; a larger incoming message closes the connection with 1009 (message too big)",
+        "To send and receive at the same time, run a reader task and a writer task under asyncio.TaskGroup",
+        "process_request(connection, request) hook: check auth headers or tokens and return an HTTP 401/403 response before the upgrade happens",
+        "Example: an echo server in 5 lines, 'async for m in ws: await ws.send(m)'"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "mechanism",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "aiohttp WebSocket Server and Client",
+      "points": [
+        "Server: 'ws = web.WebSocketResponse(heartbeat=30); await ws.prepare(request)', and the handler must finally 'return ws'",
+        "Receive loop: 'async for msg in ws:' then branch on msg.type: WSMsgType.TEXT / BINARY / ERROR (the loop stops on CLOSE)",
+        "Send helpers: send_str, send_bytes, send_json; receive helpers: receive_str, receive_json",
+        "Client: 'async with aiohttp.ClientSession() as s: async with s.ws_connect(url, heartbeat=30) as ws:'; reuse the session and don't create one per connection",
+        "heartbeat=N sends a ping every N seconds and closes the connection if no pong arrives in time; autoping=True answers incoming pings for you",
+        "receive_timeout bounds each receive(); max_msg_size defaults to 4 MiB (0 = unlimited, which is dangerous)",
+        "Graceful shutdown: keep sockets in a weakref.WeakSet on the app and in on_shutdown call 'await ws.close(code=WSCloseCode.GOING_AWAY)'",
+        "Check ws.closed before sending; after the peer closes, sends raise ConnectionResetError",
+        "Comparison with websockets: aiohttp bundles an HTTP server and client plus WebSocket support; websockets is a focused, spec-strict WebSocket-only library"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "mechanism",
+        "comparison"
+      ]
+    },
+    {
+      "title": "FastAPI / Starlette WebSocket Endpoints",
+      "points": [
+        "'@app.websocket(\"/ws\") async def ep(websocket: WebSocket):' then you must 'await websocket.accept()' before sending",
+        "Methods: receive_text / receive_bytes / receive_json and send_text / send_bytes / send_json; iterators: 'async for m in websocket.iter_text()'",
+        "A client disconnect raises WebSocketDisconnect (with a .code attribute); catch it to deregister the client in a finally/except block",
+        "Path and query params and Depends() work as they do in HTTP routes; browsers can't set headers on a WebSocket, so pass tokens in the query string or the first message",
+        "Reject auth before accepting: 'await websocket.close(code=status.WS_1008_POLICY_VIOLATION)' or raise WebSocketException; HTTPException does not apply",
+        "Uvicorn needs a WebSocket backend: install 'uvicorn[standard]' (websockets or wsproto) or the upgrade fails with a 404/warning",
+        "Receiving and pushing at once: TaskGroup with a recv task plus a send task that reads a per-client queue",
+        "With multiple workers (--workers 4) each process has its own set of connections; broadcasting across workers needs Redis or another broker",
+        "Testing: 'with TestClient(app).websocket_connect(\"/ws\") as ws: ws.send_text(...); ws.receive_text()'"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "mechanism",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Ping/Pong Heartbeats and Keepalive",
+      "points": [
+        "Why heartbeat: NATs, load balancers and proxies silently drop idle TCP connections, and a dead peer can go unnoticed for minutes",
+        "A ping frame (0x9) must be answered with a pong (0xA) carrying the same payload; an unsolicited pong acts as a one-way keepalive",
+        "websockets defaults: ping_interval=20, ping_timeout=20; with no pong, the connection closes with 1011 (keepalive ping timeout)",
+        "Manual ping in websockets: 'pong = await ws.ping(); latency = await pong' measures round-trip time",
+        "aiohttp: heartbeat=30 on WebSocketResponse and ws_connect; Uvicorn: --ws-ping-interval 20 --ws-ping-timeout 20",
+        "Browser JavaScript can't send protocol ping frames, so add app-level {'type':'ping'} messages if the client needs to detect dead links itself",
+        "Proxy idle timeouts, such as nginx proxy_read_timeout (default 60s), must be longer than the ping interval or the proxy cuts the connection",
+        "TCP keepalive (OS default about 2 hours) is far too slow to detect dead peers; use WebSocket-level pings",
+        "Trade-off: a shorter interval detects failures faster but costs more wakeups and traffic across 10k+ connections; 20–30s is typical"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Backpressure and Bounded Queues",
+      "points": [
+        "Backpressure: a slow consumer must slow down the producer; otherwise buffers grow without limit until the process runs out of memory",
+        "In websockets, 'await ws.send()' waits once the write buffer passes the high-water mark (write_limit, default 32 KiB); always await it",
+        "Receive side: websockets max_queue (default 16 messages); when it is full, the library stops reading and TCP flow control pushes back on the sender",
+        "Use asyncio.Queue(maxsize=N): 'await q.put(x)' blocks the producer when the queue is full; never use an unbounded Queue() on a hot path",
+        "put_nowait raises asyncio.QueueFull, which lets you pick a drop policy: drop newest, drop oldest (get_nowait then put), or disconnect the client",
+        "Choose a policy by data type: latest-value data (prices, cursors) → drop old or keep one slot; event logs/chat → block or disconnect with 1008/1013",
+        "Guard slow sends: 'await asyncio.wait_for(ws.send(m), timeout=5)', and close the client on timeout",
+        "Pattern: producer → bounded per-client queue → one writer task per client doing 'await ws.send(await q.get())'",
+        "Mistake: fire-and-forget create_task(ws.send()) for each message hides errors and discards backpressure"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Broadcasting to Many Clients",
+      "points": [
+        "Registry: a set of connections; 'clients.add(ws)' in try, 'clients.discard(ws)' in finally so disconnects never leak entries",
+        "Naive loop 'for ws in clients: await ws.send(m)' lets one slow client stall the whole broadcast",
+        "'asyncio.gather(*(ws.send(m) for ws in clients), return_exceptions=True)' sends concurrently, but the slowest client still sets the finish time",
+        "websockets.asyncio.server.broadcast(connections, message) is synchronous: it writes without waiting and skips clients that are closed or backed up",
+        "Robust pattern: put the message on every client's bounded queue and let each client's writer task apply its own drop/disconnect policy",
+        "Serialize once (json.dumps before the loop), not once per client; fan-out cost is O(N) writes per message",
+        "Iterate over a snapshot (list(clients)), because the set can change during an await and raise 'set changed size during iteration'",
+        "Multiple processes or hosts: publish to Redis pub/sub (redis.asyncio) or NATS, and each worker fans out to its local clients",
+        "Rooms/topics: dict[str, set[ws]] maps each topic to its subscribers; remove empty rooms to avoid leaks"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Graceful Close Codes and Reconnect with Backoff",
+      "points": [
+        "Close handshake: one side sends a close frame (code + reason ≤123 bytes), the other echoes it, then the server closes the TCP connection",
+        "Codes: 1000 normal, 1001 going away (shutdown/navigation), 1002 protocol error, 1003 unsupported data",
+        "More codes: 1008 policy violation (auth), 1009 message too big, 1011 internal error, 1012 service restart, 1013 try again later",
+        "1006 abnormal closure is never sent on the wire; it is a local report that the TCP connection died without a close frame",
+        "Codes 4000–4999 are for your application (e.g. 4001 token expired); send them with 'await ws.close(code=4001, reason=\"expired\")'",
+        "Reconnect policy: retry on 1001/1006/1011/1012/1013; do not retry blindly on 1008 or 4xxx auth failures, fix credentials first",
+        "Exponential backoff with full jitter: 'delay = random.uniform(0, min(cap, base * 2**attempt))', which prevents a thundering herd after an outage",
+        "Reset the attempt counter only after the connection has stayed stable for a while, not right after the handshake",
+        "websockets: 'async for ws in connect(uri):' reconnects with built-in backoff; catch ConnectionClosed inside and 'continue'",
+        "After a reconnect, re-authenticate, re-subscribe and resume from the last seen message id so no events are lost"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Server-Sent Events and Async Generator Streaming",
+      "points": [
+        "SSE = a single HTTP response with 'Content-Type: text/event-stream' that stays open while the server pushes text events",
+        "Wire format: 'event:', 'data:', 'id:', 'retry:' lines, and a blank line ends each event; a line starting with ':' is a comment (use it as a heartbeat)",
+        "The browser EventSource reconnects automatically (after the retry: delay) and sends a 'Last-Event-ID' header so the server can resume",
+        "FastAPI: 'return StreamingResponse(gen(), media_type=\"text/event-stream\")' where gen is an async generator yielding 'data: ...\\n\\n'",
+        "Detect disconnects: check 'await request.is_disconnected()' in the loop; cancellation raises CancelledError/GeneratorExit, so release resources in finally",
+        "The sse-starlette EventSourceResponse adds ping comments, disconnect handling and proper formatting",
+        "Proxies buffer by default: send 'X-Accel-Buffering: no' and 'Cache-Control: no-cache', and disable gzip for the stream",
+        "HTTP/1.1 browsers allow only 6 connections per domain, which caps open SSE tabs; HTTP/2 multiplexing removes this limit",
+        "SSE vs WebSocket: SSE is server → client only and text only, but it works through HTTP infrastructure and auth and reconnects by itself; it is the right choice for LLM token streams and notifications",
+        "aiohttp equivalent: 'resp = web.StreamResponse(); await resp.prepare(req); await resp.write(b\"data: x\\n\\n\")'"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Cheatsheet: Async WebSockets & Streaming",
+      "points": [
+        "Server one-liners: websockets 'serve(handler, host, port)' · aiohttp 'WebSocketResponse().prepare(req)' · FastAPI '@app.websocket' + accept()",
+        "Loops: 'async for m in ws' (websockets/aiohttp) · 'websocket.iter_text()' (Starlette); catch ConnectionClosed / WebSocketDisconnect",
+        "Keepalive: ping every 20–30s, timeout about 20s; keep proxy idle timeouts longer than the ping interval",
+        "Backpressure: always await send, use bounded asyncio.Queue(maxsize), give each consumer a drop/disconnect policy, and wrap sends in wait_for",
+        "Broadcast: registry set with a finally-block cleanup, per-client queue + writer task, serialize once, Redis pub/sub across workers",
+        "Close codes: 1000 ok · 1001 going away · 1006 dropped (local only) · 1008 policy · 1009 too big · 1011 error · 1012 restart · 4xxx app",
+        "Reconnect: exponential backoff with full jitter and a cap, no retry on auth failures, re-subscribe and resume from the last id",
+        "SSE: text/event-stream, 'data: ...\\n\\n', id + Last-Event-ID resume, ':' comment heartbeats, disable proxy buffering",
+        "Top mistakes: blocking calls in handlers, unbounded queues, sequential broadcast, forgetting accept(), no heartbeat behind a proxy",
+        "Pick one: two-way and low latency → WebSocket · server push over plain HTTP → SSE · rare updates → plain HTTP polling"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

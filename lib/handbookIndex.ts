@@ -22,7 +22,7 @@ export function indexSubject(subject: Subject) {
     .run(subject.slug, subject.name, subject.emoji, subject.description);
 }
 
-export function indexChapter(subject: string, chapter: string, post: Post, status: string) {
+export function indexChapter(subject: string, chapter: string, post: Post, status: string, title?: string) {
   getDb()
     .prepare(
       `INSERT INTO chapters (subject, slug, title, parts, points, pages, avg_fill, status, updated_at)
@@ -30,7 +30,7 @@ export function indexChapter(subject: string, chapter: string, post: Post, statu
        ON CONFLICT(subject, slug) DO UPDATE SET
          title=excluded.title, status=excluded.status, updated_at=excluded.updated_at`
     )
-    .run(subject, chapter, post.series, status);
+    .run(subject, chapter, title ?? post.series, status);
 }
 
 export function indexBook(subject: string, chapter: string, book: Book) {

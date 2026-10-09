@@ -17,6 +17,8 @@ export interface GraphStore {
   mergeEdge(from: NodeRef, rel: string, to: NodeRef, props?: Props): Promise<void>;
   query<T = Record<string, unknown>>(cypher: string, params?: Record<string, unknown>): Promise<T[]>;
   wipe(space: Space): Promise<void>;
+  /** Drops the nodes of a space that nothing links to any more; returns how many went. */
+  pruneOrphans(space: Space): Promise<number>;
   close(): Promise<void>;
 }
 

@@ -25,6 +25,15 @@ describe('handbook store', () => {
     expect((await loadPost('python', 'lists', 1)).brand).toBe('iolar');
   });
 
+  it('lists chapters in the order they were added, not alphabetically', async () => {
+    const { createSubject, createChapter, listChapters } = await import('@/lib/store');
+    await createSubject('python');
+    await createChapter('python', 'lists', 'Python Lists');
+    await createChapter('python', 'dicts', 'Dictionaries');
+    await createChapter('python', 'async', 'Async');
+    expect((await listChapters('python')).map((c) => c.slug)).toEqual(['lists', 'dicts', 'async']);
+  });
+
   it('adds parts in order and reports the next number', async () => {
     const { createSubject, createChapter, createPart, loadPost, nextPartNumber, listParts } = await import('@/lib/store');
     await createSubject('python');

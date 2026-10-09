@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { reviewPart, loadReview, reviewIsCurrent } from '@/lib/verify/review';
+import { reviewPart, loadReview, reviewIsCurrent, reviewPassed } from '@/lib/verify/review';
 import { runGates } from '@/lib/verify/runGates';
 import { ClaudeUnavailableError } from '@/lib/ai/claude';
 
@@ -25,7 +25,7 @@ export async function POST(req: Request, ctx: Ctx) {
     if (body.mode === 'gates') {
       const findings = await runGates(subject, chapter, n);
       return NextResponse.json({
-        review: { generatedAt: new Date().toISOString(), part: n, findings, passed: !findings.some((f) => f.severity === 'blocker') },
+        review: { generatedAt: new Date().toISOString(), part: n, findings, passed: reviewPassed(findings) },
         current: true,
       });
     }

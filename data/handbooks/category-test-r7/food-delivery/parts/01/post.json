@@ -1,0 +1,2571 @@
+{
+  "brand": "iolar",
+  "template": "notebook",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "FOOD DELIVERY APP SYSTEM DESIGN",
+  "date": "08/10/2026",
+  "slides": [
+    {
+      "page_title": "Food Delivery App System Design",
+      "blocks": [],
+      "hero": "utensils",
+      "kind": "cover",
+      "cover": {
+        "title": "Design a scalable Food Delivery App",
+        "subtitle": "Zomato/Swiggy Case Study",
+        "tagline": "Customer, restaurant and rider apps plus an ops dashboard: 10 subsystems designed end to end",
+        "icons": [
+          {
+            "icon": "shopping-bag",
+            "label": "5M",
+            "sub": "orders per day"
+          },
+          {
+            "icon": "zap",
+            "label": "~500/s",
+            "sub": "orders at dinner peak"
+          },
+          {
+            "icon": "search",
+            "label": "30K",
+            "sub": "search QPS"
+          },
+          {
+            "icon": "map-pin",
+            "label": "125K/s",
+            "sub": "rider pings"
+          }
+        ],
+        "pills": [
+          "Requirements",
+          "Architecture",
+          "Search",
+          "Order + cart",
+          "Payment",
+          "Assignment",
+          "Tracking + alerts",
+          "Scaling"
+        ]
+      }
+    },
+    {
+      "page_title": "Requirements and Scale Estimates",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. What we must build",
+          "ink": "accent"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Customer: ==browse and search== restaurants, build a cart",
+            "Customer: **place and pay**, track the order live, rate",
+            "Restaurant: accept orders and update their status",
+            "Rider: accept deliveries offered by dispatch"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "sidebox",
+          "title": "Out of scope here",
+          "items": [
+            "Loyalty programs",
+            "Grocery and quick-commerce",
+            "The ads auction"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. Non-functional targets",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Area",
+            "Target"
+          ],
+          "rows": [
+            [
+              "Order path",
+              "**99.95%** availability"
+            ],
+            [
+              "Search",
+              "p99 < 300 ms"
+            ],
+            [
+              "Tracking",
+              "freshness < 5 s"
+            ],
+            [
+              "Money and orders",
+              "no double charge, no lost order"
+            ]
+          ],
+          "highlightRow": 3
+        },
+        {
+          "type": "heading",
+          "text": "3. Order load: from day to peak",
+          "ink": "orange"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "5M orders/day",
+                "sub": "daily volume",
+                "ink": "blue"
+              },
+              {
+                "text": "~58/s",
+                "sub": "average",
+                "ink": "green"
+              },
+              {
+                "text": "~500/s",
+                "sub": "dinner peak, ~8x",
+                "ink": "orange"
+              },
+              {
+                "text": "~1,000/s",
+                "sub": "festival or match day",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "~100 browse sessions per order gives ~==30K search/menu QPS== at peak",
+            "So the **read path** scales independently of the write path"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "4. Storage worked example",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "avg = 5_000_000 / 86_400",
+            "peak = 8 * avg",
+            "day_gb = 5_000_000 * 5 / 1e6",
+            "year_tb = day_gb * 365 / 1e3",
+            "menu_gb = 500_000 * 100 / 1e6"
+          ],
+          "note": "menus: 50 GB, cache fully",
+          "result": {
+            "headers": [
+              "Value",
+              "Result"
+            ],
+            "rows": [
+              [
+                "avg",
+                "~58 orders/s"
+              ],
+              [
+                "peak",
+                "~460, plan 500/s"
+              ],
+              [
+                "day_gb",
+                "25 GB (5 KB/order)"
+              ],
+              [
+                "year_tb",
+                "~9 TB"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Size for the ==500/s== dinner peak and ~30K read QPS, not the 58/s average. Orders are ~9 TB/year, but the 50 GB menu set fits in cache."
+        }
+      ],
+      "hero": "lightbulb",
+      "aside": "numbers first!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Architecture and Data Stores",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. The Big Picture",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Entry Path and Core Services",
+            "rows": [
+              [
+                "app",
+                "cdn",
+                "gw",
+                "bff"
+              ],
+              [
+                "order",
+                "pay",
+                "kafka",
+                "dispatch"
+              ]
+            ],
+            "nodes": {
+              "app": {
+                "text": "Apps",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "cdn": {
+                "text": "CDN",
+                "shape": "icon",
+                "icon": "cloudfront"
+              },
+              "gw": {
+                "text": "Gateway",
+                "shape": "icon",
+                "icon": "apigateway"
+              },
+              "bff": {
+                "text": "BFFs",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "order": {
+                "text": "Order",
+                "shape": "icon",
+                "icon": "postgresql"
+              },
+              "pay": {
+                "text": "Payment",
+                "shape": "icon",
+                "icon": "lock"
+              },
+              "kafka": {
+                "text": "Kafka",
+                "shape": "icon",
+                "icon": "apachekafka"
+              },
+              "dispatch": {
+                "text": "Dispatch",
+                "shape": "icon",
+                "icon": "zap"
+              }
+            },
+            "edges": [
+              {
+                "from": "app",
+                "to": "cdn"
+              },
+              {
+                "from": "cdn",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "bff"
+              },
+              {
+                "from": "bff",
+                "to": "order"
+              },
+              {
+                "from": "order",
+                "to": "pay",
+                "label": "sync"
+              },
+              {
+                "from": "order",
+                "to": "kafka",
+                "label": "async"
+              },
+              {
+                "from": "kafka",
+                "to": "dispatch"
+              }
+            ]
+          }
+        },
+        {
+          "type": "labelrows",
+          "rows": [
+            {
+              "icon": "shield-check",
+              "label": "Entry:",
+              "text": "CDN, ==gateway== (auth, limits)"
+            },
+            {
+              "icon": "server",
+              "label": "BFFs:",
+              "text": "**customer**, restaurant, rider"
+            },
+            {
+              "icon": "network",
+              "label": "Core:",
+              "text": "catalog, cart, order, pay, dispatch, tracking, notify, pricing"
+            }
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "2. Sync vs Async Split",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Mode",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Order, pay",
+              "{green:sync}",
+              "waits, no double-charge"
+            ],
+            [
+              "Dispatch",
+              "{orange:async}",
+              "`order.placed`"
+            ],
+            [
+              "Notify, analytics",
+              "{orange:async}",
+              "can lag"
+            ]
+          ],
+          "highlightRow": 0
+        },
+        {
+          "type": "heading",
+          "text": "3. Data Store per Service",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Store",
+            "Owns",
+            "Reason"
+          ],
+          "rows": [
+            [
+              "{icon:postgresql} Postgres",
+              "orders, payments",
+              "ACID"
+            ],
+            [
+              "{icon:redis} Redis",
+              "cart, rider GPS",
+              "fast"
+            ],
+            [
+              "Elasticsearch",
+              "search index",
+              "geo + text"
+            ],
+            [
+              "{icon:s3} S3",
+              "images",
+              "blobs"
+            ],
+            [
+              "{icon:apachekafka} Kafka",
+              "events",
+              "replay"
+            ]
+          ]
+        }
+      ],
+      "hero": "network",
+      "aside": "one owner per table!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Service Boundaries and Shared Concerns",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Service Boundary Rule",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Each service ==owns its data==",
+            "**No** reads of other tables",
+            "Use `GET /orders/{id}`"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "2. Cross-Cutting Concerns",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Concern",
+            "Mechanism",
+            "Example"
+          ],
+          "rows": [
+            [
+              "Idempotency",
+              "write key",
+              "`Idempotency-Key`"
+            ],
+            [
+              "Tracing",
+              "correlation ID",
+              "`X-Correlation-Id`"
+            ],
+            [
+              "Sharding",
+              "per-city key",
+              "`city_id`"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Sync only order and pay; rest on Kafka."
+        }
+      ],
+      "hero": "network",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Restaurant Discovery and Search",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Find restaurants and dishes ==near a location==",
+            "Filter by cuisine, rating and ETA, then **rank**",
+            "Target **p99 < 300 ms** at ~30K QPS"
+          ],
+          "style": "dot",
+          "frame": "none",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Elasticsearch index with a ==geo_point== field",
+            "A geohash or H3 cell narrows the radius first",
+            "Then filter on open now and on cuisine",
+            "Ranker scores relevance, ETA, rating and conversion"
+          ],
+          "style": "dot",
+          "frame": "solid",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Search Request Path",
+            "rows": [
+              [
+                "app",
+                "gw"
+              ],
+              [
+                "search"
+              ],
+              [
+                "es",
+                "redis",
+                "menu"
+              ]
+            ],
+            "nodes": {
+              "app": {
+                "text": "Customer app",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "gw": {
+                "text": "API gateway",
+                "shape": "icon",
+                "icon": "apigateway"
+              },
+              "search": {
+                "text": "Search service",
+                "shape": "icon",
+                "icon": "search"
+              },
+              "es": {
+                "text": "Elasticsearch",
+                "shape": "icon",
+                "icon": "elasticsearch"
+              },
+              "redis": {
+                "text": "Redis availability",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "menu": {
+                "text": "Menu snippet cache",
+                "shape": "icon",
+                "icon": "database"
+              }
+            },
+            "edges": [
+              {
+                "from": "app",
+                "to": "gw",
+                "label": "lat/lng"
+              },
+              {
+                "from": "gw",
+                "to": "search"
+              },
+              {
+                "from": "search",
+                "to": "es",
+                "label": "~500 candidates"
+              },
+              {
+                "from": "search",
+                "to": "redis",
+                "label": "re-check"
+              },
+              {
+                "from": "search",
+                "to": "menu",
+                "label": "top 20"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Request Flow",
+          "ink": "purple"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "App sends lat/lng and query to the gateway",
+            "Search asks ES for ~500 nearby candidates",
+            "Availability is re-checked against ==Redis==",
+            "Ranker keeps the **top 20**",
+            "Cached menu snippets are attached and returned"
+          ],
+          "style": "number",
+          "frame": "none",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model and APIs",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Type",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "id",
+              "keyword",
+              "Restaurant key"
+            ],
+            [
+              "location",
+              "geo_point",
+              "Lat/lng for radius"
+            ],
+            [
+              "cuisines",
+              "keyword[]",
+              "Filter tags"
+            ],
+            [
+              "rating",
+              "float",
+              "Ranking signal"
+            ],
+            [
+              "is_open, prep_time",
+              "bool, int",
+              "Open now, minutes"
+            ]
+          ],
+          "frame": "none"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "GET /search?lat=12.97&lng=77.59",
+            "  &q=biryani&filters=veg,4plus",
+            "  &cursor=abc123",
+            "GET /restaurants/{id}/menu"
+          ],
+          "note": "menu is served from cache"
+        },
+        {
+          "type": "heading",
+          "text": "5. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Stale index shows closed restaurants: ==rebuild from CDC stream==",
+            "Order placement **re-validates** open status anyway",
+            "ES down: serve cached top-N per H3 cell"
+          ],
+          "style": "cross",
+          "frame": "solid",
+          "ink": "red"
+        },
+        {
+          "type": "sidebox",
+          "title": "Track",
+          "items": [
+            "p99 latency",
+            "Zero-result rate",
+            "Click-through rate"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "ES gives a fast, slightly stale shortlist. Redis and checkout hold the truth."
+        }
+      ],
+      "hero": "search",
+      "aside": "geo first!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Order Service and State Machine",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Be the ==source of truth== for an order's lifecycle",
+            "Enforce legal transitions, **reject** illegal jumps",
+            "Emit one event on every transition"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Order Service Design",
+            "rows": [
+              [
+                "app",
+                "gw"
+              ],
+              [
+                "svc",
+                "db"
+              ],
+              [
+                "box",
+                "kafka"
+              ]
+            ],
+            "nodes": {
+              "app": {
+                "text": "Customer / Restaurant / Rider apps",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "gw": {
+                "text": "API gateway",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "svc": {
+                "text": "Order service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "db": {
+                "text": "Postgres orders",
+                "shape": "icon",
+                "icon": "postgresql"
+              },
+              "box": {
+                "text": "Outbox table",
+                "shape": "icon",
+                "icon": "table"
+              },
+              "kafka": {
+                "text": "Kafka order events",
+                "shape": "icon",
+                "icon": "apachekafka"
+              }
+            },
+            "edges": [
+              {
+                "from": "app",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "svc"
+              },
+              {
+                "from": "svc",
+                "to": "db",
+                "label": "txn"
+              },
+              {
+                "from": "svc",
+                "to": "box"
+              },
+              {
+                "from": "box",
+                "to": "kafka",
+                "label": "relay"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. State Machine",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Order Lifecycle",
+            "rows": [
+              [
+                "created",
+                "pending",
+                "placed",
+                "accepted"
+              ],
+              [
+                "preparing",
+                "ready",
+                "picked",
+                "delivered"
+              ],
+              [
+                "cancelled",
+                "rejected"
+              ]
+            ],
+            "nodes": {
+              "created": {
+                "text": "CREATED",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "pending": {
+                "text": "PAYMENT_PENDING",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "placed": {
+                "text": "PLACED",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "accepted": {
+                "text": "ACCEPTED",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "preparing": {
+                "text": "PREPARING",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "ready": {
+                "text": "READY",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "picked": {
+                "text": "PICKED_UP",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "delivered": {
+                "text": "DELIVERED",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "cancelled": {
+                "text": "CANCELLED",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "rejected": {
+                "text": "REJECTED",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "created",
+                "to": "pending"
+              },
+              {
+                "from": "pending",
+                "to": "placed"
+              },
+              {
+                "from": "placed",
+                "to": "accepted"
+              },
+              {
+                "from": "accepted",
+                "to": "preparing"
+              },
+              {
+                "from": "preparing",
+                "to": "ready"
+              },
+              {
+                "from": "ready",
+                "to": "picked"
+              },
+              {
+                "from": "picked",
+                "to": "delivered"
+              },
+              {
+                "from": "placed",
+                "to": "cancelled"
+              },
+              {
+                "from": "placed",
+                "to": "rejected"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "id",
+              "uuid",
+              "order primary key"
+            ],
+            [
+              "status",
+              "enum",
+              "current state"
+            ],
+            [
+              "version",
+              "int",
+              "optimistic lock"
+            ],
+            [
+              "total",
+              "numeric",
+              "amount in paise"
+            ],
+            [
+              "order_events",
+              "table",
+              "append-only audit"
+            ]
+          ],
+          "highlightRow": 2
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Also: `user_id`, `restaurant_id`, `created_at`, `order_items`",
+            "`UPDATE ... WHERE version = 7` stops racing transitions"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "5. Key APIs",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`POST /orders` with an ==Idempotency-Key==",
+            "`GET /orders/{id}` and `POST /orders/{id}/cancel`",
+            "Callbacks: restaurant accept, ready; rider pick up",
+            "Outbox relay publishes each event to Kafka"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "6. Failures and Metrics",
+          "ink": "pink"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No accept in **3 min**: timeout job auto-cancels, refunds",
+            "Duplicate request returns the stored result",
+            "Track order success rate and accept latency",
+            "Alert on orders non-terminal for > 1 hour"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "TAKEAWAY:",
+          "text": "Only the order service moves status, one versioned transition at a time, and every move is an event."
+        }
+      ],
+      "hero": "server",
+      "aside": "one source of truth",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Cart and Checkout",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Hold== pending items of **one** restaurant",
+            "==Price==: items, taxes, delivery, discounts, surge",
+            "==Validate== before the order is created"
+          ],
+          "style": "dot",
+          "frame": "none"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Cart and Checkout Path",
+            "rows": [
+              [
+                "app",
+                "gw"
+              ],
+              [
+                "cart",
+                "checkout"
+              ],
+              [
+                "redis",
+                "catalog",
+                "order"
+              ]
+            ],
+            "nodes": {
+              "app": {
+                "text": "Customer app",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "gw": {
+                "text": "API gateway",
+                "shape": "icon",
+                "icon": "apigateway"
+              },
+              "cart": {
+                "text": "Cart service",
+                "shape": "icon",
+                "icon": "shopping-cart"
+              },
+              "checkout": {
+                "text": "Checkout",
+                "shape": "icon",
+                "icon": "shield-check"
+              },
+              "redis": {
+                "text": "Redis cart",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "catalog": {
+                "text": "Catalog prices",
+                "shape": "icon",
+                "icon": "database"
+              },
+              "order": {
+                "text": "Order service",
+                "shape": "icon",
+                "icon": "server"
+              }
+            },
+            "edges": [
+              {
+                "from": "app",
+                "to": "gw"
+              },
+              {
+                "from": "gw",
+                "to": "cart"
+              },
+              {
+                "from": "gw",
+                "to": "checkout"
+              },
+              {
+                "from": "cart",
+                "to": "redis",
+                "label": "hash"
+              },
+              {
+                "from": "checkout",
+                "to": "catalog",
+                "label": "re-price"
+              },
+              {
+                "from": "checkout",
+                "to": "order",
+                "label": "CREATED"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Redis hash `cart:{user_id}`, ==24 h TTL==",
+            "Disposable: a lost cart costs one re-add",
+            "Re-price from catalog, **never** client prices"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "3. Checkout Flow",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "POST /checkout",
+            "rows": [
+              [
+                "v",
+                "c",
+                "t"
+              ],
+              [
+                "q",
+                "o"
+              ]
+            ],
+            "nodes": {
+              "v": {
+                "text": "Open, in stock?",
+                "shape": "diamond",
+                "ink": "blue"
+              },
+              "c": {
+                "text": "Apply coupon",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "t": {
+                "text": "Compute total",
+                "shape": "box",
+                "ink": "purple"
+              },
+              "q": {
+                "text": "Lock quote ~10 min",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "o": {
+                "text": "Order in CREATED",
+                "shape": "pill",
+                "ink": "green"
+              }
+            },
+            "edges": [
+              {
+                "from": "v",
+                "to": "c",
+                "label": "yes"
+              },
+              {
+                "from": "c",
+                "to": "t"
+              },
+              {
+                "from": "t",
+                "to": "q"
+              },
+              {
+                "from": "q",
+                "to": "o"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "json",
+          "lines": [
+            "{ \"restaurant_id\": 42,",
+            "  \"items\": [",
+            "    {\"item_id\": 7, \"qty\": 2,",
+            "     \"addons\": [3]} ],",
+            "  \"coupon\": \"WELCOME50\" }"
+          ],
+          "note": "ids and qty only, no prices"
+        },
+        {
+          "type": "heading",
+          "text": "5. APIs",
+          "ink": "red"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Endpoint",
+            "Does",
+            "Returns"
+          ],
+          "rows": [
+            [
+              "`PUT /cart/items`",
+              "add/change item",
+              "cart"
+            ],
+            [
+              "`GET /cart`",
+              "**re-priced** view",
+              "fresh total"
+            ],
+            [
+              "`POST /checkout`",
+              "validate, lock",
+              "`quote_id`"
+            ]
+          ],
+          "highlightRow": 2,
+          "frame": "solid"
+        },
+        {
+          "type": "heading",
+          "text": "6. Failures and Metrics",
+          "ink": "pink"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Price/stock change: return a ==diff== to confirm",
+            "Coupon abuse: per-user cap, atomic `INCR`",
+            "Quote over ~10 min: re-price first",
+            "Track **cart-to-order conversion**, checkout errors"
+          ],
+          "style": "cross",
+          "frame": "none"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Cart disposable, price not: re-price server-side, lock quote, create order."
+        }
+      ],
+      "hero": "shopping-cart",
+      "aside": "never trust client!",
+      "subtitle": "Food Delivery App"
+    },
+    {
+      "page_title": "Payment Service",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Charge ==exactly once==; retry reuses key",
+            "**UPI**, cards, wallets, COD",
+            "Refunds; reconcile with gateways",
+            "Gateway {green:tokens} only, no raw cards",
+            "==Multiple PSPs==; **fallback** tries another"
+          ],
+          "style": "dot",
+          "frame": "solid",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "2. High Level Design",
+            "rows": [
+              [
+                "app",
+                "svc",
+                "db"
+              ],
+              [
+                "router",
+                "upi",
+                "card"
+              ]
+            ],
+            "nodes": {
+              "app": {
+                "text": "Customer app",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "svc": {
+                "text": "Payment service",
+                "shape": "icon",
+                "icon": "shield-check"
+              },
+              "db": {
+                "text": "Payments DB",
+                "shape": "icon",
+                "icon": "postgresql"
+              },
+              "router": {
+                "text": "PSP router",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "upi": {
+                "text": "PSP A (UPI)",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "card": {
+                "text": "PSP B (cards)",
+                "shape": "icon",
+                "icon": "server"
+              }
+            },
+            "edges": [
+              {
+                "from": "app",
+                "to": "svc",
+                "label": "pay"
+              },
+              {
+                "from": "svc",
+                "to": "db",
+                "label": "record"
+              },
+              {
+                "from": "svc",
+                "to": "router"
+              },
+              {
+                "from": "router",
+                "to": "upi"
+              },
+              {
+                "from": "router",
+                "to": "card",
+                "label": "fallback"
+              }
+            ]
+          }
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "3. Payment Flow",
+            "rows": [
+              [
+                "order",
+                "intent",
+                "pay"
+              ],
+              [
+                "hook",
+                "placed"
+              ]
+            ],
+            "nodes": {
+              "order": {
+                "text": "Order CREATED",
+                "shape": "box",
+                "ink": "blue"
+              },
+              "intent": {
+                "text": "Intent created",
+                "shape": "box",
+                "ink": "purple"
+              },
+              "pay": {
+                "text": "Client pays at PSP",
+                "shape": "box",
+                "ink": "orange"
+              },
+              "hook": {
+                "text": "Webhook verified",
+                "shape": "diamond",
+                "ink": "red"
+              },
+              "placed": {
+                "text": "Order PLACED",
+                "shape": "pill",
+                "ink": "green"
+              }
+            },
+            "edges": [
+              {
+                "from": "order",
+                "to": "intent",
+                "label": "create"
+              },
+              {
+                "from": "intent",
+                "to": "pay",
+                "label": "client_secret"
+              },
+              {
+                "from": "pay",
+                "to": "hook",
+                "label": "PSP calls"
+              },
+              {
+                "from": "hook",
+                "to": "placed",
+                "label": "confirmed only"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model: payments, refunds",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "id, order_id",
+              "uuid",
+              "payment id"
+            ],
+            [
+              "amount, status",
+              "int, enum",
+              "paise; PENDING, CAPTURED, FAILED"
+            ],
+            [
+              "psp, psp_ref",
+              "text",
+              "gateway, its id"
+            ],
+            [
+              "idempotency_key",
+              "text, unique",
+              "`order_id:attempt`"
+            ],
+            [
+              "refunds",
+              "table",
+              "id, payment_id, amount, status"
+            ]
+          ],
+          "highlightRow": 3
+        },
+        {
+          "type": "heading",
+          "text": "5. APIs",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "POST /payments/intents",
+            "POST /webhooks/psp",
+            "POST /payments/{id}/refund"
+          ],
+          "note": "PLACED only from verified webhook"
+        },
+        {
+          "type": "heading",
+          "text": "6. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Lost webhook: poll PSP after ==30 s==",
+            "**Nightly** reconciliation catches mismatches",
+            "Cancel after payment: auto refund",
+            "Track success (> 97%), refund time, webhook lag"
+          ],
+          "style": "dot",
+          "frame": "solid",
+          "ink": "red"
+        }
+      ],
+      "hero": "credit-card",
+      "aside": "charge once only!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Rider Dispatch and Scoring",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Pick the ==rider== per order",
+            "Arrive **just as** food is ready",
+            "Balance speed, utilization, fairness"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Dispatch Pipeline",
+            "rows": [
+              [
+                "placed",
+                "dispatch",
+                "geo"
+              ],
+              [
+                "scorer",
+                "offer"
+              ]
+            ],
+            "nodes": {
+              "placed": {
+                "text": "Order PLACED",
+                "shape": "icon",
+                "icon": "zap"
+              },
+              "dispatch": {
+                "text": "Dispatch",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "geo": {
+                "text": "Redis geo",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "scorer": {
+                "text": "Scorer",
+                "shape": "icon",
+                "icon": "calculator"
+              },
+              "offer": {
+                "text": "Rider app",
+                "shape": "icon",
+                "icon": "bike"
+              }
+            },
+            "edges": [
+              {
+                "from": "placed",
+                "to": "dispatch",
+                "label": "event"
+              },
+              {
+                "from": "dispatch",
+                "to": "geo",
+                "label": "~3 km"
+              },
+              {
+                "from": "geo",
+                "to": "scorer",
+                "label": "available"
+              },
+              {
+                "from": "scorer",
+                "to": "offer",
+                "label": "top 1"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Redis geo== index per city cell",
+            "Fires at PLACED; offer delayed by prep minus travel",
+            "Score: pickup ETA, load, acceptance; top gets **20 s**",
+            "Batching can merge two nearby orders"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Score input",
+            "Signal",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Pickup ETA",
+              "travel to restaurant",
+              "food stays hot"
+            ],
+            [
+              "Current load",
+              "active_orders",
+              "spread the work"
+            ],
+            [
+              "Acceptance rate",
+              "past offers taken",
+              "fewer re-offers"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "3. Offer State Flow",
+          "ink": "orange"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Assignment States",
+            "rows": [
+              [
+                "pending",
+                "offered"
+              ],
+              [
+                "declined",
+                "accepted",
+                "timed_out"
+              ]
+            ],
+            "nodes": {
+              "pending": {
+                "text": "PENDING",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "offered": {
+                "text": "OFFERED",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "declined": {
+                "text": "DECLINED",
+                "shape": "pill",
+                "ink": "red"
+              },
+              "accepted": {
+                "text": "ACCEPTED",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "timed_out": {
+                "text": "TIMED_OUT",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "pending",
+                "to": "offered",
+                "label": "top rider"
+              },
+              {
+                "from": "offered",
+                "to": "accepted",
+                "label": "accept"
+              },
+              {
+                "from": "offered",
+                "to": "declined",
+                "label": "decline"
+              },
+              {
+                "from": "offered",
+                "to": "timed_out",
+                "label": "20 s"
+              },
+              {
+                "from": "declined",
+                "to": "offered",
+                "label": "next"
+              },
+              {
+                "from": "timed_out",
+                "to": "offered",
+                "label": "next"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One offer **at a time**, never a broadcast",
+            "Decline or timeout moves to the ==next rider==",
+            "Accept is final once the versioned write lands"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "rider.id",
+              "bigint",
+              "Primary key"
+            ],
+            [
+              "rider.status",
+              "enum",
+              "ONLINE, BUSY, OFFLINE"
+            ],
+            [
+              "rider.lat, lng",
+              "float",
+              "Last position"
+            ],
+            [
+              "rider.active_orders",
+              "int",
+              "Load, scored"
+            ],
+            [
+              "assignment.state",
+              "enum",
+              "order, rider, state"
+            ]
+          ]
+        }
+      ],
+      "hero": "bike",
+      "aside": "fair + fast!",
+      "subtitle": "Food Delivery App"
+    },
+    {
+      "page_title": "Offer Locking and Rider Failures",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "TIP:",
+          "text": "Delay the offer by prep time minus travel time, so the rider does not wait at the restaurant."
+        },
+        {
+          "type": "heading",
+          "text": "1. APIs and Locking",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "-- POST /riders/{id}/offers/{oid}/accept",
+            "UPDATE assignment",
+            "SET rider_id=:r, state='ACCEPTED',",
+            "    version=version+1",
+            "WHERE order_id=:o AND version=:v;"
+          ],
+          "note": "0 rows updated means you lost",
+          "result": {
+            "headers": [
+              "Rider",
+              "Rows",
+              "Outcome"
+            ],
+            "rows": [
+              [
+                "A",
+                "1",
+                "wins"
+              ],
+              [
+                "B",
+                "0",
+                "rejected"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "2. Failures and Metrics",
+          "ink": "pink"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "No taker: widen radius, ==incentive==, **alert ops** at 5 min",
+            "Rider offline mid-delivery: reassign order",
+            "Track assignment time (**< 60 s**), acceptance, idle time, ETA error"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "One rider at a time; a versioned write picks the winner."
+        }
+      ],
+      "hero": "bike",
+      "subtitle": "Food Delivery App"
+    },
+    {
+      "page_title": "Real-Time Order Tracking",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Show the rider's ==live position== on the customer's map",
+            "Show an accurate ==ETA==, recomputed as traffic changes",
+            "Keep freshness **under 5 s** for 500K active riders"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Rider to Customer Pipeline",
+            "rows": [
+              [
+                "rider",
+                "ingest"
+              ],
+              [
+                "redis",
+                "kafka",
+                "eta"
+              ],
+              [
+                "gateway",
+                "customer"
+              ]
+            ],
+            "nodes": {
+              "rider": {
+                "text": "Rider app",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "ingest": {
+                "text": "Ingest service",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "redis": {
+                "text": "Redis (latest)",
+                "shape": "icon",
+                "icon": "redis"
+              },
+              "kafka": {
+                "text": "Kafka (history)",
+                "shape": "icon",
+                "icon": "apachekafka"
+              },
+              "eta": {
+                "text": "ETA service",
+                "shape": "icon",
+                "icon": "clock"
+              },
+              "gateway": {
+                "text": "Push gateway",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "customer": {
+                "text": "Customer app",
+                "shape": "icon",
+                "icon": "smartphone"
+              }
+            },
+            "edges": [
+              {
+                "from": "rider",
+                "to": "ingest",
+                "label": "ping 4 s"
+              },
+              {
+                "from": "ingest",
+                "to": "redis"
+              },
+              {
+                "from": "ingest",
+                "to": "kafka"
+              },
+              {
+                "from": "redis",
+                "to": "gateway"
+              },
+              {
+                "from": "eta",
+                "to": "gateway",
+                "label": "~30 s"
+              },
+              {
+                "from": "gateway",
+                "to": "customer",
+                "label": "WS / SSE"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "500K riders ÷ 4 s ping = ==125K writes/s==, via stateless ingest",
+            "Redis keeps latest position only; Kafka feeds cold history",
+            "Gateway subscribes to the order's rider channel and forwards updates",
+            "ETA recomputed ~30 s from road graph and traffic"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "3. Connection States",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Client Connection Lifecycle",
+            "rows": [
+              [
+                "connecting",
+                "live"
+              ],
+              [
+                "reconnecting",
+                "polling"
+              ]
+            ],
+            "nodes": {
+              "connecting": {
+                "text": "Connecting",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "live": {
+                "text": "Live stream",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "reconnecting": {
+                "text": "Reconnecting",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "polling": {
+                "text": "Polling 10 s",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "connecting",
+                "to": "live",
+                "label": "socket open"
+              },
+              {
+                "from": "live",
+                "to": "reconnecting",
+                "label": "socket drops"
+              },
+              {
+                "from": "reconnecting",
+                "to": "live",
+                "label": "backoff ok"
+              },
+              {
+                "from": "reconnecting",
+                "to": "polling",
+                "label": "still failing"
+              },
+              {
+                "from": "polling",
+                "to": "live",
+                "label": "socket back"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Data Model and APIs",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "http",
+          "lines": [
+            "HSET rider:{id} lat lng ts",
+            "EXPIRE rider:{id} 60",
+            "GET /orders/{id}/track",
+            "WS /track/{order_id}"
+          ],
+          "note": "history goes to time-series store or S3",
+          "result": {
+            "headers": [
+              "Field",
+              "Value"
+            ],
+            "rows": [
+              [
+                "lat",
+                "12.97"
+              ],
+              [
+                "lng",
+                "77.59"
+              ],
+              [
+                "ts",
+                "epoch ms"
+              ],
+              [
+                "TTL",
+                "60 s"
+              ]
+            ]
+          }
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "TIP:",
+          "text": "The 60 s TTL drops offline riders automatically, so no cleanup job is needed."
+        },
+        {
+          "type": "heading",
+          "text": "5. Failures and Metrics",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Socket drops: reconnect with ==backoff==, then poll every 10 s",
+            "Stationary rider: **throttle** pings to save battery",
+            "Track update lag p99, against the 5 s target",
+            "Track ETA error versus actual delivery time",
+            "Track connection count per gateway"
+          ],
+          "style": "check"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Keep only the latest ping in Redis, stream it over WebSocket, and fall back to polling."
+        }
+      ],
+      "hero": "map-pin",
+      "aside": "fresh under 5 s!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Notifications",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Responsibilities",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Tell all parties about ==every order event==",
+            "Push, SMS, in-app, email; dedupe on `event_id`",
+            "Restaurant alerts **retry louder** than customer ones"
+          ],
+          "style": "dot"
+        },
+        {
+          "type": "heading",
+          "text": "2. High Level Design",
+          "ink": "green"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "Notification Pipeline",
+            "rows": [
+              [
+                "kafka",
+                "svc"
+              ],
+              [
+                "push",
+                "sms",
+                "mail"
+              ],
+              [
+                "fcm",
+                "smsv",
+                "mailv"
+              ]
+            ],
+            "nodes": {
+              "kafka": {
+                "text": "order events (Kafka)",
+                "shape": "icon",
+                "icon": "apachekafka"
+              },
+              "svc": {
+                "text": "Template + prefs",
+                "shape": "icon",
+                "icon": "server"
+              },
+              "push": {
+                "text": "Push worker",
+                "shape": "icon",
+                "icon": "smartphone"
+              },
+              "sms": {
+                "text": "SMS worker",
+                "shape": "icon",
+                "icon": "message-square"
+              },
+              "mail": {
+                "text": "Email worker",
+                "shape": "icon",
+                "icon": "mail"
+              },
+              "fcm": {
+                "text": "FCM / APNs",
+                "shape": "icon",
+                "icon": "bell"
+              },
+              "smsv": {
+                "text": "SMS vendor",
+                "shape": "icon",
+                "icon": "network"
+              },
+              "mailv": {
+                "text": "Email vendor",
+                "shape": "icon",
+                "icon": "network"
+              }
+            },
+            "edges": [
+              {
+                "from": "kafka",
+                "to": "svc",
+                "label": "order.accepted"
+              },
+              {
+                "from": "svc",
+                "to": "push",
+                "label": "channel + language"
+              },
+              {
+                "from": "svc",
+                "to": "sms"
+              },
+              {
+                "from": "svc",
+                "to": "mail"
+              },
+              {
+                "from": "push",
+                "to": "fcm"
+              },
+              {
+                "from": "sms",
+                "to": "smsv"
+              },
+              {
+                "from": "mail",
+                "to": "mailv"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "3. Delivery State Machine",
+          "ink": "red"
+        },
+        {
+          "type": "diagram",
+          "kind": "flowchart",
+          "spec": {
+            "title": "One Notification's Life",
+            "rows": [
+              [
+                "recv",
+                "rend",
+                "pushed"
+              ],
+              [
+                "deliv",
+                "smsd",
+                "fail"
+              ]
+            ],
+            "nodes": {
+              "recv": {
+                "text": "RECEIVED",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "rend": {
+                "text": "RENDERED",
+                "shape": "pill",
+                "ink": "blue"
+              },
+              "pushed": {
+                "text": "PUSH_SENT",
+                "shape": "pill",
+                "ink": "purple"
+              },
+              "deliv": {
+                "text": "DELIVERED",
+                "shape": "pill",
+                "ink": "green"
+              },
+              "smsd": {
+                "text": "SMS_SENT",
+                "shape": "pill",
+                "ink": "orange"
+              },
+              "fail": {
+                "text": "FAILED (DLQ)",
+                "shape": "pill",
+                "ink": "red"
+              }
+            },
+            "edges": [
+              {
+                "from": "recv",
+                "to": "rend",
+                "label": "new event_id"
+              },
+              {
+                "from": "rend",
+                "to": "pushed",
+                "label": "push first"
+              },
+              {
+                "from": "pushed",
+                "to": "deliv",
+                "label": "device ack"
+              },
+              {
+                "from": "pushed",
+                "to": "smsd",
+                "label": "no ack / uninstalled"
+              },
+              {
+                "from": "smsd",
+                "to": "deliv",
+                "label": "SMS ok"
+              },
+              {
+                "from": "smsd",
+                "to": "fail",
+                "label": "retries used up"
+              }
+            ]
+          }
+        },
+        {
+          "type": "heading",
+          "text": "4. Table Schema",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Column",
+            "Type",
+            "Description"
+          ],
+          "rows": [
+            [
+              "id",
+              "uuid",
+              "primary key"
+            ],
+            [
+              "user_id",
+              "bigint",
+              "recipient"
+            ],
+            [
+              "event_id",
+              "uuid",
+              "dedupe key per channel"
+            ],
+            [
+              "channel, status",
+              "enum",
+              "push/sms/in-app/email; state"
+            ],
+            [
+              "sent_at",
+              "timestamp",
+              "UTC send time"
+            ]
+          ]
+        },
+        {
+          "type": "sidebox",
+          "title": "5. APIs and Retries",
+          "items": [
+            "`POST /notify` for ==ops== and marketing",
+            "`user_prefs(user_id, channel, lang, opted_in)`",
+            "**Exponential** retry 1/2/4 s, then DLQ"
+          ],
+          "ink": "blue"
+        },
+        {
+          "type": "sidebox",
+          "title": "6. Failures and Metrics",
+          "items": [
+            "SMS outage: ==secondary provider==; per-user rate limit",
+            "Peak ~500 orders/s × ~4 events ≈ 2K sends/s",
+            "Track delivery rate, p99 < 5 s, opt-outs"
+          ],
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "banner",
+          "title": "INTERVIEW TAKEAWAY:",
+          "text": "Dedupe on event_id, push first, SMS fallback, DLQ: no event lost or sent twice."
+        }
+      ],
+      "hero": "bell",
+      "aside": "dedupe, then send!",
+      "subtitle": "(Food Delivery App)"
+    },
+    {
+      "page_title": "Scale, Failures and Interview Qs",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "1. Scaling and caching",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Layer",
+            "Technique",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Orders DB",
+              "shard `city`/`user_id`",
+              "~500 orders/s"
+            ],
+            [
+              "Services",
+              "autoscale alone",
+              "scale alone"
+            ],
+            [
+              "History",
+              "read replicas",
+              "offload reads"
+            ],
+            [
+              "Peak",
+              "prewarm 7-9 pm",
+              "no cold start"
+            ],
+            [
+              "Menus",
+              "CDN + Redis 60 s",
+              "~30K QPS"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==Kafka== absorbs order, ping bursts",
+            "Dispatch, notifications **lag**, never fail",
+            "Festival spike ~1,000 orders/s (2x)"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "2. Failure handling",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Timeouts** on every cross-service call",
+            "Retries with ==jitter==, not lockstep",
+            "==Circuit breakers== cut sick services",
+            "==Bulkheads== stop pool starvation",
+            "Multi-AZ plus warm standby region",
+            "Degrade: recommendations off first, never checkout"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "delay = min(cap, base * 2**n)",
+            "sleep(random(0, delay))  # jitter"
+          ],
+          "note": "jitter stops retry stampedes"
+        },
+        {
+          "type": "heading",
+          "text": "3. Trade-offs",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choice",
+            "Pick",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "Orders, payments",
+              "strong",
+              "slower writes"
+            ],
+            [
+              "Search, tracking",
+              "eventual",
+              "stale seconds"
+            ],
+            [
+              "Push WebSocket",
+              "fresh position",
+              "dearer than polling"
+            ],
+            [
+              "Batch orders",
+              "cheaper",
+              "slower delivery"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "4. Interview questions",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "Answer"
+          ],
+          "rows": [
+            [
+              "Double charge?",
+              "idempotency key"
+            ],
+            [
+              "Fair rider?",
+              "score ETA, load, acceptance"
+            ],
+            [
+              "No accept?",
+              "3 min timeout, cancel, refund"
+            ],
+            [
+              "Festival spike?",
+              "prewarm, Kafka, autoscale"
+            ],
+            [
+              "Fresh search?",
+              "CDC into Elasticsearch"
+            ]
+          ]
+        },
+        {
+          "type": "heading",
+          "text": "5. Common mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Trusting **client prices** at checkout",
+            "Advancing orders on **client** payment",
+            "One global database for everything",
+            "Polling rider locations from Postgres",
+            "No ==idempotency keys== on writes"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "lightbulb",
+      "aside": "last page!",
+      "subtitle": "(Food Delivery App)"
+    }
+  ],
+  "caption": {
+    "text": "How would you design Zomato or Swiggy for millions of users? 🍔📱\n\nThis is one of the most common system design interview questions, and most people jump straight to the database. Start with the requirements instead.\n\nThis carousel walks through the whole design, page by page:\n\n1️⃣ The interview prompt: Food Delivery App System Design\n2️⃣ Requirements and scale estimates\n3️⃣ High-level architecture\n4️⃣ Restaurant discovery and search\n5️⃣ Order service and state machine\n6️⃣ Cart and checkout\n7️⃣ Payments\n8️⃣ Delivery partner assignment\n9️⃣ Real-time order tracking\n🔟 Notifications\n1️⃣1️⃣ Scaling, failure handling, trade-offs and interview questions\n\nSave this for your next interview prep session and share it with a friend who is preparing for system design rounds. 📌\n\nComment “food” to get the full system design PDF.",
+    "hashtags": [
+      "#systemdesign",
+      "#systemdesigninterview",
+      "#foodDeliveryApp",
+      "#zomato",
+      "#swiggy",
+      "#softwareengineering",
+      "#backenddevelopment",
+      "#techinterview",
+      "#codinginterview",
+      "#handwrittennotes",
+      "#learntocode",
+      "#iolar"
+    ]
+  }
+}

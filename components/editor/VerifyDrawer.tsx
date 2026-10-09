@@ -25,6 +25,9 @@ export default function VerifyDrawer({
   const [review, setReview] = useState<Review | null>(null);
   const [current, setCurrent] = useState(false);
   const [busy, setBusy] = useState<'' | 'gates' | 'full' | 'fix'>('');
+  // Checks alone are not a review: they miss what only the full review sees (facts, visuals),
+  // and publishing reads the saved full review, so a clean pre-flight must not say "publish".
+  const [gatesOnly, setGatesOnly] = useState(false);
 
   const base = `/api/handbooks/${subject}/${chapter}/parts/${part}`;
 
@@ -33,6 +36,7 @@ export default function VerifyDrawer({
     fetch(`${base}/review`).then((r) => r.json()).then((d) => {
       setReview(d.review ?? null);
       setCurrent(!!d.current);
+      setGatesOnly(false);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, subject, chapter, part]);
@@ -50,9 +54,10 @@ export default function VerifyDrawer({
       if (!r.ok) throw new Error(d.error ?? 'review failed');
       setReview(d.review);
       setCurrent(!!d.current);
+      setGatesOnly(mode === 'gates');
       const blockers = d.review.findings.filter((f: Finding) => f.severity === 'blocker').length;
       if (blockers) message.warning(`${blockers} blocker(s) — publishing is held until they clear`);
-      else message.success('No blockers');
+      else message.success(mode === 'gates' ? 'Checks pass — run the full review to clear it for publishing' : 'No blockers');
     } catch (err) {
       message.error(String(err));
     } finally {
@@ -124,10 +129,14 @@ export default function VerifyDrawer({
         ) : (
           <>
             <Alert
-              type={review.passed ? 'success' : 'error'}
+              type={!review.passed ? 'error' : gatesOnly ? 'info' : 'success'}
               showIcon
               style={{ marginBottom: 14 }}
-              title={review.passed ? 'No blockers — this part can be published' : `${blockers.length} blocker(s) hold publishing`}
+              title={!review.passed
+                ? `${blockers.length} blocker(s) hold publishing`
+                : gatesOnly
+                  ? 'Checks pass — only the full review can clear this part for publishing'
+                  : 'No blockers — this part can be published'}
               description={`${findings.length} finding(s) · reviewed ${new Date(review.generatedAt).toLocaleString()}`}
             />
 

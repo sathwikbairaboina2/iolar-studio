@@ -1,0 +1,246 @@
+{
+  "title": "10 Database Concepts You Can't Skip in System Design Interviews",
+  "summary": "Ten core database concepts, from indexing and transactions through isolation, MVCC, pooling, partitioning, replication and sharding. Each chapter covers what it is, why it exists, how it works with a concrete example, its trade-offs, and the interview takeaway.",
+  "chapters": [
+    {
+      "title": "Indexing",
+      "points": [
+        "What it is: a separate sorted structure (usually a B-tree) that maps column values to row locations, so lookups skip scanning the whole table",
+        "Why it exists: a full scan of 10M rows is O(n); a B-tree lookup is O(log n), about 3-4 page reads",
+        "Used for: WHERE filters, JOIN keys, ORDER BY, and enforcing UNIQUE constraints",
+        "How it works: CREATE INDEX idx_users_email ON users(email); SELECT * FROM users WHERE email='a@x.com' changes from Seq Scan (10M rows) to Index Scan (1 row); check with EXPLAIN ANALYZE",
+        "Composite index (country, created_at) serves queries on country alone or country plus created_at, but not created_at alone (leftmost-prefix rule)",
+        "Benefit: reads on selective predicates drop from seconds to milliseconds",
+        "Benefit: a covering index (INCLUDE the selected columns) answers the query from the index alone, with no table fetch",
+        "Benefit: range scans and sorted output come for free because B-tree entries are ordered",
+        "Consider: every INSERT, UPDATE and DELETE must also update each index, so write cost grows with index count",
+        "Consider: low-cardinality columns (e.g. boolean is_active) rarely benefit, and wrapping the column in a function (LOWER(email)) bypasses the index",
+        "Interview takeaway: index for your read patterns, order composite columns by the leftmost-prefix rule, and always justify the write-amplification cost"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Transactions",
+      "points": [
+        "What it is: a group of statements executed as one all-or-nothing unit of work, delimited by BEGIN and COMMIT/ROLLBACK",
+        "Why it exists: real operations span several writes, and a crash halfway must not leave half-applied state",
+        "Used for: money transfers, order plus inventory updates, any multi-row invariant",
+        "How it works: BEGIN; UPDATE accounts SET bal=bal-100 WHERE id=1; UPDATE accounts SET bal=bal+100 WHERE id=2; COMMIT; if the second UPDATE fails, ROLLBACK restores account 1 to its old balance",
+        "Under the hood the write-ahead log (WAL) records changes before data pages, so a crash can redo committed work and undo uncommitted work",
+        "Benefit: invariants such as 'total money is constant' hold across multiple statements",
+        "Benefit: error handling is simple, because any failure rolls everything back",
+        "Benefit: other sessions never see your uncommitted intermediate state (subject to isolation level)",
+        "Consider: long-running transactions hold locks and bloat the log or old row versions, so keep them short",
+        "Consider: never do network calls (payment API, email) inside an open transaction, because it holds locks while waiting on the network",
+        "Interview takeaway: use a transaction whenever several writes must succeed together, scope it as small as possible, and know that cross-service work needs sagas, not one transaction"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "ACID",
+      "points": [
+        "What it is: four guarantees a transactional database gives: Atomicity, Consistency, Isolation, Durability",
+        "Why it exists: it gives developers a predictable contract so application code need not handle partial failures and races by hand",
+        "Used for: judging whether a store (PostgreSQL, MySQL InnoDB) fits financial or order data versus a looser NoSQL store",
+        "How it works, Atomicity: transfer of $100 either applies both updates or neither, via undo information",
+        "How it works, Consistency: constraints (CHECK balance >= 0, foreign keys) move the DB only from one valid state to another; an overdraft transfer is rejected",
+        "How it works, Isolation: concurrent transactions behave as if run in some serial order, to a degree set by the isolation level",
+        "How it works, Durability: once COMMIT returns, the change survives a crash because the WAL is fsynced to disk first",
+        "Benefit: correctness for money-like data without custom recovery code",
+        "Consider: the 'C' in ACID is about application invariants, and the database only enforces the constraints you declare; it is not the same as 'C' in CAP",
+        "Consider: durability costs an fsync per commit, and turning it off (synchronous_commit=off) trades up to a few hundred ms of lost commits for speed",
+        "Interview takeaway: be able to give one concrete failure each property prevents, and contrast with BASE systems that trade ACID for availability and scale"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Isolation Levels",
+      "points": [
+        "What it is: a setting that controls how much concurrent transactions can see of each other's work",
+        "Why it exists: full serial execution is correct but slow, so levels let you pick a point between safety and throughput",
+        "Used for: choosing the weakest level that still prevents the anomalies your workload cannot tolerate",
+        "How it works, anomalies: dirty read (see uncommitted data), non-repeatable read (same row read twice differs), phantom read (same query returns new rows), write skew (two txns each read, then write disjoint rows that break a shared rule)",
+        "Comparison table: Read Uncommitted allows all of them; Read Committed blocks dirty reads; Repeatable Read also blocks non-repeatable reads (and phantoms in PostgreSQL and MySQL InnoDB); Serializable blocks all",
+        "Example: two on-call doctors each run SELECT count(*) FROM oncall (returns 2), then each removes themselves; under Repeatable Read both commit and zero remain (write skew); Serializable aborts one",
+        "Defaults: PostgreSQL and Oracle use Read Committed; MySQL InnoDB uses Repeatable Read",
+        "Benefit: higher levels give stronger correctness with no application-side locking code",
+        "Consider: Serializable can abort transactions (PostgreSQL error 40001), so the application must retry",
+        "Consider: assuming 'Repeatable Read' means the same thing in every database, when the exact guarantees differ by engine",
+        "Interview takeaway: name the anomaly you are guarding against, pick the level for it, and mention retry logic for Serializable"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Locking",
+      "points": [
+        "What it is: a mechanism where a transaction reserves a row, page or table so others cannot conflict with it",
+        "Why it exists: when two transactions write the same data, one must wait or fail to avoid lost updates",
+        "Used for: preventing lost updates, serializing critical sections such as stock decrement or seat booking",
+        "How it works, shared vs exclusive: shared (S) locks allow many readers; exclusive (X) locks allow one writer and block all others",
+        "Pessimistic example: BEGIN; SELECT stock FROM items WHERE id=7 FOR UPDATE; UPDATE items SET stock=stock-1 WHERE id=7; COMMIT; a second buyer blocks at FOR UPDATE until the first commits",
+        "Optimistic example: UPDATE items SET stock=stock-1, version=version+1 WHERE id=7 AND version=12; if 0 rows are updated, someone else won, so retry",
+        "Benefit: pessimistic locking is simple and safe under high contention on hot rows",
+        "Benefit: optimistic locking holds no locks, so it scales well when conflicts are rare",
+        "Consider: deadlock, where T1 locks A then wants B while T2 locks B then wants A; the DB kills one victim, so always lock rows in a consistent order",
+        "Consider: locking far more than needed (a table lock, or FOR UPDATE with no index) throttles throughput",
+        "Interview takeaway: pessimistic for high contention, optimistic with a version column for low contention, and always mention deadlock avoidance"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "MVCC",
+      "points": [
+        "What it is: Multi-Version Concurrency Control, where the DB keeps several versions of a row and each transaction reads a consistent snapshot",
+        "Why it exists: pure locking makes readers and writers block each other, which hurts throughput",
+        "Used for: PostgreSQL, MySQL InnoDB and Oracle to give snapshot reads with no read locks",
+        "How it works: each row version carries creator and deleter transaction IDs (xmin/xmax in PostgreSQL); a query sees only versions committed before its snapshot was taken",
+        "Example: T1 (txid 100) runs UPDATE price=20 on a row where price=10; the old version stays visible to T2 (snapshot before 100) which reads 10, while new transactions read 20",
+        "Benefit: readers never block writers and writers never block readers",
+        "Benefit: consistent point-in-time reads, so a long report sees one stable snapshot",
+        "Consider: old versions pile up (dead tuples), and PostgreSQL needs VACUUM to reclaim them or tables and indexes bloat",
+        "Consider: a long-running transaction pins old versions and blocks cleanup, so watch for idle-in-transaction sessions",
+        "Consider: writers on the same row still conflict, so MVCC reduces locking but does not remove it",
+        "Interview takeaway: MVCC is how Read Committed and Repeatable Read get non-blocking reads; the cost is version storage and vacuum"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Connection Pooling",
+      "points": [
+        "What it is: keeping a fixed set of open database connections that app requests borrow and return, instead of opening one per request",
+        "Why it exists: a connection costs a TCP and auth handshake (tens of ms) and server memory (PostgreSQL forks a process, roughly 5-10 MB each)",
+        "Used for: web apps, APIs and serverless functions that hit the DB at high request rates",
+        "How it works: pool of 20 connections; 200 concurrent requests queue for a free connection, run their query in about 5 ms and return it; tools include HikariCP in-app and PgBouncer as an external proxy",
+        "Sizing rule of thumb: pool size is about (CPU cores x 2) + effective disk spindles, so a 4-core DB needs roughly 10 connections, not 500",
+        "Benefit: removes per-request handshake latency",
+        "Benefit: caps concurrent queries so the DB is not overloaded past max_connections",
+        "Benefit: PgBouncer in transaction mode lets thousands of clients share a few dozen server connections",
+        "Consider: a pool that is too large causes context-switching and slower queries; too small makes requests queue",
+        "Consider: leaked connections (never returned after an exception) drain the pool, so always release in finally, and session state like SET or prepared statements breaks in transaction pooling",
+        "Interview takeaway: bigger is not better, so size the pool to the DB and put a proxy like PgBouncer in front when many app instances or serverless functions connect"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Partitioning",
+      "points": [
+        "What it is: splitting one large table into smaller physical pieces (partitions) inside a single database server, while queries still see one logical table",
+        "Why it exists: huge tables make scans, index maintenance and deletes of old data slow",
+        "Used for: time-series and log data, dropping old data cheaply, and speeding up queries that filter on the partition key",
+        "How it works: CREATE TABLE events (id bigint, ts date, ...) PARTITION BY RANGE (ts); create events_2026_09 for FOR VALUES FROM ('2026-09-01') TO ('2026-10-01'); a query with WHERE ts >= '2026-09-15' touches only that partition (partition pruning)",
+        "Strategies: range (dates), list (country code), hash (user_id mod N) for even spread",
+        "Benefit: partition pruning shrinks the data scanned, and each partition has smaller indexes",
+        "Benefit: retention becomes DROP PARTITION (instant) instead of a slow DELETE with vacuum",
+        "Consider: queries that do not filter on the partition key scan every partition, so no gain",
+        "Consider: the partition key must be chosen up front, and primary keys and unique constraints usually have to include it",
+        "Partitioning vs sharding: partitioning stays on one server, while sharding spreads data across many servers",
+        "Interview takeaway: partition for manageability and pruning on one machine, and choose a key that matches your most common filter"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Replication",
+      "points": [
+        "What it is: copying data from a primary database to one or more replicas, usually by streaming the write-ahead log",
+        "Why it exists: to survive node failure (high availability) and to scale reads beyond one machine",
+        "Used for: read replicas for dashboards and search pages, failover standbys, and cross-region copies",
+        "How it works: app writes go to the primary; the primary ships WAL records to 2 replicas; read queries are load-balanced to replicas, and on primary failure a replica is promoted",
+        "Sync vs async: synchronous waits for a replica ack before commit (no data loss, higher latency); asynchronous returns immediately (fast, but a crash can lose the last few transactions)",
+        "Topologies: single-leader (most common), multi-leader (multi-region writes, needs conflict resolution), leaderless (Dynamo-style quorum, R+W>N)",
+        "Benefit: high availability, with failover in seconds to minutes",
+        "Benefit: read throughput scales by adding replicas",
+        "Consider: replication lag means a user may write, then read from a stale replica and not see it; mitigate with read-your-writes (route that user to the primary briefly)",
+        "Consider: replicas scale reads only, so write throughput and total data size stay bounded by the one primary",
+        "Interview takeaway: replication gives availability and read scale, trades off consistency via lag, and does not fix write scaling, which is what sharding is for"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Sharding",
+      "points": [
+        "What it is: horizontally splitting data across multiple independent database servers (shards), each holding a subset of the rows",
+        "Why it exists: one machine's disk, memory and write throughput are finite, and replication cannot scale writes",
+        "Used for: very large datasets and write-heavy systems such as social feeds, messaging and multi-tenant SaaS",
+        "How it works: shard_id = hash(user_id) % 4; user 1001 gives hash 7 and 7 % 4 = 3, so rows for user 1001 live on shard 3 and the router sends queries there",
+        "Strategies: hash (even spread, bad range scans), range (easy ranges, risk of hot shard), directory lookup (flexible, extra hop), consistent hashing (adding a node moves only about 1/N of keys)",
+        "Benefit: writes and storage scale roughly linearly by adding shards",
+        "Benefit: a failure or load spike is contained to one shard",
+        "Consider: cross-shard joins and transactions are slow or need two-phase commit or sagas, so design queries to hit one shard",
+        "Consider: a bad key creates hot spots (a celebrity user, or a monotonically increasing ID on range sharding), and resharding is costly",
+        "Consider: operational complexity grows, so exhaust indexing, caching, replicas and partitioning first",
+        "Interview takeaway: shard last, pick a shard key with high cardinality that matches your access pattern, and be ready to discuss resharding and cross-shard queries"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    }
+  ]
+}

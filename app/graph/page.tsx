@@ -1,7 +1,7 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { Alert, Card, Input, List, Segmented, Tabs, Tag, Typography } from 'antd';
+import { Alert, Card, Input, Segmented, Tabs, Tag, Typography } from 'antd';
 import dynamic from 'next/dynamic';
 import GraphCanvas from '@/components/graph/GraphCanvas';
 import type { ViewEdge, ViewNode } from '@/lib/knowledge/view';
@@ -161,16 +161,14 @@ export default function GraphPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <Input.Search placeholder="search labels…" value={q} onChange={(e) => setQ(e.target.value)} onSearch={() => void search()} />
           {found.length > 0 && (
-            <List
-              size="small"
-              dataSource={found}
-              renderItem={(n) => (
-                <List.Item onClick={() => setSelected(n)} style={{ cursor: 'pointer' }}>
+            <Rows>
+              {found.map((n, i) => (
+                <Row key={i} onClick={() => setSelected(n)}>
                   <Tag>{n.kind}</Tag>
                   {n.label}
-                </List.Item>
-              )}
-            />
+                </Row>
+              ))}
+            </Rows>
           )}
           <Input
             placeholder="ask by meaning…"
@@ -181,17 +179,15 @@ export default function GraphPage() {
             }}
           />
           {hits.length > 0 && (
-            <List
-              size="small"
-              dataSource={hits}
-              renderItem={(h) => (
-                <List.Item>
+            <Rows>
+              {hits.map((h, i) => (
+                <Row key={i}>
                   <Tag>{h.collection}</Tag>
                   <span style={{ fontVariantNumeric: 'tabular-nums', marginRight: 8 }}>{h.score.toFixed(2)}</span>
                   {h.text.slice(0, 160)}
-                </List.Item>
-              )}
-            />
+                </Row>
+              ))}
+            </Rows>
           )}
           {selected && (
             <Card
@@ -210,6 +206,22 @@ export default function GraphPage() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** A small divided list; antd's List is deprecated and Listy is a virtual scroller, overkill here. */
+function Rows({ children }: { children: ReactNode }) {
+  return <div style={{ display: 'grid' }}>{children}</div>;
+}
+
+function Row({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{ padding: '8px 0', borderBottom: '1px solid rgba(5, 5, 5, 0.06)', cursor: onClick ? 'pointer' : undefined }}
+    >
+      {children}
     </div>
   );
 }

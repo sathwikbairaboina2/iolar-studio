@@ -1,0 +1,1651 @@
+{
+  "brand": "iolar",
+  "template": "study-sheet",
+  "ratio": "3:4",
+  "seed": 42,
+  "series": "ASYNC DATABASES IN PYTHON",
+  "date": "26/09/2026",
+  "slides": [
+    {
+      "page_title": "Why Async Database Access",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. Definition",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "The ==event loop== runs on **one** thread",
+            "A blocking call (`psycopg2`, `sqlite3`, sync `redis-py`) freezes it",
+            "Every other coroutine waits until that call returns",
+            "An ==async driver== yields at network I/O instead"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "# sync driver: loop frozen",
+            "rows = cur.fetchall()",
+            "# async driver: loop keeps going",
+            "rows = await conn.fetch(sql)"
+          ],
+          "note": "only await hands control back"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Mechanism",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "Task A",
+                "sub": "await conn.fetch()",
+                "ink": "blue"
+              },
+              {
+                "text": "Loop",
+                "sub": "serves Task B, C…",
+                "ink": "purple"
+              },
+              {
+                "text": "Postgres",
+                "sub": "works, replies",
+                "ink": "orange"
+              },
+              {
+                "text": "Task A",
+                "sub": "resumes with rows",
+                "ink": "green"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Async gives more ==concurrency==, not a faster query",
+            "A 200 ms query is **still** 200 ms",
+            "The win: many requests wait on I/O together"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Driver",
+            "1 query",
+            "10 at once"
+          ],
+          "rows": [
+            [
+              "sync",
+              "200 ms",
+              "~2000 ms"
+            ],
+            [
+              "async",
+              "200 ms",
+              "__~200 ms__"
+            ]
+          ],
+          "highlightRow": 1,
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 3. Comparison",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "DB",
+            "Sync",
+            "Async"
+          ],
+          "rows": [
+            [
+              "{icon:postgresql} Postgres",
+              "psycopg2",
+              "**asyncpg** (binary), psycopg 3"
+            ],
+            [
+              "{icon:sqlite} SQLite",
+              "sqlite3",
+              "aiosqlite (thread)"
+            ],
+            [
+              "{icon:redis} Redis",
+              "redis-py",
+              "redis.asyncio"
+            ],
+            [
+              "{icon:mysql} MySQL",
+              "PyMySQL",
+              "aiomysql / asyncmy"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "DB is still the limit",
+          "text": "1000 coroutines on 10 connections: **990** wait on the pool. Sizing is in part 2, p.2."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**Sync** ORM inside `async def`: tests pass, server stalls under load",
+            "One blocking `sqlite3` call delays **every** request",
+            "Expecting async to speed up a slow query",
+            "Treating 1000 tasks as 1000 parallel queries"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "asyncio.run(main(), debug=True)",
+            "# WARNING Executing <Task ...>",
+            "#   took 0.212 seconds"
+          ],
+          "note": "flags callbacks blocking over 100 ms"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. Takeaways",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Every DB call in `async def` must be ==awaited==",
+            "Sync-only library → `asyncio.to_thread()` (next page)",
+            "The **database** and pool cap throughput, not the loop",
+            "Run with `debug=True` in dev to catch stalls"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause"
+          ],
+          "rows": [
+            [
+              "all requests slow together",
+              "==blocking== sync call"
+            ],
+            [
+              "p99 spikes under load",
+              "pool exhausted"
+            ],
+            [
+              "one endpoint slow",
+              "the query **itself**"
+            ]
+          ],
+          "frame": "dashed"
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Don't block the loop"
+    },
+    {
+      "page_title": "Escaping Blocking Calls with to_thread",
+      "blocks": [
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Quick audit",
+          "text": "Search `async def` bodies for `psycopg2`, `sqlite3`, `requests`: each one **blocks** the loop."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 6. Escape hatch: to_thread",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "def legacy(uid):  # sync lib",
+            "    return sync_orm.get(uid)",
+            "",
+            "user = await asyncio.to_thread(",
+            "    legacy, 42)  # off the loop"
+          ],
+          "note": "escape hatch for sync-only libraries"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`to_thread()` runs the call in the default ==thread pool==",
+            "The loop stays free while the thread blocks",
+            "The pool is small: not a fix for **hot** paths",
+            "Prefer a real ==async driver== when one exists"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Use"
+          ],
+          "rows": [
+            [
+              "{icon:postgresql} Postgres",
+              "`asyncpg`"
+            ],
+            [
+              "{icon:sqlite} SQLite",
+              "`aiosqlite`"
+            ],
+            [
+              "{icon:redis} Redis",
+              "`redis.asyncio`"
+            ],
+            [
+              "sync-only lib",
+              "`asyncio.to_thread`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 7. Concurrency, not speed",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def one(i):",
+            "  return await pool.fetchval(q, i)",
+            "",
+            "vals = await asyncio.gather(",
+            "  *(one(i) for i in range(1000)))"
+          ],
+          "note": "10 conns: 990 tasks queue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`gather()` starts all 1000 tasks at once",
+            "Only ==10== hold a connection; the rest await the pool",
+            "Total time ≈ 100 rounds × **query** time",
+            "Grow the pool only if the DB can take it"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 8. Finding blocking calls",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "loop = asyncio.get_running_loop()",
+            "loop.slow_callback_duration = 0.05",
+            "# default 0.1 s: warn sooner",
+            "# or env PYTHONASYNCIODEBUG=1"
+          ],
+          "note": "only active in debug mode"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Blocking call",
+            "Async swap"
+          ],
+          "rows": [
+            [
+              "`time.sleep()`",
+              "`asyncio.sleep()`"
+            ],
+            [
+              "`requests.get()`",
+              "`httpx.AsyncClient`"
+            ],
+            [
+              "`psycopg2`",
+              "==asyncpg=="
+            ],
+            [
+              "big file `open()`",
+              "`to_thread()`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 9. The right pattern",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def handler(uid):",
+            "  async with pool.acquire() as c:",
+            "    return await c.fetchrow(",
+            "      q, uid)  # yields here"
+          ],
+          "note": "hold the conn only for the query"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Create the pool **once** at startup",
+            "Acquire per request, release fast",
+            "No sync I/O inside `async def`",
+            "Load-test: unit tests hide ==loop stalls=="
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "takeaway",
+          "title": "Rule",
+          "text": "Blocking call → `to_thread` or an async driver. Slow query → fix the ==query==, not the loop."
+        }
+      ],
+      "hero": "python",
+      "subtitle": "Don't block the loop"
+    },
+    {
+      "page_title": "asyncpg Connections and Pools",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. Definition: One Connection",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "conn = await asyncpg.connect(dsn)",
+            "try:",
+            "    n = await conn.fetchval(q)",
+            "finally:",
+            "    await conn.close()  # always"
+          ],
+          "note": "unclosed conn leaks a Postgres backend"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Returns",
+            "e.g."
+          ],
+          "rows": [
+            [
+              "`fetch()`",
+              "list of ==Record==",
+              "all rows"
+            ],
+            [
+              "`fetchrow()`",
+              "one Record or **None**",
+              "by id"
+            ],
+            [
+              "`fetchval()`",
+              "single value",
+              "count(*)"
+            ],
+            [
+              "`execute()`",
+              "status string",
+              "'INSERT 0 1'"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Mechanism: The Pool",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "pool = await asyncpg.create_pool(",
+            "    dsn, min_size=10,",
+            "    max_size=10)  # both default 10",
+            "async with pool.acquire() as c:",
+            "    rows = await c.fetch(q)"
+          ],
+          "note": "released back to pool on exit"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Shortcuts `pool.fetch()` / `pool.execute()`: acquire → run → release",
+            "On release: ==RESET ALL==, UNLISTEN, open cursors closed",
+            "`max_inactive_connection_lifetime=300` s closes {purple:idle} conns"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def init(c):  # per conn",
+            "  await c.set_type_codec('jsonb',",
+            "    encoder=json.dumps,",
+            "    decoder=json.loads,",
+            "    schema='pg_catalog')"
+          ],
+          "note": "pass via create_pool(dsn, init=init)"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 3. Example: Params & Records",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "r = await conn.fetchrow(",
+            "  'SELECT * FROM users'",
+            "  ' WHERE id=$1 AND org=$2',",
+            "  uid, org)  # sent separately",
+            "r['name'], r[0], dict(r)"
+          ],
+          "note": "$1, $2 — never %s or ?"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Placeholders are **positional** `$1, $2`, not `%s` / `?`",
+            "Values travel ==separately== from SQL text → no injection",
+            "Record access: `r['name']`, `r[0]`, `dict(r)`"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Postgres",
+            "Python"
+          ],
+          "rows": [
+            [
+              "uuid",
+              "`uuid.UUID`"
+            ],
+            [
+              "timestamptz",
+              "`datetime`"
+            ],
+            [
+              "numeric",
+              "`Decimal`"
+            ],
+            [
+              "int[]",
+              "`list[int]`"
+            ]
+          ]
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Two concurrent awaits on one `conn` → **InterfaceError**",
+            "`%s` or `?` placeholders → syntax error; use `$1`",
+            "Forgetting `close()` → leaked server connections",
+            "Row-by-row INSERT loops for bulk → use ==COPY=="
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "connect, query, pool"
+    },
+    {
+      "page_title": "Bulk Loads, COPY & Pool Lifecycle",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "await conn.executemany(",
+            "  'INSERT INTO t VALUES($1,$2)',",
+            "  rows)  # batched",
+            "await conn.copy_records_to_table(",
+            "  't', records=rows)  # COPY"
+          ],
+          "note": "COPY often 10x+ faster than INSERTs"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "await asyncio.gather(",
+            "  conn.fetch(q1), conn.fetch(q2))",
+            "# InterfaceError: another",
+            "# operation is in progress"
+          ],
+          "note": "one conn = one query at a time"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Fix",
+          "text": "Give each task its own conn: `pool.fetch()` or `pool.acquire()` per task, never a shared `conn`."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. Bulk loads compared",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Round trips",
+            "Speed"
+          ],
+          "rows": [
+            [
+              "`execute()` in a loop",
+              "N",
+              "slowest"
+            ],
+            [
+              "`executemany()`",
+              "batched",
+              "faster"
+            ],
+            [
+              "`copy_records_to_table()`",
+              "one ==COPY==",
+              "**10x+**"
+            ]
+          ],
+          "highlightRow": 2,
+          "frame": "dashed"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Few rows or need `ON CONFLICT` → `executemany()`",
+            "Thousands of rows into one table → ==COPY==",
+            "Pass `columns=[...]` to COPY a subset of columns",
+            "Wrap the load in `conn.transaction()`: all or nothing"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 6. Pool lifecycle",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def lifespan(app):",
+            "  app.pool = await create_pool(",
+            "    dsn, init=init)  # startup",
+            "  yield",
+            "  await app.pool.close()  # drain"
+          ],
+          "note": "one pool per process, not per request"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`pool.acquire(timeout=5)` fails fast instead of queueing forever",
+            "`pool.close()` waits for conns to be ==released==",
+            "`pool.terminate()` closes **immediately**, no waiting",
+            "`command_timeout=` on the pool caps every query"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 7. Takeaways",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`try/finally` or `async with` so conns always return",
+            "One query at a time **per** connection",
+            "Positional `$1` params: values never touch the SQL",
+            "Per-conn setup (codecs) goes in ==init=="
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Default choice",
+          "text": "Reach for `pool.fetch()` first; use `acquire()` only when several queries must share a conn or a ==transaction==."
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "connect, query, pool"
+    },
+    {
+      "page_title": "Prepared Statements",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. What is it"
+        },
+        {
+          "type": "paragraph",
+          "text": "A ==prepared statement== is parsed and planned **once** on the server. After that it runs many times with different `$1` values.",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "asyncpg prepares **every** query for you",
+            "Cached ==per connection==, not shared by the pool",
+            "`statement_cache_size=100` by default, an __LRU__"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Mechanism: plans"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Run / mode",
+            "Plan used",
+            "Why"
+          ],
+          "rows": [
+            [
+              "runs 1–5",
+              "custom",
+              "sees real $1"
+            ],
+            [
+              "run 6+",
+              "maybe generic",
+              "if cost ≈ custom"
+            ],
+            [
+              "force_custom_plan",
+              "always custom",
+              "skewed data"
+            ],
+            [
+              "force_generic_plan",
+              "always generic",
+              "skip replanning"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 3. Template"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "stmt = await conn.prepare(",
+            "  \"SELECT * FROM users\"",
+            "  \" WHERE id=$1\")",
+            "r1 = await stmt.fetchrow(42)",
+            "r2 = await stmt.fetchrow(7)  # no reparse"
+          ],
+          "note": "stmt lives on THIS connection only"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "status =",
+            "rows",
+            "best plan"
+          ],
+          "rows": [
+            [
+              "'rare'",
+              "50",
+              "index scan"
+            ],
+            [
+              "'common'",
+              "9 M",
+              "seq scan"
+            ],
+            [
+              "generic",
+              "one for both",
+              "**wrong** for one"
+            ]
+          ],
+          "highlightRow": 2,
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "pool = await asyncpg.create_pool(",
+            "  dsn, server_settings={",
+            "  \"plan_cache_mode\":",
+            "  \"force_custom_plan\"})"
+          ],
+          "note": "fixes generic plans on skewed data"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. PgBouncer transaction mode"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "PREPARE",
+                "sub": "server conn A"
+              },
+              {
+                "text": "PgBouncer",
+                "sub": "txn mode swaps"
+              },
+              {
+                "text": "EXECUTE",
+                "sub": "server conn B",
+                "ink": "red"
+              },
+              {
+                "text": "error",
+                "sub": "__asyncpg_stmt_1__ does not exist",
+                "ink": "red"
+              }
+            ]
+          }
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "asyncpg.connect(dsn,",
+            "  statement_cache_size=0)",
+            "# via SQLAlchemy:",
+            "connect_args={",
+            "  \"statement_cache_size\": 0,",
+            "  \"prepared_statement_cache_size\": 0}"
+          ],
+          "note": "both keys needed through SQLAlchemy"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "PgBouncer 1.21+",
+          "text": "Tracks protocol-level prepared statements when `max_prepared_statements` > 0, so you can keep the cache."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. Mistakes"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Trusting the generic plan on **skewed** columns",
+            "Leaving the statement cache on behind transaction-mode PgBouncer",
+            "`ALTER TABLE` during a deploy raises ==InvalidCachedStatementError==",
+            "asyncpg retries it **outside** a transaction only",
+            "Inside `conn.transaction()` you must retry it yourself"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "parse once, run many"
+    },
+    {
+      "page_title": "SQLAlchemy 2.0 Async Engine and AsyncSession",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. Definition",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==create_async_engine== builds an engine on the **asyncpg** dialect",
+            "URL: `postgresql+asyncpg://user:pw@host/db`, `pool_size=5`",
+            "==async_sessionmaker== is the session factory; build it **once** at startup",
+            "`expire_on_commit=False` keeps loaded attributes after commit"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "engine = create_async_engine(",
+            "    URL, pool_size=5)",
+            "Session = async_sessionmaker(",
+            "    engine,",
+            "    expire_on_commit=False)"
+          ],
+          "note": "create both once, share app-wide"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Mechanism",
+          "ink": "blue"
+        },
+        {
+          "type": "diagram",
+          "kind": "flow",
+          "spec": {
+            "nodes": [
+              {
+                "text": "AsyncSession",
+                "sub": "await s.execute()",
+                "ink": "blue"
+              },
+              {
+                "text": "greenlet bridge",
+                "sub": "switches sync ↔ async",
+                "ink": "purple"
+              },
+              {
+                "text": "sync ORM core",
+                "sub": "unchanged 1.x code"
+              },
+              {
+                "text": "asyncpg",
+                "sub": "awaits the network",
+                "ink": "green"
+              }
+            ]
+          }
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "A ==greenlet== bridges the sync ORM to the async driver",
+            "Implicit I/O **outside** the bridge raises ==MissingGreenlet==",
+            "Sync-only APIs (DDL, inspection): `await conn.run_sync(fn)`"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Await?"
+          ],
+          "rows": [
+            [
+              "`add()`",
+              "{green:no}, sync"
+            ],
+            [
+              "`flush()` `commit()`",
+              "**yes**"
+            ],
+            [
+              "`rollback()` `refresh()`",
+              "**yes**"
+            ],
+            [
+              "`delete()` `execute()`",
+              "**yes**"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "res = await s.stream(stmt)",
+            "async for row in res:",
+            "    handle(row)  # row by row"
+          ],
+          "note": "server-side cursor, not all rows"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def lifespan(app):",
+            "  async with engine.begin() as c:",
+            "    await c.run_sync(",
+            "      Base.metadata.create_all)",
+            "  yield",
+            "  await engine.dispose()"
+          ],
+          "note": "FastAPI: dispose closes pooled conns"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "One AsyncSession shared across `asyncio.gather` is **not** task-safe",
+            "`s.commit()` without `await` means the coroutine never runs",
+            "Lazy attribute access after commit raises MissingGreenlet",
+            "`execute()` on huge results loads every row; `stream()` instead",
+            "No `engine.dispose()` at shutdown leaves connections open"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Rule of thumb",
+          "text": "__One session per request or task__. Share the engine and the sessionmaker; never share a session. Lazy loading traps are on p.7."
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Many ids?",
+          "text": "Not `gather(*(s.get(User, i) ...))` on one session: use one ==IN== query, `select(User).where(User.id.in_(ids))`."
+        }
+      ],
+      "hero": "SQLAlchemy",
+      "subtitle": "The asyncio ORM"
+    },
+    {
+      "page_title": "AsyncSession Queries & Per-Request Sessions",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 3. Example",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with Session() as s, s.begin():",
+            "    s.add(User(name=\"ada\"))  # sync",
+            "    res = await s.execute(",
+            "        select(User).where(User.age > 30))",
+            "    users = res.scalars().all()",
+            "    u1 = await s.get(User, 1)  # PK lookup"
+          ],
+          "note": "commits on success, rolls back on error"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`s.begin()` → **COMMIT** on clean exit, ==ROLLBACK== on error",
+            "`add()` only stages; the INSERT runs at flush",
+            "`s.get()` checks the ==identity map== before querying",
+            "`scalars()` unwraps rows into ORM objects"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Result call",
+            "Returns"
+          ],
+          "rows": [
+            [
+              "`scalars().all()`",
+              "list of objects"
+            ],
+            [
+              "`scalar_one()`",
+              "exactly one, else **error**"
+            ],
+            [
+              "`scalar_one_or_none()`",
+              "one or `None`"
+            ],
+            [
+              "`first()`",
+              "first Row or `None`"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. One session per request",
+          "ink": "blue"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def get_session():",
+            "  async with Session() as s:",
+            "    yield s  # closed after",
+            "",
+            "async def read(uid: int,",
+            "  s=Depends(get_session)):"
+          ],
+          "note": "FastAPI: fresh session each request"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Share the ==engine== and sessionmaker app-wide",
+            "Open a **new** session per request or task",
+            "`async with` closes it and returns the conn to the pool"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 6. Concurrent tasks",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async def load(i):",
+            "  async with Session() as s:",
+            "    return await s.get(User, i)",
+            "",
+            "users = await asyncio.gather(",
+            "  *(load(i) for i in ids))"
+          ],
+          "note": "each task gets its OWN session"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Error",
+            "Likely cause"
+          ],
+          "rows": [
+            [
+              "==MissingGreenlet==",
+              "lazy load / expired attr"
+            ],
+            [
+              "IllegalStateChangeError",
+              "session shared by tasks"
+            ],
+            [
+              "coroutine never awaited",
+              "missing **await**"
+            ],
+            [
+              "QueuePool limit reached",
+              "sessions never closed"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Why expire_on_commit=False",
+          "text": "Default expires objects on commit; the next `user.name` reload can't await → ==MissingGreenlet==. Off keeps values readable."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 7. Loading on purpose",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "u = await s.get(User, 1)",
+            "p = await u.awaitable_attrs.posts",
+            "await s.refresh(u, [\"posts\"])"
+          ],
+          "note": "awaitable_attrs needs the AsyncAttrs mixin"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Await every relationship load: ==awaitable_attrs== or `refresh()`",
+            "Eager-load up front with `selectinload()` when you know",
+            "`lazy='raise'` makes surprise loads fail in **tests**"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "green"
+        }
+      ],
+      "hero": "SQLAlchemy",
+      "subtitle": "The asyncio ORM"
+    },
+    {
+      "page_title": "Transactions, Isolation Levels & SKIP LOCKED",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ 1. Definition: the transaction block",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`async with conn.transaction():` → **COMMIT** on clean exit",
+            "Exception inside → ==ROLLBACK==, then the error re-raises",
+            "Nested `transaction()` → a ==SAVEPOINT==; only it rolls back",
+            "Options: `isolation=`, `readonly=`, `deferrable=`"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "green"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with conn.transaction():",
+            "    await conn.execute(q1)",
+            "    async with conn.transaction():",
+            "        await conn.execute(q2)"
+          ],
+          "note": "inner block = SAVEPOINT, not new tx"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "tx = conn.transaction(",
+            "    isolation='serializable',",
+            "    readonly=True,",
+            "    deferrable=True)",
+            "async with tx:  # no writes",
+            "    rows = await conn.fetch(q)"
+          ],
+          "note": "deferrable: waits for safe snapshot"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 2. Mechanism: what each level sees",
+          "ink": "blue"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "**READ COMMITTED** (default): each ==statement== sees data committed before it began",
+            "REPEATABLE READ: ==one snapshot== for the whole transaction",
+            "SERIALIZABLE (SSI): blocks every anomaly, may fail with ==40001==",
+            "READ UNCOMMITTED = READ COMMITTED in Postgres: **no** dirty reads"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 3. Comparison: anomalies allowed",
+          "ink": "purple"
+        },
+        {
+          "type": "diagram",
+          "kind": "matrix",
+          "spec": {
+            "rows": [
+              [
+                "level",
+                "dirty",
+                "non-rep.",
+                "phantom",
+                "serial."
+              ],
+              [
+                "RC",
+                "no",
+                "yes",
+                "yes",
+                "yes"
+              ],
+              [
+                "RR",
+                "no",
+                "no",
+                "no*",
+                "yes"
+              ],
+              [
+                "SER",
+                "no",
+                "no",
+                "no",
+                "no"
+              ]
+            ],
+            "highlight": [
+              [
+                3,
+                1
+              ],
+              [
+                3,
+                2
+              ],
+              [
+                3,
+                3
+              ],
+              [
+                3,
+                4
+              ]
+            ],
+            "caption": "* Postgres-specific: the SQL standard allows phantoms at RR"
+          }
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "q = (select(Job)",
+            "  .where(Job.state == 'new')",
+            "  .limit(1)",
+            "  .with_for_update(",
+            "     skip_locked=True))",
+            "# FOR UPDATE SKIP LOCKED"
+          ],
+          "note": "each worker claims a different job"
+        },
+        {
+          "type": "paragraph",
+          "text": "`with_for_update()` locks the selected rows until **COMMIT**. With ==SKIP LOCKED==, queue workers skip rows another worker has claimed and never wait on each other.",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "callout",
+          "style": "sticky",
+          "title": "Fix",
+          "text": "Call the API **before** `begin()` or after commit, and keep the transaction short. Server-side guards are on page 9."
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Savepoints, SSI, row locks"
+    },
+    {
+      "page_title": "Finding Idle-in-Transaction Sessions",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "☆ Spot the leak",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "sql",
+          "lines": [
+            "SELECT pid, xact_start, query",
+            "FROM pg_stat_activity",
+            "WHERE state =",
+            "  'idle in transaction';"
+          ],
+          "note": "old xact_start = leaked transaction"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "==idle in transaction==: tx open, no query running",
+            "Row locks and a **pooled** conn stay held meanwhile",
+            "Usual cause: `await` on HTTP inside the tx",
+            "`pg_terminate_backend(pid)` ends a stuck session"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "orange"
+        },
+        {
+          "type": "heading",
+          "text": "☆ Bad vs good pattern",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with conn.transaction():",
+            "  await conn.execute(upd)",
+            "  r = await http.get(url)  # !!",
+            "  await conn.execute(ins, r)"
+          ],
+          "note": "tx sits idle while HTTP waits"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "r = await http.get(url)  # first",
+            "async with conn.transaction():",
+            "  await conn.execute(upd)",
+            "  await conn.execute(ins, r)"
+          ],
+          "note": "external I/O stays outside the tx"
+        },
+        {
+          "type": "heading",
+          "text": "☆ Server-side guard",
+          "ink": "red"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "pool = await create_pool(dsn,",
+            "  server_settings={",
+            "    'idle_in_transaction_'",
+            "    'session_timeout': '10s'})"
+          ],
+          "note": "server kills tx idle over 10 s"
+        },
+        {
+          "type": "heading",
+          "text": "☆ All three guards",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Stops"
+          ],
+          "rows": [
+            [
+              "`statement_timeout`",
+              "runaway query"
+            ],
+            [
+              "`lock_timeout`",
+              "long lock waits"
+            ],
+            [
+              "`idle_in_transaction_session_timeout`",
+              "==leaked== tx"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "ss = {'statement_timeout': '5s',",
+            "      'lock_timeout': '2s'}",
+            "engine = create_async_engine(",
+            "  URL, connect_args={",
+            "    'server_settings': ss})"
+          ],
+          "note": "SQLAlchemy: set on every new conn"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`statement_timeout` hit → ==QueryCanceledError==, tx aborted",
+            "Idle timeout hit → server **closes** the connection",
+            "Pool discards the dead conn; next checkout gets a fresh one",
+            "Or per role: `ALTER ROLE app SET lock_timeout='2s'`"
+          ],
+          "style": "dot",
+          "frame": "dashed",
+          "ink": "blue"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Alert on it",
+          "text": "Graph the count of ==idle in transaction== rows; any older than a few seconds means an `await` leaked into a tx."
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Savepoints, SSI, row locks"
+    },
+    {
+      "page_title": "Serializable Retries, Savepoints & Row Locks",
+      "blocks": [
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "for attempt in range(3):",
+            "  try:",
+            "    async with c.transaction(",
+            "        isolation='serializable'):",
+            "      return await work(c)",
+            "  except SerializationError:"
+          ],
+          "note": "40001: retry the WHOLE transaction"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 4. Example: SQLAlchemy and row locks",
+          "ink": "purple"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "RR = 'REPEATABLE READ'",
+            "e2 = engine.execution_options(",
+            "  isolation_level=RR)",
+            "async with s.begin_nested():",
+            "  s.add(audit)  # SAVEPOINT"
+          ],
+          "note": "begin_nested() needs an outer begin()"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`execution_options()` returns a ==copy== of the engine; the original is unchanged",
+            "Level applies to each **new** connection it checks out",
+            "`begin_nested()` failure rolls back the ==savepoint== only",
+            "The outer `s.begin()` can still commit the rest"
+          ],
+          "style": "check",
+          "frame": "dashed",
+          "ink": "purple"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 5. Mistakes",
+          "ink": "red"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "`await http.get(...)` inside a tx → ==row locks held== meanwhile",
+            "The pooled connection stays pinned; other tasks queue",
+            "`pg_stat_activity` shows ==idle in transaction==",
+            "Retrying one statement after 40001 instead of the whole tx",
+            "Expecting dirty reads from READ UNCOMMITTED in Postgres"
+          ],
+          "style": "cross",
+          "frame": "dashed",
+          "ink": "red"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 6. Choosing a level",
+          "ink": "blue"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Level"
+          ],
+          "rows": [
+            [
+              "most OLTP",
+              "READ COMMITTED"
+            ],
+            [
+              "consistent report",
+              "REPEATABLE READ"
+            ],
+            [
+              "cross-row invariants",
+              "==SERIALIZABLE== + retry"
+            ],
+            [
+              "long read-only scan",
+              "SER readonly deferrable"
+            ]
+          ],
+          "frame": "dashed"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "row = await c.fetchrow(",
+            "  'SELECT id FROM jobs'",
+            "  ' WHERE state=$1 LIMIT 1'",
+            "  ' FOR UPDATE SKIP LOCKED',",
+            "  'new')  # inside a tx"
+          ],
+          "note": "asyncpg: lock lasts until COMMIT"
+        },
+        {
+          "type": "heading",
+          "text": "☆ 7. Savepoints in practice",
+          "ink": "orange"
+        },
+        {
+          "type": "code",
+          "lang": "python",
+          "lines": [
+            "async with c.transaction():",
+            "  for row in rows:",
+            "    try:",
+            "      async with c.transaction():",
+            "        await c.execute(ins, *row)",
+            "    except UniqueViolationError:"
+          ],
+          "note": "only the bad row's SAVEPOINT rolls back"
+        },
+        {
+          "type": "callout",
+          "style": "tip",
+          "title": "Retry with backoff",
+          "text": "On ==40001== sleep `0.05 * 2**attempt` s plus jitter, then rerun the **whole** block; give up after ~3 tries."
+        },
+        {
+          "type": "heading",
+          "text": "☆ 8. Takeaways",
+          "ink": "green"
+        },
+        {
+          "type": "bullets",
+          "items": [
+            "Keep transactions ==short==: no external I/O inside",
+            "Nested block = SAVEPOINT, not a new transaction",
+            "SERIALIZABLE → retry the **whole** tx on 40001",
+            "Queue workers: `FOR UPDATE SKIP LOCKED`"
+          ],
+          "style": "checkbox",
+          "frame": "dashed",
+          "ink": "green"
+        }
+      ],
+      "hero": "postgresql",
+      "subtitle": "Savepoints, SSI, row locks"
+    }
+  ],
+  "caption": {
+    "text": "One blocking database call can stall your whole asyncio app, and it's easy to write one without noticing. iolar's handwritten notes show how to use Postgres, SQLite and Redis without blocking the event loop: asyncpg pools and prepared statements, SQLAlchemy 2.0 AsyncSession, transactions, pool sizing, N+1 and lazy-loading traps, timeouts and cancellation safety. Save the cheatsheet for your next async service.",
+    "hashtags": [
+      "#python",
+      "#asyncio",
+      "#asyncpg",
+      "#sqlalchemy",
+      "#postgresql",
+      "#redis",
+      "#sqlite",
+      "#backenddevelopment",
+      "#databases",
+      "#pythondeveloper",
+      "#codingnotes",
+      "#iolar"
+    ]
+  }
+}

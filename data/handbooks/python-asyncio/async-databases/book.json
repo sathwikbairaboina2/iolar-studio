@@ -1,0 +1,213 @@
+{
+  "title": "Async Databases in Python: asyncpg, SQLAlchemy 2.0, aiosqlite and Redis",
+  "summary": "How to talk to Postgres, SQLite and Redis from asyncio without blocking the event loop. It covers asyncpg connections, pools and prepared statements, SQLAlchemy 2.0 AsyncSession, transactions and isolation, pool sizing, N+1 and lazy-loading traps, timeouts, and cancellation safety.",
+  "chapters": [
+    {
+      "title": "Why Async Database Access",
+      "points": [
+        "The event loop runs on one thread, so a blocking driver call (psycopg2, sqlite3, redis-py sync) freezes every other coroutine until it returns",
+        "An async driver yields at network I/O: 'await conn.fetch(...)' suspends the task while Postgres works, and the loop serves other requests",
+        "Async improves concurrency (many requests waiting on I/O), not the speed of a single query; a 200 ms query is still 200 ms",
+        "Async drivers: asyncpg (Postgres, binary protocol), psycopg 3 async, aiosqlite (SQLite via a thread), redis.asyncio (Redis), aiomysql/asyncmy (MySQL)",
+        "Throughput is still limited by the database: 1000 coroutines sharing 10 connections means 990 wait on the pool",
+        "Escape hatch for sync-only libraries: 'await asyncio.to_thread(fn, *args)' moves the blocking call off the loop",
+        "Mistake: calling a sync ORM or driver inside 'async def' looks fine in tests but stalls the whole server under load",
+        "Debug aid: 'asyncio.run(main(), debug=True)' logs callbacks that block the loop for more than 100 ms"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "asyncpg Connections and Pools",
+      "points": [
+        "'conn = await asyncpg.connect(dsn)' opens one connection; always 'await conn.close()' or use it inside try/finally",
+        "Query API: fetch() returns a list of Records, fetchrow() one Record or None, fetchval() a single value, execute() a status string like 'INSERT 0 1'",
+        "Placeholders are positional $1, $2 (not %s or ?), and values travel separately from the SQL text, which blocks injection",
+        "Record supports r['name'], r[0] and dict(r); Postgres types map to Python natively (UUID, datetime, Decimal, lists)",
+        "'pool = await asyncpg.create_pool(dsn, min_size=10, max_size=10)' (both default to 10), then 'async with pool.acquire() as conn:'",
+        "Shortcuts pool.fetch()/pool.execute() acquire, run the query and release in one call",
+        "On release the pool resets the connection (RESET ALL, UNLISTEN, closes open cursors); max_inactive_connection_lifetime=300 s closes idle connections",
+        "Use the init= callback to run per-connection setup such as set_type_codec('jsonb', encoder=json.dumps, decoder=json.loads, schema='pg_catalog')",
+        "A connection runs one query at a time: two concurrent awaits on the same conn raise InterfaceError 'another operation is in progress'",
+        "Bulk loads: executemany() for batches, copy_records_to_table() for COPY, which is often 10x or more faster than row-by-row INSERT"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Prepared Statements",
+      "points": [
+        "A prepared statement is parsed and planned once on the server, then executed many times with different parameters",
+        "asyncpg prepares every query automatically and caches it per connection (statement_cache_size=100 by default, an LRU)",
+        "Explicit form: 'stmt = await conn.prepare(\"SELECT * FROM users WHERE id=$1\")' then 'await stmt.fetchrow(42)'",
+        "Postgres uses custom plans for the first 5 executions, then may switch to a generic plan; plan_cache_mode can force either",
+        "A generic plan can be bad for skewed data (e.g. status='rare' vs status='common'); fix with plan_cache_mode=force_custom_plan",
+        "PgBouncer in transaction mode sends the next statement to a different server connection, which gives 'prepared statement \"__asyncpg_stmt_1__\" does not exist'",
+        "Fix for PgBouncer: asyncpg statement_cache_size=0; through SQLAlchemy set connect_args={'statement_cache_size': 0, 'prepared_statement_cache_size': 0}",
+        "PgBouncer 1.21+ can track protocol-level prepared statements with max_prepared_statements > 0",
+        "ALTER TABLE during a deploy can invalidate cached plans and raise InvalidCachedStatementError; asyncpg retries it outside a transaction, but inside a transaction you must retry"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "SQLAlchemy 2.0 Async Engine and AsyncSession",
+      "points": [
+        "'engine = create_async_engine(\"postgresql+asyncpg://user:pw@host/db\", pool_size=5)' builds an async engine on the asyncpg dialect",
+        "'Session = async_sessionmaker(engine, expire_on_commit=False)' is the session factory; create it once at startup",
+        "Pattern: 'async with Session() as s, s.begin():' commits on success and rolls back on an exception",
+        "2.0-style queries: 'res = await s.execute(select(User).where(User.age > 30))' then 'res.scalars().all()'; 'await s.get(User, 1)' does a primary-key lookup",
+        "add() is sync; flush(), commit(), rollback(), refresh(), delete() and execute() must be awaited",
+        "'await s.stream(stmt)' uses a server-side cursor: 'async for row in result' streams large result sets without loading them all",
+        "Under the hood a greenlet bridges the sync ORM to the async driver; implicit I/O outside that bridge raises MissingGreenlet",
+        "Use 'await conn.run_sync(Base.metadata.create_all)' for sync-only APIs such as DDL and inspection",
+        "An AsyncSession is not safe for concurrent tasks: use one session per request or task, never shared across asyncio.gather",
+        "Call 'await engine.dispose()' on shutdown (e.g. in FastAPI lifespan) to close pooled connections cleanly"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Transactions and Isolation Levels",
+      "points": [
+        "asyncpg: 'async with conn.transaction():' commits on exit and rolls back on exception; a nested transaction() becomes a SAVEPOINT",
+        "asyncpg options: conn.transaction(isolation='serializable', readonly=True, deferrable=True)",
+        "SQLAlchemy: 'async with s.begin_nested():' creates a savepoint; set the level with engine.execution_options(isolation_level='REPEATABLE READ')",
+        "Postgres default is READ COMMITTED: each statement sees data committed before it started",
+        "REPEATABLE READ takes one snapshot for the whole transaction, which blocks non-repeatable reads and phantoms in Postgres",
+        "SERIALIZABLE (SSI) blocks every anomaly but can fail with SerializationFailure (SQLSTATE 40001), so the whole transaction must be retried",
+        "READ UNCOMMITTED behaves as READ COMMITTED in Postgres; there are no dirty reads",
+        "Comparison row: dirty read / non-repeatable read / phantom / serialization anomaly allowed at RC: no/yes/yes/yes; RR: no/no/no*/yes; SER: no/no/no/no (*Postgres-specific)",
+        "Row locks: select(...).with_for_update() or 'SELECT ... FOR UPDATE SKIP LOCKED' for job-queue workers",
+        "Mistake: awaiting an HTTP call inside a transaction holds locks and a pooled connection; the session shows as 'idle in transaction'"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "N+1 Queries and Lazy Loading Under asyncio",
+      "points": [
+        "N+1: one query loads N parents, then accessing parent.children fires N more queries, one per parent",
+        "In AsyncSession an implicit lazy load cannot await, so it raises MissingGreenlet instead of silently querying",
+        "selectinload(User.posts): a second query 'WHERE user_id IN (...)'; 2 queries total, best for one-to-many collections",
+        "joinedload(Post.author): a single LEFT OUTER JOIN, best for many-to-one; with collections you must call result.unique()",
+        "Set relationship(lazy='raise') or add options(raiseload('*')) so any unplanned lazy load fails loudly in tests",
+        "The AsyncAttrs mixin lets you load deliberately: 'posts = await user.awaitable_attrs.posts'",
+        "expire_on_commit=False keeps attributes loaded after commit; otherwise the next attribute access triggers a refresh that raises MissingGreenlet",
+        "'await s.refresh(user, [\"posts\"])' reloads a specific relationship explicitly",
+        "asyncpg-level fix: batch lookups with 'WHERE id = ANY($1::int[])' and pass a Python list instead of looping queries",
+        "Mistake: 'await asyncio.gather(*(s.get(User, i) for i in ids))' on one session is N queries and unsafe concurrency; use one IN query"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Connection Pool Sizing",
+      "points": [
+        "Every Postgres connection is a backend process using several MB of RAM; max_connections defaults to 100, with 3 reserved for superusers",
+        "SQLAlchemy QueuePool defaults: pool_size=5, max_overflow=10, pool_timeout=30 s, pool_recycle=-1 (never)",
+        "Budget: app_instances × workers × (pool_size + max_overflow) must stay below max_connections minus admin headroom",
+        "Little's law: needed connections ≈ requests/sec × average seconds each connection is held (e.g. 500 rps × 0.02 s = 10)",
+        "Starting heuristic from the PostgreSQL wiki: connections ≈ (CPU cores × 2) + effective spindles; bigger pools often get slower through contention",
+        "In asyncio the pool works as a semaphore: thousands of coroutines queue for a few connections, so a small pool is normal",
+        "pool_pre_ping=True checks a connection before checkout and survives DB restarts or firewall idle-kills at the cost of one round trip",
+        "pool_recycle=1800 replaces connections before load balancers or proxies drop them silently",
+        "Behind PgBouncer or on serverless, use poolclass=NullPool and let the external pooler own the pooling",
+        "Symptom of an undersized pool or leaked sessions: TimeoutError 'QueuePool limit of size 5 overflow 10 reached'"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "aiosqlite and redis.asyncio",
+      "points": [
+        "aiosqlite runs stdlib sqlite3 on a dedicated background thread per connection and exposes async methods that proxy to it",
+        "'async with aiosqlite.connect(\"app.db\") as db:' then 'await db.execute(sql, params)' and 'await db.commit()'; set db.row_factory = aiosqlite.Row",
+        "SQLite allows one writer at a time: enable 'PRAGMA journal_mode=WAL' and set busy_timeout to avoid 'database is locked'",
+        "SQLAlchemy URL 'sqlite+aiosqlite:///app.db' is handy for tests and local dev, but its behaviour differs from Postgres (types, locking)",
+        "aioredis was merged into redis-py 4.2+ as redis.asyncio: 'r = redis.asyncio.Redis.from_url(url, decode_responses=True)'",
+        "Basic use: 'await r.set(\"k\", \"v\", ex=60)', 'await r.get(\"k\")'; close with 'await r.aclose()' (redis-py 5.0.1+)",
+        "Pipelines batch round trips: 'async with r.pipeline(transaction=True) as p: p.incr(\"hits\"); p.expire(\"hits\", 60); await p.execute()'",
+        "Share one ConnectionPool.from_url(url, max_connections=50) for the whole app; don't create a client per request",
+        "Pub/sub: 'ps = r.pubsub(); await ps.subscribe(\"ch\")' then 'async for msg in ps.listen()'",
+        "Optimistic locking: WATCH a key, then MULTI/EXEC in a pipeline; retry on WatchError, or use an atomic Lua script instead"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Timeouts and Cancellation Safety",
+      "points": [
+        "Client-side deadline: 'async with asyncio.timeout(5):' (Python 3.11+) or 'await asyncio.wait_for(coro, 5)'",
+        "asyncpg timeouts: command_timeout= on connect or create_pool, per-call timeout= on fetch/execute; on expiry asyncpg sends a Postgres cancel request",
+        "Server-side guards: statement_timeout, lock_timeout, idle_in_transaction_session_timeout, set via connect_args={'server_settings': {...}}",
+        "Cancellation arrives as CancelledError at the current await; inside 'async with conn.transaction()' it triggers ROLLBACK, and the pool discards or resets the connection",
+        "CancelledError is a BaseException (3.8+): never swallow it with 'except BaseException: pass'; clean up, then re-raise",
+        "A cancel in the middle of a command can leave a connection half-read; a driver bug like this leaked Redis replies across users (redis-py CVE-2023-28858/28859, March 2023)",
+        "asyncio.shield() protects critical cleanup such as a final commit or release from outer cancellation, but the outer await still raises",
+        "In a TaskGroup, one failed query cancels its sibling tasks; each task needs its own connection or session",
+        "Retry only idempotent work: retry on SerializationFailure or connection loss with backoff, never blindly re-run a non-idempotent INSERT after a timeout"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheatsheet: Async Databases in Python",
+      "points": [
+        "asyncpg: create_pool → 'async with pool.acquire() as c' → fetch/fetchrow/fetchval/execute with $1 placeholders",
+        "asyncpg transaction: 'async with c.transaction(isolation=\"serializable\")'; nested = savepoint",
+        "PgBouncer transaction mode: statement_cache_size=0 (+ prepared_statement_cache_size=0 via SQLAlchemy)",
+        "SQLAlchemy: create_async_engine('postgresql+asyncpg://…') + async_sessionmaker(expire_on_commit=False)",
+        "Session pattern: 'async with Session() as s, s.begin():' with one session per request or task",
+        "Relationships: selectinload for collections, joinedload for many-to-one, lazy='raise' by default",
+        "MissingGreenlet = an implicit lazy load or expired attribute; eager-load it or use awaitable_attrs",
+        "Pool math: instances × workers × (pool_size + max_overflow) < max_connections; pool_pre_ping=True",
+        "Isolation: RC by default; RR = snapshot; SERIALIZABLE means retry on 40001",
+        "aiosqlite: WAL + busy_timeout; redis.asyncio: shared pool, pipelines, await aclose()",
+        "Timeouts at both layers: asyncio.timeout on the client + statement_timeout on the server",
+        "Never await external I/O inside a transaction, and never swallow CancelledError"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

@@ -142,8 +142,9 @@ export const PLUGINS: Plugin[] = [
     what: 'The knowledge graph: handbooks, reels and jobs, one space each. Rebuildable from data/.',
     openUrl: 'http://127.0.0.1:3125/',
     start: {
-      command: 'docker',
-      args: ['compose', '-f', 'docker/compose.yml', 'up', '-d', 'iolar-neo4j'],
+      // Through a script that starts Docker Desktop first when its engine is down.
+      command: 'powershell.exe',
+      args: ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', 'scripts/compose-up.ps1', '-Service', 'iolar-neo4j'],
       cwd: process.cwd(),
       hint: 'docker compose -f docker/compose.yml up -d iolar-neo4j',
     },
@@ -156,8 +157,9 @@ export const PLUGINS: Plugin[] = [
     what: 'Passages and verified claims, the research agents’ memory.',
     openUrl: 'http://127.0.0.1:3126/dashboard',
     start: {
-      command: 'docker',
-      args: ['compose', '-f', 'docker/compose.yml', 'up', '-d', 'iolar-qdrant'],
+      // Through a script that starts Docker Desktop first when its engine is down.
+      command: 'powershell.exe',
+      args: ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', 'scripts/compose-up.ps1', '-Service', 'iolar-qdrant'],
       cwd: process.cwd(),
       hint: 'docker compose -f docker/compose.yml up -d iolar-qdrant',
     },

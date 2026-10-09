@@ -1,0 +1,225 @@
+{
+  "title": "Python Concurrency Models Compared",
+  "summary": "Compares Python's concurrency models: threads under the GIL, free-threaded 3.13+, multiprocessing, asyncio, and structured concurrency with trio and anyio. Covers how to pick one by workload, how to mix models safely, shared-state pitfalls, and how to benchmark to see whether concurrency helps.",
+  "chapters": [
+    {
+      "title": "Concurrency vs Parallelism: The Fundamentals",
+      "points": [
+        "Concurrency means managing several tasks whose lifetimes overlap. Parallelism means executing several tasks at the same instant on multiple cores",
+        "I/O-bound work spends most of its time waiting on network, disk or a DB. CPU-bound work spends it computing in the interpreter",
+        "Preemptive multitasking (threads): the OS or interpreter can switch tasks at any bytecode boundary, without the code asking",
+        "Cooperative multitasking (asyncio, trio): a task gives up control only at an explicit await point",
+        "Python's four main models are threading, multiprocessing, asyncio (coroutines) and native extensions that release the GIL",
+        "Unit cost differs a lot: a coroutine is a small heap object, a thread has an OS stack, and a process is a whole interpreter with its own memory",
+        "concurrent.futures gives one Executor API (submit, map, Future.result) for both threads and processes",
+        "A Future is a placeholder for a result that isn't ready yet. concurrent.futures.Future is a different class from asyncio.Future",
+        "Blocking call vs non-blocking call: a blocking call holds up only its own thread, but in asyncio it holds up the whole event loop",
+        "Amdahl's law: speedup ≤ 1 / (serial_fraction + parallel_fraction/N), so the serial part caps the gain",
+        "Rule of thumb: waiting is solved by concurrency, and computing is solved by parallelism"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Threading and the GIL",
+      "points": [
+        "The GIL (Global Interpreter Lock) is a mutex in CPython: only one thread runs Python bytecode at a time",
+        "The GIL exists to protect reference counts and interpreter internals cheaply, and it keeps C extensions simple",
+        "Switch interval: a thread waiting for the GIL asks the running thread to release it after sys.getswitchinterval() (default 0.005 s)",
+        "The GIL is released during blocking I/O (socket recv, file read), time.sleep, and select/poll",
+        "C extensions can release the GIL during heavy work, e.g. NumPy operations, hashlib on large buffers, zlib compression",
+        "So threads do speed up I/O-bound code, but pure-Python CPU-bound code gets no speedup and can even get slower from contention",
+        "threading.Thread(target=f, args=(x,)).start() then .join(). daemon=True threads are killed abruptly when the interpreter exits",
+        "ThreadPoolExecutor(max_workers=n) reuses threads. Its default max_workers is min(32, os.cpu_count() + 4)",
+        "Example: executor.map(fetch, urls) downloads 100 URLs about N× faster than a serial loop, because the threads overlap their network waits",
+        "Exceptions in a bare Thread don't reach the caller. They go to threading.excepthook, while Future.result() re-raises them",
+        "Threads can't be killed from outside. Stop them cooperatively with a threading.Event flag that the thread checks",
+        "Thread stacks reserve virtual memory (often 8 MB on Linux), so thousands of threads are feasible but not free"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Free-Threaded Python (3.13+)",
+      "points": [
+        "PEP 703 added an optional build with the GIL removed: python3.13t, the 't' suffix, built with --disable-gil",
+        "It was experimental in 3.13. PEP 779 made it officially supported (no longer experimental) in 3.14, but it is still not the default build",
+        "Check at runtime with sys._is_gil_enabled(). Force the GIL back on with PYTHON_GIL=1 or -X gil=1",
+        "How it stays safe without the GIL: biased reference counting (cheap for the owning thread), immortal objects, and the mimalloc allocator",
+        "Built-in containers like dict and list use per-object locks (critical sections), so single operations don't corrupt them",
+        "Pure-Python CPU-bound threads can now run on multiple cores in parallel, which gives near-linear speedup for independent work",
+        "Single-threaded code runs slower: about 40% in 3.13 (specializing interpreter disabled), cut to roughly 5-10% in 3.14",
+        "Importing a C extension that doesn't declare Py_mod_gil support re-enables the GIL and emits a warning",
+        "Removing the GIL exposes latent races: a compound operation like `d[k] = d.get(k, 0) + 1` still needs a Lock",
+        "Before adopting it, check that your dependencies ship cp313t/cp314t wheels"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "multiprocessing and ProcessPoolExecutor",
+      "points": [
+        "Each worker process has its own interpreter and its own GIL, which gives true CPU parallelism even on GIL builds",
+        "Start methods: fork (copies the parent; fast, but unsafe with threads), spawn (fresh interpreter; slow, safe) and forkserver",
+        "Default start method by platform: spawn on Windows and on macOS since 3.8, forkserver on Linux since 3.14 (fork before that)",
+        "Forking a process that has threads can deadlock on inherited locks. Since 3.12 Python emits a DeprecationWarning for it",
+        "The if __name__ == '__main__': guard is required with spawn. Without it, each child re-imports the main module and spawns more workers",
+        "Arguments and results are pickled across the process boundary, so lambdas, local functions and open sockets can't be sent",
+        "ProcessPoolExecutor(max_workers=os.cpu_count()) with submit/map and as_completed() handles results in the order they finish",
+        "chunksize in map() batches items per IPC round trip and is essential when there are many tiny tasks",
+        "max_tasks_per_child (3.11+) recycles workers to contain memory leaks",
+        "A worker crash (segfault, OOM kill) raises BrokenProcessPool, and the pool must be recreated",
+        "multiprocessing.shared_memory (3.8+) shares raw buffers such as NumPy arrays without pickling",
+        "Cost: process startup takes tens of ms plus per-call serialization, so each task should do far more work than that overhead"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "asyncio: Event Loop and Coroutines",
+      "points": [
+        "`async def` defines a coroutine function. Calling it returns a coroutine object, and nothing runs until it is awaited or scheduled",
+        "The event loop runs one thread, uses OS readiness APIs (epoll, kqueue, IOCP), and resumes coroutines whose I/O is ready",
+        "asyncio.run(main()) creates the loop, runs it, and closes it. It is the single entry point for a program",
+        "asyncio.create_task(coro) schedules the coroutine to run concurrently. `await coro` alone runs it sequentially",
+        "asyncio.gather(*aws) runs awaitables concurrently. By default the first exception propagates but the sibling tasks keep running",
+        "asyncio.TaskGroup (3.11+) is structured: if one task fails, the others are cancelled and an ExceptionGroup is raised",
+        "`async with asyncio.timeout(5):` (3.11+) sets a deadline. Prefer it to wrapping calls in wait_for",
+        "Cancellation injects CancelledError at an await point. Re-raise it after cleanup and never swallow it",
+        "Keep a reference to every task you create. The loop holds only weak references, so an unreferenced task can be garbage-collected mid-run",
+        "asyncio.Semaphore(n) caps in-flight requests, e.g. 10k URLs with at most 100 open at once",
+        "A blocking call such as time.sleep, requests.get or a heavy loop freezes every coroutine. Debug mode (PYTHONASYNCIODEBUG=1) logs callbacks slower than 100 ms",
+        "It scales to tens of thousands of sockets because each waiting coroutine costs only a few KB, not an OS thread"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Structured Concurrency: trio and anyio",
+      "points": [
+        "Structured concurrency: every task lives inside a lexical scope that can't exit until all of its child tasks finish",
+        "trio nursery: `async with trio.open_nursery() as n: n.start_soon(f)`. The block waits for all its children",
+        "If a child fails, its siblings are cancelled and the errors surface together as an ExceptionGroup, handled with except* (3.11+)",
+        "Cancel scopes: trio.move_on_after(5) silently stops the block, while fail_after(5) raises TooSlowError",
+        "Cancellation is level-triggered: every checkpoint inside a cancelled scope keeps raising Cancelled, so cleanup can't accidentally continue",
+        "Checkpoints are the await points where trio may switch or cancel. trio.sleep(0) yields explicitly",
+        "anyio is an API that runs on either the asyncio or the trio backend, selected via anyio.run(main, backend='trio')",
+        "anyio.create_task_group() gives nursery semantics on top of plain asyncio",
+        "anyio.CapacityLimiter bounds concurrency, and anyio.to_thread.run_sync offloads blocking calls",
+        "Compared with plain asyncio: no orphaned tasks, no silently lost exceptions, and timeouts that nest correctly",
+        "asyncio.TaskGroup and asyncio.timeout adopted these ideas, but create_task outside a group still escapes the structure"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Mixing Models Safely",
+      "points": [
+        "await asyncio.to_thread(fn, *args) (3.9+) runs a blocking function in the default thread pool and copies contextvars",
+        "loop.run_in_executor(executor, fn, *args) takes only positional args, so use functools.partial for kwargs",
+        "CPU-bound work from async code: run_in_executor(ProcessPoolExecutor(), fn, x) keeps the event loop responsive",
+        "asyncio.run_coroutine_threadsafe(coro, loop) submits a coroutine from another thread and returns a concurrent.futures.Future",
+        "loop.call_soon_threadsafe(cb) is the only safe way for another thread to touch the loop. A plain call_soon from another thread is a bug",
+        "Never call asyncio.run() inside a running loop: it raises RuntimeError. Await the coroutine instead",
+        "Calling future.result() on the loop's own thread for a future scheduled on that loop deadlocks, because the loop can't progress",
+        "asyncio primitives (Lock, Queue, Event) are not thread-safe. Use queue.Queue or janus to bridge between threads and the loop",
+        "anyio.from_thread.run(async_fn) lets a worker thread call back into the event loop",
+        "A long-lived sync app can run the loop in a background thread and call run_coroutine_threadsafe(...).result(timeout) from sync code",
+        "The default executor is shared. Set loop.set_default_executor(...) or use a dedicated pool so slow calls don't starve it"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Shared-State Pitfalls",
+      "points": [
+        "counter += 1 is not atomic: it compiles to load, add and store bytecodes, so a thread switch in between loses updates",
+        "The GIL protects the interpreter, not your invariants. Check-then-act code still races, with or without the GIL",
+        "`with lock:` (threading.Lock) guarantees release on exceptions. RLock lets the same thread re-acquire it",
+        "Deadlock: two locks acquired in opposite orders. Fix it with a global lock ordering or a single coarser lock",
+        "Prefer message passing: queue.Queue producer/consumer avoids most explicit locks",
+        "asyncio races happen across await points: `if key not in cache: cache[key] = await fetch()` can fetch twice",
+        "In multiprocessing, a global mutated in a child is invisible to the parent because each process has separate memory",
+        "Manager().dict() proxies are shared, but every access is an IPC round trip and orders of magnitude slower",
+        "multiprocessing.Value and Array need `with v.get_lock():` for read-modify-write updates",
+        "threading.local holds per-thread state. contextvars.ContextVar holds per-task state that is correct under asyncio",
+        "Free-threaded builds make rare races frequent. Stress-test with many threads and a small sys.setswitchinterval"
+      ],
+      "shape": [
+        "mistakes",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Choosing by Workload, Benchmarks, and When Concurrency Doesn't Help",
+      "points": [
+        "Many sockets with async libraries (aiohttp, asyncpg) → asyncio or anyio",
+        "Moderate I/O through blocking libraries (requests, boto3, DB drivers) → ThreadPoolExecutor",
+        "Pure-Python CPU work → ProcessPoolExecutor, or threads on a free-threaded build",
+        "Numeric CPU work → vectorize with NumPy or Numba first. Threads work because these libraries release the GIL",
+        "Typical benchmark: CPU-bound fib on 4 cores takes about serial time with threads under the GIL and about serial/4 with processes",
+        "I/O benchmark: 100 requests at 100 ms each take ~10 s serially and ~0.1-0.3 s with threads or asyncio",
+        "Measure with time.perf_counter() or pyperf, with warm-up and repeats. Never trust a single time.time() run",
+        "Profile before parallelizing: cProfile, or py-spy to see the real bottleneck (and GIL contention with --gil)",
+        "It doesn't help when tasks are tiny (pickling and scheduling cost more than the work itself)",
+        "It doesn't help when a shared bottleneck (DB pool, API rate limit, a single disk, memory bandwidth) is already saturated",
+        "Too much concurrency hurts: more threads than needed cause contention and memory blow-up, and unbounded asyncio fan-out causes server-side 429s",
+        "uvloop can speed up the asyncio loop's I/O dispatch, but it won't fix blocking calls or CPU-bound coroutines"
+      ],
+      "shape": [
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheatsheet: Python Concurrency at a Glance",
+      "points": [
+        "Decision table: I/O plus async libraries → asyncio; I/O plus blocking libraries → threads; CPU → processes, or free-threaded threads",
+        "Threads: ThreadPoolExecutor(max_workers).map(fn, items). Cheap to share memory, limited by the GIL for CPU work",
+        "Processes: ProcessPoolExecutor with the __main__ guard, picklable args, and chunksize for many small tasks",
+        "asyncio: asyncio.run(main()), with TaskGroup for fan-out, timeout() for deadlines and Semaphore for limits",
+        "trio/anyio: nurseries and task groups, move_on_after/fail_after, ExceptionGroup handled with except*",
+        "Bridges: to_thread / run_in_executor (sync from async), run_coroutine_threadsafe / call_soon_threadsafe (async from a thread)",
+        "Free-threaded: python3.13t or 3.14t, check sys._is_gil_enabled(), audit C-extension support",
+        "Safety: Lock for read-modify-write, Queue for handoff, ContextVar for per-task state, and never block the event loop",
+        "Before scaling out: profile, measure with perf_counter or pyperf, apply Amdahl's law, check the shared bottleneck",
+        "Red flags: time.sleep in async def, lost task references, swallowed CancelledError, fork with threads, Manager in hot loops"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

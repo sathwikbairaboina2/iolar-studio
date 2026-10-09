@@ -1,0 +1,229 @@
+{
+  "title": "Docker Multi-Stage Builds",
+  "summary": "A study-notes series on Docker multi-stage builds: how stages, COPY --from and layer caching work, BuildKit cache mounts, minimal final images (alpine, distroless), dev/test targets, ARG scoping, non-root users, .dockerignore and measured image-size savings.",
+  "chapters": [
+    {
+      "title": "Docker Multi-Stage Builds: Cover",
+      "points": [
+        "Docker: build once, ship a small image — multi-stage builds separate build tools from the runtime",
+        "Series map: stages, COPY --from, cache, BuildKit mounts, final images, targets, ARG, security, .dockerignore, cheatsheet",
+        "The problem: single-stage images ship compilers, source, package caches and dev dependencies to production",
+        "The promise: typical Go/Node/Java images shrink from ~1 GB to 10–200 MB",
+        "Prerequisite vocabulary: image, layer, build context, Dockerfile instruction, registry",
+        "Running example used throughout: a small web app built in a builder stage and run in a slim stage"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Why Multi-Stage: The Single-Stage Problem",
+      "points": [
+        "Definition: a multi-stage Dockerfile has several FROM lines; each FROM starts a new stage with a fresh filesystem",
+        "Only the last stage (or the --target stage) becomes the final image; earlier stages are discarded from it",
+        "Single-stage: golang:1.22 image is ~800 MB because it holds the toolchain, source and module cache",
+        "Old workaround: the 'builder pattern' with two Dockerfiles and a shell script copying artifacts via docker cp",
+        "Multi-stage replaces that with one Dockerfile and one docker build command",
+        "Smaller image means faster pull, faster deploy, lower registry cost and smaller attack surface",
+        "Example: FROM golang:1.22 AS build / RUN go build -o /app ./cmd/server / FROM alpine / COPY --from=build /app /app",
+        "Mistake: leaving build tools (gcc, git, npm devDependencies) in the final stage",
+        "Mistake: assuming earlier stages are pushed — they stay only in the local build cache",
+        "Intermediate stages still cost build time and cache space even though they are not shipped"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "FROM ... AS Stages and COPY --from",
+      "points": [
+        "FROM image AS name gives a stage a name; without AS, stages are numbered from 0",
+        "COPY --from=build /src/out /app copies files from a named stage's filesystem",
+        "COPY --from=0 refers to a stage by index — fragile when stages are reordered, prefer names",
+        "COPY --from=nginx:1.27 /etc/nginx/nginx.conf /tmp/ copies from an external image, not just stages",
+        "Stage names are case-insensitive lowercase by convention: build, deps, test, runtime",
+        "A stage can start FROM a previous stage: FROM base AS dev reuses its layers and ENV",
+        "Only files are copied — ENV, WORKDIR, USER and installed packages from the source stage do not carry over",
+        "COPY --from --chown=app:app /app /app sets ownership during the copy",
+        "COPY --link (BuildKit) makes the copied layer independent so base changes do not invalidate it",
+        "Node example: build stage runs npm ci && npm run build, runtime stage copies only /app/dist and production node_modules",
+        "Mistake: copying from a stage that does not exist yields 'invalid from flag value' or 'pull access denied'",
+        "Mistake: forgetting that a COPY from a stage copies the whole path, including unwanted build artifacts"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Build Cache and Layer Ordering",
+      "points": [
+        "Every RUN, COPY and ADD instruction creates a layer; unchanged layers are reused from cache",
+        "Cache key for a layer: the instruction text plus, for COPY/ADD, a checksum of the copied file contents",
+        "Once one layer is invalidated, every later layer in that stage is rebuilt",
+        "Rule: order instructions from least to most frequently changing",
+        "Dependency-first pattern: COPY package.json package-lock.json ./ then RUN npm ci, then COPY . .",
+        "Go pattern: COPY go.mod go.sum ./ then RUN go mod download, then COPY . . then RUN go build",
+        "Bad ordering: COPY . . before npm ci means any source edit re-installs all dependencies",
+        "Combine related commands in one RUN with && and clean caches in the same layer (apt-get update && apt-get install -y x && rm -rf /var/lib/apt/lists/*)",
+        "Deleting files in a later layer does not shrink the image — the data remains in the earlier layer",
+        "Stages are independent in cache: changing the runtime stage does not rebuild the builder stage",
+        "BuildKit builds independent stages in parallel and skips stages not needed by the target",
+        "Mistake: RUN apt-get update alone in its own layer gets cached and serves stale package lists",
+        "docker build --no-cache and --pull force a clean rebuild of layers and base images"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "BuildKit Cache Mounts and Secrets",
+      "points": [
+        "BuildKit is the default builder in modern Docker; the syntax is enabled with # syntax=docker/dockerfile:1 on the first line",
+        "RUN --mount=type=cache,target=/root/.npm npm ci keeps the npm cache between builds without storing it in a layer",
+        "Cache mounts persist on the builder host, so a changed lockfile only downloads new packages",
+        "Go example: RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build go build ./...",
+        "pip example: RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt",
+        "apt example: cache /var/cache/apt and /var/lib/apt with sharing=locked to avoid concurrent corruption",
+        "Options: id= names a cache, sharing=shared|private|locked controls concurrent access, mode= and uid= set permissions",
+        "Cache mounts vs layer cache: layer cache is all-or-nothing per instruction, a cache mount is incremental inside a RUN",
+        "RUN --mount=type=bind,source=package.json,target=package.json mounts files without a COPY layer",
+        "RUN --mount=type=secret,id=npmrc,target=/root/.npmrc uses a credential at build time without baking it into any layer",
+        "Pass the secret with docker build --secret id=npmrc,src=$HOME/.npmrc .",
+        "Mistake: using ARG or ENV for tokens — they are visible in docker history and image metadata",
+        "Limitation: cache mounts are not shared across CI runners unless you export the cache (--cache-to / --cache-from, type=registry or gha)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Final Images: Alpine vs Distroless vs Scratch",
+      "points": [
+        "The final stage decides what ships: pick the smallest base that still runs your binary",
+        "scratch: an empty image, ~0 MB, for fully static binaries (Go with CGO_ENABLED=0)",
+        "alpine: ~5–8 MB, uses musl libc and busybox, has a shell and apk package manager",
+        "distroless (gcr.io/distroless/static, base, nodejs, java): no shell, no package manager, only runtime and CA certs",
+        "debian-slim: ~30–75 MB, glibc, widest compatibility, easy debugging",
+        "Size comparison for a Go service: golang:1.22 ~800 MB, debian-slim ~85 MB, alpine ~15 MB, distroless/static ~8 MB, scratch ~6 MB",
+        "Alpine gotcha: musl differs from glibc — some Python wheels and Node native addons fail or must compile from source",
+        "Distroless has no shell, so docker exec -it sh fails; use the :debug tag or docker debug / ephemeral containers",
+        "scratch has no CA certificates, no /etc/passwd and no timezone data — copy them from the builder stage",
+        "Example: COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ for HTTPS calls from scratch",
+        "Security: fewer packages means fewer CVEs in scanners like Trivy or Grype and a smaller attack surface",
+        "Mistake: choosing alpine for a glibc-linked binary built elsewhere — fails with 'not found' at exec time"
+      ],
+      "shape": [
+        "definition",
+        "comparison",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "--target: Dev, Test and Prod Stages",
+      "points": [
+        "docker build --target test . builds only up to and including the named stage",
+        "One Dockerfile can hold base, deps, dev, test, build and prod stages",
+        "Common graph: base → deps → (dev | test | build) → prod, with prod copying from build",
+        "dev stage: adds hot-reload tooling and devDependencies, CMD [\"npm\",\"run\",\"dev\"], used with bind mounts",
+        "test stage: FROM build AS test then RUN npm test — a failing test fails the docker build",
+        "CI pattern: docker build --target test . then docker build --target prod -t app:1.0 .",
+        "With BuildKit, stages not required by the target are skipped entirely",
+        "docker-compose: build: { context: ., target: dev } selects the stage per environment",
+        "If no --target is given the last stage in the file is built, so keep prod last",
+        "Output-only stages: docker build --target export --output type=local,dest=./out . extracts files without an image",
+        "Mistake: putting a dev stage last so a plain docker build ships dev tooling to production",
+        "Mistake: a typo in --target gives 'target stage could not be found'"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "ARG and ENV Across Stages",
+      "points": [
+        "ARG is a build-time variable set with --build-arg NAME=value; ENV persists into the running container",
+        "An ARG declared before the first FROM is global but usable only in FROM lines",
+        "To use it inside a stage, redeclare it there: ARG VERSION with no value inherits the global default",
+        "ARG scope ends at the stage boundary — each stage must declare the ARGs it needs",
+        "Example: ARG GO_VERSION=1.22 / FROM golang:${GO_VERSION} AS build / FROM alpine:${ALPINE_VERSION}",
+        "ENV values also do not cross stages unless the stage is built FROM the earlier stage",
+        "Predefined build ARGs: TARGETOS, TARGETARCH, TARGETPLATFORM, BUILDPLATFORM for multi-arch builds",
+        "Cross-compile pattern: FROM --platform=$BUILDPLATFORM golang AS build then GOOS=$TARGETOS GOARCH=$TARGETARCH go build",
+        "ARG changes invalidate the cache for later instructions that use it",
+        "ARG values show in docker history, so never pass secrets through them",
+        "Promote an ARG to runtime with ENV APP_VERSION=$APP_VERSION",
+        "Mistake: using an ARG inside a stage without redeclaring it, so the value is empty"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Non-Root Users and Hardening",
+      "points": [
+        "Containers run as root (UID 0) by default, so an escape or bug has maximum privilege",
+        "USER instruction switches the user for later RUN, CMD and ENTRYPOINT",
+        "Create the user in the build stage: RUN addgroup -S app && adduser -S -G app app (alpine) or useradd -r (debian)",
+        "Numeric UID is safer for Kubernetes runAsNonRoot checks: USER 10001:10001",
+        "Distroless ships a ready user: gcr.io/distroless/static:nonroot runs as UID 65532",
+        "scratch needs a hand-made /etc/passwd copied from the builder stage",
+        "COPY --chown=app:app ensures files are readable by the runtime user",
+        "Ports below 1024 need root unless capabilities are added; use 8080 instead of 80",
+        "Read-only root filesystem: docker run --read-only with tmpfs for /tmp complements non-root",
+        "HEALTHCHECK needs curl or a shell on alpine; for distroless use a built-in binary subcommand",
+        "Mistake: placing USER before a RUN that needs root, such as apk add, which then fails",
+        "Mistake: writable app directories owned by root so the non-root process cannot write logs or temp files"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": ".dockerignore and Cheatsheet",
+      "points": [
+        ".dockerignore lists paths excluded from the build context sent to the daemon",
+        "Smaller context means faster builds and fewer accidental cache busts from irrelevant file changes",
+        "Typical entries: .git, node_modules, dist, *.log, .env, Dockerfile, docker-compose.yml, coverage",
+        "Syntax: glob patterns, ** matches any depth, ! re-includes an exception such as !README.md",
+        "Ignoring .env and credentials keeps secrets out of COPY . . layers",
+        "Without it, COPY . . copies a host node_modules over the container's, breaking native modules",
+        "Per-Dockerfile ignore: Dockerfile.prod.dockerignore beside Dockerfile.prod (BuildKit)",
+        "Mistake: ignoring a file your Dockerfile COPYs, causing 'file not found' during build",
+        "Cheatsheet: FROM x AS s | COPY --from=s | --target s | RUN --mount=type=cache | ARG redeclare | USER nonroot",
+        "Checklist: pin base tags or digests, order layers by change rate, cache mounts, minimal final base, non-root, .dockerignore, test stage in CI",
+        "Summary: build fat, ship thin — keep toolchains in builder stages and copy only artifacts into a small non-root final image"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "mistakes",
+        "summary",
+        "cheatsheet"
+      ]
+    }
+  ]
+}

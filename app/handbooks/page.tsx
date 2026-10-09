@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button, Card, Col, Empty, Input, Modal, Progress, Row, Statistic, Tag, Typography } from 'antd';
+import { Button, Card, Col, Empty, Input, Modal, Progress, Row, Skeleton, Statistic, Tag, Typography } from 'antd';
 import { message } from '@/lib/ui/message';
 import LabeledInput from '@/components/ui/LabeledInput';
 import { PlusOutlined } from '@ant-design/icons';
@@ -13,13 +13,20 @@ type SubjectMeta = {
 
 export default function HandbooksPage() {
   const [subjects, setSubjects] = useState<SubjectMeta[]>([]);
+  // Until the first answer arrives, an empty list means "not known yet", not "no subjects".
+  const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [emoji, setEmoji] = useState('📓');
   const router = useRouter();
 
   const slug = slugify(name);
-  const load = () => fetch('/api/handbooks').then((r) => r.json()).then((d) => setSubjects(d.subjects ?? []));
+  const load = () =>
+    fetch('/api/handbooks')
+      .then((r) => r.json())
+      .then((d) => setSubjects(d.subjects ?? []))
+      .catch((err) => message.error(`Could not load subjects: ${err}`))
+      .finally(() => setLoaded(true));
   useEffect(() => { load(); }, []);
 
   const create = async () => {
@@ -54,7 +61,9 @@ export default function HandbooksPage() {
       </Row>
 
       <Typography.Title level={5}>Subjects</Typography.Title>
-      {subjects.length === 0 ? (
+      {!loaded ? (
+        <Skeleton active paragraph={{ rows: 3 }} />
+      ) : subjects.length === 0 ? (
         <Empty description="No subjects yet">
           <Button type="primary" onClick={() => setOpen(true)}>+ new subject</Button>
         </Empty>
