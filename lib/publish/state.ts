@@ -6,7 +6,10 @@ import type { Finding } from '@/lib/verify/gates';
 export type Verdict = 'pass' | 'unsure' | 'fail';
 export type ChapterState = {
   selected: boolean;
+  /** Inputs hash: book.json plus every part's post.json when the edition was reviewed. */
   hash?: string;
+  /** Hash of the edition sections that were reviewed. */
+  editionHash?: string;
   verdict?: Verdict;
   findings?: Finding[];
   reviewedAt?: string;

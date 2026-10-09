@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,22 @@ vi.mock('@/lib/renderer/icons', async (orig) => ({
 let root: string;
 const put = (rel: string, v: unknown) => { const f = path.join(root, rel); mkdirSync(path.dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(v)); };
 const post = (text: string) => ({ brand: 'iolar', series: 's', date: 'd', slides: [{ page_title: 'Page', blocks: [{ type: 'paragraph', text }] }] });
+const editionOf = (chapter: string, text: string, inputsHash: string) => ({
+  schema: 1, subject: 'py', chapter, inputsHash, generatedAt: '2026-10-09T00:00:00.000Z',
+  sections: [
+    { title: 'Intro', role: 'intro', pages: [{ title: 'Start', blocks: [{ type: 'paragraph', text }] }] },
+    { title: 'Main', role: 'outline', outlineIndex: 0, pages: [{ title: 'Body', blocks: [{ type: 'paragraph', text: 'body words '.repeat(200) }] }] },
+  ],
+});
+/** Writes the chapter's edition and returns the state entry that matches it. */
+async function publishedChapter(chapter: string, text: string) {
+  const { chapterHash } = await import('@/lib/publish/hash');
+  const { editionHash } = await import('@/lib/digital/edition');
+  const hash = await chapterHash('py', chapter);
+  const e = editionOf(chapter, text, hash);
+  put(`handbooks/py/${chapter}/digital/edition.json`, e);
+  return { selected: true, verdict: 'pass', hash, editionHash: editionHash(e as never), reviewedAt: '2026-10-09T00:00:00.000Z', approvedBy: 'ai' };
+}
 
 async function fixture(extra: Record<string, unknown> = {}) {
   put('handbooks/py/subject.json', { slug: 'py', name: 'Python', emoji: 'x', description: 'About python' });
@@ -19,11 +35,9 @@ async function fixture(extra: Record<string, unknown> = {}) {
     put(`handbooks/py/${c}/book.json`, { title: c, summary: `${c} summary`, chapters: [{ title: 'a', points: ['p'] }] });
     put(`handbooks/py/${c}/parts/01/post.json`, post(`${c} text {icon:python}`));
   }
-  const { chapterHash } = await import('@/lib/publish/hash');
-  const ch = (hash: string) => ({ selected: true, verdict: 'pass', hash, reviewedAt: '2026-10-09T00:00:00.000Z', approvedBy: 'ai' });
   put('handbooks/py/publish.json', {
     alwaysAsk: false,
-    chapters: { loop: ch(await chapterHash('py', 'loop')), tasks: ch(await chapterHash('py', 'tasks')) },
+    chapters: { loop: await publishedChapter('loop', 'loop text {icon:python}'), tasks: await publishedChapter('tasks', 'tasks text {icon:python}') },
     order: { order: ['loop', 'tasks'], prerequisites: { tasks: ['loop'] }, gaps: [], overlaps: [], confidence: 0.9, approvedBy: 'ai', basis: 'b' },
     ...extra,
   });
@@ -43,13 +57,34 @@ describe('exportSubject', () => {
     expect(parseHandbook(file).ok).toBe(true);
     expect(file.order).toEqual(['loop', 'tasks']);
     expect(file.orderReview.approvedBy).toBe('ai');
-    expect(file.chapters[1]).toMatchObject({ slug: 'tasks', prerequisites: ['loop'], minutes: 1, review: { approvedBy: 'ai' } });
+    expect(file.chapters[1]).toMatchObject({ slug: 'tasks', summary: 'tasks summary', prerequisites: ['loop'], minutes: 2, review: { approvedBy: 'ai', passes: ['rules', 'facts', 'pedagogy', 'readability'] } });
+    expect(file.chapters[1].parts.map((p: { n: number; title: string }) => [p.n, p.title])).toEqual([[1, 'Intro'], [2, 'Main']]);
+    expect(file.chapters[1].parts[1].pages[0].title).toBe('Body');
     expect(Object.keys(file.icons)).toEqual(['python']);
   });
 
-  it('drops a chapter that was edited after its review', async () => {
+  it('drops a chapter whose post was edited after its review', async () => {
     await fixture();
     put('handbooks/py/tasks/parts/01/post.json', post('changed'));
+    const { exportSubject } = await import('@/lib/publish/export');
+    await exportSubject('py');
+    expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['loop']);
+  });
+
+  it('drops a chapter whose book.json was edited, and one whose edition no longer matches its review', async () => {
+    await fixture();
+    put('handbooks/py/tasks/book.json', { title: 'tasks', summary: 'new', chapters: [{ title: 'a', points: ['p', 'q'] }] });
+    const e = JSON.parse(readFileSync(path.join(root, 'handbooks/py/loop/digital/edition.json'), 'utf8'));
+    e.sections[0].title = 'Edited by hand';
+    put('handbooks/py/loop/digital/edition.json', e);
+    const { exportSubject } = await import('@/lib/publish/export');
+    expect(await exportSubject('py')).toMatchObject({ written: false, chapters: 0 });
+    expect(existsSync(out())).toBe(false);
+  });
+
+  it('drops a chapter that has no edition', async () => {
+    await fixture();
+    rmSync(path.join(root, 'handbooks/py/tasks/digital'), { recursive: true });
     const { exportSubject } = await import('@/lib/publish/export');
     await exportSubject('py');
     expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['loop']);
@@ -98,10 +133,8 @@ describe('exportSubject', () => {
 
   it('keeps a chapter with an unknown icon and never embeds unsafe svg', async () => {
     await fixture();
-    put('handbooks/py/loop/parts/01/post.json', post('{icon:unknown} {icon:evil} {icon:python}'));
-    const { chapterHash } = await import('@/lib/publish/hash');
     const state = JSON.parse(readFileSync(path.join(root, 'handbooks/py/publish.json'), 'utf8'));
-    state.chapters.loop.hash = await chapterHash('py', 'loop');
+    state.chapters.loop = await publishedChapter('loop', '{icon:unknown} {icon:evil} {icon:python}');
     put('handbooks/py/publish.json', state);
     const { exportSubject } = await import('@/lib/publish/export');
     await exportSubject('py');

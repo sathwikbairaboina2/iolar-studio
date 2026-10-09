@@ -65,3 +65,34 @@ export async function saveEdition(e: Edition): Promise<void> {
   await fs.writeFile(`${file}.tmp`, JSON.stringify(e, null, 2));
   await fs.rename(`${file}.tmp`, file);
 }
+
+/** Every icon name an edition uses: icon fields and {icon:name} in any text. */
+export function editionIconNames(e: Edition): string[] {
+  const names = new Set<string>();
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') for (const m of v.matchAll(/\{icon:([^{}\n]+?)\}/g)) names.add(m[1].trim());
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+        if (k === 'icon' && typeof x === 'string') names.add(x.trim());
+        else walk(x);
+      }
+    }
+  };
+  for (const s of e.sections) walk(s.pages);
+  names.delete('');
+  return [...names];
+}
+
+const NON_PROSE = new Set(['type', 'kind', 'style', 'ink', 'icon', 'lang', 'frame', 'shape']);
+/** Words in all of the edition's text (code included), for a reading time. */
+export function editionWords(e: Edition): number {
+  let n = 0;
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') n += v.split(/\s+/).filter(Boolean).length;
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v as Record<string, unknown>)) if (!NON_PROSE.has(k)) walk(x);
+  };
+  for (const s of e.sections) walk(s.pages);
+  return n;
+}

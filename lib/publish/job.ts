@@ -1,16 +1,16 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import { subjectDir } from '@/lib/paths';
-import { listParts, loadChapterMeta, loadSubject } from '@/lib/store';
+import { loadChapterMeta, loadSubject } from '@/lib/store';
 import { loadBook } from '@/lib/ai/book';
-import { reviewIsCurrent, reviewPart } from '@/lib/verify/review';
+import { editionHash, inputsHash, loadEdition } from '@/lib/digital/edition';
+import { generateEdition } from '@/lib/digital/generate';
+import { reviewAndFix } from '@/lib/digital/fix';
+import { currentReview } from '@/lib/digital/review';
 import type { Finding } from '@/lib/verify/gates';
-import { digitalReview } from './digital';
 import { exportSubject } from './export';
-import { chapterHash } from './hash';
 import { proposeOrder, type OrderInput } from './order';
 import { updateState, type ChapterState, type PublishState } from './state';
-import { chapterVerdict, partReviewsFor } from './verdict';
 
 export type JobStep = { chapter: string; pass: string; state: 'queued' | 'running' | 'done' | 'skipped' };
 export type PublishJob = {
@@ -22,6 +22,9 @@ export type PublishJob = {
   steps: JobStep[];
   message?: string;
 };
+
+/** The steps shown for each chapter, in order. */
+export const CHAPTER_STEPS = ['generate', 'rules', 'facts', 'pedagogy', 'readability', 'fix'] as const;
 
 const UNAVAILABLE = 'Claude is not available; reviews could not run';
 /** A job file left "live" by a crashed server stops blocking new runs after this long. */
@@ -64,7 +67,7 @@ export async function startPublish(subject: string, chapters: string[]): Promise
       for (const c of chapters) s.chapters[c] = { ...s.chapters[c], selected: true };
     });
     const steps: JobStep[] = [
-      ...chapters.flatMap((chapter): JobStep[] => [{ chapter, pass: 'reviews', state: 'queued' }, { chapter, pass: 'digital', state: 'queued' }]),
+      ...chapters.flatMap((chapter): JobStep[] => CHAPTER_STEPS.map((pass) => ({ chapter, pass, state: 'queued' as const }))),
       { chapter: '', pass: 'order', state: 'queued' },
       { chapter: '', pass: 'export', state: 'queued' },
     ];
@@ -90,10 +93,14 @@ export async function startPublish(subject: string, chapters: string[]): Promise
 
 async function run(job: PublishJob, chapters: string[]) {
   const { subject } = job;
-  const mark = async (chapter: string, pass: string, state: JobStep['state']) => {
+  // Marks may be fired from callbacks that do not wait, so the writes go one at a time, in the order they were asked.
+  let chain: Promise<unknown> = Promise.resolve();
+  const mark = (chapter: string, pass: string, state: JobStep['state']) => {
     const step = job.steps.find((s) => s.chapter === chapter && s.pass === pass);
     if (step) step.state = state;
-    await writeJob(job);
+    const next = chain.then(() => writeJob(job));
+    chain = next.catch(() => {});
+    return next;
   };
   const setMessage = (m: string) => { job.message = job.message ?? m; };
 
@@ -124,42 +131,66 @@ async function reviewChapter(
   mark: (chapter: string, pass: string, state: JobStep['state']) => Promise<void>,
   setMessage: (m: string) => void,
 ) {
-  const hash = await chapterHash(subject, chapter).catch(() => null);
+  const markAll = async (passes: readonly string[], state: JobStep['state']) => { for (const p of passes) await mark(chapter, p, state); };
+  const hash = await inputsHash(subject, chapter).catch(() => null);
   const state = await updateState(subject, (s) => s.chapters[chapter]);
-  const reusable = !!hash && state?.hash === hash && !!state.verdict && !hasUnavailable(state.findings ?? []);
+  let edition = await loadEdition(subject, chapter);
+  const editionIsCurrent = !!hash && !!edition && edition.inputsHash === hash;
+  const reusable = editionIsCurrent && state?.hash === hash && !!state.verdict && state.editionHash === editionHash(edition!) && !hasUnavailable(state.findings ?? []);
   if (reusable) {
-    await mark(chapter, 'reviews', 'skipped');
-    await mark(chapter, 'digital', 'skipped');
+    await markAll(CHAPTER_STEPS, 'skipped');
     await updateState(subject, (s) => autoApprove(s, chapter));
     return;
   }
 
   let findings: Finding[] = [];
   let verdict: ChapterState['verdict'] = 'unsure';
+  let reviewedEdition: string | undefined;
   try {
-    await mark(chapter, 'reviews', 'running');
-    for (const n of await listParts(subject, chapter)) {
-      if (!(await reviewIsCurrent(subject, chapter, n))) await reviewPart(subject, chapter, n);
+    if (editionIsCurrent) {
+      await mark(chapter, 'generate', 'skipped');
+    } else {
+      // A failure here leaves any older edition untouched on disk, but it no longer matches the inputs, so it cannot go live.
+      await mark(chapter, 'generate', 'running');
+      edition = await generateEdition(subject, chapter);
+      await mark(chapter, 'generate', 'done');
     }
-    await mark(chapter, 'reviews', 'done');
-    await mark(chapter, 'digital', 'running');
-    const parts = await partReviewsFor(subject, chapter);
-    const digital = await digitalReview(subject, chapter);
-    await mark(chapter, 'digital', 'done');
-    findings = [...parts.findings.flat(), ...digital];
-    verdict = chapterVerdict(parts.findings, digital);
+
+    const saved = await currentReview(subject, chapter);
+    let review = saved && !hasUnavailable(saved.findings) ? saved : null;
+    if (review) {
+      await markAll(CHAPTER_STEPS.slice(1), 'skipped');
+    } else {
+      let fixing = false;
+      const AI = ['facts', 'pedagogy', 'readability'];
+      review = await reviewAndFix(subject, chapter, {
+        onStep: (step) => {
+          if (step.startsWith('fix:') && !fixing) { fixing = true; mark(chapter, 'fix', 'running').catch(() => {}); }
+        },
+        onReviewStep: (step) => {
+          if (step === 'rules') markAll(['rules'], 'running').catch(() => {});
+          else if (step === 'ai') markAll(['rules'], 'done').then(() => markAll(AI, 'running')).catch(() => {});
+          else if (step === 'done') markAll(AI, 'done').catch(() => {});
+        },
+      });
+      await markAll(['rules', ...AI], 'done');
+      await mark(chapter, 'fix', fixing ? 'done' : 'skipped');
+    }
+    findings = review.findings;
+    verdict = review.verdict;
+    reviewedEdition = review.editionHash;
     if (hasUnavailable(findings)) setMessage(UNAVAILABLE);
   } catch (err) {
     // A pass that could not run leaves the chapter for a person; it is neither failed nor live.
-    setMessage(isUnavailable(err) ? UNAVAILABLE : `A review pass failed: ${err instanceof Error ? err.message : String(err)}`);
+    setMessage(isUnavailable(err) ? UNAVAILABLE : `The edition could not be written or reviewed: ${err instanceof Error ? err.message : String(err)}`);
     findings = [{
       pass: 'publish', rule: 'publish.unavailable', severity: 'minor', page: 0,
-      summary: isUnavailable(err) ? 'Claude was not available, so the chapter could not be reviewed.' : 'A review pass failed, so the chapter could not be reviewed.',
-      evidence: String(err).slice(0, 120), fix: 'Run the review again.',
+      summary: isUnavailable(err) ? 'Claude was not available, so the chapter could not be reviewed.' : 'The edition could not be written or reviewed, so the chapter could not be published.',
+      evidence: String(err).slice(0, 200), fix: 'Run the review again.',
     }];
     verdict = 'unsure';
-    await mark(chapter, 'reviews', 'done');
-    await mark(chapter, 'digital', 'done');
+    reviewedEdition = undefined;
+    await markAll(CHAPTER_STEPS, 'done');
   }
 
   await updateState(subject, (s) => {
@@ -167,6 +198,7 @@ async function reviewChapter(
     s.chapters[chapter] = {
       selected: s.chapters[chapter]?.selected ?? true,
       hash: hash ?? undefined,
+      editionHash: reviewedEdition,
       verdict,
       findings,
       reviewedAt: new Date().toISOString(),
