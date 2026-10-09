@@ -6,13 +6,14 @@ import type { Edition } from '@/lib/digital/edition';
 type Sample = { slug: string; parts: { n: number; title: string; pages: { title: string; blocks: unknown[] }[] }[] };
 const sample: Sample = JSON.parse(readFileSync(path.join(__dirname, 'fixtures/digital-sample-edition.json'), 'utf8'));
 
-function asEdition(parts: Sample['parts']): Edition {
+function asEdition(parts: Sample['parts'], intro = true): Edition {
+  const first = intro ? 1 : 0;
   return {
     schema: 1, subject: 'python-asyncio', chapter: sample.slug, inputsHash: 'h', generatedAt: '2026-10-09T00:00:00.000Z',
     sections: parts.map((p, i) => ({
       title: p.title,
-      role: i === 0 ? 'intro' : i === parts.length - 1 ? 'quiz' : 'outline',
-      ...(i > 0 && i < parts.length - 1 ? { outlineIndex: i - 1 } : {}),
+      role: intro && i === 0 ? 'intro' : i === parts.length - 1 ? 'quiz' : 'outline',
+      ...(i >= first && i < parts.length - 1 ? { outlineIndex: i - first } : {}),
       pages: p.pages,
     })),
   };
@@ -46,9 +47,9 @@ const output = (...l: string[]) => ({ type: 'code', lang: 'output', lines: l });
 
 describe('editionGates', () => {
   it('lets the approved sample through with no blocker or major finding', async () => {
-    run.mockResolvedValue(ok('coroutine\nfetching…\ndata\n'));
+    run.mockResolvedValue(ok('fetching…\ncoroutine data\n'));
     const { editionGates } = await import('@/lib/digital/gates');
-    const findings = await editionGates(asEdition(sample.parts), sampleBook());
+    const findings = await editionGates(asEdition(sample.parts, false), sampleBook());
     expect(findings.filter((f) => f.severity !== 'minor')).toEqual([]);
     expect(run).toHaveBeenCalledTimes(1);
   });

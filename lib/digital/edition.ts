@@ -4,6 +4,7 @@ import path from 'path';
 import { digitalDir } from '@/lib/paths';
 import { chapterHash } from '@/lib/publish/hash';
 import { parseHandbook } from '@/lib/publish/contract';
+import { stripInline } from '@/lib/renderer/inline';
 
 export type EditionPage = { title: string; blocks: unknown[] };
 export type EditionSection = { title: string; role: 'intro' | 'outline' | 'quiz'; outlineIndex?: number; pages: EditionPage[] };
@@ -15,9 +16,47 @@ export const MAX_CODE_BLOCKS_PER_SECTION = 12;
 export const MAX_CODE_BLOCKS_PER_EDITION = 160;
 export const MAX_EDITION_BYTES = 1_500_000;
 
+/** A revision page is one screen of notes. An `output` block belongs to the example before it and is not code. */
+export const MAX_BLOCKS_PER_PAGE = 14;
+export const MAX_CODE_BLOCKS_PER_PAGE = 2;
+export const MAX_TABLES_PER_PAGE = 2;
+export const MAX_CODE_LINES = 8;
+export const MAX_PARAGRAPHS_PER_PAGE = 1;
+export const MAX_PARAGRAPH_CHARS = 160;
+export const MAX_BULLET_CHARS = 120;
+
 /** Code blocks that are examples; an output block only shows what the example before it prints. */
 const exampleCount = (s: EditionSection) =>
   s.pages.reduce((n, p) => n + p.blocks.filter((b) => (b as { type?: string; lang?: string })?.type === 'code' && (b as { lang?: string }).lang !== 'output').length, 0);
+
+/** What a page breaks, in words the generator can act on when it is asked to write the page again. */
+export function pageCapErrors(p: EditionPage): string[] {
+  const errors: string[] = [];
+  const blocks = p.blocks as Record<string, unknown>[];
+  const at = `page "${p.title}"`;
+  if (blocks.length > MAX_BLOCKS_PER_PAGE) errors.push(`${at} has ${blocks.length} blocks; the most allowed is ${MAX_BLOCKS_PER_PAGE}`);
+  const examples = blocks.filter((b) => b?.type === 'code' && b.lang !== 'output');
+  if (examples.length > MAX_CODE_BLOCKS_PER_PAGE) errors.push(`${at} has ${examples.length} code blocks; the most allowed is ${MAX_CODE_BLOCKS_PER_PAGE}`);
+  const tables = blocks.filter((b) => b?.type === 'table').length;
+  if (tables > MAX_TABLES_PER_PAGE) errors.push(`${at} has ${tables} tables; the most allowed is ${MAX_TABLES_PER_PAGE}`);
+  for (const b of examples) {
+    const n = Array.isArray(b.lines) ? b.lines.length : 0;
+    if (n > MAX_CODE_LINES) errors.push(`${at} has a code block of ${n} lines; the most allowed is ${MAX_CODE_LINES}`);
+  }
+  const paragraphs = blocks.filter((b) => b?.type === 'paragraph');
+  if (paragraphs.length > MAX_PARAGRAPHS_PER_PAGE) errors.push(`${at} has ${paragraphs.length} paragraphs; the most allowed is ${MAX_PARAGRAPHS_PER_PAGE}`);
+  for (const b of paragraphs) {
+    const n = stripInline(String(b.text ?? '')).length;
+    if (n > MAX_PARAGRAPH_CHARS) errors.push(`${at} has a paragraph of ${n} characters; the most allowed is ${MAX_PARAGRAPH_CHARS}`);
+  }
+  for (const b of blocks.filter((x) => x?.type === 'bullets')) {
+    for (const item of Array.isArray(b.items) ? b.items : []) {
+      const n = stripInline(String(item)).length;
+      if (n > MAX_BULLET_CHARS) errors.push(`${at} has a bullet of ${n} characters; the most allowed is ${MAX_BULLET_CHARS}`);
+    }
+  }
+  return errors;
+}
 
 export function editionFile(s: string, c: string) {
   return path.join(digitalDir(s, c), 'edition.json');
@@ -44,6 +83,8 @@ export function validateEdition(e: Edition, title: string): { ok: true } | { ok:
   e.sections.forEach((s) => {
     if (!s.pages.length) errors.push(`section "${s.title}" has no pages`);
     s.pages.forEach((p) => { if (!p.blocks.length) errors.push(`page "${p.title}" in "${s.title}" has no blocks`); });
+    if (s.role === 'outline' && s.pages.length > 1) errors.push(`section "${s.title}" has ${s.pages.length} pages; an outline section has exactly 1`);
+    for (const p of s.pages) errors.push(...pageCapErrors(p));
   });
   e.sections.forEach((s) => {
     if (s.pages.length > MAX_PAGES_PER_SECTION) errors.push(`section "${s.title}" has ${s.pages.length} pages; the most allowed is ${MAX_PAGES_PER_SECTION}`);
