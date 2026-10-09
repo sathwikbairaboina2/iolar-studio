@@ -1,6 +1,6 @@
 'use client';
 import { use, useEffect, useState } from 'react';
-import { Button, Card, Empty, Input, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from 'antd';
+import { Button, Card, Checkbox, Empty, Input, Modal, Segmented, Select, Space, Tag, Tooltip, Typography } from 'antd';
 import { message } from '@/lib/ui/message';
 import { PlusOutlined } from '@ant-design/icons';
 import Link from 'next/link';
@@ -9,6 +9,10 @@ import { isSlug, slugify } from '@/lib/paths';
 import { SWEEP } from '@/components/ThemeProvider';
 import { CATEGORIES, categoryOf, filterChapters, type CategoryId } from '@/lib/handbookCategories';
 import { CategorySelect } from '@/components/handbooks/CategorySelect';
+import { PublishStrip } from '@/components/handbooks/PublishStrip';
+import { PublishBar } from '@/components/handbooks/PublishBar';
+import { PublishDrawer } from '@/components/handbooks/PublishDrawer';
+import { usePublish, type PublishData } from '@/components/handbooks/usePublish';
 
 type ChapterMeta = {
   subject: string; slug: string; title: string; category?: string; parts: number;
@@ -23,6 +27,26 @@ const STATUS_COLOR: Record<string, string> = {
   draft: 'default', rendered: 'blue', polished: 'purple', packaged: 'gold', published: 'success',
 };
 
+const AIIOLAR_TAG: Record<string, { color: string; label: string }> = {
+  live: { color: 'success', label: 'Live on aiiolar' },
+  none: { color: 'default', label: 'Not published' },
+  run: { color: 'processing', label: 'Reviewing' },
+  you: { color: 'warning', label: 'Needs you' },
+  fail: { color: 'error', label: 'Failed review' },
+};
+
+/** Where a chapter stands on aiiolar, from the publish snapshot. */
+function aiiolarState(slug: string, p: PublishData | null): string {
+  if (!p) return 'none';
+  const job = p.job;
+  if (job?.live && job.steps.some((s) => s.chapter === slug && (s.state === 'running' || s.state === 'queued'))) return 'run';
+  if (p.live.includes(slug)) return 'live';
+  const c = p.state.chapters[slug];
+  if (c?.selected && !c.rejected && c.verdict === 'fail') return 'fail';
+  if (p.queue.chapters.includes(slug)) return 'you';
+  return 'none';
+}
+
 export default function SubjectPage({ params }: { params: Promise<{ subject: string }> }) {
   const { subject } = use(params);
   const [meta, setMeta] = useState<Subject | null>(null);
@@ -33,6 +57,9 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
   const [fCategory, setFCategory] = useState<string>('');
   const [fStatus, setFStatus] = useState<string | undefined>();
   const [query, setQuery] = useState('');
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [drawer, setDrawer] = useState<'run' | 'queue' | null>(null);
+  const { data: pub, act } = usePublish(subject);
   const router = useRouter();
   const shown = filterChapters(chapters, { category: fCategory, status: fStatus, query });
   const count = (id: string) => chapters.filter((c) => categoryOf(c.category).id === id).length;
@@ -45,6 +72,26 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [subject]);
+
+  const titles = Object.fromEntries(chapters.map((c) => [c.slug, c.title]));
+  const toggle = (slug: string) => setSel((cur) => { const n = new Set(cur); if (n.has(slug)) n.delete(slug); else n.add(slug); return n; });
+  const allSelected = chapters.length > 0 && sel.size === chapters.length;
+  const live = new Set(pub?.live ?? []);
+  const selected = [...sel];
+  const publishError = (e: unknown) => message.error(e instanceof Error ? e.message : 'failed');
+  const startRun = async () => {
+    try {
+      await act({ action: 'run', chapters: selected });
+      setDrawer('run');
+      setSel(new Set());
+    } catch (e) { publishError(e); }
+  };
+  const takeOff = async () => {
+    try {
+      await act({ action: 'unselect', chapters: selected.filter((s) => live.has(s)) });
+      setSel(new Set());
+    } catch (e) { publishError(e); }
+  };
 
   const create = async () => {
     const r = await fetch(`/api/handbooks/${subject}`, {
@@ -73,6 +120,18 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>new chapter</Button>
         </Space>
       </div>
+
+      {chapters.length > 0 && pub && (
+        <PublishStrip
+          liveCount={pub.live.length}
+          name={meta?.name ?? subject}
+          updatedAt={pub.state.exportedAt}
+          alwaysAsk={pub.state.alwaysAsk}
+          queueCount={pub.queue.chapters.length + (pub.queue.order ? 1 : 0)}
+          onAlwaysAsk={(v) => act({ action: 'alwaysAsk', value: v }).catch(publishError)}
+          onQueue={() => setDrawer('queue')}
+        />
+      )}
 
       {chapters.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
@@ -112,7 +171,18 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
       ) : shown.length === 0 ? (
         <Empty description="No chapters match these filters" />
       ) : (
-        shown.map((c) => (
+        <>
+        <div style={{ marginBottom: 6, paddingInlineStart: 14 }}>
+          <Checkbox
+            aria-label="select all chapters"
+            checked={allSelected}
+            indeterminate={sel.size > 0 && !allSelected}
+            onChange={() => setSel(allSelected ? new Set() : new Set(chapters.map((c) => c.slug)))}
+          >
+            <span style={{ opacity: 0.65, fontSize: 13 }}>Chapter</span>
+          </Checkbox>
+        </div>
+        {shown.map((c) => (
           <Card
             key={c.slug}
             size="small"
@@ -121,6 +191,9 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
             onClick={() => router.push(`/handbooks/${subject}/${c.slug}`)}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+              <span onClick={(e) => e.stopPropagation()}>
+                <Checkbox aria-label={`select ${c.title}`} checked={sel.has(c.slug)} onChange={() => toggle(c.slug)} />
+              </span>
               <span
                 style={{
                   width: 34, height: 34, borderRadius: 10, display: 'inline-flex', alignItems: 'center',
@@ -155,11 +228,36 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
                 })}
               </Space>
               <Tag color={STATUS_COLOR[c.status] ?? 'default'}>{c.status}</Tag>
+              {pub && (() => {
+                const st = aiiolarState(c.slug, pub);
+                return <Tag data-testid={`aiiolar-${c.slug}`} color={AIIOLAR_TAG[st].color}>{AIIOLAR_TAG[st].label}</Tag>;
+              })()}
               <Button size="small">open</Button>
             </div>
           </Card>
-        ))
+        ))}
+        </>
       )}
+
+      <PublishBar
+        count={sel.size}
+        toReview={selected.filter((s) => !live.has(s)).length}
+        anyLive={selected.some((s) => live.has(s))}
+        busy={!!pub?.job?.live}
+        onClear={() => setSel(new Set())}
+        onUnpublish={takeOff}
+        onGo={startRun}
+      />
+      <PublishDrawer
+        open={drawer !== null}
+        mode={drawer ?? 'run'}
+        subject={subject}
+        data={pub}
+        titles={titles}
+        selected={selected}
+        act={act}
+        onClose={() => setDrawer(null)}
+      />
 
       <Modal
         title="New chapter"
