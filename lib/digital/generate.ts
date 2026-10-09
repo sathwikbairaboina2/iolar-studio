@@ -4,7 +4,7 @@ import { extractJson } from '@/lib/ai/revise';
 import { listParts, loadChapterMeta, loadPost } from '@/lib/store';
 import type { Post } from '@/lib/schema';
 import { inputsHash, loadEdition, saveEdition, validateEdition, type Edition, type EditionPage, type EditionSection } from './edition';
-import { carouselText, sectionPrompt } from './prompt';
+import { carouselFor, sectionPrompt } from './prompt';
 
 export type SectionRequest = { role: 'intro' | 'outline' | 'quiz'; outlineIndex?: number; notes?: string[] };
 
@@ -16,7 +16,7 @@ async function context(subject: string, chapter: string) {
   const posts: Post[] = [];
   for (const n of await listParts(subject, chapter)) posts.push(await loadPost(subject, chapter, n));
   const meta = await loadChapterMeta(subject, chapter);
-  return { book, chapterTitle: meta.title || book.title, carousel: carouselText(posts) };
+  return { book, chapterTitle: meta.title || book.title, posts };
 }
 
 type Ctx = Awaited<ReturnType<typeof context>>;
@@ -65,7 +65,9 @@ function fallbackTitle(book: Ctx['book'], req: SectionRequest) {
 async function writeSection(subject: string, chapter: string, ctx: Ctx, req: SectionRequest): Promise<EditionSection> {
   let error: string | undefined;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const prompt = sectionPrompt({ ...ctx, role: req.role, outlineIndex: req.outlineIndex, notes: req.notes, error });
+    const section = req.role === 'outline' ? ctx.book.chapters[req.outlineIndex ?? 0] : undefined;
+    const carousel = carouselFor(ctx.posts, section);
+    const prompt = sectionPrompt({ book: ctx.book, chapterTitle: ctx.chapterTitle, carousel, role: req.role, outlineIndex: req.outlineIndex, notes: req.notes, error });
     const raw = await runClaude(prompt, { timeoutMs: 300_000 });
     try {
       const parsed = parseAnswer(raw) as { title?: unknown; pages?: unknown };
@@ -75,7 +77,14 @@ async function writeSection(subject: string, chapter: string, ctx: Ctx, req: Sec
         if (typeof p?.title !== 'string' || !Array.isArray(p.blocks)) throw new Error('every page needs a "title" and a "blocks" array');
       }
       for (const p of pages) p.blocks = p.blocks.map(normalizeBlock);
-      const title = typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTitle(ctx.book, req);
+      // An outline section keeps the book's title; the quiz is always "Check yourself". The one page carries the same title.
+      const title = req.role === 'intro' && typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTitle(ctx.book, req);
+      if (pages.length === 1 && req.role !== 'intro') pages[0].title = title;
+      if (req.role === 'quiz') {
+        if (pages.length !== 1) throw new Error(`the quiz section has ${pages.length} pages; it has exactly 1 page of 3 to 5 qa blocks`);
+        const questions = pages[0].blocks.filter((b) => (b as { type?: string })?.type === 'qa').length;
+        if (questions < 3 || questions > 5) throw new Error(`the quiz page has ${questions} qa blocks; it needs 3 to 5 qa blocks`);
+      }
       const section: EditionSection = { title, role: req.role, ...(req.role === 'outline' ? { outlineIndex: req.outlineIndex } : {}), pages };
       const one: Edition = { schema: 1, subject, chapter, inputsHash: '', generatedAt: new Date().toISOString(), sections: [section] };
       const v = validateEdition(one, ctx.chapterTitle);
@@ -113,12 +122,11 @@ async function inPool<T, R>(items: T[], job: (item: T) => Promise<R>): Promise<R
   return out;
 }
 
-/** Intro, one section per book.json section, then quiz and summary. Nothing is saved unless every section is valid. */
+/** One page per book.json section, then the quiz page. Nothing is saved unless every section is valid. */
 export async function generateEdition(subject: string, chapter: string, opts: { notes?: Record<number, string[]> } = {}): Promise<Edition> {
   const hash = await inputsHash(subject, chapter);
   const ctx = await context(subject, chapter);
   const requests: SectionRequest[] = [
-    { role: 'intro' },
     ...ctx.book.chapters.map((_, i): SectionRequest => ({ role: 'outline', outlineIndex: i, notes: opts.notes?.[i] })),
     { role: 'quiz' },
   ];
@@ -139,7 +147,9 @@ export async function regenerateWithNotes(subject: string, chapter: string, note
   const outline = edition?.sections.filter((s) => s.role === 'outline').length ?? 0;
   const hash = await inputsHash(subject, chapter);
   // Sections written from older inputs cannot be patched into an edition stamped with the new hash.
-  if (!edition || outline !== ctx.book.chapters.length || edition.inputsHash !== hash) {
+  // An edition from before the revision-note shape (an intro, or an outline section of several pages) is written again whole.
+  const oldShape = !!edition && edition.sections.some((s) => s.role === 'intro' || (s.role === 'outline' && s.pages.length !== 1));
+  if (!edition || oldShape || outline !== ctx.book.chapters.length || edition.inputsHash !== hash) {
     return generateEdition(subject, chapter, { notes: Object.fromEntries(ctx.book.chapters.map((_, i) => [i, [notes]])) });
   }
   const low = notes.toLowerCase();

@@ -1,11 +1,15 @@
 import type { Book } from '@/lib/ai/book';
 import { stripInline } from '@/lib/renderer/inline';
 import type { Post } from '@/lib/schema';
+import {
+  MAX_BLOCKS_PER_PAGE, MAX_BULLET_CHARS, MAX_CODE_BLOCKS_PER_PAGE, MAX_CODE_LINES, MAX_PARAGRAPHS_PER_PAGE, MAX_PARAGRAPH_CHARS, MAX_TABLES_PER_PAGE,
+} from './edition';
+import { EXAMPLE_PAGES } from './examples';
 
 /** Block types the aiiolar reader draws, one JSON example each. */
 export const BLOCK_EXAMPLES = `Allowed blocks (nothing else; no labelrows, no concept, no cover pages):
 {"type":"heading","text":"A short heading"}
-{"type":"paragraph","text":"Full sentences with **bold** terms, ==marks== and \`code\`."}
+{"type":"paragraph","text":"One short line of context with **bold** terms (rare; prefer bullets)."}
 {"type":"bullets","items":["one","two"],"style":"check"}
 {"type":"code","lang":"python","lines":["print('hi')"],"note":"optional caption","result":{"headers":["a"],"rows":[["1"]]}}
 {"type":"code","lang":"output","lines":["hi"]}
@@ -27,19 +31,26 @@ ink values: blue, red, green, black, purple, orange, pink. Never use the diagram
 
 export const INLINE_SYNTAX = `Inline text (paragraph, bullets, table cells, callouts, qa) uses only: **bold**, ==mark==, \`code\`, __underline__, {icon:name}, and {blue|red|green|black|purple|orange|pink:text}. No single-asterisk italics, no markdown headings, no markdown links.`;
 
+/** The limits validateEdition enforces, in words the writer can follow. */
+export const CAPS_TEXT = `Hard limits, checked by a program (a page over any of them is thrown away): at most ${MAX_BLOCKS_PER_PAGE} blocks on the page, at most ${MAX_CODE_BLOCKS_PER_PAGE} code blocks (an output block does not count), at most ${MAX_TABLES_PER_PAGE} tables, at most ${MAX_CODE_LINES} lines per code block, at most ${MAX_PARAGRAPHS_PER_PAGE} paragraph of at most ${MAX_PARAGRAPH_CHARS} characters, and every bullet item at most ${MAX_BULLET_CHARS} characters.`;
+
 export const EDITION_RULES = [
-  'You are writing one section of a web chapter that a learner reads on a page, top to bottom.',
+  'You are writing one page of REVISION NOTES in a web handbook: the page a learner scans the night before an exam. Notes, not prose.',
   BLOCK_EXAMPLES,
+  'Bullets take a style (dot, number, check, cross, checkbox, star), a frame ("dashed") and an ink; headings, sideboxes and bullets take an ink.',
   INLINE_SYNTAX,
-  'Worked examples: a runnable example is a `python` code block immediately followed by a code block with lang "output" holding exactly what the program prints. The code must run on Python 3.11 with the standard library only, finish in a couple of seconds, and print exactly that output. Later examples may use names that earlier examples in the chapter defined.',
+  `The page has 3 to 6 mini-sections, each a heading block (numbered, "1. What the loop is", with an ink) followed by its notes. Notes are: one-line bullets with the key words in ==marks== or {ink:...} (one idea per bullet, a fragment is fine), compact tables, a small flow, chain or flowchart for every process or decision, code of at most ${MAX_CODE_LINES} lines (an output block right after it whenever it prints something), one callout with style sticky for the thing to remember, a sidebox for rules.`,
+  CAPS_TEXT,
+  'Worked examples: a runnable example is a `python` code block immediately followed by a code block with lang "output" holding exactly what the program prints. The code must run on Python 3.11 with the standard library only, finish in a couple of seconds, and print exactly that output. Later examples may use names that earlier examples on the page defined.',
   'Use a table for every set of comparison rows in the points.',
-  'Use a flow, chain or flowchart for every process or decision.',
-  'Write common mistakes as callouts with style sticky.',
+  'Write common mistakes as callouts with style sticky, or as bullets with style cross.',
   'No single-asterisk italics, no markdown headings or links.',
-  "Write for reading on a page: no 'swipe', 'next slide' or page numbers. Explain an idea in prose before showing code for it; do not turn the section into bullet dumps.",
-  'Every page has a title and at least one block. Use one to four pages per section (never more than 6), and at most 12 code blocks in the whole section.',
-  'Answer shape, as ONE JSON object and nothing else (no prose, no markdown fences): {"title": string, "pages": [{"title": string, "blocks": [...]}]}',
+  "Write for reading on a page: no 'swipe', 'next slide' or page numbers.",
+  'Answer shape, as ONE JSON object and nothing else (no prose, no markdown fences): {"title": string, "pages": [{"title": string, "blocks": [...]}]} with exactly one page.',
 ].join('\n\n');
+
+const styleExamples = () =>
+  `Two example pages from the paperback, as JSON. Match their density and mix of blocks; do not copy their facts:\n${EXAMPLE_PAGES.map((p) => JSON.stringify(p)).join('\n')}`;
 
 const SKIP_KEYS = new Set(['type', 'kind', 'style', 'ink', 'icon', 'frame', 'lang']);
 function texts(v: unknown, out: string[] = []): string[] {
@@ -56,7 +67,42 @@ export function carouselText(posts: Post[]): string {
     .join('\n\n');
 }
 
-const SOURCE_NOTE = 'Source material (facts and examples you may reuse; do not copy slide phrasing):';
+/** The most source text one prompt carries. */
+export const SOURCE_LIMIT = 12_000;
+
+const STOP = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'are', 'not']);
+const titleWords = (s: string) => new Set((stripInline(s).toLowerCase().match(/[a-z][a-z0-9_]{2,}/g) ?? []).filter((w) => !STOP.has(w)));
+
+/**
+ * The carousel pages that cover one section: those whose title shares half its words with the section's, then
+ * those whose text holds a third of the section's longer words (at most three). Without a match, the whole
+ * carousel. Cut to SOURCE_LIMIT characters either way.
+ */
+export function carouselFor(posts: Post[], section?: { title: string; points: string[] }): string {
+  const whole = () => carouselText(posts).slice(0, SOURCE_LIMIT);
+  if (!section) return whole();
+  const pages = posts.flatMap((p) => p.slides.map((s) => ({ title: s.page_title, body: texts(s.blocks).join('\n') })));
+  const want = titleWords(section.title);
+  const longWords = new Set((stripInline(section.points.join(' ')).toLowerCase().match(/[a-z][a-z0-9_]{6,}/g) ?? []));
+  const picked = new Set<number>();
+  const scored: { i: number; score: number }[] = [];
+  pages.forEach((pg, i) => {
+    const have = titleWords(pg.title);
+    const both = [...want].filter((w) => have.has(w)).length;
+    const union = new Set([...want, ...have]).size;
+    if (union && both / union >= 0.5) picked.add(i);
+    else if (longWords.size) {
+      const text = titleWords(pg.body + ' ' + pg.title);
+      const hit = [...longWords].filter((w) => text.has(w)).length;
+      if (hit / longWords.size >= 0.33) scored.push({ i, score: hit / longWords.size });
+    }
+  });
+  scored.sort((a, b) => b.score - a.score).slice(0, 3).forEach((x) => picked.add(x.i));
+  if (!picked.size) return whole();
+  return [...picked].sort((a, b) => a - b).map((i) => `### ${pages[i].title}\n${pages[i].body}`).join('\n\n').slice(0, SOURCE_LIMIT);
+}
+
+const SOURCE_NOTE = 'Source material, the paperback pages for this (facts and examples you may reuse; do not copy slide phrasing):';
 
 export function sectionPrompt(opts: {
   book: Book;
@@ -71,18 +117,19 @@ export function sectionPrompt(opts: {
   const out: string[] = [EDITION_RULES, `Chapter: ${opts.chapterTitle}. ${book.summary}`];
   if (role === 'intro') {
     out.push(
-      'Write the INTRODUCTION: one page titled for what the chapter teaches, 2 to 3 paragraphs saying why it matters and what the learner can do afterwards, and a tip callout with prerequisites or setup.',
+      'Write the INTRODUCTION: one page titled for what the chapter teaches, as notes: 3 to 5 one-line bullets on why it matters and what the learner can do afterwards, and a tip callout with prerequisites or setup.',
       `The chapter's outline, for orientation:\n${book.chapters.map((c, i) => `${i + 1}. ${c.title}`).join('\n')}`,
     );
   } else if (role === 'quiz') {
     out.push(
-      'Write the QUIZ AND SUMMARY: section title "Check yourself" with two pages. Page "Quiz": 3 to 5 qa blocks that test understanding (predict output, spot the bug), not recall of wording. Page "Summary": one bullets block (style "check") of 4 to 7 one-line takeaways.',
+      'Write the QUIZ: section title "Check yourself" with exactly ONE page titled "Check yourself" holding 3 to 5 qa blocks and nothing else. The questions test understanding (predict output, spot the bug), not recall of wording. Keep every answer to a few short bullet lines. A wrong answer teaches something false, so work through each one before you write it.',
       `Everything the chapter covers:\n${book.chapters.map((c) => `- ${c.title}: ${c.points.join('; ')}`).join('\n')}`,
     );
   } else {
     const section = book.chapters[opts.outlineIndex ?? 0];
     out.push(
-      `Write the section "${section.title}". Cover EVERY point below, each in its own words with an example, table or diagram where the point calls for one. The points are the checklist:\n${section.points.map((p, i) => `${i + 1}. ${p}`).join('\n')}`,
+      styleExamples(),
+      `Write the section "${section.title}" as ONE page of notes, the page title exactly "${section.title}". Every point below must show up on the page as a short note (a bullet, a table row, a node of a diagram, a line of code), with an example, table or diagram where the point calls for one. The points are the checklist:\n${section.points.map((p, i) => `${i + 1}. ${p}`).join('\n')}`,
       `For orientation, the chapter's sections:\n${book.chapters.map((c, i) => `${i + 1}. ${c.title}`).join('\n')}`,
     );
   }
