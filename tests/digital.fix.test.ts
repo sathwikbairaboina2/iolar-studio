@@ -89,4 +89,28 @@ describe('reviewAndFix', () => {
     expect(m.generateSection).not.toHaveBeenCalled();
     expect(r.verdict).toBe('pass');
   });
+
+  it('keeps a section that cannot be rewritten, saves the others, and returns the last review', async () => {
+    const m = mocks([[finding(2), finding(3)], []]);
+    m.generateSection.mockImplementation(async (_s: string, _c: string, req: { role: 'intro' | 'outline' | 'quiz'; outlineIndex?: number }) => {
+      if (req.outlineIndex === 0) throw new Error('section Alpha: bad JSON');
+      return sec('Beta', req.role, req.outlineIndex, 'v2');
+    });
+    const { reviewAndFix } = await import('@/lib/digital/fix');
+    const r = await reviewAndFix('py', 'loop');
+    expect(r.verdict).toBe('pass');
+    const { loadEdition } = await import('@/lib/digital/edition');
+    const e = (await loadEdition('py', 'loop'))!;
+    expect(JSON.stringify(e.sections[1])).toContain('v1');
+    expect(JSON.stringify(e.sections[2])).toContain('v2');
+  });
+
+  it('returns the review as it stands when no section could be rewritten', async () => {
+    const m = mocks([[finding(2)]]);
+    m.generateSection.mockRejectedValue(new Error('section Alpha: bad JSON'));
+    const { reviewAndFix } = await import('@/lib/digital/fix');
+    const r = await reviewAndFix('py', 'loop');
+    expect(r.verdict).toBe('fail');
+    expect(m.reviewEdition).toHaveBeenCalledTimes(1);
+  });
 });

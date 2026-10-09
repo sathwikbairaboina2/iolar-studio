@@ -118,4 +118,21 @@ describe('generateEdition', () => {
     expect(e.sections).toHaveLength(4);
     expect(run.mock.calls.map((c) => c[0] as string).filter((p) => p.includes('be brief'))).toHaveLength(2);
   });
+
+  it('reads the first JSON object when prose or a second object follows it', async () => {
+    const wrapped = (p: string) => section(titleOf(p)) + '\n\nHope that helps! {"note": "extra"}';
+    mockClaude((p) => wrapped(p));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect(e.sections.map((s) => s.title)).toEqual(['Introduction', 'Alpha', 'Beta', 'Check yourself']);
+  });
+
+  it('turns a block written with the diagram kind as its type into a diagram block', async () => {
+    const flow = { type: 'flow', nodes: [{ text: 'A' }, { text: 'B' }] };
+    const answer = (p: string) => JSON.stringify({ title: titleOf(p), pages: [{ title: 'p', blocks: [{ type: 'paragraph', text: 'x' }, flow] }] });
+    mockClaude((p) => answer(p));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect(e.sections[0].pages[0].blocks[1]).toEqual({ type: 'diagram', kind: 'flow', spec: { nodes: [{ text: 'A' }, { text: 'B' }] } });
+  });
 });

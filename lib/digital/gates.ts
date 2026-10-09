@@ -55,12 +55,24 @@ function iconRefs(v: unknown, out: string[] = []): string[] {
 
 const lines = (b: Record<string, unknown>) => (Array.isArray(b.lines) ? (b.lines as unknown[]).map(String) : []);
 
-/** The key terms of an outline point: backticked terms, else its two longest words of six letters or more. */
+/**
+ * The key terms of an outline point: the longest identifier of each backticked span, else the two longest
+ * words of six letters or more. A point is covered when at least half of its terms show up (see `covered`).
+ */
 export function keyTerms(point: string): string[] {
-  const code = [...point.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()).filter(Boolean);
-  if (code.length) return code;
+  const spans = [...point.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+  if (spans.length) {
+    const terms = spans.map((span) => (span.match(/[A-Za-z_][A-Za-z0-9_.]*/g) ?? []).sort((x, y) => y.length - x.length)[0]).filter((x): x is string => !!x);
+    return [...new Set(terms)];
+  }
   const words = [...new Set(point.toLowerCase().match(/[a-z][a-z0-9_]{5,}/g) ?? [])];
   return words.sort((a, b) => b.length - a.length).slice(0, 2);
+}
+
+/** A plain word matches by its first six letters, so "switched" is found as "switches" and "library" as "libraries". */
+function seen(body: string, term: string): boolean {
+  const t = term.toLowerCase();
+  return body.includes(/^[a-z]+$/.test(t) && t.length > 6 ? t.slice(0, 6) : t);
 }
 
 const MARKDOWN: [RegExp, string][] = [
@@ -103,16 +115,25 @@ export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
     const next = sequence[i + 1]?.block;
     const hasOutput = !!next && next.type === 'code' && next.lang === 'output';
     if (!pythonMissing) {
-      const res = await runPythonWithPrelude(buildPrelude(earlier), code.join('\n'));
+      // Standalone first: most examples are whole programs, and replaying every earlier example makes slow ones slower.
+      // Only an example that fails alone is tried again with the earlier ones as its prelude.
+      const text = code.join('\n');
+      const expected = hasOutput ? lines(next!).join('\n') : null;
+      const good = (r: Awaited<ReturnType<typeof runPythonWithPrelude>>) => r.ok && !r.timedOut && (expected === null || outputMatches(r.stdout, expected));
+      let res = await runPythonWithPrelude('', text);
       if (/python not available/.test(res.stderr)) pythonMissing = true;
-      else if (!res.ok || res.timedOut) {
-        const why = res.timedOut ? 'timed out' : res.stderr.trim().split('\n').slice(-2).join(' | ').slice(0, 200);
-        out.push(hasOutput
-          ? finding('rules.code', 'blocker', page, 'A worked example fails when run, so the output shown cannot be right.', why, 'Fix the code so it runs and prints the output shown.')
-          : finding('rules.code-runs', 'major', page, 'A code example fails when run.', why, 'Fix the code, or mark it as a fragment by showing only the call site.'));
-      } else if (hasOutput) {
-        const expected = lines(next!).join('\n');
-        if (!outputMatches(res.stdout, expected)) {
+      else {
+        if (!good(res) && earlier.length) {
+          const withPrelude = await runPythonWithPrelude(buildPrelude(earlier), text, { timeoutMs: Math.min(60_000, 5_000 + 1_500 * earlier.length) });
+          // Keep the prelude run when it succeeds, or when the standalone run did not even run (its error then names the real problem).
+          if (good(withPrelude) || !res.ok) res = withPrelude;
+        }
+        if (!res.ok || res.timedOut) {
+          const why = res.timedOut ? 'timed out' : res.stderr.trim().split('\n').slice(-2).join(' | ').slice(0, 200);
+          out.push(hasOutput
+            ? finding('rules.code', 'blocker', page, 'A worked example fails when run, so the output shown cannot be right.', why, 'Fix the code so it runs and prints the output shown.')
+            : finding('rules.code-runs', 'major', page, 'A code example fails when run.', why, 'Fix the code, or mark it as a fragment by showing only the call site.'));
+        } else if (expected !== null && !outputMatches(res.stdout, expected)) {
           out.push(finding('rules.code', 'blocker', page, 'A worked example prints something other than the output shown.', `expected: ${firstLines(expected)} / actual: ${firstLines(res.stdout)}`, 'Make the output block hold exactly what the code prints.'));
         }
       }
@@ -127,8 +148,8 @@ export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
     const body = s.pages.flatMap((p) => [p.title, ...texts(p.blocks), ...(p.blocks as Record<string, unknown>[]).filter((b) => b.type === 'code').flatMap(lines)]).map(stripInline).join('\n').toLowerCase();
     for (const pt of book.chapters[s.outlineIndex ?? -1]?.points ?? []) {
       const terms = keyTerms(pt);
-      const missing = terms.filter((t) => !body.includes(t.toLowerCase()));
-      if (missing.length) out.push(finding('rules.coverage', 'major', point, `The section does not cover an outline point (missing ${missing.map((m) => `"${m}"`).join(', ')}).`, pt, 'Add the point with an explanation and an example.'));
+      const missing = terms.filter((t) => !seen(body, t));
+      if (terms.length && terms.length - missing.length < Math.ceil(terms.length / 2)) out.push(finding('rules.coverage', 'major', point, `The section does not cover an outline point (missing ${missing.map((m) => `"${m}"`).join(', ')}).`, pt, 'Add the point with an explanation and an example.'));
     }
   });
 

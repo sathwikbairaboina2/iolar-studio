@@ -21,6 +21,42 @@ async function context(subject: string, chapter: string) {
 
 type Ctx = Awaited<ReturnType<typeof context>>;
 
+const DIAGRAM_KINDS = new Set(['flow', 'chain', 'flowchart', 'cards', 'array', 'matrix', 'tables', 'schema', 'er']);
+
+/** The first complete JSON object in an answer, even when prose or a second object follows it. */
+export function firstJsonObject(raw: string): unknown {
+  const start = raw.indexOf('{');
+  if (start === -1) throw new Error('no JSON object in the answer');
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return JSON.parse(raw.slice(start, i + 1));
+  }
+  throw new Error('the JSON object in the answer is not closed');
+}
+
+function parseAnswer(raw: string): unknown {
+  try {
+    return extractJson(raw);
+  } catch {
+    return firstJsonObject(raw);
+  }
+}
+
+/** A diagram written as {"type":"flow", ...} instead of {"type":"diagram","kind":"flow","spec":{...}} is the same diagram. */
+export function normalizeBlock(block: unknown): unknown {
+  const b = block as Record<string, unknown> | null;
+  if (!b || typeof b !== 'object' || typeof b.type !== 'string' || !DIAGRAM_KINDS.has(b.type)) return block;
+  const { type, spec, ...rest } = b;
+  return { type: 'diagram', kind: type, spec: spec ?? rest };
+}
+
 function fallbackTitle(book: Ctx['book'], req: SectionRequest) {
   return req.role === 'intro' ? 'Introduction' : req.role === 'quiz' ? 'Check yourself' : book.chapters[req.outlineIndex ?? 0]?.title ?? 'Section';
 }
@@ -32,12 +68,13 @@ async function writeSection(subject: string, chapter: string, ctx: Ctx, req: Sec
     const prompt = sectionPrompt({ ...ctx, role: req.role, outlineIndex: req.outlineIndex, notes: req.notes, error });
     const raw = await runClaude(prompt, { timeoutMs: 300_000 });
     try {
-      const parsed = extractJson(raw) as { title?: unknown; pages?: unknown };
+      const parsed = parseAnswer(raw) as { title?: unknown; pages?: unknown };
       if (!Array.isArray(parsed.pages)) throw new Error('the answer has no "pages" array');
       const pages = parsed.pages as EditionPage[];
       for (const p of pages) {
         if (typeof p?.title !== 'string' || !Array.isArray(p.blocks)) throw new Error('every page needs a "title" and a "blocks" array');
       }
+      for (const p of pages) p.blocks = p.blocks.map(normalizeBlock);
       const title = typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title.trim() : fallbackTitle(ctx.book, req);
       const section: EditionSection = { title, role: req.role, ...(req.role === 'outline' ? { outlineIndex: req.outlineIndex } : {}), pages };
       const one: Edition = { schema: 1, subject, chapter, inputsHash: '', generatedAt: new Date().toISOString(), sections: [section] };

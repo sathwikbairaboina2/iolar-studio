@@ -13,7 +13,7 @@ export const BLOCK_EXAMPLES = `Allowed blocks (nothing else; no labelrows, no co
 {"type":"callout","style":"tip","title":"Before you start","text":"..."}   (style: tip | takeaway | sticky)
 {"type":"sidebox","title":"Safe from another thread","items":["...","..."],"ink":"orange"}
 {"type":"qa","q":"A question?","a_bullets":["the answer","why"],"example_code":["optional","lines"]}
-Diagrams, {"type":"diagram","kind":KIND,"spec":SPEC}, with these kinds only:
+Diagrams are ALWAYS written {"type":"diagram","kind":KIND,"spec":SPEC} (for example {"type":"diagram","kind":"flow","spec":{"nodes":[...]}}), never with the kind as the block type. Kinds:
 flow       {"nodes":[{"text":"Step","sub":"detail","ink":"blue"}]}
 chain      {"title":"optional","steps":[{"text":"Step","note":"detail","ink":"blue"}]}
 flowchart  {"title":"optional","rows":[["q1"],["a","b"]],"nodes":{"q1":{"text":"Question?","shape":"diamond"},"a":{"text":"Yes","shape":"box","ink":"green"},"b":{"text":"No","shape":"pill"}},"edges":[{"from":"q1","to":"a","label":"yes"},{"from":"q1","to":"b","label":"no"}]}

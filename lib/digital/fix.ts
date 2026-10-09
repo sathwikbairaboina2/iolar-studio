@@ -4,6 +4,7 @@ import { generateSection } from './generate';
 import { reviewEdition, type EditionReview } from './review';
 
 const note = (f: Finding) => `${f.page > 0 ? `page ${f.page}: ` : ''}${f.summary}${f.evidence ? ` (${f.evidence})` : ''}${f.fix ? ` Fix: ${f.fix}` : ''}`;
+const isUnavailable = (err: unknown) => (err as { name?: string } | null)?.name === 'ClaudeUnavailableError';
 /** Findings worth a regeneration: real defects, not a pass that could not run. */
 const actionable = (f: Finding) => f.severity !== 'minor' && !f.rule.endsWith('.unavailable');
 
@@ -38,12 +39,20 @@ export async function reviewAndFix(
     }
     if (!notes.size) break;
 
+    // A section that cannot be rewritten keeps its text; the others still go in, and the verdict stands for it.
+    let rewritten = 0;
     for (const [si, list] of [...notes].sort((a, b) => a[0] - b[0])) {
       const s = edition.sections[si];
       opts.onStep?.(`fix:${s.title}`);
-      edition.sections[si] = await generateSection(subject, chapter, { role: s.role, outlineIndex: s.outlineIndex, notes: list });
       regenerated.add(si);
+      try {
+        edition.sections[si] = await generateSection(subject, chapter, { role: s.role, outlineIndex: s.outlineIndex, notes: list });
+        rewritten++;
+      } catch (err) {
+        if (isUnavailable(err)) break;
+      }
     }
+    if (!rewritten) break;
     edition.generatedAt = new Date().toISOString();
     await saveEdition(edition);
 

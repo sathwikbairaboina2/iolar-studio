@@ -72,15 +72,24 @@ describe('editionGates', () => {
   });
 
   it('replays earlier examples as the prelude of a later one', async () => {
-    run.mockResolvedValue(ok('3\n'));
+    // Alone, the second example does not know `total`; with the first one replayed first it runs.
+    run.mockImplementation(async (prelude: string, code: string) => (prelude || code !== 'print(total)' ? ok('3\n') : { ok: false, stdout: '', stderr: "NameError: name 'total' is not defined", timedOut: false }));
     const { editionGates } = await import('@/lib/digital/gates');
     const m = mini([py('total = 1 + 2'), py('print(total)'), output('3')]);
     const f = await editionGates(m.edition, m.book);
     expect(f.filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
-    const preludeOfSecond = run.mock.calls[1][0] as string;
-    expect(preludeOfSecond).toContain(Buffer.from('total = 1 + 2').toString('base64'));
-    expect(run.mock.calls[1][1]).toBe('print(total)');
+    const withPrelude = run.mock.calls.find((c) => c[0] !== '')!;
+    expect(withPrelude[0]).toContain(Buffer.from('total = 1 + 2').toString('base64'));
+    expect(withPrelude[1]).toBe('print(total)');
     expect(run.mock.calls[0][0]).toBe('');
+  });
+
+  it('does not replay earlier examples for one that runs on its own', async () => {
+    run.mockResolvedValue(ok('1\n'));
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([py('print(1)'), output('1'), py('print(1)'), output('1')]);
+    await editionGates(m.edition, m.book);
+    expect(run.mock.calls.map((c) => c[0])).toEqual(['', '']);
   });
 
   it('skips the code checks when python is not available', async () => {
@@ -101,6 +110,15 @@ describe('editionGates', () => {
     const { keyTerms } = await import('@/lib/digital/gates');
     expect(keyTerms('Threads versus coroutines in scheduling')).toEqual(['coroutines', 'scheduling']);
     expect(keyTerms('Use `await` and `asyncio.run`')).toEqual(['await', 'asyncio.run']);
+    expect(keyTerms("Example: `async def fetch(): await asyncio.sleep(1); return 'data'`")).toEqual(['asyncio.sleep']);
+  });
+
+  it('counts a point as covered when half its terms appear, matching word stems', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('Libraries and the scheduling of coroutines matter.')], ['Threads versus coroutine library scheduling']);
+    expect((await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.coverage')).toEqual([]);
+    const none = mini([para('Nothing relevant.')], ['Threads versus coroutine library scheduling']);
+    expect((await editionGates(none.edition, none.book)).filter((x) => x.rule === 'rules.coverage')).toHaveLength(1);
   });
 
   it('flags single-asterisk italics, markdown headings and links as minor', async () => {
