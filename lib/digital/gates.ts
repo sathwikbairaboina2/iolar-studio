@@ -3,6 +3,7 @@ import { stripInline } from '@/lib/renderer/inline';
 import { iconSvg } from '@/lib/renderer/icons';
 import { buildPrelude, outputMatches, runPythonWithPrelude } from '@/lib/verify/sandbox';
 import type { Finding } from '@/lib/verify/gates';
+import { PY_STDLIB } from './stdlib';
 import { validateEdition, type Edition } from './edition';
 
 const BLOCK_TYPES = new Set(['heading', 'paragraph', 'bullets', 'code', 'table', 'callout', 'sidebox', 'qa', 'diagram']);
@@ -89,6 +90,12 @@ function firstLines(s: string) {
   return s.trim().split('\n').slice(0, 3).join(' | ').slice(0, 160);
 }
 
+/** True only for "No module named 'X'" where X's top-level package is not part of the standard library. */
+export function missingThirdParty(stderr: string): boolean {
+  const m = stderr.match(/ModuleNotFoundError: No module named ['"]([^'"]+)['"]/);
+  return !!m && !PY_STDLIB.has(m[1].split('.')[0]);
+}
+
 export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
   const out: Finding[] = [];
   const pages = flatten(e);
@@ -132,7 +139,7 @@ export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
           if (good(withPrelude) || !res.ok) res = withPrelude;
         }
         // A fragment that shows a third-party library (uvloop, aiohttp) cannot run here; only one that claims an output must.
-        const thirdParty = !hasOutput && !res.ok && /ModuleNotFoundError|ImportError/.test(res.stderr);
+        const thirdParty = !hasOutput && !res.ok && missingThirdParty(res.stderr);
         if (thirdParty) {
           // nothing to report
         } else if (!res.ok || res.timedOut) {

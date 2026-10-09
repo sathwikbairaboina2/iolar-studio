@@ -157,6 +157,23 @@ describe('editionGates', () => {
     expect((await editionGates(b.edition, b.book)).find((x) => x.rule === 'rules.code')?.severity).toBe('blocker');
   });
 
+  it('reports an import error that is not a missing third-party module', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const bad = [
+      "ModuleNotFoundError: No module named 'asyncio.nothing'",
+      "ModuleNotFoundError: No module named 'json'",
+      "ImportError: cannot import name 'gather' from 'asyncio'",
+    ];
+    for (const stderr of bad) {
+      run.mockResolvedValue({ ok: false, stdout: '', stderr, timedOut: false });
+      const m = mini([py('import uvloop')]);
+      expect((await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.code-runs'), stderr).toHaveLength(1);
+    }
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: "ModuleNotFoundError: No module named 'aiohttp.client'", timedOut: false });
+    const ok = mini([py('import aiohttp.client')]);
+    expect((await editionGates(ok.edition, ok.book)).filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
+  });
+
   it('finds a dotted name through its member', async () => {
     const { editionGates } = await import('@/lib/digital/gates');
     const m = mini([para('Advance it with send(None) until it stops.')], ['Use `coro.send(None)` to advance it']);
