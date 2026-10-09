@@ -48,7 +48,7 @@ async function siblingParts(subject: string, chapter: string, part: number): Pro
     : '';
 }
 
-const SHAPE = `Return ONLY a JSON object, no prose and no markdown fences:
+export const SHAPE = `Return ONLY a JSON object, no prose and no markdown fences:
 {"findings":[{"severity":"blocker"|"major"|"minor","page":number,"summary":string,"evidence":string,"fix":string}]}
 - "page" is 1-based; use 0 for something about the whole part.
 - "summary" is ONE sentence naming the defect.
@@ -56,7 +56,7 @@ const SHAPE = `Return ONLY a JSON object, no prose and no markdown fences:
 - "fix" is a concrete change.
 Report only real defects. An empty findings array is the correct answer for clean content.`;
 
-function parseFindings(raw: string, pass: string): Finding[] {
+export function parseFindings(raw: string, pass: string): Finding[] {
   try {
     const parsed = extractJson(raw) as { findings?: unknown[] };
     const list = Array.isArray(parsed.findings) ? parsed.findings : [];
@@ -79,7 +79,7 @@ function parseFindings(raw: string, pass: string): Finding[] {
   }
 }
 
-async function askClaude(pass: string, prompt: string, allowedTools?: string[]): Promise<Finding[]> {
+export async function askClaude(pass: string, prompt: string, allowedTools?: string[]): Promise<Finding[]> {
   try {
     return parseFindings(await runClaude(prompt, { timeoutMs: 900_000, allowedTools }), pass);
   } catch (err) {
