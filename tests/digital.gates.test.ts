@@ -1,0 +1,132 @@
+import { readFileSync } from 'fs';
+import path from 'path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Edition } from '@/lib/digital/edition';
+
+type Sample = { slug: string; parts: { n: number; title: string; pages: { title: string; blocks: unknown[] }[] }[] };
+const sample: Sample = JSON.parse(readFileSync(path.join(__dirname, 'fixtures/digital-sample-edition.json'), 'utf8'));
+
+function asEdition(parts: Sample['parts']): Edition {
+  return {
+    schema: 1, subject: 'python-asyncio', chapter: sample.slug, inputsHash: 'h', generatedAt: '2026-10-09T00:00:00.000Z',
+    sections: parts.map((p, i) => ({
+      title: p.title,
+      role: i === 0 ? 'intro' : i === parts.length - 1 ? 'quiz' : 'outline',
+      ...(i > 0 && i < parts.length - 1 ? { outlineIndex: i - 1 } : {}),
+      pages: p.pages,
+    })),
+  };
+}
+const book = (points: string[][]) => ({ title: 't', summary: 's', chapters: points.map((p, i) => ({ title: `S${i}`, points: p })) });
+const sampleBook = () => book([
+  ['Concurrency is not parallelism', 'Threads, processes or asyncio'],
+  ['Calling a coroutine function returns a coroutine object', '`await` suspends the current coroutine'],
+  ['One turn of the event loop'],
+]);
+
+const run = vi.fn();
+beforeEach(() => {
+  vi.resetModules();
+  run.mockReset();
+  vi.doMock('@/lib/verify/sandbox', async (orig) => ({ ...(await orig<object>()), runPythonWithPrelude: run }));
+});
+
+const ok = (stdout: string) => ({ ok: true, stdout, stderr: '', timedOut: false });
+const para = (text: string) => ({ type: 'paragraph', text });
+const mini = (blocks: unknown[], points: string[] = []) => ({
+  edition: asEdition([
+    { n: 1, title: 'Intro', pages: [{ title: 'i', blocks: [para('hello')] }] },
+    { n: 2, title: 'Main', pages: [{ title: 'm', blocks }] },
+    { n: 3, title: 'Quiz', pages: [{ title: 'q', blocks: [{ type: 'qa', q: 'Q?', a_bullets: ['A'] }] }] },
+  ]),
+  book: book([points]),
+});
+const py = (...l: string[]) => ({ type: 'code', lang: 'python', lines: l });
+const output = (...l: string[]) => ({ type: 'code', lang: 'output', lines: l });
+
+describe('editionGates', () => {
+  it('lets the approved sample through with no blocker or major finding', async () => {
+    run.mockResolvedValue(ok('coroutine\nfetching…\ndata\n'));
+    const { editionGates } = await import('@/lib/digital/gates');
+    const findings = await editionGates(asEdition(sample.parts), sampleBook());
+    expect(findings.filter((f) => f.severity !== 'minor')).toEqual([]);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks a worked example whose output differs from what it prints', async () => {
+    run.mockResolvedValue(ok('2\n'));
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('x'), py('print(1)'), output('1')]);
+    const f = await editionGates(m.edition, m.book);
+    expect(f).toContainEqual(expect.objectContaining({ rule: 'rules.code', severity: 'blocker', page: 2 }));
+    expect(f.find((x) => x.rule === 'rules.code')!.evidence).toMatch(/expected: 1 .* actual: 2/);
+  });
+
+  it('blocks a worked example that fails to run, and only warns for one without output', async () => {
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: 'NameError: x', timedOut: false });
+    const { editionGates } = await import('@/lib/digital/gates');
+    const a = mini([py('print(x)'), output('1')]);
+    expect((await editionGates(a.edition, a.book)).find((f) => f.rule === 'rules.code')?.severity).toBe('blocker');
+    const b = mini([py('print(x)')]);
+    expect((await editionGates(b.edition, b.book)).find((f) => f.rule === 'rules.code-runs')?.severity).toBe('major');
+  });
+
+  it('replays earlier examples as the prelude of a later one', async () => {
+    run.mockResolvedValue(ok('3\n'));
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([py('total = 1 + 2'), py('print(total)'), output('3')]);
+    const f = await editionGates(m.edition, m.book);
+    expect(f.filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
+    const preludeOfSecond = run.mock.calls[1][0] as string;
+    expect(preludeOfSecond).toContain(Buffer.from('total = 1 + 2').toString('base64'));
+    expect(run.mock.calls[1][1]).toBe('print(total)');
+    expect(run.mock.calls[0][0]).toBe('');
+  });
+
+  it('skips the code checks when python is not available', async () => {
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: 'python not available', timedOut: false });
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([py('print(1)'), output('1')]);
+    expect((await editionGates(m.edition, m.book)).filter((f) => f.rule.startsWith('rules.code'))).toEqual([]);
+  });
+
+  it('reports an outline point whose key terms are missing', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('Only about apples.')], ['Explain the `Semaphore` class']);
+    const f = await editionGates(m.edition, m.book);
+    expect(f).toContainEqual(expect.objectContaining({ rule: 'rules.coverage', severity: 'major', page: 2, evidence: 'Explain the `Semaphore` class' }));
+  });
+
+  it('picks the two longest words when a point has no backticked term', async () => {
+    const { keyTerms } = await import('@/lib/digital/gates');
+    expect(keyTerms('Threads versus coroutines in scheduling')).toEqual(['coroutines', 'scheduling']);
+    expect(keyTerms('Use `await` and `asyncio.run`')).toEqual(['await', 'asyncio.run']);
+  });
+
+  it('flags single-asterisk italics, markdown headings and links as minor', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('this is *slanted* text'), para('# Heading'), para('[a link](http://x.y)'), para('fine **bold** and `*args`')]);
+    const f = (await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.markdown');
+    expect(f).toHaveLength(3);
+    expect(f.every((x) => x.severity === 'minor')).toBe(true);
+  });
+
+  it('flags a compare diagram and a cover page as kinds the reader does not draw', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([{ type: 'diagram', kind: 'compare', spec: { left: { title: 'a', items: ['x'] }, right: { title: 'b', items: ['y'] } } }, { type: 'labelrows', rows: [{ icon: 'python', label: 'l', text: 't' }] }]);
+    const f = await editionGates(m.edition, m.book);
+    expect(f.filter((x) => x.rule === 'rules.kind').map((x) => x.severity)).toEqual(['major', 'major']);
+  });
+
+  it('flags an icon with no artwork', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('look {icon:definitely-not-an-icon-zzz}')]);
+    expect(await editionGates(m.edition, m.book)).toContainEqual(expect.objectContaining({ rule: 'rules.icon', severity: 'major' }));
+  });
+
+  it('reports contract errors as a blocker', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([{ type: 'table', headers: [], rows: [] }]);
+    expect(await editionGates(m.edition, m.book)).toContainEqual(expect.objectContaining({ rule: 'rules.contract', severity: 'blocker' }));
+  });
+});
