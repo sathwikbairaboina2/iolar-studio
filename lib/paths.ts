@@ -10,6 +10,11 @@ export function handbooksRoot() {
   return path.join(dataRoot(), 'handbooks');
 }
 
+/** Where finished handbook files wait for the site to collect them. */
+export function publishedDir() {
+  return path.join(dataRoot(), 'published');
+}
+
 export function isSlug(v: string) {
   return /^[a-z0-9-]+$/.test(v);
 }
