@@ -26,9 +26,9 @@ function mocks(opts: Opts = {}) {
   });
   const reviewAndFix = opts.fix ?? vi.fn().mockImplementation(async (s: string, c: string, o?: { onStep?: (x: string) => void; onReviewStep?: (x: string) => void }) => {
     const { loadEdition, editionHash } = await import('@/lib/digital/edition');
-    const { reviewFile } = await import('@/lib/digital/review');
+    const { reviewFile, GATES_VERSION } = await import('@/lib/digital/review');
     o?.onStep?.('review'); o?.onReviewStep?.('rules'); o?.onReviewStep?.('ai'); o?.onReviewStep?.('done');
-    const review = { editionHash: editionHash((await loadEdition(s, c))!), generatedAt: new Date().toISOString(), findings: opts.findings ?? [], verdict: opts.verdict ?? 'pass' };
+    const review = { editionHash: editionHash((await loadEdition(s, c))!), generatedAt: new Date().toISOString(), gatesVersion: GATES_VERSION, findings: opts.findings ?? [], verdict: opts.verdict ?? 'pass' };
     mkdirSync(path.dirname(reviewFile(s, c)), { recursive: true });
     writeFileSync(reviewFile(s, c), JSON.stringify(review));
     return review;
@@ -215,5 +215,68 @@ describe('publish job', () => {
     expect(loop.verdict).toBe('unsure');
     expect(loop.editionHash).toBeUndefined();
     expect(existsSync(published())).toBe(false);
+  });
+
+  it('rereview deletes the saved review and reviews the edition on disk without writing it again', async () => {
+    const m = mocks();
+    const { startPublish } = await import('@/lib/publish/job');
+    const { reviewFile } = await import('@/lib/digital/review');
+    const { readState } = await import('@/lib/publish/state');
+    await startPublish('py', ['loop']);
+    await finish();
+    expect(existsSync(reviewFile('py', 'loop'))).toBe(true);
+    m.generateEdition.mockClear();
+    const real = m.reviewAndFix.getMockImplementation()!;
+    let existedWhenReviewStarted: boolean | null = null;
+    m.reviewAndFix.mockClear();
+    m.reviewAndFix.mockImplementation(async (...args: unknown[]) => {
+      existedWhenReviewStarted = existsSync(reviewFile('py', 'loop'));
+      return (real as (...a: unknown[]) => Promise<unknown>)(...args);
+    });
+    await startPublish('py', ['loop'], { rereview: true });
+    const job = await finish();
+    expect(m.generateEdition).not.toHaveBeenCalled();
+    expect(m.reviewAndFix).toHaveBeenCalledTimes(1);
+    expect(existedWhenReviewStarted).toBe(false);
+    expect(job.steps.find((x) => x.chapter === 'loop' && x.pass === 'generate')!.state).toBe('skipped');
+    expect((await readState('py')).chapters.loop.verdict).toBe('pass');
+  });
+
+  it('does not reuse a saved review made by other gates', async () => {
+    const m = mocks();
+    const { startPublish } = await import('@/lib/publish/job');
+    const { reviewFile } = await import('@/lib/digital/review');
+    await startPublish('py', ['loop']);
+    await finish();
+    const old = JSON.parse(readFileSync(reviewFile('py', 'loop'), 'utf8'));
+    writeFileSync(reviewFile('py', 'loop'), JSON.stringify({ ...old, gatesVersion: 0 }));
+    m.reviewAndFix.mockClear();
+    await startPublish('py', ['loop']);
+    await finish();
+    expect(m.reviewAndFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a rejected chapter rejected and never approves it when it is reviewed again', async () => {
+    mocks();
+    const { startPublish } = await import('@/lib/publish/job');
+    const { readState, updateState, liveChapters } = await import('@/lib/publish/state');
+    await startPublish('py', ['loop']);
+    await finish();
+    await updateState('py', (st) => { st.chapters.loop.rejected = true; delete st.chapters.loop.approvedBy; });
+    put('handbooks/py/loop/book.json', { title: 'loop', summary: 'x', chapters: [{ title: 'a', points: ['p', 'q'] }] });
+    await startPublish('py', ['loop']);
+    await finish();
+    const state = await readState('py');
+    expect(state.chapters.loop).toMatchObject({ rejected: true, verdict: 'pass' });
+    expect(state.chapters.loop.approvedBy).toBeUndefined();
+    expect(liveChapters(state)).toEqual([]);
+  });
+
+  it('marks the step that failed as failed and the ones after it as skipped', async () => {
+    mocks({ generate: vi.fn().mockRejectedValue(new Error('model said no')) });
+    const { startPublish } = await import('@/lib/publish/job');
+    await startPublish('py', ['loop']);
+    const job = await finish();
+    expect(job.steps.filter((x) => x.chapter === 'loop').map((x) => x.state)).toEqual(['failed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped']);
   });
 });

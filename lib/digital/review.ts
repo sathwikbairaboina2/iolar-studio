@@ -10,7 +10,10 @@ import type { Verdict } from '@/lib/publish/state';
 import { editionHash, loadEdition, type Edition } from './edition';
 import { editionGates } from './gates';
 
-export type EditionReview = { editionHash: string; generatedAt: string; findings: Finding[]; verdict: Verdict };
+/** Bump when the gates or the review prompts change in a way that makes an older review out of date. */
+export const GATES_VERSION = 2;
+
+export type EditionReview = { editionHash: string; generatedAt: string; gatesVersion?: number; findings: Finding[]; verdict: Verdict };
 
 export function reviewFile(s: string, c: string) {
   return path.join(digitalDir(s, c), 'review.json');
@@ -43,7 +46,7 @@ export async function loadEditionReview(s: string, c: string): Promise<EditionRe
 /** The saved review, but only while it judged the edition that is on disk now. */
 export async function currentReview(s: string, c: string): Promise<EditionReview | null> {
   const [review, edition] = await Promise.all([loadEditionReview(s, c), loadEdition(s, c)]);
-  return review && edition && review.editionHash === editionHash(edition) ? review : null;
+  return review && edition && review.editionHash === editionHash(edition) && review.gatesVersion === GATES_VERSION ? review : null;
 }
 
 const WRONG_ANSWER = 'A wrong quiz answer or wrong example output is severity "major", never "minor": a learner would be taught something false.';
@@ -99,6 +102,7 @@ export async function reviewEdition(subject: string, chapter: string, opts: { on
   const review: EditionReview = {
     editionHash: editionHash(edition),
     generatedAt: new Date().toISOString(),
+    gatesVersion: GATES_VERSION,
     findings,
     verdict: chapterVerdict([findings], []),
   };

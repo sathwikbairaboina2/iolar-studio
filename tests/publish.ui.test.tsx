@@ -93,6 +93,23 @@ describe('publish UI', () => {
     await waitFor(() => expect(posts).toContainEqual({ url: '/api/handbooks/py/publish', body: { action: 'unselect', chapters: ['tasks', 'db'] } }));
   });
 
+  it('posts a re-review from a chapter card', async () => {
+    await mount();
+    await act(async () => { fireEvent.click(screen.getByText(/Review queue/)); });
+    await waitFor(() => expect(screen.getByText('Review again')).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByText('Review again')); });
+    await waitFor(() => expect(posts).toContainEqual({ url: '/api/handbooks/py/publish', body: { action: 'rereview', chapter: 'tasks' } }));
+  });
+
+  it('shows a failed job step as failed', async () => {
+    await mount();
+    const { PublishDrawer: Drawer } = await import('@/components/handbooks/PublishDrawer');
+    cleanup();
+    const job = { subject: 'py', live: false, startedAt: '', stage: 'done', steps: [{ chapter: 'tasks', pass: 'generate', state: 'failed' }] };
+    render(<Drawer open mode="run" subject="py" selected={['tasks']} data={{ ...publish, job } as never} titles={{ tasks: 'Tasks' }} act={async () => ({})} onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('pass-generate').getAttribute('data-state')).toBe('bad'));
+  });
+
   it('posts Always ask me', async () => {
     await mount();
     await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Always ask me' })); });

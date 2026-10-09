@@ -93,6 +93,18 @@ export async function POST(req: Request, ctx: Ctx) {
           throw err;
         }
       }
+      case 'rereview': {
+        const chapter = body.chapter;
+        if (typeof chapter !== 'string' || !isSlug(chapter)) return bad('chapter must be a slug');
+        if (!exists(chapter)) return bad('unknown chapter', 404);
+        if (!(await loadEdition(subject, chapter))) return bad('this chapter has no edition to review yet');
+        try {
+          return NextResponse.json({ job: await startPublish(subject, [chapter], { rereview: true }) });
+        } catch (err) {
+          if (err instanceof Error && err.message === 'busy') return bad('a publish run is already live for this subject', 409);
+          throw err;
+        }
+      }
       case 'unselect': {
         const chapters = slugList(body.chapters);
         if (!chapters) return bad('chapters must be a list of chapter slugs');

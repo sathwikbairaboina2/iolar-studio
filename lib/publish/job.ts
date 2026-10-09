@@ -6,13 +6,14 @@ import { loadBook } from '@/lib/ai/book';
 import { editionHash, inputsHash, loadEdition } from '@/lib/digital/edition';
 import { generateEdition, regenerateWithNotes } from '@/lib/digital/generate';
 import { reviewAndFix } from '@/lib/digital/fix';
-import { currentReview } from '@/lib/digital/review';
+import { currentReview, reviewFile } from '@/lib/digital/review';
 import type { Finding } from '@/lib/verify/gates';
+import { writeFileAtomic } from './atomic';
 import { exportSubject } from './export';
 import { proposeOrder, type OrderInput } from './order';
 import { updateState, type ChapterState, type PublishState } from './state';
 
-export type JobStep = { chapter: string; pass: string; state: 'queued' | 'running' | 'done' | 'skipped' };
+export type JobStep = { chapter: string; pass: string; state: 'queued' | 'running' | 'done' | 'skipped' | 'failed' };
 export type PublishJob = {
   subject: string;
   live: boolean;
@@ -49,15 +50,39 @@ export async function readJob(subject: string): Promise<PublishJob | null> {
 async function writeJob(job: PublishJob) {
   const file = jobFile(job.subject);
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(`${file}.tmp`, JSON.stringify(job, null, 2));
-  await fs.rename(`${file}.tmp`, file);
+  await writeFileAtomic(file, JSON.stringify(job, null, 2));
 }
 
 const isUnavailable = (err: unknown) => (err as { name?: string } | null)?.name === 'ClaudeUnavailableError';
 const hasUnavailable = (findings: Finding[]) => findings.some((f) => f.rule.endsWith('.unavailable'));
 
-/** Starts a review-and-publish run in the background; throws 'busy' while one is live for the subject. */
-export async function startPublish(subject: string, chapters: string[], opts: { notes?: Record<string, string> } = {}): Promise<PublishJob> {
+type Mark = (chapter: string, pass: string, state: JobStep['state']) => Promise<void>;
+
+/**
+ * Marks may be fired from callbacks that do not wait, so every write of the job file, the last one
+ * included, goes one at a time in the order it was asked.
+ */
+function serialWriter(job: PublishJob) {
+  let chain: Promise<unknown> = Promise.resolve();
+  const write = () => {
+    const next = chain.then(() => writeJob(job));
+    chain = next.catch(() => {});
+    return next;
+  };
+  const mark: Mark = (chapter, pass, state) => {
+    const step = job.steps.find((s) => s.chapter === chapter && s.pass === pass);
+    if (step) step.state = state;
+    return write();
+  };
+  return { mark, write };
+}
+
+/**
+ * Starts a review-and-publish run in the background; throws 'busy' while one is live for the subject.
+ * `notes` write the chapter's edition again with them; `rereview` deletes the saved review and reviews
+ * (and fixes) the edition that is on disk without writing it again.
+ */
+export async function startPublish(subject: string, chapters: string[], opts: { notes?: Record<string, string>; rereview?: boolean } = {}): Promise<PublishJob> {
   const existing = await readJob(subject);
   const liveFile = !!existing?.live && Date.now() - Date.parse(existing.startedAt) < STALE_MS;
   if (running.has(subject) || liveFile) throw new Error('busy');
@@ -73,7 +98,8 @@ export async function startPublish(subject: string, chapters: string[], opts: { 
     ];
     const job: PublishJob = { subject, live: true, startedAt: new Date().toISOString(), stage: 'reviews', steps };
     await writeJob(job);
-    void run(job, chapters, opts.notes ?? {})
+    const writer = serialWriter(job);
+    void run(job, chapters, opts.notes ?? {}, !!opts.rereview, writer.mark)
       .catch(async (err) => {
         job.message = `The run stopped: ${err instanceof Error ? err.message : String(err)}`;
       })
@@ -81,7 +107,7 @@ export async function startPublish(subject: string, chapters: string[], opts: { 
         job.live = false;
         job.stage = 'done';
         job.finishedAt = new Date().toISOString();
-        await writeJob(job).catch(() => {});
+        await writer.write().catch(() => {});
         running.delete(subject);
       });
     return job;
@@ -91,54 +117,52 @@ export async function startPublish(subject: string, chapters: string[], opts: { 
   }
 }
 
-async function run(job: PublishJob, chapters: string[], notes: Record<string, string>) {
+async function run(job: PublishJob, chapters: string[], notes: Record<string, string>, rereview: boolean, mark: Mark) {
   const { subject } = job;
-  // Marks may be fired from callbacks that do not wait, so the writes go one at a time, in the order they were asked.
-  let chain: Promise<unknown> = Promise.resolve();
-  const mark = (chapter: string, pass: string, state: JobStep['state']) => {
-    const step = job.steps.find((s) => s.chapter === chapter && s.pass === pass);
-    if (step) step.state = state;
-    const next = chain.then(() => writeJob(job));
-    chain = next.catch(() => {});
-    return next;
-  };
   const setMessage = (m: string) => { job.message = job.message ?? m; };
 
-  for (const chapter of chapters) await reviewChapter(subject, chapter, mark, setMessage, notes[chapter]);
+  for (const chapter of chapters) await reviewChapter(subject, chapter, job, mark, setMessage, notes[chapter], rereview);
 
   job.stage = 'order';
   await mark('', 'order', 'running');
+  let orderFailed = false;
   try {
     await settleOrder(subject);
   } catch (err) {
     setMessage(`The order pass failed: ${err instanceof Error ? err.message : String(err)}`);
+    orderFailed = true;
   }
-  await mark('', 'order', 'done');
+  await mark('', 'order', orderFailed ? 'failed' : 'done');
 
   job.stage = 'export';
   await mark('', 'export', 'running');
+  let exportFailed = false;
   try {
     await exportSubject(subject);
   } catch (err) {
     setMessage(`The export failed: ${err instanceof Error ? err.message : String(err)}`);
+    exportFailed = true;
   }
-  await mark('', 'export', 'done');
+  await mark('', 'export', exportFailed ? 'failed' : 'done');
 }
 
 async function reviewChapter(
   subject: string,
   chapter: string,
-  mark: (chapter: string, pass: string, state: JobStep['state']) => Promise<void>,
+  job: PublishJob,
+  mark: Mark,
   setMessage: (m: string) => void,
   notes?: string,
+  rereview = false,
 ) {
   const markAll = async (passes: readonly string[], state: JobStep['state']) => { for (const p of passes) await mark(chapter, p, state); };
   const hash = await inputsHash(subject, chapter).catch(() => null);
   const state = await updateState(subject, (s) => s.chapters[chapter]);
   let edition = await loadEdition(subject, chapter);
   const editionIsCurrent = !!hash && !!edition && edition.inputsHash === hash;
-  // Notes from a person always write the edition again.
-  const reusable = !notes && editionIsCurrent && state?.hash === hash && !!state.verdict && state.editionHash === editionHash(edition!) && !hasUnavailable(state.findings ?? []);
+  // Notes from a person always write the edition again; a re-review always looks at it again.
+  if (rereview) await fs.rm(reviewFile(subject, chapter), { force: true });
+  const reusable = !notes && !rereview && editionIsCurrent && state?.hash === hash && !!state.verdict && state.editionHash === editionHash(edition!) && !hasUnavailable(state.findings ?? []) && !!(await currentReview(subject, chapter));
   if (reusable) {
     await markAll(CHAPTER_STEPS, 'skipped');
     await updateState(subject, (s) => autoApprove(s, chapter));
@@ -149,7 +173,7 @@ async function reviewChapter(
   let verdict: ChapterState['verdict'] = 'unsure';
   let reviewedEdition: string | undefined;
   try {
-    if (editionIsCurrent && !notes) {
+    if ((editionIsCurrent && !notes) || (rereview && edition)) {
       await mark(chapter, 'generate', 'skipped');
     } else {
       // A failure here leaves any older edition untouched on disk, but it no longer matches the inputs, so it cannot go live.
@@ -192,13 +216,19 @@ async function reviewChapter(
     }];
     verdict = 'unsure';
     reviewedEdition = undefined;
-    await markAll(CHAPTER_STEPS, 'done');
+    // The step that was running failed; the ones after it never started.
+    for (const step of job.steps.filter((x) => x.chapter === chapter)) {
+      if (step.state === 'running') await mark(chapter, step.pass, 'failed');
+      else if (step.state === 'queued') await mark(chapter, step.pass, 'skipped');
+    }
   }
 
   await updateState(subject, (s) => {
     // New content starts a new decision: earlier approvals and rejections belonged to the old text.
     s.chapters[chapter] = {
       selected: s.chapters[chapter]?.selected ?? true,
+      // A person's rejection stays until a person approves it; a rerun never clears it.
+      ...(s.chapters[chapter]?.rejected ? { rejected: true } : {}),
       hash: hash ?? undefined,
       editionHash: reviewedEdition,
       verdict,

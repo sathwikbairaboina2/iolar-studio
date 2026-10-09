@@ -94,6 +94,19 @@ describe('reviewEdition', () => {
     expect(await currentReview('py', 'loop')).toBeNull();
   });
 
+  it('stores the gates version and treats a review made by other gates as not current', async () => {
+    mocks();
+    const { reviewEdition, currentReview, loadEditionReview, reviewFile, GATES_VERSION } = await import('@/lib/digital/review');
+    const r = await reviewEdition('py', 'loop');
+    expect(r.gatesVersion).toBe(GATES_VERSION);
+    expect(await currentReview('py', 'loop')).not.toBeNull();
+    writeFileSync(reviewFile('py', 'loop'), JSON.stringify({ ...(await loadEditionReview('py', 'loop')), gatesVersion: GATES_VERSION - 1 }));
+    expect(await currentReview('py', 'loop')).toBeNull();
+    const { gatesVersion: _gone, ...unversioned } = r;
+    writeFileSync(reviewFile('py', 'loop'), JSON.stringify(unversioned));
+    expect(await currentReview('py', 'loop')).toBeNull();
+  });
+
   it('currentReview is null when there is no review', async () => {
     const { currentReview } = await import('@/lib/digital/review');
     expect(await currentReview('py', 'loop')).toBeNull();

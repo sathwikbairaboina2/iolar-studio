@@ -123,4 +123,21 @@ describe('publish api', () => {
     expect(got.live).toEqual([]);
     expect(got.stale).toEqual(['loop']);
   });
+
+  it('rereview: 404 for an unknown chapter, 400 without an edition, 409 while a run is live, else starts a job', async () => {
+    const route = await import('@/app/api/handbooks/[subject]/publish/route');
+    expect((await route.POST(req('POST', { action: 'rereview', chapter: 'ghost' }), ctx)).status).toBe(404);
+    expect((await route.POST(req('POST', { action: 'rereview', chapter: 7 }), ctx)).status).toBe(400);
+    expect((await route.POST(req('POST', { action: 'rereview', chapter: 'loop' }), ctx)).status).toBe(400);
+    put('handbooks/py/loop/digital/edition.json', { schema: 1, subject: 'py', chapter: 'loop', inputsHash: 'h', generatedAt: 'now', sections: [] });
+    put('handbooks/py/publish-job.json', { subject: 'py', live: true, startedAt: new Date().toISOString(), stage: 'reviews', steps: [] });
+    expect((await route.POST(req('POST', { action: 'rereview', chapter: 'loop' }), ctx)).status).toBe(409);
+    vi.resetModules();
+    const startPublish = vi.fn().mockResolvedValue({ subject: 'py', live: true });
+    vi.doMock('@/lib/publish/job', async (orig) => ({ ...(await orig<object>()), startPublish }));
+    const mocked = await import('@/app/api/handbooks/[subject]/publish/route');
+    expect((await mocked.POST(req('POST', { action: 'rereview', chapter: 'loop' }), ctx)).status).toBe(200);
+    expect(startPublish).toHaveBeenCalledWith('py', ['loop'], { rereview: true });
+    vi.doUnmock('@/lib/publish/job');
+  });
 });

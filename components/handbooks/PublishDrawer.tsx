@@ -22,6 +22,7 @@ const PASS_STYLE: Record<PassState, { bg: string; fg: string; mark: string }> = 
 /** A review pass takes its colour from its findings; generate and fix only say whether they ran. */
 function stepState(name: string, jobState: string | undefined, findings: Finding[], hasVerdict: boolean): PassState {
   if (jobState === 'running') return 'run';
+  if (jobState === 'failed') return 'bad';
   if (!REVIEW_PASSES.has(name)) return jobState === 'done' ? 'ok' : '';
   if (!hasVerdict) return '';
   const mine = findings.filter((f) => f.pass === name);
@@ -90,6 +91,7 @@ function ChapterCard({ subject, slug, title, data, act, onDone }: {
           )}
           {waiting && <Button size="small" onClick={() => run({ action: 'reject', chapter: slug })}>Reject</Button>}
           {sections.length > 0 && <Link href={`/handbooks/${subject}/${slug}/edition`}><Button size="small">Open the edition</Button></Link>}
+          {!job?.live && sections.length > 0 && <Button size="small" onClick={() => run({ action: 'rereview', chapter: slug })}>Review again</Button>}
           {!job?.live && <Button size="small" onClick={() => setNotesOpen((v) => !v)}>Regenerate with notes</Button>}
         </div>
       )}
