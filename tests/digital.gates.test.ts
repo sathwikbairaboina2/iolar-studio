@@ -147,4 +147,19 @@ describe('editionGates', () => {
     const m = mini([{ type: 'table', headers: [], rows: [] }]);
     expect(await editionGates(m.edition, m.book)).toContainEqual(expect.objectContaining({ rule: 'rules.contract', severity: 'blocker' }));
   });
+
+  it('does not fail an example without output that imports a third-party library, but blocks one that claims an output', async () => {
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: "ModuleNotFoundError: No module named 'uvloop'", timedOut: false });
+    const { editionGates } = await import('@/lib/digital/gates');
+    const a = mini([py('import uvloop')]);
+    expect((await editionGates(a.edition, a.book)).filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
+    const b = mini([py('import uvloop'), output('x')]);
+    expect((await editionGates(b.edition, b.book)).find((x) => x.rule === 'rules.code')?.severity).toBe('blocker');
+  });
+
+  it('finds a dotted name through its member', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('Advance it with send(None) until it stops.')], ['Use `coro.send(None)` to advance it']);
+    expect((await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.coverage')).toEqual([]);
+  });
 });

@@ -72,7 +72,10 @@ export function keyTerms(point: string): string[] {
 /** A plain word matches by its first six letters, so "switched" is found as "switches" and "library" as "libraries". */
 function seen(body: string, term: string): boolean {
   const t = term.toLowerCase();
-  return body.includes(/^[a-z]+$/.test(t) && t.length > 6 ? t.slice(0, 6) : t);
+  if (body.includes(/^[a-z]+$/.test(t) && t.length > 6 ? t.slice(0, 6) : t)) return true;
+  // A dotted name such as coro.send is also found by its member when the prose writes send(None).
+  const last = t.includes('.') ? t.slice(t.lastIndexOf('.') + 1) : '';
+  return last.length >= 4 && body.includes(last);
 }
 
 const MARKDOWN: [RegExp, string][] = [
@@ -128,7 +131,11 @@ export async function editionGates(e: Edition, book: Book): Promise<Finding[]> {
           // Keep the prelude run when it succeeds, or when the standalone run did not even run (its error then names the real problem).
           if (good(withPrelude) || !res.ok) res = withPrelude;
         }
-        if (!res.ok || res.timedOut) {
+        // A fragment that shows a third-party library (uvloop, aiohttp) cannot run here; only one that claims an output must.
+        const thirdParty = !hasOutput && !res.ok && /ModuleNotFoundError|ImportError/.test(res.stderr);
+        if (thirdParty) {
+          // nothing to report
+        } else if (!res.ok || res.timedOut) {
           const why = res.timedOut ? 'timed out' : res.stderr.trim().split('\n').slice(-2).join(' | ').slice(0, 200);
           out.push(hasOutput
             ? finding('rules.code', 'blocker', page, 'A worked example fails when run, so the output shown cannot be right.', why, 'Fix the code so it runs and prints the output shown.')
