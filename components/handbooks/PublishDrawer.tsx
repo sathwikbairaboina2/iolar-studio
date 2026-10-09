@@ -178,7 +178,7 @@ export function PublishDrawer({ open, mode, subject, data, titles, selected, act
         <Steps size="small" current={current} style={{ marginBottom: 16 }} items={[{ title: 'Chapter reviews' }, { title: 'Learnable order' }, { title: 'Publish' }]} />
       )}
       {mode === 'queue' && !slugs.length && !data.queue.order && <p>Nothing is waiting for you.</p>}
-      {(mode === 'queue' || stage === 0) && slugs.map((s) => <ChapterCard key={s} subject={subject} slug={s} title={titles[s] ?? s} data={data} act={act} onDone={() => {}} />)}
+      {(mode === 'queue' || stage === 0 || (stage === 2 && !live)) && slugs.map((s) => <ChapterCard key={s} subject={subject} slug={s} title={titles[s] ?? s} data={data} act={act} onDone={() => {}} />)}
       {mode === 'run' && stage === 0 && <p style={{ opacity: 0.6, fontSize: 13 }}>Runs in the background; you can close this.</p>}
       {mode === 'run' && stage === 1 && live && <p>Working out a learnable order...</p>}
       {((mode === 'run' && stage === 1 && !live) || (mode === 'queue' && data.queue.order)) && (
