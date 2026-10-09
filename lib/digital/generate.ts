@@ -137,13 +137,14 @@ export async function regenerateWithNotes(subject: string, chapter: string, note
   const ctx = await context(subject, chapter);
   const edition = await loadEdition(subject, chapter);
   const outline = edition?.sections.filter((s) => s.role === 'outline').length ?? 0;
-  if (!edition || outline !== ctx.book.chapters.length) {
+  const hash = await inputsHash(subject, chapter);
+  // Sections written from older inputs cannot be patched into an edition stamped with the new hash.
+  if (!edition || outline !== ctx.book.chapters.length || edition.inputsHash !== hash) {
     return generateEdition(subject, chapter, { notes: Object.fromEntries(ctx.book.chapters.map((_, i) => [i, [notes]])) });
   }
   const low = notes.toLowerCase();
   const named = edition.sections.flatMap((s, i) => (low.includes(s.title.toLowerCase()) ? [i] : []));
   const targets = named.length ? named : edition.sections.flatMap((s, i) => (s.role === 'outline' ? [i] : []));
-  const hash = await inputsHash(subject, chapter);
   const written = await inPool(targets, (i) => writeSection(subject, chapter, ctx, { role: edition.sections[i].role, outlineIndex: edition.sections[i].outlineIndex, notes: [notes] }));
   const sections = [...edition.sections];
   targets.forEach((si, k) => { sections[si] = written[k]; });

@@ -111,6 +111,20 @@ describe('generateEdition', () => {
     expect(run.mock.calls.map((c) => titleOf(c[0] as string)).sort()).toEqual(['Alpha', 'Beta']);
   });
 
+  it('regenerateWithNotes writes the whole edition again when the inputs changed since it was written', async () => {
+    const run = mockClaude((p) => section(titleOf(p)));
+    const { generateEdition, regenerateWithNotes } = await import('@/lib/digital/generate');
+    const { inputsHash, loadEdition } = await import('@/lib/digital/edition');
+    await generateEdition('py', 'loop');
+    put('handbooks/py/loop/parts/01/post.json', { brand: 'iolar', series: 's', date: 'd', slides: [{ page_title: 'Carousel title', blocks: [{ type: 'paragraph', text: 'changed words' }] }] });
+    run.mockClear();
+    const e = await regenerateWithNotes('py', 'loop', 'Beta needs a second example');
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(e.inputsHash).toBe(await inputsHash('py', 'loop'));
+    expect((await loadEdition('py', 'loop'))!.inputsHash).toBe(e.inputsHash);
+    expect(run.mock.calls.map((c) => c[0] as string).filter((p) => p.includes('Beta needs a second example'))).toHaveLength(2);
+  });
+
   it('regenerateWithNotes writes a whole edition when none exists', async () => {
     const run = mockClaude((p) => section(titleOf(p)));
     const { regenerateWithNotes } = await import('@/lib/digital/generate');
