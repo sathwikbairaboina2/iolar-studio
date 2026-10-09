@@ -39,6 +39,7 @@ export function chapterFile(s: string, c: string) { return path.join(chapterDir(
 export function bookFile(s: string, c: string) { return path.join(chapterDir(s, c), 'book.json'); }
 export function referencesFile(s: string, c: string) { return path.join(chapterDir(s, c), 'references.json'); }
 export function refsDir(s: string, c: string) { return path.join(chapterDir(s, c), 'refs'); }
+export function digitalDir(s: string, c: string) { return path.join(chapterDir(s, c), 'digital'); }
 export function partsDir(s: string, c: string) { return path.join(chapterDir(s, c), 'parts'); }
 export function partDir(s: string, c: string, part: number) { return path.join(partsDir(s, c), partName(part)); }
 export function postFile(s: string, c: string, part: number) { return path.join(partDir(s, c, part), 'post.json'); }
