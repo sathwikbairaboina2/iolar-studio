@@ -57,6 +57,17 @@ describe('reviewAndFix', () => {
     expect(JSON.stringify(e.sections[1])).toContain('v1');
   });
 
+  it('builds notes from a facts finding with the summary and fix only, cut to 300 characters', async () => {
+    const long = 'x'.repeat(500);
+    const m = mocks([[{ ...finding(3), summary: long, fix: long, evidence: 'FETCHED PAGE TEXT' }], []]);
+    const { reviewAndFix } = await import('@/lib/digital/fix');
+    await reviewAndFix('py', 'loop');
+    const note: string = m.generateSection.mock.calls[0][2].notes[0];
+    expect(note).not.toContain('FETCHED PAGE TEXT');
+    expect(note).not.toContain('x'.repeat(301));
+    expect(note).toContain('x'.repeat(300));
+  });
+
   it('does not regenerate a section fixed in round 1 again in round 2', async () => {
     const m = mocks([[finding(2), finding(3)], [finding(2), finding(3)], []]);
     const { reviewAndFix } = await import('@/lib/digital/fix');

@@ -3,7 +3,14 @@ import { loadEdition, saveEdition } from './edition';
 import { generateSection } from './generate';
 import { reviewEdition, type EditionReview } from './review';
 
-const note = (f: Finding) => `${f.page > 0 ? `page ${f.page}: ` : ''}${f.summary}${f.evidence ? ` (${f.evidence})` : ''}${f.fix ? ` Fix: ${f.fix}` : ''}`;
+const cut = (t: string) => t.slice(0, 300);
+/** Facts findings quote text fetched from the web, so only the reviewer's own summary and fix reach the next prompt. */
+const note = (f: Finding) => {
+  const where = f.page > 0 ? `page ${f.page}: ` : '';
+  const fix = f.fix ? ` Fix: ${cut(f.fix)}` : '';
+  if (f.pass === 'facts') return `${where}${cut(f.summary)}${fix}`;
+  return `${where}${f.summary}${f.evidence ? ` (${f.evidence})` : ''}${fix}`;
+};
 const isUnavailable = (err: unknown) => (err as { name?: string } | null)?.name === 'ClaudeUnavailableError';
 /** Findings worth a regeneration: real defects, not a pass that could not run. */
 const actionable = (f: Finding) => f.severity !== 'minor' && !f.rule.endsWith('.unavailable');

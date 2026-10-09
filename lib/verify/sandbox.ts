@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { mkdtemp, rm } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -14,6 +14,17 @@ export type RunResult = {
 const TIMEOUT_MS = 5_000;
 const MAX_OUTPUT = 8 * 1024;
 
+/** Stops the interpreter and everything it started. */
+function killTree(pid: number | undefined) {
+  if (!pid) return;
+  try {
+    if (process.platform === 'win32') spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => {});
+    else process.kill(-pid, 'SIGKILL');
+  } catch {
+    /* already gone */
+  }
+}
+
 /**
  * Runs a snippet in a throwaway directory with an isolated interpreter, no site
  * packages, no inherited PYTHONPATH, and proxies pointed at a dead address so a
@@ -27,38 +38,60 @@ export async function runPython(code: string, opts: { timeoutMs?: number } = {})
 
   try {
     return await new Promise<RunResult>((resolve) => {
-      const child = execFile(
-        'python',
-        ['-I', '-S', file],
-        {
-          cwd: dir,
-          timeout,
-          maxBuffer: MAX_OUTPUT,
-          windowsHide: true,
-          env: {
-            ...process.env,
-            PATH: process.env.PATH ?? '',
-            SYSTEMROOT: process.env.SYSTEMROOT ?? '',
-            PYTHONPATH: '',
-            PYTHONHOME: '',
-            PYTHONDONTWRITEBYTECODE: '1',
-            // Point every proxy at a closed port so a snippet cannot reach the network.
-            HTTP_PROXY: 'http://127.0.0.1:9',
-            HTTPS_PROXY: 'http://127.0.0.1:9',
-            NO_PROXY: '',
-          },
-        },
-        (err, stdout, stderr) => {
-          const timedOut = !!err && (err as NodeJS.ErrnoException).code === undefined && /timed?.?out|ETIMEDOUT/i.test(String(err));
-          resolve({
-            ok: !err,
-            stdout: String(stdout).slice(0, MAX_OUTPUT),
-            stderr: String(stderr).slice(0, MAX_OUTPUT),
-            timedOut: timedOut || (!!err && (err as { killed?: boolean }).killed === true),
-          });
+      const child = spawn('python', ['-I', '-S', file], {
+        cwd: dir,
+        windowsHide: true,
+        // Its own process group off Windows, so a timeout can take the whole tree down.
+        detached: process.platform !== 'win32',
+        // Only what the interpreter needs; nothing else of ours (tokens, API keys) is passed on.
+        env: {
+          PATH: process.env.PATH ?? '',
+          SYSTEMROOT: process.env.SYSTEMROOT ?? '',
+          TEMP: dir,
+          TMP: dir,
+          PYTHONIOENCODING: 'utf-8',
+          PYTHONDONTWRITEBYTECODE: '1',
+          // Point every proxy at a closed port so a snippet cannot reach the network.
+          HTTP_PROXY: 'http://127.0.0.1:9',
+          HTTPS_PROXY: 'http://127.0.0.1:9',
+          NO_PROXY: '',
+        } as unknown as NodeJS.ProcessEnv,
+      });
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+      let overflow = false;
+      let spawnFailed = false;
+      let done = false;
+      const finish = (exit: number | null) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve({
+          ok: !spawnFailed && exit === 0 && !timedOut && !overflow,
+          stdout: stdout.slice(0, MAX_OUTPUT),
+          stderr: spawnFailed ? 'python not available' : stderr.slice(0, MAX_OUTPUT),
+          timedOut: timedOut || overflow,
+        });
+      };
+      const take = (which: 'out' | 'err') => (chunk: Buffer) => {
+        if (which === 'out') stdout += chunk.toString('utf8');
+        else stderr += chunk.toString('utf8');
+        if (!overflow && (stdout.length > MAX_OUTPUT || stderr.length > MAX_OUTPUT)) {
+          overflow = true;
+          killTree(child.pid);
         }
-      );
-      child.on('error', () => resolve({ ok: false, stdout: '', stderr: 'python not available', timedOut: false }));
+      };
+      child.stdout?.on('data', take('out'));
+      child.stderr?.on('data', take('err'));
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killTree(child.pid);
+        // A grandchild that survived could keep the pipes open; do not wait for it.
+        setTimeout(() => finish(null), 2_000).unref();
+      }, timeout);
+      child.on('error', () => { spawnFailed = true; finish(null); });
+      child.on('close', (c) => finish(c));
     });
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});

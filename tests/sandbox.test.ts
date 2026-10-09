@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import { describe, it, expect } from 'vitest';
 import {
   runPython, expectedOutput, outputMatches, buildPrelude, runPythonWithPrelude,
@@ -20,6 +23,42 @@ describe('runPython', () => {
     const r = await runPython('while True:\n    pass\n');
     expect(r.ok).toBe(false);
     expect(r.timedOut).toBe(true);
+  }, 30_000);
+
+  it('starts python with a minimal environment and temp dirs inside the sandbox', async () => {
+    process.env.SANDBOX_SECRET_TEST = 'leak';
+    try {
+      const code = [
+        'import os',
+        'print(sorted(k.upper() for k in os.environ))',
+        'print(os.environ.get("TEMP") == os.getcwd(), os.environ.get("TMP") == os.getcwd())',
+      ].join('\n');
+      const r = await runPython(code);
+      expect(r.ok).toBe(true);
+      expect(r.stdout).not.toContain('SANDBOX_SECRET_TEST');
+      expect(r.stdout).toContain('PYTHONIOENCODING');
+      expect(r.stdout).toContain('True True');
+    } finally {
+      delete process.env.SANDBOX_SECRET_TEST;
+    }
+  }, 30_000);
+
+  it('kills the whole process tree on a timeout', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'tree-'));
+    const marker = path.join(dir, 'marker.txt').split(path.sep).join('/');
+    const code = [
+      'import subprocess, sys, time',
+      `subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2.5); open('${marker}', 'w').write('x')"])`,
+      'time.sleep(30)',
+    ].join('\n');
+    try {
+      const r = await runPython(code, { timeoutMs: 1000 });
+      expect(r.timedOut).toBe(true);
+      await new Promise((res) => setTimeout(res, 3500));
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it('cannot reach the network', async () => {
