@@ -71,6 +71,18 @@ describe('reviewEdition', () => {
     expect(ask.mock.calls.map((c) => c[0]).sort()).toEqual(['facts', 'pedagogy', 'readability']);
   });
 
+  it('states that a wrong quiz answer or wrong example output is major, and raises such a finding', async () => {
+    const wrong = { ...f('pedagogy', 'minor'), summary: 'The quiz answer is wrong: it says 3 but the code prints 4.' };
+    const ask = mocks({ pedagogy: [wrong] });
+    const { reviewEdition } = await import('@/lib/digital/review');
+    const r = await reviewEdition('py', 'loop');
+    for (const pass of ['facts', 'pedagogy']) {
+      expect(ask.mock.calls.find((c) => c[0] === pass)![1]).toMatch(/wrong quiz answer or wrong example output is severity "major"/);
+    }
+    expect(r.findings[0].severity).toBe('major');
+    expect(r.verdict).toBe('unsure');
+  });
+
   it('currentReview is null once the edition changes', async () => {
     mocks();
     const { reviewEdition, currentReview } = await import('@/lib/digital/review');

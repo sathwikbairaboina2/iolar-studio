@@ -46,6 +46,14 @@ export async function currentReview(s: string, c: string): Promise<EditionReview
   return review && edition && review.editionHash === editionHash(edition) ? review : null;
 }
 
+const WRONG_ANSWER = 'A wrong quiz answer or wrong example output is severity "major", never "minor": a learner would be taught something false.';
+const WRONG_ANSWER_TEXT = /\b(wrong|incorrect|incorrectly|false)\b[^.]{0,60}\b(answer|output)\b|\b(answer|output)\b[^.]{0,60}\b(is|are)\s+(wrong|incorrect|false)\b/i;
+
+/** The reviewers sometimes call a wrong answer minor; it never is. */
+export function raiseWrongAnswers(findings: Finding[]): Finding[] {
+  return findings.map((f) => (f.severity === 'minor' && !f.rule.endsWith('.unavailable') && WRONG_ANSWER_TEXT.test(f.summary) ? { ...f, severity: 'major' as const } : f));
+}
+
 /** Rule checks first (cheap, no AI), then the facts, pedagogy and readability passes side by side. */
 export async function reviewEdition(subject: string, chapter: string, opts: { onStep?: (step: string) => void } = {}): Promise<EditionReview> {
   const edition = await loadEdition(subject, chapter);
@@ -64,6 +72,7 @@ export async function reviewEdition(subject: string, chapter: string, opts: { on
       'Extract every factual claim (complexities, API names and signatures, version behaviour, semantics, and the printed output of examples) and verify it.',
       'Report ONLY claims that are wrong or misleading. Correct-but-terse is fine; do not report style.',
       'Use web search when a claim depends on current library or language behaviour. Page numbers below are the ones to use in "page".',
+      WRONG_ANSWER,
       'Chapter text:', text, SHAPE,
     ].join('\n\n'), ['WebSearch', 'WebFetch']),
 
@@ -71,6 +80,7 @@ export async function reviewEdition(subject: string, chapter: string, opts: { on
       'You are reviewing whether a web chapter teaches what its outline promises.',
       'Report only: an outline point that is missing or only named, a term used before it is defined, sections in an order that would confuse a learner, an example that does not teach its point, or a quiz question that tests wording instead of understanding or whose answer is wrong.',
       'Do not report wording style or density.',
+      WRONG_ANSWER,
       `The outline this was written from:\n${JSON.stringify(book.chapters.map((c) => ({ title: c.title, points: c.points })))}`,
       'Chapter text:', text, SHAPE,
     ].join('\n\n')),
@@ -85,7 +95,7 @@ export async function reviewEdition(subject: string, chapter: string, opts: { on
   opts.onStep?.('done');
 
   const order = { blocker: 0, major: 1, minor: 2 } as const;
-  const findings = [...gates, ...facts, ...pedagogy, ...readability].sort((a, b) => order[a.severity] - order[b.severity] || a.page - b.page);
+  const findings = raiseWrongAnswers([...gates, ...facts, ...pedagogy, ...readability]).sort((a, b) => order[a.severity] - order[b.severity] || a.page - b.page);
   const review: EditionReview = {
     editionHash: editionHash(edition),
     generatedAt: new Date().toISOString(),

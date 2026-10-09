@@ -93,6 +93,16 @@ describe('reviewAndFix', () => {
     expect(m.generateSection.mock.calls.map((c) => c[2].outlineIndex)).toEqual([0, 1]);
   });
 
+  it('adds minor findings as notes only to sections that are being rewritten anyway', async () => {
+    const m = mocks([[finding(3), { ...finding(3, 'minor'), summary: 'minor on beta' }, { ...finding(2, 'minor'), summary: 'minor on alpha' }], []]);
+    const { reviewAndFix } = await import('@/lib/digital/fix');
+    await reviewAndFix('py', 'loop');
+    expect(m.generateSection).toHaveBeenCalledTimes(1);
+    const notes: string[] = m.generateSection.mock.calls[0][2].notes;
+    expect(notes.some((n) => n.includes('minor on beta'))).toBe(true);
+    expect(notes.some((n) => n.includes('minor on alpha'))).toBe(false);
+  });
+
   it('does not regenerate for minor findings or an unavailable pass', async () => {
     const m = mocks([[finding(2, 'minor'), finding(0, 'minor', 'facts.unavailable')]]);
     const { reviewAndFix } = await import('@/lib/digital/fix');

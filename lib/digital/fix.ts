@@ -45,6 +45,13 @@ export async function reviewAndFix(
       else if (round === 0) edition.sections.forEach((s, si) => { if (s.role === 'outline') add(si, f); });
     }
     if (!notes.size) break;
+    // Minor findings are not worth a rewrite alone, but a section being rewritten anyway can fix them too.
+    for (const f of review.findings.filter((x) => x.severity === 'minor' && !x.rule.endsWith('.unavailable'))) {
+      if (f.page > 0 && pageSection[f.page - 1] !== undefined) {
+        const si = pageSection[f.page - 1];
+        if (notes.has(si)) notes.get(si)!.push(note(f));
+      }
+    }
 
     // A section that cannot be rewritten keeps its text; the others still go in, and the verdict stands for it.
     let rewritten = 0;
