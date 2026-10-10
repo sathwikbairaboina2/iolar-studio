@@ -40,4 +40,14 @@ describe('EditionSheets', () => {
     expect(container.textContent).not.toMatch(/Play/);
     expect(container.querySelector('section svg[aria-hidden]')).toBeNull();
   });
+
+  it('stacks the sheets full width, not in the chapter reader grid that keeps a column for the page list', async () => {
+    const { EditionSheets } = await import('@/components/handbooks/EditionSheets');
+    const styles = (await import('@/components/aiiolar-sheet/handbook.module.css')).default as Record<string, string>;
+    const { container } = render(<EditionSheets edition={edition} subject="Python Asyncio" title="Tasks" logoSvg={null} icons={{}} />);
+    const holder = container.querySelector('section')!.parentElement!;
+    expect(styles.reader).toBeTruthy();
+    expect(holder.classList.contains(styles.reader)).toBe(false);
+    expect(holder.classList.contains(styles.readerSheet)).toBe(false);
+  });
 });

@@ -24,9 +24,9 @@ export function EditionSheets({ edition, subject, title, logoSvg, icons }: { edi
   const logo = logoSvg ? iconMarkup({ logo: logoSvg }, 'logo') : null;
   return (
     <div className={styles.shell}>
-      <main className={styles.wrap}>
+      <main className={`${styles.wrap} ${styles.wrapWide}`}>
         <FitColumns />
-        <article className={`${styles.reader} ${styles.readerSheet}`}>
+        <article>
           <h1 className={styles.chH}>{title}</h1>
           {parsed.ok
             ? parsed.pages.map((page, n) => <Sheet key={n} page={page} pageNo={n + 1} subject={subject} logoSvg={logo} icons={icons} id={`p${n + 1}`} />)
