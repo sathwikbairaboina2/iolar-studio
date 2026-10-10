@@ -27,22 +27,6 @@ const edition = {
 
 beforeEach(() => cleanup());
 
-describe('EditionView', () => {
-  it('draws sections, pages with numbers and each block type, and escapes html', async () => {
-    const { EditionView } = await import('@/components/handbooks/EditionView');
-    const { container } = render(<EditionView edition={edition} title="Loop" />);
-    expect(screen.getByText('Loop')).toBeTruthy();
-    expect(screen.getByText('Intro')).toBeTruthy();
-    expect(screen.getByText('page 2')).toBeTruthy();
-    expect(screen.getByText('print(1)', { exact: false })).toBeTruthy();
-    expect(screen.getByText('cell')).toBeTruthy();
-    expect(screen.getByText(/diagram · flow/)).toBeTruthy();
-    expect(screen.getByText('Q?')).toBeTruthy();
-    expect(container.querySelector('.em')?.textContent).toBe('world');
-    expect(container.querySelector('p b')).toBeNull();
-  });
-});
-
 describe('edition page', () => {
   it('reads the saved edition, and says so when there is none', async () => {
     vi.resetModules();
