@@ -61,7 +61,6 @@ describe('generateEdition', () => {
     expect(alpha).toContain('alpha point two');
     expect(alpha).toContain('carousel words here');
     expect(alpha).toContain('Carousel title');
-    expect(alpha).not.toContain('beta point one');
   });
 
   it('retries once with the error when the first answer is not JSON', async () => {
@@ -118,11 +117,11 @@ describe('generateEdition', () => {
   });
 
   it('names the cap a page broke in the retry prompt, and saves no oversize page', async () => {
-    const big = JSON.stringify({ title: 'Alpha', pages: [{ title: 'Alpha', blocks: Array.from({ length: 15 }, () => ({ type: 'bullets', items: ['x'] })) }] });
+    const big = JSON.stringify({ title: 'Alpha', pages: [{ title: 'Alpha', blocks: Array.from({ length: 11 }, () => ({ type: 'bullets', items: ['x'] })) }] });
     const run = mockClaude((p, n) => (n === 0 ? big : answer(p)));
     const { generateSection } = await import('@/lib/digital/generate');
     expect((await generateSection('py', 'loop', { role: 'outline', outlineIndex: 0 })).pages[0].blocks).toHaveLength(1);
-    expect(run.mock.calls[1][0]).toMatch(/Your previous answer was rejected: .*15 blocks; the most allowed is 14/);
+    expect(run.mock.calls[1][0]).toMatch(/Your previous answer was rejected: .*11 blocks; the most allowed is 10/);
     vi.resetModules();
     const fat = JSON.stringify({ title: 'Alpha', pages: [{ title: 'Alpha', blocks: [{ type: 'paragraph', text: 'p'.repeat(200) }] }] });
     mockClaude(() => fat);
@@ -135,7 +134,7 @@ describe('generateEdition', () => {
     const run = mockClaude((p) => (titleOf(p) === 'Check yourself' ? quiz(6) : answer(p)));
     const { generateSection } = await import('@/lib/digital/generate');
     await expect(generateSection('py', 'loop', { role: 'quiz' })).rejects.toThrow(/3 to 5 qa blocks/);
-    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenCalledTimes(3);
     expect(run.mock.calls[1][0]).toMatch(/rejected: .*6 qa blocks/);
     vi.resetModules();
     mockClaude((p) => (titleOf(p) === 'Check yourself' ? quiz(4) : answer(p)));
@@ -152,7 +151,7 @@ describe('generateEdition', () => {
     await generateSection('py', 'loop', { role: 'outline', outlineIndex: 0 });
     const prompt = run.mock.calls[0][0] as string;
     expect(prompt).toMatch(/notes, not prose/i);
-    expect(prompt).toMatch(/at most 14 blocks/);
+    expect(prompt).toMatch(/at most 10 blocks/);
     expect(prompt).toMatch(/at most 2 code blocks/);
     expect(prompt).toMatch(/at most 2 tables/);
     expect(prompt).toMatch(/at most 8 lines/);
@@ -272,5 +271,253 @@ describe('generateEdition', () => {
     const { generateEdition } = await import('@/lib/digital/generate');
     const e = await generateEdition('py', 'loop');
     expect(e.sections[0].pages[0].blocks[1]).toEqual({ type: 'diagram', kind: 'flow', spec: { nodes: [{ text: 'A' }, { text: 'B' }] } });
+  });
+});
+
+const setBook = (chapters: unknown[], extra: Record<string, unknown> = {}) =>
+  put('handbooks/py/loop/book.json', { title: 'Loop', summary: 'About loops', chapters, ...extra });
+const setCategory = (category: string) => put('handbooks/py/loop/chapter.json', { title: 'Loop', order: 0, category });
+
+describe('category-aware editions', () => {
+  it('writes no section for a cover and keeps each outlineIndex into book.chapters', async () => {
+    setBook([{ title: 'Cover', points: ['what is inside'], shape: ['cover'] }, { title: 'Alpha', points: ['a'] }, { title: 'Beta', points: ['b'] }]);
+    const run = mockClaude((p) => answer(p));
+    const { generateEdition, regenerateWithNotes } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect(e.sections.map((s) => [s.role, s.title, s.outlineIndex])).toEqual([['outline', 'Alpha', 1], ['outline', 'Beta', 2], ['quiz', 'Check yourself', undefined]]);
+    expect(run).toHaveBeenCalledTimes(3);
+    run.mockClear();
+    await regenerateWithNotes('py', 'loop', 'Beta needs a second example');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes a section for a cover that holds teaching points, as plain content, and none for a label cover', async () => {
+    const teaching = ['Every instruction in a Dockerfile creates one cached image layer', 'Put the rarely changing steps first so the cache stays warm'];
+    setBook([{ title: 'Mental Model', points: teaching, shape: ['cover'] }, { title: 'Compose', points: ['Docker Compose', 'One YAML file'], shape: ['cover'] }, { title: 'Beta', points: ['b'] }]);
+    const run = mockClaude((p) => answer(p));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect(e.sections.map((s) => [s.title, s.outlineIndex])).toEqual([['Mental Model', 0], ['Beta', 2], ['Check yourself', undefined]]);
+    const prompt = run.mock.calls.map((c) => c[0] as string).find((p) => p.includes('1. Every instruction in a Dockerfile'))!;
+    expect(prompt).not.toMatch(/roles: cover/);
+    expect(prompt).toContain('- Mental Model: Every instruction');
+    expect(prompt).not.toContain('- Compose:');
+  });
+
+  const outlinePrompt = async (category: string, chapter: Record<string, unknown> = {}, book: Record<string, unknown> = {}) => {
+    setCategory(category);
+    setBook([{ title: 'Alpha', points: ['alpha point one'], ...chapter }, { title: 'Beta', points: ['beta point one'] }], book);
+    const run = mockClaude((p) => answer(p));
+    const { generateSection } = await import('@/lib/digital/generate');
+    await generateSection('py', 'loop', { role: 'outline', outlineIndex: 0 });
+    return run.mock.calls[0][0] as string;
+  };
+
+  it('asks interview-qa chapters for one qa block per question, not mini-sections', async () => {
+    const prompt = await outlinePrompt('interview-qa');
+    expect(prompt).toContain('Every point is one interview question');
+    expect(prompt).toContain('No heading blocks between questions');
+    expect(prompt).not.toContain('2 to 4 mini-sections');
+  });
+
+  it('asks drills for numbered tasks on the book dataset', async () => {
+    const dataset = { tables: [{ name: 'emp', columns: ['id', 'name'], rows: [['1', 'Asha']] }] };
+    const prompt = await outlinePrompt('drills', {}, { dataset });
+    expect(prompt).toContain('Every point is one drill');
+    expect(prompt).toContain('SAMPLE DATASET');
+    expect(prompt).toContain('emp(id, name)');
+    expect(prompt).not.toContain('2 to 4 mini-sections');
+  });
+
+  it('keeps the notes shape for handbook, listicle and system-design, ordered by the section roles', async () => {
+    for (const c of ['handbook', 'listicle', 'system-design']) {
+      vi.resetModules();
+      const prompt = await outlinePrompt(c, { shape: ['definition', 'example'] });
+      expect(prompt).toContain('2 to 4 mini-sections');
+      expect(prompt).toContain("Order the mini-sections by the section's roles: definition, example.");
+    }
+  });
+
+  it('turns a cheatsheet section into compact tables and one-line bullets', async () => {
+    const prompt = await outlinePrompt('handbook', { shape: ['cheatsheet'] });
+    expect(prompt).toContain("This is the chapter's cheat sheet");
+  });
+
+  it('puts every category rule and the idea-before-code rule in the outline prompt', async () => {
+    const { CATEGORIES } = await import('@/lib/handbookCategories');
+    for (const c of CATEGORIES) {
+      vi.resetModules();
+      const prompt = await outlinePrompt(c.id);
+      for (const r of c.content.rules) expect(prompt).toContain(r);
+      expect(prompt).toContain('state the idea in a bullet before any code that shows it');
+      expect(prompt).not.toContain('red number badge');
+    }
+  });
+
+  it('renumbers questions across the outline sections of a continuous category, and only those', async () => {
+    const { renumberQuestions } = await import('@/lib/digital/generate');
+    const page = (blocks: unknown[]) => ({ title: 'p', blocks });
+    const sections = [
+      { title: 'A', role: 'outline' as const, outlineIndex: 0, pages: [page([{ type: 'qa', q: 'Q7. What is X?', a_bullets: ['x'] }, { type: 'heading', text: 'Q12) Find Y' }, { type: 'qa', q: 'No number?', a_bullets: ['x'] }])] },
+      { title: 'B', role: 'outline' as const, outlineIndex: 1, pages: [page([{ type: 'qa', q: 'Q 3. What is Z?', a_bullets: ['x'] }])] },
+      { title: 'Check yourself', role: 'quiz' as const, pages: [page([{ type: 'qa', q: 'Q9. Quiz?', a_bullets: ['x'] }])] },
+    ];
+    const out = renumberQuestions(sections as never);
+    const blocks = out.flatMap((s) => s.pages.flatMap((p) => p.blocks as { q?: string; text?: string }[]));
+    expect(blocks.map((b) => b.q ?? b.text)).toEqual(['Q1. What is X?', 'Q2. Find Y', 'No number?', 'Q3. What is Z?', 'Q9. Quiz?']);
+  });
+
+  it('renumbers a generated interview-qa edition from Q1', async () => {
+    setCategory('interview-qa');
+    const bank = (title: string, start: number) => JSON.stringify({ title, pages: [{ title, blocks: [{ type: 'qa', q: `Q${start}. A?`, a_bullets: ['x'] }, { type: 'qa', q: `Q${start + 1}. B?`, a_bullets: ['x'] }] }] });
+    mockClaude((p) => (titleOf(p) === 'Check yourself' ? quiz() : bank(titleOf(p), titleOf(p) === 'Alpha' ? 5 : 40)));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    const qs = e.sections.filter((s) => s.role === 'outline').flatMap((s) => s.pages.flatMap((p) => p.blocks.map((b) => (b as { q: string }).q)));
+    expect(qs).toEqual(['Q1. A?', 'Q2. B?', 'Q3. A?', 'Q4. B?']);
+  });
+
+  it('leaves other categories untouched', async () => {
+    setCategory('handbook');
+    const bank = (title: string) => JSON.stringify({ title, pages: [{ title, blocks: [{ type: 'qa', q: 'Q9. A?', a_bullets: ['x'] }] }] });
+    mockClaude((p) => (titleOf(p) === 'Check yourself' ? quiz() : bank(titleOf(p))));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect((e.sections[0].pages[0].blocks[0] as { q: string }).q).toBe('Q9. A?');
+  });
+});
+
+describe('one bad diagram', () => {
+  const badDiagram = { type: 'diagram', kind: 'flow', spec: {} };
+  const page = (title: string, blocks: unknown[]) => JSON.stringify({ title, pages: [{ title, blocks }] });
+
+  it('is dropped on the last attempt and the section is still saved', async () => {
+    const run = mockClaude((p) => (titleOf(p) === 'Alpha' ? page('Alpha', [{ type: 'paragraph', text: 'kept' }, badDiagram]) : answer(p)));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect(e.sections[0].pages[0].blocks).toEqual([{ type: 'paragraph', text: 'kept' }]);
+    expect(run.mock.calls.filter((c) => /section "Alpha"/.test(c[0] as string))).toHaveLength(3);
+    expect(existsSync(editionPath())).toBe(true);
+  });
+
+  it('does not rescue a page that stays invalid without its diagrams', async () => {
+    const many = Array.from({ length: 15 }, () => ({ type: 'bullets', items: ['x'] }));
+    mockClaude((p) => (titleOf(p) === 'Alpha' ? page('Alpha', [...many, badDiagram]) : answer(p)));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    await expect(generateEdition('py', 'loop')).rejects.toThrow(/section Alpha/);
+    expect(existsSync(editionPath())).toBe(false);
+  });
+});
+
+describe('caps and category on the edition', () => {
+  it('stamps the category on the saved edition', async () => {
+    setCategory('interview-qa');
+    mockClaude((p) => answer(p));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    expect((await generateEdition('py', 'loop')).category).toBe('interview-qa');
+  });
+
+  it('states 18 blocks and 6 code blocks to drills, 10 blocks and 170 words to the handbook, and 14 and 2 to the rest', async () => {
+    for (const c of ['drills', 'handbook', 'interview-qa', 'listicle', 'system-design']) {
+      vi.resetModules();
+      setCategory(c);
+      const run = mockClaude((p) => answer(p));
+      const { generateSection } = await import('@/lib/digital/generate');
+      await generateSection('py', 'loop', { role: 'outline', outlineIndex: 0 });
+      const prompt = run.mock.calls[0][0] as string;
+      if (c === 'drills') {
+        expect(prompt).toMatch(/at most 18 blocks/);
+        expect(prompt).toMatch(/at most 6 code blocks/);
+        expect(prompt).not.toMatch(/words of visible text/);
+      } else if (c === 'handbook') {
+        expect(prompt).toMatch(/at most 10 blocks/);
+        expect(prompt).toMatch(/at most 2 code blocks/);
+        expect(prompt).toMatch(/at most 170 words of visible text/);
+      } else {
+        expect(prompt).not.toMatch(/words of visible text/);
+        expect(prompt).toMatch(/at most 14 blocks/);
+        expect(prompt).toMatch(/at most 2 code blocks/);
+      }
+    }
+  });
+
+  it('saves a drills section with 6 tasks', async () => {
+    setCategory('drills');
+    const tasks = Array.from({ length: 6 }, (_, i) => [
+      { type: 'heading', text: `Q${i + 1}. Task` },
+      { type: 'code', lang: 'python', lines: ['print(1)'] },
+      { type: 'code', lang: 'output', lines: ['1'] },
+    ]).flat();
+    mockClaude((p) => (titleOf(p) === 'Check yourself' ? quiz() : JSON.stringify({ title: titleOf(p), pages: [{ title: titleOf(p), blocks: tasks }] })));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect(e.sections[0].pages[0].blocks).toHaveLength(18);
+  });
+});
+
+describe('round 2 prompts and attempts', () => {
+  it('shows an outline page every other section with its points as fixed facts, skipping covers', async () => {
+    setBook([{ title: 'Cover', points: ['cover point'], shape: ['cover'] }, { title: 'Alpha', points: ['alpha point one', 'alpha point two'] }, { title: 'Beta', points: ['beta 5M orders', 'beta point two'] }]);
+    const run = mockClaude((p) => answer(p));
+    const { generateSection } = await import('@/lib/digital/generate');
+    await generateSection('py', 'loop', { role: 'outline', outlineIndex: 1 });
+    const prompt = run.mock.calls[0][0] as string;
+    expect(prompt).toMatch(/fixed facts/);
+    expect(prompt).toContain('- Beta: beta 5M orders; beta point two');
+    expect(prompt).toMatch(/never contradict/);
+    expect(prompt).toMatch(/only its own checklist/);
+    expect(prompt).not.toContain('cover point');
+    expect(prompt).toContain('1. alpha point one');
+  });
+
+  it('puts the no-bare-questions rule in every category outline prompt', async () => {
+    const { CATEGORIES } = await import('@/lib/handbookCategories');
+    for (const c of CATEGORIES) {
+      vi.resetModules();
+      setCategory(c.id);
+      const run = mockClaude((p) => answer(p));
+      const { generateSection } = await import('@/lib/digital/generate');
+      await generateSection('py', 'loop', { role: 'outline', outlineIndex: 0 });
+      expect(run.mock.calls[0][0]).toContain('Never list a question without its answer.');
+    }
+  });
+
+  it('gives each section three attempts', async () => {
+    let quizCalls = 0;
+    mockClaude((p) => (titleOf(p) === 'Check yourself' ? (quizCalls++ < 2 ? quiz(1) : quiz(3)) : answer(p)));
+    const { generateEdition } = await import('@/lib/digital/generate');
+    const e = await generateEdition('py', 'loop');
+    expect(e.sections[2].role).toBe('quiz');
+    expect(quizCalls).toBe(3);
+  });
+
+  it('fails after three invalid attempts', async () => {
+    const run = mockClaude((p) => (titleOf(p) === 'Check yourself' ? quiz(1) : answer(p)));
+    const { generateSection } = await import('@/lib/digital/generate');
+    await expect(generateSection('py', 'loop', { role: 'quiz' })).rejects.toThrow(/3 to 5 qa blocks/);
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('word cap on handbook pages', () => {
+  const wordyPage = (n: number) => JSON.stringify({ title: 'Alpha', pages: [{ title: 'Alpha', blocks: [{ type: 'bullets', style: 'dot', items: Array.from({ length: n / 5 }, (_, i) => `a${i} b c d e`) }] }] });
+
+  it('retries a handbook page over 170 words and tells the model', async () => {
+    setCategory('handbook');
+    let calls = 0;
+    const run = mockClaude((p) => (++calls === 1 ? wordyPage(200) : answer(p)));
+    const { generateSection } = await import('@/lib/digital/generate');
+    const s = await generateSection('py', 'loop', { role: 'outline', outlineIndex: 0 });
+    expect(s.title).toBe('Alpha');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1][0] as string).toContain('cut it to the must-know lines');
+  });
+
+  it('does not cap words in other categories', async () => {
+    setCategory('listicle');
+    const run = mockClaude(() => wordyPage(200));
+    const { generateSection } = await import('@/lib/digital/generate');
+    await generateSection('py', 'loop', { role: 'outline', outlineIndex: 0 });
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

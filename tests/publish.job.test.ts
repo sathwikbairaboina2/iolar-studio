@@ -105,6 +105,13 @@ describe('publish job', () => {
     await finish();
   });
 
+  it('reports a job file left live by a crashed server as not live once it is stale', async () => {
+    const startedAt = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    put('handbooks/py/publish-job.json', { subject: 'py', live: true, startedAt, stage: 'reviews', steps: [] });
+    const { readJob } = await import('@/lib/publish/job');
+    expect((await readJob('py'))?.live).toBe(false);
+  });
+
   it('holds a passing chapter for approval when Always ask me is on', async () => {
     mocks();
     put('handbooks/py/publish.json', { alwaysAsk: true, chapters: {} });

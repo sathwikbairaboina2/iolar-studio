@@ -4,7 +4,7 @@ import { iconSvg } from '@/lib/renderer/icons';
 import { buildPrelude, outputEquals, runPythonWithPrelude } from '@/lib/verify/sandbox';
 import type { Finding } from '@/lib/verify/gates';
 import { PY_STDLIB } from './stdlib';
-import { validateEdition, type Edition } from './edition';
+import { MAX_PARAGRAPHS_PER_PAGE, MAX_PARAGRAPH_CHARS, validateEdition, type Edition } from './edition';
 
 const BLOCK_TYPES = new Set(['heading', 'paragraph', 'bullets', 'code', 'table', 'callout', 'sidebox', 'qa', 'diagram']);
 const DIAGRAM_KINDS = new Set(['flow', 'chain', 'flowchart', 'cards', 'array', 'matrix', 'tables', 'schema', 'er']);
@@ -56,9 +56,17 @@ function iconRefs(v: unknown, out: string[] = []): string[] {
 
 const lines = (b: Record<string, unknown>) => (Array.isArray(b.lines) ? (b.lines as unknown[]).map(String) : []);
 
+/** Question and instruction words that say nothing about the topic; matched by their first six letters so inflections are covered. */
+const GENERIC = new Set([
+  'differ', 'between', 'example', 'explai', 'descri', 'instea', 'choose', 'choosi', 'contai', 'return', 'separa', 'compar', 'versus', 'withou',
+  'whethe', 'should', 'common', 'mistak', 'unders', 'differ', 'follow', 'anothe', 'relate', 'usage', 'actual', 'really', 'always',
+  'called', 'during', 'before', 'behind', 'inside', 'around',
+].map((w) => w.slice(0, 6)));
+
 /**
  * The key terms of an outline point: the longest identifier of each backticked span, else the two longest
- * words of six letters or more. A point is covered when at least half of its terms show up (see `covered`).
+ * words of six letters or more that are not generic question words, topped up with all-caps acronyms
+ * (JDK, TLB) when fewer than two remain. A point is covered when at least half of its terms show up (see `covered`).
  */
 export function keyTerms(point: string): string[] {
   const spans = [...point.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
@@ -66,14 +74,20 @@ export function keyTerms(point: string): string[] {
     const terms = spans.map((span) => (span.match(/[A-Za-z_][A-Za-z0-9_.]*/g) ?? []).sort((x, y) => y.length - x.length)[0]).filter((x): x is string => !!x);
     return [...new Set(terms)];
   }
-  const words = [...new Set(point.toLowerCase().match(/[a-z][a-z0-9_]{5,}/g) ?? [])];
-  return words.sort((a, b) => b.length - a.length).slice(0, 2);
+  const words = [...new Set(point.toLowerCase().match(/[a-z][a-z0-9_]{5,}/g) ?? [])].filter((w) => !GENERIC.has(w.slice(0, 6)));
+  const terms = words.sort((a, b) => b.length - a.length).slice(0, 2);
+  if (terms.length < 2) {
+    const acronyms = [...new Set((point.match(/(?<![A-Za-z])[A-Z]{2,5}(?![A-Za-z])/g) ?? []).map((a) => a.toLowerCase()))];
+    for (const a of acronyms) if (terms.length < 2 && !terms.includes(a)) terms.push(a);
+  }
+  return terms;
 }
 
 /** A plain word matches by its first six letters, so "switched" is found as "switches" and "library" as "libraries". */
 function seen(body: string, term: string): boolean {
   const t = term.toLowerCase();
-  if (body.includes(/^[a-z]+$/.test(t) && t.length > 6 ? t.slice(0, 6) : t)) return true;
+  // A five-letter stem finds other forms of the word: "deleting" in "delete", "resolution" in "resolve".
+  if (body.includes(/^[a-z]+$/.test(t) && t.length > 6 ? t.slice(0, 5) : t)) return true;
   // A dotted name such as coro.send is also found by its member when the prose writes send(None).
   const last = t.includes('.') ? t.slice(t.lastIndexOf('.') + 1) : '';
   return last.length >= 4 && body.includes(last);
@@ -93,7 +107,19 @@ function firstLines(s: string) {
 /** True only for "No module named 'X'" where X's top-level package is not part of the standard library. */
 export function missingThirdParty(stderr: string): boolean {
   const m = stderr.match(/ModuleNotFoundError: No module named ['"]([^'"]+)['"]/);
-  return !!m && !PY_STDLIB.has(m[1].split('.')[0]);
+  if (m) return !PY_STDLIB.has(m[1].split('.')[0]);
+  // A call site such as `shap.TreeExplainer(model)` names what the page does not set up; a forgotten stdlib import is still a bug.
+  const n = stderr.match(/NameError: name ['"]([^'"]+)['"] is not defined/);
+  return !!n && !PY_STDLIB.has(n[1]);
+}
+
+/** True on Windows when a run failed only because the example uses something POSIX-only (os.fork, fcntl, opening a directory). */
+export function posixOnly(stderr: string, platform: string = process.platform): boolean {
+  if (platform !== 'win32') return false;
+  if (/AttributeError: module '(os|signal|select|time)' has no attribute/.test(stderr)) return true;
+  if (/ModuleNotFoundError: No module named '(fcntl|resource|pwd|grp|termios|tty|pty|posix|crypt|spwd|syslog|curses|readline)'/.test(stderr)) return true;
+  const p = stderr.match(/PermissionError: \[Errno 13\] Permission denied: '([^']*)'/);
+  return !!p && (p[1] === '.' || p[1] === '..' || /[/\\]$/.test(p[1]));
 }
 
 /** All the examples together may take this long to run; after that the rest are skipped and the verdict cannot be a pass. */
@@ -149,9 +175,14 @@ export async function editionGates(e: Edition, book: Book, opts: { budgetMs?: nu
           if (good(withPrelude) || !res.ok) res = withPrelude;
         }
         // A fragment that shows a third-party library (uvloop, aiohttp) cannot run here; only one that claims an output must.
-        const thirdParty = !hasOutput && !res.ok && missingThirdParty(res.stderr);
-        if (thirdParty) {
+        const thirdParty = !res.ok && !res.timedOut && missingThirdParty(res.stderr);
+        if (thirdParty && !hasOutput) {
           // nothing to report
+        } else if (thirdParty) {
+          // The sandbox runs without site-packages, so a pandas worked example cannot run here; a person checks its output.
+          out.push(finding('rules.code-unverified', 'minor', page, 'A worked example uses a library that is not installed here, so its output was not checked.', res.stderr.trim().split('\n').slice(-1)[0].slice(0, 200), 'Check the output by running it with the library installed.'));
+        } else if (!res.ok && !res.timedOut && posixOnly(res.stderr)) {
+          out.push(finding('rules.code-unverified', 'minor', page, 'A POSIX-only example could not be run on this machine, so it was not checked.', res.stderr.trim().split('\n').slice(-1)[0].slice(0, 200), 'Check it on Linux or macOS.'));
         } else if (!res.ok || res.timedOut) {
           const why = res.timedOut ? 'timed out' : res.stderr.trim().split('\n').slice(-2).join(' | ').slice(0, 200);
           out.push(hasOutput
@@ -165,17 +196,27 @@ export async function editionGates(e: Edition, book: Book, opts: { budgetMs?: nu
     earlier.push(code);
   }
 
-  // Every outline point has to show up in its section.
+  // Every outline point has to show up in its section. Word matching misses terse paraphrase ("dup ACKs"), so this is a
+  // hint; the pedagogy pass, which reads the outline, reports a point that is really missing as major.
   e.sections.forEach((s, si) => {
     if (s.role !== 'outline') return;
     const point = pages.findIndex((p) => p.section === si) + 1;
-    const body = s.pages.flatMap((p) => [p.title, ...texts(p.blocks), ...(p.blocks as Record<string, unknown>[]).filter((b) => b.type === 'code').flatMap(lines)]).map(stripInline).join('\n').toLowerCase();
+    const body = s.pages.flatMap((p) => [...[p.title, ...texts(p.blocks)].map(stripInline), ...(p.blocks as Record<string, unknown>[]).filter((b) => b.type === 'code').flatMap(lines)]).join('\n').toLowerCase();
     for (const pt of book.chapters[s.outlineIndex ?? -1]?.points ?? []) {
       const terms = keyTerms(pt);
       const missing = terms.filter((t) => !seen(body, t));
-      if (terms.length && terms.length - missing.length < Math.ceil(terms.length / 2)) out.push(finding('rules.coverage', 'major', point, `The section does not cover an outline point (missing ${missing.map((m) => `"${m}"`).join(', ')}).`, pt, 'Add the point with an explanation and an example.'));
+      if (terms.length && terms.length - missing.length < Math.ceil(terms.length / 2)) out.push(finding('rules.coverage', 'minor', point, `The section does not cover an outline point (missing ${missing.map((m) => `"${m}"`).join(', ')}).`, pt, 'Add the point with an explanation and an example.'));
     }
   });
+
+  // Revision notes, not prose: at most one short paragraph per page.
+  for (const p of pages) {
+    const page = p.blocks[0]?.page ?? 0;
+    const paragraphs = p.blocks.filter((l) => l.block.type === 'paragraph');
+    const long = paragraphs.find((l) => stripInline(String(l.block.text ?? '')).length > MAX_PARAGRAPH_CHARS);
+    if (long) out.push(finding('rules.prose', 'major', page, `A paragraph is over ${MAX_PARAGRAPH_CHARS} characters; revision pages are notes, not prose.`, stripInline(String(long.block.text)).slice(0, 100), 'Cut it into one-line bullets, a table or a diagram.'));
+    else if (paragraphs.length > MAX_PARAGRAPHS_PER_PAGE) out.push(finding('rules.prose', 'major', page, `The page has ${paragraphs.length} paragraphs; at most ${MAX_PARAGRAPHS_PER_PAGE} is allowed.`, p.title, 'Turn the extra paragraphs into one-line bullets.'));
+  }
 
   // Studio inline syntax only.
   for (const p of pages) {

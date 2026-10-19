@@ -41,7 +41,9 @@ function jobFile(subject: string) {
 
 export async function readJob(subject: string): Promise<PublishJob | null> {
   try {
-    return JSON.parse(await fs.readFile(jobFile(subject), 'utf8')) as PublishJob;
+    const job = JSON.parse(await fs.readFile(jobFile(subject), 'utf8')) as PublishJob;
+    // A run that outlived STALE_MS died with its server; the studio would otherwise wait on it forever.
+    return job.live && Date.now() - Date.parse(job.startedAt) >= STALE_MS ? { ...job, live: false } : job;
   } catch {
     return null;
   }

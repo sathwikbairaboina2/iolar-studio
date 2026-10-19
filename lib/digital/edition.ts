@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
+import type { CategoryId } from '@/lib/handbookCategories';
 import { digitalDir } from '@/lib/paths';
 import { chapterHash } from '@/lib/publish/hash';
 import { parseHandbook } from '@/lib/publish/contract';
@@ -8,7 +9,7 @@ import { stripInline } from '@/lib/renderer/inline';
 
 export type EditionPage = { title: string; blocks: unknown[] };
 export type EditionSection = { title: string; role: 'intro' | 'outline' | 'quiz'; outlineIndex?: number; pages: EditionPage[] };
-export type Edition = { schema: 1; subject: string; chapter: string; inputsHash: string; generatedAt: string; sections: EditionSection[] };
+export type Edition = { schema: 1; subject: string; chapter: string; category?: CategoryId; inputsHash: string; generatedAt: string; sections: EditionSection[] };
 
 /** Limits a generated edition has to stay inside; the gates run every example, so size is time. */
 export const MAX_PAGES_PER_SECTION = 6;
@@ -25,23 +26,45 @@ export const MAX_PARAGRAPHS_PER_PAGE = 1;
 export const MAX_PARAGRAPH_CHARS = 160;
 export const MAX_BULLET_CHARS = 120;
 
+export type PageCaps = { blocks: number; code: number; tables: number; codeLines: number; words?: number };
+export const DEFAULT_CAPS: PageCaps = { blocks: MAX_BLOCKS_PER_PAGE, code: MAX_CODE_BLOCKS_PER_PAGE, tables: MAX_TABLES_PER_PAGE, codeLines: MAX_CODE_LINES };
+
+/** A drills page holds about six tasks, each with its own code block and result, so it gets a roomier page. */
+export const capsFor = (category?: string): PageCaps =>
+  category === 'drills' ? { blocks: 18, code: 6, tables: 2, codeLines: 8 }
+    : category === 'handbook' ? { blocks: 10, code: 2, tables: 2, codeLines: 8, words: 170 }
+      : DEFAULT_CAPS;
+
+/** Keys whose string values are markup, not words a reader sees. */
+const NON_WORD_KEYS = new Set(['type', 'kind', 'style', 'ink', 'icon', 'frame', 'lang']);
+
+function visibleWords(v: unknown): number {
+  if (typeof v === 'string') return stripInline(v).split(/\s+/).filter(Boolean).length;
+  if (Array.isArray(v)) return v.reduce((n: number, x) => n + visibleWords(x), 0);
+  if (v && typeof v === 'object') return Object.entries(v as Record<string, unknown>).reduce((n, [k, x]) => (NON_WORD_KEYS.has(k) ? n : n + visibleWords(x)), 0);
+  return 0;
+}
+
+/** What editions written before the quick-revision caps were held to; saving, fixing and reviewing an old edition must not start failing. */
+const legacyCaps = (category?: string): PageCaps => (category === 'handbook' ? DEFAULT_CAPS : capsFor(category));
+
 /** Code blocks that are examples; an output block only shows what the example before it prints. */
 const exampleCount = (s: EditionSection) =>
   s.pages.reduce((n, p) => n + p.blocks.filter((b) => (b as { type?: string; lang?: string })?.type === 'code' && (b as { lang?: string }).lang !== 'output').length, 0);
 
 /** What a page breaks, in words the generator can act on when it is asked to write the page again. */
-export function pageCapErrors(p: EditionPage): string[] {
+export function pageCapErrors(p: EditionPage, caps: PageCaps = DEFAULT_CAPS): string[] {
   const errors: string[] = [];
   const blocks = p.blocks as Record<string, unknown>[];
   const at = `page "${p.title}"`;
-  if (blocks.length > MAX_BLOCKS_PER_PAGE) errors.push(`${at} has ${blocks.length} blocks; the most allowed is ${MAX_BLOCKS_PER_PAGE}`);
+  if (blocks.length > caps.blocks) errors.push(`${at} has ${blocks.length} blocks; the most allowed is ${caps.blocks}`);
   const examples = blocks.filter((b) => b?.type === 'code' && b.lang !== 'output');
-  if (examples.length > MAX_CODE_BLOCKS_PER_PAGE) errors.push(`${at} has ${examples.length} code blocks; the most allowed is ${MAX_CODE_BLOCKS_PER_PAGE}`);
+  if (examples.length > caps.code) errors.push(`${at} has ${examples.length} code blocks; the most allowed is ${caps.code}`);
   const tables = blocks.filter((b) => b?.type === 'table').length;
-  if (tables > MAX_TABLES_PER_PAGE) errors.push(`${at} has ${tables} tables; the most allowed is ${MAX_TABLES_PER_PAGE}`);
+  if (tables > caps.tables) errors.push(`${at} has ${tables} tables; the most allowed is ${caps.tables}`);
   for (const b of examples) {
     const n = Array.isArray(b.lines) ? b.lines.length : 0;
-    if (n > MAX_CODE_LINES) errors.push(`${at} has a code block of ${n} lines; the most allowed is ${MAX_CODE_LINES}`);
+    if (n > caps.codeLines) errors.push(`${at} has a code block of ${n} lines; the most allowed is ${caps.codeLines}`);
   }
   const paragraphs = blocks.filter((b) => b?.type === 'paragraph');
   if (paragraphs.length > MAX_PARAGRAPHS_PER_PAGE) errors.push(`${at} has ${paragraphs.length} paragraphs; the most allowed is ${MAX_PARAGRAPHS_PER_PAGE}`);
@@ -54,6 +77,10 @@ export function pageCapErrors(p: EditionPage): string[] {
       const n = stripInline(String(item)).length;
       if (n > MAX_BULLET_CHARS) errors.push(`${at} has a bullet of ${n} characters; the most allowed is ${MAX_BULLET_CHARS}`);
     }
+  }
+  if (caps.words) {
+    const n = visibleWords(blocks);
+    if (n > caps.words) errors.push(`${at} has ${n} words; the most allowed is ${caps.words}: cut it to the must-know lines`);
   }
   return errors;
 }
@@ -77,14 +104,14 @@ export function asChapterParts(e: Edition): { n: number; title: string; pages: {
 }
 
 /** The edition as the site would read it: wrapped in a one-chapter handbook and run through the contract. */
-export function validateEdition(e: Edition, title: string): { ok: true } | { ok: false; errors: string[] } {
+export function validateEdition(e: Edition, title: string, opts: { fresh?: boolean } = {}): { ok: true } | { ok: false; errors: string[] } {
   const errors: string[] = [];
   if (!e.sections.length) errors.push('the edition has no sections');
   e.sections.forEach((s) => {
     if (!s.pages.length) errors.push(`section "${s.title}" has no pages`);
     s.pages.forEach((p) => { if (!p.blocks.length) errors.push(`page "${p.title}" in "${s.title}" has no blocks`); });
     if (s.role === 'outline' && s.pages.length > 1) errors.push(`section "${s.title}" has ${s.pages.length} pages; an outline section has exactly 1`);
-    for (const p of s.pages) errors.push(...pageCapErrors(p));
+    for (const p of s.pages) errors.push(...pageCapErrors(p, opts.fresh ? capsFor(e.category) : legacyCaps(e.category)));
   });
   e.sections.forEach((s) => {
     if (s.pages.length > MAX_PAGES_PER_SECTION) errors.push(`section "${s.title}" has ${s.pages.length} pages; the most allowed is ${MAX_PAGES_PER_SECTION}`);

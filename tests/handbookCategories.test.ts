@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CATEGORIES, categoryOf, isCategoryId, itemRange, filterChapters } from '@/lib/handbookCategories';
+import { CATEGORIES, categoryOf, isCategoryId, itemRange, filterChapters, isLabelCover } from '@/lib/handbookCategories';
 
 describe('handbook categories', () => {
   it('ships the five researched categories, each with all three rule layers', () => {
@@ -55,5 +55,13 @@ describe('caption prompts', () => {
   it('carries no literal example topic or number in any category caption', async () => {
     const { CATEGORIES } = await import('@/lib/handbookCategories');
     for (const c of CATEGORIES) expect(c.script.caption, c.id).not.toMatch(/\b\d{2,}\b|Docker|Swiggy|API questions/);
+  });
+});
+
+describe('isLabelCover', () => {
+  it('is true only for a cover whose points are short labels', () => {
+    expect(isLabelCover({ shape: ['cover'], points: ['Docker Compose', 'One YAML file'] })).toBe(true);
+    expect(isLabelCover({ shape: ['cover'], points: ['Each instruction in a Dockerfile creates one cached image layer'] })).toBe(false);
+    expect(isLabelCover({ points: ['Docker Compose'] })).toBe(false);
   });
 });

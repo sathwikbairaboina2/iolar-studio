@@ -110,7 +110,7 @@ const BOOK_SHAPE = `Return ONLY this JSON object, no prose and no markdown fence
     }
   ]
 }
-Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Aim for 6-12 points per chapter so a chapter fills a dense handwritten page.`;
+Points are the syllabus: each is a specific teachable item (a definition, a method, a complexity, a gotcha, a code example, a comparison row) — not a vague heading. Points per chapter follow the SIZE budget; each point is one must-remember fact, command, rule or gotcha. No history, motivation or "why learn X" points.`;
 
 /** Asked for in a drills book only: the single schema and sample rows every task runs on. */
 const DATASET_SHAPE = `Also add a top-level "dataset": the full schema and EVERY sample row the tasks will use, as
@@ -172,8 +172,10 @@ export async function bookFromTopic(subject: string, chapter: string, topic: str
   const prompt = [
     'You are building the syllabus for a tech handbook published as an Instagram carousel of dense handwritten notes pages.',
     `Topic: ${topic}`,
-    'Cover the topic thoroughly, the way a strong study-notes series would: fundamentals, mechanics/internals, practical usage, comparisons, complexity or trade-offs, common mistakes, and a closing summary.',
-    'Give every chapter a "shape": the ordered section roles its page should have (definition, mechanism, example, comparison, mistakes, summary, cheatsheet). A platform or service family (AWS, Docker, Kubernetes) starts with a chapter shaped ["cover"]; the last chapter of any series is shaped ["cheatsheet"].',
+    category.id === 'handbook'
+      ? 'Write quick revision notes. Cover the topic end to end once, in this order: what it is and the mental model, the core workflow, everyday commands or usage, the common mistakes, and a cheat sheet last. Keep only what a learner revises the night before; skip anything obvious or rarely used.'
+      : 'Cover the topic thoroughly, the way a strong study-notes series would: fundamentals, mechanics/internals, practical usage, comparisons, complexity or trade-offs, common mistakes, and a closing summary.',
+    'Give every chapter a "shape": the ordered section roles its page should have (definition, mechanism, example, comparison, mistakes, summary, cheatsheet). A platform or service family (AWS, Docker, Kubernetes) starts with a chapter shaped ["cover"], whose points are short labels (a few words each) for what the handbook covers, with every teaching point in a later chapter; the last chapter of any series is shaped ["cheatsheet"].',
     await categoryBookRules(subject, chapter),
     partBudget(category.presentation.pointsPerPage, category.presentation.bookPages),
     category.id === 'drills' ? DATASET_SHAPE : '',

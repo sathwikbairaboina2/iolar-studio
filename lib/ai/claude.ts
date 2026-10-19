@@ -96,7 +96,8 @@ export function runClaude(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (code !== 0) return reject(new Error(`claude exited ${code}: ${stderr.slice(0, 400)}`));
+      // In -p mode the CLI prints API errors and limits to stdout, leaving stderr empty.
+      if (code !== 0) return reject(new Error(`claude exited ${code}: ${(stderr.trim() || stdout.trim().slice(-400)).slice(0, 400)}`));
       if (streaming) {
         if (pending.trim()) {
           const parsed = parseStreamLine(pending);

@@ -85,9 +85,9 @@ export const CATEGORIES: HandbookCategory[] = [
     presentation: {
       template: 'notebook',
       itemsPerPage: '6-8 numbered sections',
-      // Round 6 (docker): 10 of 12 pages needed condensing at polish at 5 points a page.
-      pointsPerPage: 4,
-      bookPages: 12,
+      // Quick revision: a chapter is about 6 short pages of 5 points, so the book is at most 30 points.
+      pointsPerPage: 5,
+      bookPages: 6,
       minFill: 85,
       numbering: 'chapters',
       pageRules: 'Page title plus a one-line scope subtitle. At most 8 numbered sections per page (bullets at most 12 words), mixing definition bullets, one X-vs-Y comparison table, one flow diagram and one code or pseudo-code example. Every page carries one colour-coded table (a meaning per column or row, shown in colour) and, where the topic has code, one annotated code example: a "code" block whose "note" names the gotcha. Close the page with a one-line "Key Takeaways" callout.',
@@ -233,6 +233,9 @@ export function categoryOf(id: unknown): HandbookCategory {
 
 /** A cover chapter lists what is inside; it is never an item and never counted. */
 export const isCover = (c: { shape?: string[] }) => Boolean(c.shape?.includes('cover'));
+
+/** A cover whose points are all short labels (six words or fewer) has nothing to teach; a longer one is a teaching section. */
+export const isLabelCover = (c: { shape?: string[]; points: string[] }) => isCover(c) && c.points.every((p) => p.trim().split(/\s+/).length <= 6);
 
 /** Roles only a closing page plays. */
 const CLOSING_ROLES = new Set(['cheatsheet', 'cheat sheet', 'summary', 'recap']);

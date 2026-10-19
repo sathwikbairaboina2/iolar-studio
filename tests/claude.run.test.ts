@@ -25,4 +25,20 @@ describe('runClaude', () => {
     await expect(runClaude('prompt', { timeoutMs: 5_000 })).rejects.toThrow(/stdin.*EPIPE/);
     expect(child.kill).toHaveBeenCalled();
   });
+
+  it('reports what the CLI printed on stdout when it fails with nothing on stderr', async () => {
+    const child = brokenChild();
+    const stdin = child.stdin as Record<string, unknown>;
+    stdin.write = () => true;
+    stdin.end = () => {
+      queueMicrotask(() => {
+        (child.stdout as EventEmitter).emit('data', Buffer.from('API Error: Request too large\n'));
+        child.emit('close', 1);
+      });
+    };
+    const spawn = vi.fn(() => child);
+    vi.doMock('child_process', () => ({ spawn, default: { spawn } }));
+    const { runClaude } = await import('@/lib/ai/claude');
+    await expect(runClaude('prompt', { timeoutMs: 5_000 })).rejects.toThrow(/exited 1: API Error: Request too large/);
+  });
 });

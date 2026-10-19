@@ -177,3 +177,79 @@ describe('edition', () => {
     });
   });
 });
+
+describe('caps per category', () => {
+  const drillPage = (tasks: number, extraCode = 0) => ({
+    title: 'Drills',
+    blocks: [
+      ...Array.from({ length: tasks }, (_, i) => [
+        { type: 'heading', text: `Q${i + 1}. Task` },
+        { type: 'code', lang: 'python', lines: ['print(1)'] },
+        { type: 'code', lang: 'output', lines: ['1'] },
+      ]).flat(),
+      ...Array.from({ length: extraCode }, () => ({ type: 'code', lang: 'python', lines: ['x'] })),
+    ],
+  });
+  const withPage = (page: unknown, category?: string) => {
+    const e = edition();
+    e.sections[1].pages = [page as never];
+    return { ...e, ...(category ? { category } : {}) } as never;
+  };
+
+  it('lets a drills page hold 6 tasks, and nothing else', async () => {
+    const { validateEdition } = await import('@/lib/digital/edition');
+    expect(validateEdition(withPage(drillPage(6), 'drills'), 'Loop')).toEqual({ ok: true });
+    const noCategory = validateEdition(withPage(drillPage(6)), 'Loop');
+    expect(noCategory.ok).toBe(false);
+    expect(validateEdition(withPage(drillPage(6), 'handbook'), 'Loop').ok).toBe(false);
+    expect(validateEdition(withPage(drillPage(6, 1), 'drills'), 'Loop').ok).toBe(false);
+    expect(validateEdition(withPage(drillPage(7), 'drills'), 'Loop').ok).toBe(false);
+  });
+
+  it('capsFor gives drills 18 blocks and 6 code blocks, everything else the defaults', async () => {
+    const { capsFor, DEFAULT_CAPS } = await import('@/lib/digital/edition');
+    expect(capsFor('drills')).toEqual({ blocks: 18, code: 6, tables: 2, codeLines: 8 });
+    expect(capsFor('listicle')).toEqual(DEFAULT_CAPS);
+    expect(capsFor()).toEqual({ blocks: 14, code: 2, tables: 2, codeLines: 8 });
+  });
+
+  it('capsFor gives a quick-revision handbook page 10 blocks and 170 words', async () => {
+    const { capsFor } = await import('@/lib/digital/edition');
+    expect(capsFor('handbook')).toEqual({ blocks: 10, code: 2, tables: 2, codeLines: 8, words: 170 });
+  });
+
+  const wordy = (n: number) => ({
+    title: 'Wordy',
+    blocks: [{ type: 'bullets', style: 'dot', ink: 'blue', items: [...Array.from({ length: Math.floor(n / 5) }, (_, i) => `==a${i}== b c d e`), ...(n % 5 ? [Array.from({ length: n % 5 }, () => 'z').join(' ')] : [])] }],
+  });
+
+  it('a handbook page over 170 words fails with the count, the cap and the instruction; the same page in listicle passes', async () => {
+    const { pageCapErrors, capsFor } = await import('@/lib/digital/edition');
+    const errors = pageCapErrors(wordy(171) as never, capsFor('handbook'));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('page "Wordy"');
+    expect(errors[0]).toContain('171 words');
+    expect(errors[0]).toContain('170');
+    expect(errors[0]).toContain('cut it to the must-know lines');
+    expect(pageCapErrors(wordy(170) as never, capsFor('handbook'))).toEqual([]);
+    expect(pageCapErrors(wordy(171) as never, capsFor('listicle'))).toEqual([]);
+  });
+
+  it('counts visible words only: markup stripped, type/kind/style/ink/icon/frame/lang skipped', async () => {
+    const { pageCapErrors } = await import('@/lib/digital/edition');
+    const page = { title: 'T', blocks: [{ type: 'callout', style: 'sticky', ink: 'red', icon: 'bulb', frame: 'solid', text: '**two** {blue:three words} ==x==' }] };
+    expect(pageCapErrors(page as never, { blocks: 10, code: 2, tables: 2, codeLines: 8, words: 4 })).toEqual([]);
+    expect(pageCapErrors(page as never, { blocks: 10, code: 2, tables: 2, codeLines: 8, words: 3 })).toHaveLength(1);
+  });
+
+  it('validateEdition leaves existing editions alone unless asked for the fresh caps', async () => {
+    const { validateEdition } = await import('@/lib/digital/edition');
+    const e = edition();
+    e.sections[1].pages = [wordy(300) as never];
+    const old = { ...e, category: 'handbook' } as never;
+    expect(validateEdition(old, 'Loop')).toEqual({ ok: true });
+    const fresh = validateEdition(old, 'Loop', { fresh: true });
+    expect(fresh.ok).toBe(false);
+    expect(validateEdition({ ...e, category: 'listicle' } as never, 'Loop', { fresh: true })).toEqual({ ok: true });
+  });
+});

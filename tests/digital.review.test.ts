@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -105,6 +105,101 @@ describe('reviewEdition', () => {
     const { gatesVersion: _gone, ...unversioned } = r;
     writeFileSync(reviewFile('py', 'loop'), JSON.stringify(unversioned));
     expect(await currentReview('py', 'loop')).toBeNull();
+  });
+
+  it('keeps code lines and qa example_code verbatim while stripping inline markup elsewhere', async () => {
+    const { editionText } = await import('@/lib/digital/review');
+    const e = edition();
+    e.sections[0].pages[0].blocks = [
+      { type: 'code', lang: 'python', lines: ['entries = 2**32 // 2**12', 'return a == b and c == d', 'def __init__(self):'] },
+      { type: 'qa', q: 'Q?', a_bullets: ['a'], example_code: ['x == y'] },
+      { type: 'bullets', items: ['**bold** and ==mark=='] },
+    ] as never;
+    const text = editionText(e);
+    for (const l of ['entries = 2**32 // 2**12', 'return a == b and c == d', 'def __init__(self):', 'x == y']) expect(text).toContain(l);
+    expect(text).toContain('bold and mark');
+  });
+
+  it('is version 5 of the gates, and asks the readability pass whether the page reads as scannable revision notes', async () => {
+    const ask = mocks();
+    const { reviewEdition, GATES_VERSION } = await import('@/lib/digital/review');
+    expect(GATES_VERSION).toBe(5);
+    await reviewEdition('py', 'loop');
+    const prompt = ask.mock.calls.find((c) => c[0] === 'readability')![1] as string;
+    expect(prompt).toMatch(/scannable revision notes/);
+    expect(prompt).toMatch(/prose dumps/);
+    expect(prompt).toMatch(/one idea per bullet/);
+    expect(prompt).toMatch(/visuals/);
+  });
+
+  it('names the chapter category to every AI pass, with the intended shape for Q&A banks and drills', async () => {
+    const cases: [string, string, string | null][] = [
+      ['interview-qa', 'Interview Q&A Bank', 'Pages written as numbered qa blocks without headings are the intended shape for this category.'],
+      ['drills', 'Query & Code Drills', 'Numbered task headings each followed by solution code and its result are the intended shape.'],
+      ['handbook', 'Complete Handbook', null],
+    ];
+    for (const [id, name, shape] of cases) {
+      vi.resetModules();
+      put('handbooks/py/loop/chapter.json', { title: 'Loop', order: 0, category: id });
+      const ask = mocks();
+      const { reviewEdition } = await import('@/lib/digital/review');
+      await reviewEdition('py', 'loop');
+      for (const pass of ['facts', 'pedagogy', 'readability']) expect(ask.mock.calls.find((c) => c[0] === pass)![1]).toContain(name);
+      for (const pass of ['pedagogy', 'readability']) {
+        const prompt = ask.mock.calls.find((c) => c[0] === pass)![1] as string;
+        if (shape) expect(prompt).toContain(shape);
+        else expect(prompt).not.toMatch(/are the intended shape/);
+      }
+      expect(ask.mock.calls.find((c) => c[0] === 'facts')![1]).not.toMatch(/are the intended shape/);
+    }
+  });
+
+  it('still reviews when chapter.json is missing', async () => {
+    rmSync(path.join(root, 'handbooks/py/loop/chapter.json'));
+    mocks();
+    const { reviewEdition } = await import('@/lib/digital/review');
+    await expect(reviewEdition('py', 'loop')).resolves.toBeTruthy();
+  });
+
+  it('writes a flowchart as edges, not raw ids', async () => {
+    const { editionText } = await import('@/lib/digital/review');
+    const e = edition();
+    e.sections[0].pages[0].blocks = [{
+      type: 'diagram', kind: 'flowchart',
+      spec: {
+        rows: [['q1'], ['a', 'b']],
+        nodes: { q1: { text: 'Local or remote?' }, a: { text: 'ARP for host' }, b: { text: 'ARP for gateway' } },
+        edges: [{ from: 'q1', to: 'a', label: 'local' }, { from: 'q1', to: 'b', label: 'remote' }],
+      },
+    }] as never;
+    const text = editionText(e);
+    expect(text).toContain('Local or remote? --local--> ARP for host');
+    expect(text).toContain('Local or remote? --remote--> ARP for gateway');
+    expect(text).not.toMatch(/^q1$/m);
+    expect(text).not.toContain('rows');
+  });
+
+  it('writes a table as one line per row, so cells stay with their columns', async () => {
+    const { editionText } = await import('@/lib/digital/review');
+    const e = edition();
+    e.sections[0].pages[0].blocks = [{
+      type: 'table', headers: ['', 'Hub', '**Switch**'],
+      rows: [['Forwards', 'every port', 'dest MAC'], ['Duplex', 'half', 'full']], highlightRow: 1,
+    }] as never;
+    const text = editionText(e);
+    expect(text).toContain(' | Hub | Switch');
+    expect(text).toContain('Forwards | every port | dest MAC');
+    expect(text).toContain('Duplex | half | full');
+  });
+
+  it('gives only the readability pass severity guidance', async () => {
+    const ask = mocks();
+    const { reviewEdition } = await import('@/lib/digital/review');
+    await reviewEdition('py', 'loop');
+    const has = (pass: string) => (ask.mock.calls.find((c) => c[0] === pass)![1] as string).includes('Severity: major only when a learner skimming the page would misread it');
+    expect(has('readability')).toBe(true);
+    expect(has('facts')).toBe(false);
+    expect(has('pedagogy')).toBe(false);
   });
 
   it('currentReview is null when there is no review', async () => {

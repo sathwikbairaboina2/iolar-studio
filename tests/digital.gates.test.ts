@@ -100,11 +100,23 @@ describe('editionGates', () => {
     expect((await editionGates(m.edition, m.book)).filter((f) => f.rule.startsWith('rules.code'))).toEqual([]);
   });
 
+  it('flags a paragraph over 160 characters, or more than one paragraph on a page, as major prose', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const long = mini([para('word '.repeat(40))]);
+    const f = (await editionGates(long.edition, long.book)).filter((x) => x.rule === 'rules.prose');
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({ severity: 'major', page: 2, pass: 'rules' });
+    const two = mini([para('one'), para('two')]);
+    expect((await editionGates(two.edition, two.book)).filter((x) => x.rule === 'rules.prose')).toHaveLength(1);
+    const ok = mini([para('a short note'), { type: 'bullets', items: ['x'] }]);
+    expect((await editionGates(ok.edition, ok.book)).filter((x) => x.rule === 'rules.prose')).toEqual([]);
+  });
+
   it('reports an outline point whose key terms are missing', async () => {
     const { editionGates } = await import('@/lib/digital/gates');
     const m = mini([para('Only about apples.')], ['Explain the `Semaphore` class']);
     const f = await editionGates(m.edition, m.book);
-    expect(f).toContainEqual(expect.objectContaining({ rule: 'rules.coverage', severity: 'major', page: 2, evidence: 'Explain the `Semaphore` class' }));
+    expect(f).toContainEqual(expect.objectContaining({ rule: 'rules.coverage', severity: 'minor', page: 2, evidence: 'Explain the `Semaphore` class' }));
   });
 
   it('picks the two longest words when a point has no backticked term', async () => {
@@ -149,13 +161,32 @@ describe('editionGates', () => {
     expect(await editionGates(m.edition, m.book)).toContainEqual(expect.objectContaining({ rule: 'rules.contract', severity: 'blocker' }));
   });
 
-  it('does not fail an example without output that imports a third-party library, but blocks one that claims an output', async () => {
+  it('does not fail an example without output that imports a third-party library, and marks one that claims an output as unverified', async () => {
     run.mockResolvedValue({ ok: false, stdout: '', stderr: "ModuleNotFoundError: No module named 'uvloop'", timedOut: false });
     const { editionGates } = await import('@/lib/digital/gates');
     const a = mini([py('import uvloop')]);
     expect((await editionGates(a.edition, a.book)).filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
+    // The sandbox runs without site-packages, so a pandas worked example can never run here; it is left for a person to check.
     const b = mini([py('import uvloop'), output('x')]);
+    const f = (await editionGates(b.edition, b.book)).filter((x) => x.rule.startsWith('rules.code'));
+    expect(f).toEqual([expect.objectContaining({ rule: 'rules.code-unverified', severity: 'minor', evidence: expect.stringContaining("No module named 'uvloop'") })]);
+  });
+
+  it('still blocks a worked example whose output fails for a stdlib reason', async () => {
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: "ModuleNotFoundError: No module named 'json'", timedOut: false });
+    const { editionGates } = await import('@/lib/digital/gates');
+    const b = mini([py('import json'), output('x')]);
     expect((await editionGates(b.edition, b.book)).find((x) => x.rule === 'rules.code')?.severity).toBe('blocker');
+  });
+
+  it('treats a call-site fragment without output as a fragment, but not a forgotten stdlib import', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: "NameError: name 'shap' is not defined", timedOut: false });
+    const a = mini([py('explainer = shap.TreeExplainer(model)')]);
+    expect((await editionGates(a.edition, a.book)).filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: "NameError: name 'json' is not defined", timedOut: false });
+    const b = mini([py('json.dumps({})')]);
+    expect((await editionGates(b.edition, b.book)).filter((x) => x.rule === 'rules.code-runs')).toHaveLength(1);
   });
 
   it('reports an import error that is not a missing third-party module', async () => {
@@ -173,6 +204,36 @@ describe('editionGates', () => {
     run.mockResolvedValue({ ok: false, stdout: '', stderr: "ModuleNotFoundError: No module named 'aiohttp.client'", timedOut: false });
     const ok = mini([py('import aiohttp.client')]);
     expect((await editionGates(ok.edition, ok.book)).filter((x) => x.rule.startsWith('rules.code'))).toEqual([]);
+  });
+
+  it('posixOnly exempts POSIX-only failures on Windows only', async () => {
+    const { posixOnly } = await import('@/lib/digital/gates');
+    const yes = [
+      "AttributeError: module 'os' has no attribute 'fork'",
+      "AttributeError: module 'signal' has no attribute 'SIGKILL'",
+      "ModuleNotFoundError: No module named 'fcntl'",
+      "ModuleNotFoundError: No module named 'resource'",
+      "PermissionError: [Errno 13] Permission denied: '.'",
+      "PermissionError: [Errno 13] Permission denied: '..'",
+      "PermissionError: [Errno 13] Permission denied: 'data/'",
+      "PermissionError: [Errno 13] Permission denied: 'data\\'",
+    ];
+    for (const s of yes) {
+      expect(posixOnly(s, 'win32'), s).toBe(true);
+      expect(posixOnly(s, 'linux'), s).toBe(false);
+    }
+    for (const s of ["NameError: name 'x' is not defined", "PermissionError: [Errno 13] Permission denied: 'notes.txt'", "ModuleNotFoundError: No module named 'uvloop'", "AttributeError: module 'json' has no attribute 'x'"]) expect(posixOnly(s, 'win32'), s).toBe(false);
+  });
+
+  it('reports a POSIX-only failure as one minor unverified finding, with or without an output block', async () => {
+    run.mockResolvedValue({ ok: false, stdout: '', stderr: "Traceback\nPermissionError: [Errno 13] Permission denied: '.'", timedOut: false });
+    const { editionGates, posixOnly } = await import('@/lib/digital/gates');
+    if (!posixOnly("PermissionError: [Errno 13] Permission denied: '.'")) return; // only meaningful on Windows
+    for (const blocks of [[py("os.open('.', os.O_RDONLY)")], [py("os.open('.', os.O_RDONLY)"), output('x')]]) {
+      const m = mini(blocks);
+      const f = (await editionGates(m.edition, m.book)).filter((x) => x.rule.startsWith('rules.code'));
+      expect(f).toEqual([expect.objectContaining({ rule: 'rules.code-unverified', severity: 'minor', evidence: expect.stringContaining('Permission denied') })]);
+    }
   });
 
   it('compares an output block exactly, ignoring line endings, trailing spaces and trailing blank lines', async () => {
@@ -208,5 +269,39 @@ describe('editionGates', () => {
     const { editionGates } = await import('@/lib/digital/gates');
     const m = mini([para('Advance it with send(None) until it stops.')], ['Use `coro.send(None)` to advance it']);
     expect((await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.coverage')).toEqual([]);
+  });
+
+  it('finds a term written in another form of the same word', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('Resolve it: delete every marker line.')], ['Resolution means deleting all three marker lines']);
+    expect((await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.coverage')).toEqual([]);
+  });
+
+  it('finds a dunder term inside code kept verbatim', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    run.mockResolvedValue(ok(''));
+    const m = mini([para('Setup.'), py('def __init__(self):', '    pass')], ['Explain `__init__`']);
+    expect((await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.coverage')).toEqual([]);
+  });
+
+  it('keyTerms ignores generic question words and falls back to all-caps acronyms', async () => {
+    const { keyTerms } = await import('@/lib/digital/gates');
+    const jdk = keyTerms('What is the difference between JDK, JRE and JVM?');
+    expect(jdk.length).toBeGreaterThan(0);
+    for (const t of jdk) expect(['jdk', 'jre', 'jvm']).toContain(t);
+    const heap = keyTerms('What is the difference between heap and stack memory?');
+    expect(heap.length).toBeGreaterThan(0);
+    for (const t of heap) expect(['difference', 'between']).not.toContain(t);
+    expect(heap).toContain('memory');
+    const generic = keyTerms('Give an example of choosing instead of containing');
+    for (const t of generic) expect(['example', 'choosing', 'instead', 'containing']).not.toContain(t);
+    expect(keyTerms('Explain the `Semaphore` class')).toEqual(['Semaphore']);
+  });
+});
+
+describe('keyTerms generic words', () => {
+  it('keeps importing and other import words', async () => {
+    const { keyTerms } = await import('@/lib/digital/gates');
+    expect(keyTerms('Why importing modules matters')).toContain('importing');
   });
 });

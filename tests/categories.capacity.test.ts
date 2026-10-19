@@ -36,9 +36,34 @@ describe('capacity per category', () => {
     expect(prompt).toContain(`about ${qa.pointsPerPage} of them`);
   });
 
-  it('the classic handbook plans 4 points a page; the other categories keep their numbers', () => {
-    expect(categoryOf('handbook').presentation.pointsPerPage).toBe(4);
+  it('the quick-revision handbook plans 6 chapters of 5 points; the other categories keep their numbers', () => {
+    expect(categoryOf('handbook').presentation.pointsPerPage).toBe(5);
+    expect(categoryOf('handbook').presentation.bookPages).toBe(6);
+    expect(CATEGORIES.filter((c) => c.id !== 'handbook').map((c) => c.presentation.bookPages)).toEqual([16, 12, 12, 12]);
     expect(CATEGORIES.filter((c) => c.id !== 'handbook').map((c) => c.presentation.pointsPerPage)).toEqual([4, 7, 5, 6]);
+  });
+
+  it('a handbook topic book asks for a quick revision run; the other categories keep the thorough line', async () => {
+    const book = JSON.stringify({ title: 'T', summary: 's', chapters: [{ title: 'c', points: ['p'] }] });
+    const runClaude = vi.fn().mockResolvedValue(book);
+    vi.doMock('@/lib/ai/claude', () => ({ runClaude, ClaudeUnavailableError: class extends Error {} }));
+    const { createSubject, createChapter } = await import('@/lib/store');
+    await createSubject('db');
+    await createChapter('db', 'hb', 'Git', 'handbook');
+    await createChapter('db', 'qa', 'API Questions', 'interview-qa');
+    const { bookFromTopic } = await import('@/lib/ai/book');
+    await bookFromTopic('db', 'hb', 'git');
+    await bookFromTopic('db', 'qa', 'apis');
+    const hb = String(runClaude.mock.calls[0][0]);
+    const qa = String(runClaude.mock.calls[1][0]);
+    expect(hb).toContain('end to end');
+    expect(hb).toContain('cheat sheet last');
+    expect(hb).not.toContain('Cover the topic thoroughly');
+    expect(qa).toContain('Cover the topic thoroughly');
+    for (const p of [hb, qa]) {
+      expect(p).not.toContain('6-12 points per chapter');
+      expect(p).toContain('must-remember fact');
+    }
   });
 
   it('without a category (references mode) the budget keeps the global constants', async () => {
