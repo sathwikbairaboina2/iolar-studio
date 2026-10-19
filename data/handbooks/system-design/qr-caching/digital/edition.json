@@ -1,0 +1,737 @@
+{
+  "schema": 1,
+  "subject": "system-design",
+  "chapter": "qr-caching",
+  "category": "handbook",
+  "inputsHash": "a29c8bb6d4997a5021ebd2f092b59c27fa6937ad2a45949ccd5582f9f79663f3",
+  "generatedAt": "2026-10-19T10:25:44.683Z",
+  "sections": [
+    {
+      "title": "Cache Layers Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Cache Layers Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What a Cache Is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Cache = ==small fast copy== of slow data",
+                "{green:Hit}: skips the origin. {red:Miss}: full cost, then fills the cache",
+                "Hit ratio = ==hits / (hits + misses)=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Layers Outward to Inward",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "browser",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "CDN",
+                    "sub": "edge",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "App",
+                    "sub": "local or Redis",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Database",
+                    "sub": "buffer pool",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Layer",
+                "Controlled by",
+                "Note"
+              ],
+              "rows": [
+                [
+                  "Client",
+                  "`Cache-Control`, `ETag`",
+                  "closest to user"
+                ],
+                [
+                  "CDN",
+                  "`s-maxage`, `Vary`",
+                  "static/public; cuts latency, origin load"
+                ],
+                [
+                  "App: in-process",
+                  "local memory",
+                  "fast, per-instance, ==inconsistent=="
+                ],
+                [
+                  "App: Redis/Memcached",
+                  "shared cache",
+                  "shared, one network hop"
+                ],
+                [
+                  "Database",
+                  "buffer pool, query cache",
+                  "last line of defense"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Client Headers",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "Cache-Control: max-age=60",
+                "Cache-Control: private, no-store",
+                "ETag: \"v7\"  ->  If-None-Match: \"v7\"",
+                "HTTP/1.1 304 Not Modified"
+              ],
+              "note": "revalidation: 304 means reuse your copy"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`no-store`: never cache. `no-cache`: cache, but ==revalidate== first",
+                "`private`: browser only, not shared caches"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Each layer outward is ==faster but staler=="
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Read and Write Caching Patterns",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Read and Write Caching Patterns",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Read path: cache-aside",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Cache-aside== (lazy loading): the **app** owns the logic",
+                "Read cache, on miss read DB, then write cache",
+                "Only requested data is cached",
+                "{green:Most common} pattern"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "def get(k):",
+                "    v = cache.get(k)",
+                "    if v is None:",
+                "        v = db.get(k)",
+                "        cache.set(k, v, ttl=300)",
+                "    return v"
+              ],
+              "note": "pseudo-code: miss fills the cache"
+            },
+            {
+              "type": "heading",
+              "text": "2. Write patterns",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Pattern",
+                "Write goes to",
+                "Trade-off"
+              ],
+              "rows": [
+                [
+                  "==Write-through==",
+                  "cache + DB, synchronously",
+                  "Never stale for written keys; slower writes; may cache unread data"
+                ],
+                [
+                  "==Write-back==",
+                  "cache; DB flushed async in batches",
+                  "Fastest writes; {red:data lost} if cache dies before flush"
+                ],
+                [
+                  "==Write-around==",
+                  "DB only, skips cache",
+                  "No pollution from write-once data; next read is a miss"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Write",
+                    "sub": "app",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Cache",
+                    "sub": "acked at once",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Batch flush",
+                    "sub": "async",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "DB",
+                    "sub": "loss window",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Pick",
+              "text": "Read-heavy default: ==cache-aside==. Consistency: ==write-through==. Write throughput: ==write-back==, accepting loss risk."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Eviction Policies",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Eviction Policies",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. When and Who",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Eviction runs when the cache is ==full== to free space",
+                "The ==policy== decides the victim"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. LRU, LFU, TTL",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Policy",
+                "Evicts",
+                "Weak spot"
+              ],
+              "rows": [
+                [
+                  "**LRU**",
+                  "least recently used",
+                  "scan of one-off keys"
+                ],
+                [
+                  "**LFU**",
+                  "least frequently used",
+                  "old once-popular keys"
+                ],
+                [
+                  "**TTL**",
+                  "expired entries",
+                  "ignores free space"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "LRU: ==O(1)== with hash map + doubly linked list",
+                "LRU: default for ==recency-skewed== workloads",
+                "LFU: protects ==hot keys==, needs frequency ==aging==",
+                "TTL: bounds ==staleness==, so combine with LRU/LFU"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Redis Example",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "maxmemory 2gb",
+                "maxmemory-policy allkeys-lru"
+              ]
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Policy",
+                "Behaviour when full"
+              ],
+              "rows": [
+                [
+                  "`allkeys-lru`",
+                  "evicts any key, LRU first"
+                ],
+                [
+                  "`volatile-*`",
+                  "evicts only keys with a TTL"
+                ],
+                [
+                  "`noeviction`",
+                  "writes return {red:errors}"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "TTL is not a space policy",
+              "text": "A TTL alone does not free space when the cache fills. Pair it with ==LRU== or ==LFU==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Invalidation Strategies",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Invalidation Strategies",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What Invalidation Is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Invalidation== = deciding when a cached copy is no longer valid",
+                "The {red:hardest part} of caching",
+                "**TTL expiry**: simplest, tolerates ==bounded staleness==",
+                "Pick the TTL from how stale the data may be"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Delete on Write",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "DB update",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "cache.delete",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Next read misses",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Refill",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "db.update(key, value)",
+                "cache.delete(key)"
+              ],
+              "note": "delete, do not set"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Prefer ==delete== over set",
+                "Racing writers can leave a {red:stale value} behind with set"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Versions and CDN Purge",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Method",
+                "How",
+                "Best for"
+              ],
+              "rows": [
+                [
+                  "**Versioned key or URL**",
+                  "`user:42:v7`, `app.3f9a.js`: new version = new key, no purge",
+                  "CDN, client assets"
+                ],
+                [
+                  "**CDN purge**",
+                  "By URL or tag / surrogate key",
+                  "Dynamic content"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Purge is not instant",
+              "text": "Propagation takes time. Pair a purge with a short ==s-maxage== for dynamic content."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Thundering Herd and Common Mistakes",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Thundering Herd and Common Mistakes",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Cache Stampede",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Hot key expires",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Many requests miss",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "All hit the DB",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "DB overloaded",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Fixes and Penetration",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Request coalescing==: per-key lock or single-flight, one rebuilds, others wait or serve stale",
+                "==TTL jitter== spreads expiry so keys do not die together: ttl = base + random",
+                "Also ==pre-warm== or refresh early, before expiry"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import random",
+                "ttl = 300 + random.randint(0, 60)",
+                "cache.set(k, v, ttl=ttl)"
+              ],
+              "note": "call-site fragment: 300 to 360 s"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{purple:Penetration}: repeated misses for keys that do not exist bypass the cache",
+                "Fix: cache a ==null== with a short TTL",
+                "Or put a ==Bloom filter== in front to reject unknown keys"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Mistake",
+                "Consequence",
+                "Fix"
+              ],
+              "rows": [
+                [
+                  "No TTL or size limit",
+                  "Stale data, memory grows forever",
+                  "TTL plus eviction limit"
+                ],
+                [
+                  "Per-user data in shared CDN",
+                  "One user sees another's data",
+                  "`private` or `Vary`"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Every key needs a ==TTL== (with jitter) and every cache needs a ==size limit==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Caching Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Caching Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Layers and Write Patterns",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "browser",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "CDN",
+                    "sub": "edge",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "App",
+                    "sub": "local or Redis",
+                    "ink": "purple"
+                  },
+                  {
+                    "type": "x",
+                    "text": "Database",
+                    "sub": "buffer pool",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Cache ==as close to the user== as correctness allows",
+                "Each layer outward is faster but {red:staler}"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Pattern",
+                "Pick for",
+                "Catch"
+              ],
+              "rows": [
+                [
+                  "**Cache-aside**",
+                  "read-heavy default",
+                  "first read misses"
+                ],
+                [
+                  "**Write-through**",
+                  "consistency",
+                  "slower writes"
+                ],
+                [
+                  "**Write-back**",
+                  "write throughput",
+                  "loss if cache dies"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Eviction and Invalidation",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Need",
+                "Pick"
+              ],
+              "rows": [
+                [
+                  "Eviction",
+                  "==LRU== default; LFU for stable hot sets"
+                ],
+                [
+                  "Bound staleness",
+                  "==TTL== always"
+                ],
+                [
+                  "Dynamic data",
+                  "TTL plus delete on write"
+                ],
+                [
+                  "Static assets",
+                  "version keys, `app.3f9a.js`"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Stampede Defense",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Single-flight lock==: one request rebuilds, others wait",
+                "==TTL jitter==: base plus random, no shared expiry",
+                "==Serve stale== while revalidating",
+                "==Null caching== for missing keys, short TTL"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Delete, do not set",
+              "text": "After the DB update, ==delete== the key. A set can race and store a stale value."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Writers A and B update key k. Order: A writes DB, B writes DB, B sets cache, A sets cache. What do DB and cache hold?",
+              "a_bullets": [
+                "DB holds B's value, cache holds A's, so it is stale until the TTL.",
+                "Fix: delete the key after the DB write; the next read refills it."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "5,000 hot keys are cached at startup with ttl=300. What happens at 300 s?",
+              "a_bullets": [
+                "All expire together, so the misses hit the DB at once: a stampede.",
+                "Fix: TTL jitter (base + random) and a single-flight lock per key."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Redis is full with volatile-lru, but no key has a TTL. What does a write do?",
+              "a_bullets": [
+                "It fails with an error.",
+                "volatile-* evicts only keys with a TTL, so there is no victim, same as noeviction."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Cache-aside looks up user -1, which is not in the DB. Why does every request hit the DB?",
+              "a_bullets": [
+                "Nothing is found, so nothing is cached and each request misses.",
+                "Fix: cache a null with a short TTL, or use a Bloom filter."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

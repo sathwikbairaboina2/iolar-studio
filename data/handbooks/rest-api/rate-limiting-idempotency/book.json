@@ -1,0 +1,104 @@
+{
+  "title": "Rate Limiting, Retries and Webhooks: Revision Notes",
+  "summary": "Quick revision of rate limiting algorithms (token bucket, fixed and sliding window), 429 and Retry-After handling, safe retries with idempotency keys, and webhook basics. It goes from the mental model to a final cheat sheet.",
+  "chapters": [
+    {
+      "title": "Rate Limiting Mental Model",
+      "points": [
+        "Rate limiting caps how many requests a client may make per time window; excess requests are rejected or delayed, which protects the server and enforces fairness",
+        "The limit key decides who shares a budget: API key, user ID, IP address or route; IP-only keys punish users behind one NAT",
+        "A limiter has two knobs: the sustained rate (requests per second) and the burst size (how many can arrive at once)",
+        "Server-side limiting protects the service; client-side throttling keeps your own calls under the provider's quota",
+        "Distributed limiters need a shared atomic counter (for example Redis INCR or a Lua script); per-node counters multiply the real limit by node count"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Token Bucket, Fixed and Sliding Window",
+      "points": [
+        "Token bucket: a bucket holds up to capacity tokens and refills at rate r per second; each request spends 1 token and is rejected when the bucket is empty, so bursts up to capacity are allowed",
+        "Token bucket refill is computed lazily on each request: tokens = min(capacity, tokens + elapsed * rate); no timer thread is needed, only tokens and last_refill_time per key",
+        "Fixed window: count requests per calendar window (for example per minute) and reset the counter at the boundary; it is cheap, with one counter per key",
+        "Fixed window flaw: a client can send the full limit at the end of one window and again at the start of the next, giving up to 2x the limit in a short span",
+        "Sliding window log stores every request timestamp, which is exact but memory-heavy; sliding window counter weights the previous window: count = current + previous * (1 - elapsed fraction), which is cheap and approximate"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "429 Too Many Requests and Retry-After",
+      "points": [
+        "HTTP 429 Too Many Requests is the standard rejection status for rate limiting; 503 signals general overload, and neither is a client bug to be fixed in the payload",
+        "Retry-After carries either delay-seconds (Retry-After: 30) or an HTTP-date; clients must parse both forms",
+        "Common quota headers (RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, or X-RateLimit-* variants) are informational and not universal, so read the provider's docs",
+        "Client rule: when Retry-After is present, wait at least that long and prefer it over your own backoff calculation",
+        "Mistake: retrying a 429 immediately in a tight loop; this worsens the overload and can extend the ban"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Retries and Idempotency Keys",
+      "points": [
+        "Retry only transient failures (network timeout, 429, 502, 503, 504); never retry 4xx errors like 400, 401 or 404, because they will fail again",
+        "Exponential backoff doubles the wait each attempt (1s, 2s, 4s, ...) with a maximum cap and a maximum attempt count",
+        "Add jitter (randomise the delay, for example sleep = random(0, base * 2^n)) so many clients do not retry in lockstep and cause a retry storm",
+        "GET, PUT and DELETE are idempotent by definition; POST is not, so a retried POST can create a duplicate such as a double charge",
+        "Idempotency key: the client sends a unique key (Idempotency-Key: <uuid>) on a POST; the server stores the key with the first result and returns that stored result for repeats; reuse the same key on every retry, and a new key only for a new operation"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Webhooks Basics",
+      "points": [
+        "A webhook is an HTTP POST the provider sends to your registered URL when an event happens, so it pushes instead of you polling",
+        "Verify authenticity: the provider signs the raw body with a shared secret (HMAC-SHA256) and you recompute and compare in constant time; verify against the raw bytes, not re-serialised JSON",
+        "Respond 2xx quickly and do the heavy work asynchronously (queue it); a slow or failed response triggers the provider's retries",
+        "Delivery is at-least-once and unordered, so store the event ID and skip ones already processed to make the handler idempotent",
+        "Mistake: trusting the payload without checking the signature or timestamp, which allows spoofed and replayed events"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Rate Limiting and Retries Cheat Sheet",
+      "points": [
+        "Algorithms: token bucket allows bursts at a steady average rate; fixed window is simplest but allows 2x boundary bursts; sliding window counter is smooth and cheap but approximate; sliding window log is exact but costs memory",
+        "Server rejection: respond 429 plus Retry-After (seconds or HTTP-date) and rate limit headers",
+        "Client retry loop: retry only 429 and 5xx, honour Retry-After, otherwise use exponential backoff with a cap and jitter, and stop after a max attempt count",
+        "Idempotency: one Idempotency-Key per logical POST, reused across all retries of it; the server returns the stored result for repeats",
+        "Webhooks: verify the HMAC signature on the raw body, return 2xx fast, queue the work, and dedupe by event ID"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

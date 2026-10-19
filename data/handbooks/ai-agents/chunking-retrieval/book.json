@@ -1,0 +1,106 @@
+{
+  "title": "RAG Retrieval Tuning: Chunking, Hybrid Search, Re-ranking and Evaluation",
+  "summary": "Quick revision notes on tuning the retrieval step of a RAG system. They cover chunk size and overlap, metadata filtering, hybrid search, re-ranking and query rewriting, then how to measure retrieval with recall@k and MRR.",
+  "chapters": [
+    {
+      "title": "Retrieval Mental Model",
+      "points": [
+        "Retrieval is the step that picks the top-k chunks from an index to put in the LLM prompt. If the right chunk is not retrieved, the answer cannot be grounded, however good the model is.",
+        "Pipeline order: rewrite query, filter by metadata, retrieve candidates (dense + keyword), re-rank, take the top few chunks, generate.",
+        "Two-stage idea: stage 1 is cheap and wide (high recall, top 50-100). Stage 2 is slow and precise (re-ranker, top 3-5).",
+        "Dense vectors match meaning but miss exact tokens such as IDs, error codes and names. Keyword search (BM25) matches exact tokens but misses paraphrases.",
+        "Interview Point: Why can a RAG system hallucinate even with a strong LLM? Which stage do you debug first, retrieval or generation? Why do retrieval and generation need separate metrics?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "Chunk Size and Overlap",
+      "points": [
+        "Chunk size is how much text becomes one embedding (counted in tokens). Overlap is the share of the previous chunk repeated at the start of the next one.",
+        "Small chunks (100-200 tokens) give precise matches but lose context. Large chunks (800-1500 tokens) keep context but dilute the embedding and waste prompt space.",
+        "Common starting point: 256-512 tokens with 10-20% overlap. Tune it against recall@k on your own queries rather than trusting a default.",
+        "Overlap stops a fact being split across a chunk boundary. Example: size 500, overlap 50 means chunk 2 starts at token 450. The cost is a larger index and near-duplicate hits.",
+        "Split on structure (headings, paragraphs, code blocks) before falling back to fixed token windows. Mistakes: zero overlap, 50% overlap that duplicates the index, one chunk size for every document type. Interview Point: How do you choose a chunk size? What does overlap fix and what does it cost? Why does a bigger chunk lower retrieval precision?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Metadata Filtering and Hybrid Search",
+      "points": [
+        "Metadata filtering restricts candidates by structured fields (source, date, tenant_id, doc type, language) before or during the vector search.",
+        "Pre-filtering applies the filter inside the ANN search and is exact. Post-filtering takes top-k first and then filters, so it can return fewer than k or zero results. Prefer pre-filtering.",
+        "Hybrid search runs BM25 and dense retrieval in parallel and merges the two ranked lists. Use it when queries contain IDs, acronyms or error codes.",
+        "Reciprocal Rank Fusion: score = sum of 1/(k+rank) across lists, with k about 60. It needs no score normalisation. The alternative is a weighted sum, which needs normalised scores.",
+        "Mistakes: filtering on fields that were never stored at ingest, using post-filtering with a selective filter, summing raw BM25 and cosine scores. Always filter by tenant_id for multi-tenant data. Interview Point: Pre-filter vs post-filter? Why is RRF preferred over adding scores? When does BM25 beat embeddings?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Re-ranking and Query Rewriting",
+      "points": [
+        "A re-ranker rescores the retrieved candidates against the query and reorders them. Retrieve about 50, re-rank, keep the top 3-5.",
+        "A bi-encoder embeds the query and the document separately, so it is fast and can be indexed. A cross-encoder reads query and document together, so it is more accurate but too slow to run over the whole corpus.",
+        "Re-ranking only reorders what stage 1 returned. If the answer is not in the candidate set, it cannot help. Fix recall first, then precision.",
+        "Query rewriting techniques: expand abbreviations, rewrite a follow-up into a standalone question using chat history, HyDE (embed a generated hypothetical answer), and multi-query (several paraphrases, results merged).",
+        "Mistakes: re-ranking too few candidates, rewriting that drifts from the user's intent, adding latency with no measured gain. Interview Point: Bi-encoder vs cross-encoder? Why not use a cross-encoder for first-stage retrieval? When does query rewriting help in chat?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Measuring Retrieval: recall@k and MRR",
+      "points": [
+        "Build a labelled set of (query, relevant chunk or doc IDs) pairs, ideally 50-200 real queries. Without this set, tuning is guesswork.",
+        "recall@k = share of a query's relevant chunks found in the top k, averaged over queries; with one relevant chunk per query this is the share of queries with a hit in the top k (hit rate). Example: 8 of 10 queries hit in the top 5 gives recall@5 = 0.8.",
+        "MRR = mean of 1/rank of the first relevant result. Ranks 1, 2 and 4 give (1 + 0.5 + 0.25)/3 = 0.583. It rewards putting the right chunk first.",
+        "recall@k measures candidate coverage and is the metric for stage 1. MRR (or nDCG) measures ordering and is the metric for the re-ranker. Change one variable at a time, such as chunk size or hybrid on/off, and re-measure.",
+        "Mistakes: evaluating on synthetic queries only, tuning on the test queries, reporting only the average without checking failing queries, using k larger than the prompt can hold. Interview Point: recall@k vs MRR? How would you decide between two chunk sizes? Why is end-to-end answer quality not enough?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Retrieval Tuning Cheat Sheet",
+      "points": [
+        "Chunking: 256-512 tokens, 10-20% overlap, split on structure first. Choose the size by recall@k, not by habit.",
+        "Filtering and hybrid: pre-filter on metadata (always tenant_id). Run BM25 plus dense and merge with RRF, score = sum of 1/(60+rank).",
+        "Re-ranking: retrieve about 50 with a bi-encoder, re-score with a cross-encoder, keep the top 3-5. It cannot recover a chunk that was never retrieved.",
+        "Query rewriting: standalone follow-ups, expansion, HyDE, multi-query. Check that each rewrite improves the metrics.",
+        "Metrics: recall@k = relevant chunks in the top k / all relevant chunks, averaged over queries (equal to hit rate when each query has one relevant chunk). MRR = mean of 1/rank of the first relevant result. Debug order: recall@k first (chunking, hybrid, filters), then MRR (re-ranker)."
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

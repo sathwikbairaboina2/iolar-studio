@@ -1,0 +1,109 @@
+{
+  "title": "Kubernetes Config, Secrets and Access: Quick Revision Notes",
+  "summary": "Night-before revision of Kubernetes ConfigMaps, Secrets and base64 encoding, env vars versus mounted files, namespaces, RBAC basics and service accounts. It runs from the mental model through workflow, commands and mistakes to a cheat sheet.",
+  "chapters": [
+    {
+      "title": "ConfigMaps and Secrets: The Mental Model",
+      "points": [
+        "ConfigMap = non-sensitive config as key/value pairs (strings or whole files); Secret = same shape, meant for sensitive data. Both are namespaced objects, and the pod consumes them without rebuilding the image",
+        "Secret values are base64-ENCODED, not encrypted: `echo -n 'pw' | base64` and `base64 -d` reverse it. Anyone who can read the Secret can decode it",
+        "`data:` holds base64 values, `stringData:` accepts plain text and is converted to base64 on write (write-only convenience, never returned by reads)",
+        "Encryption at rest needs an EncryptionConfiguration on the API server (etcd), and RBAC must restrict `get/list` on secrets. ConfigMap vs Secret: both stored in etcd, only Secret gets special handling (tmpfs on node, redacted in describe)",
+        "Interview Point: Is a Secret encrypted? Why is base64 not security? What is the difference between data and stringData? What is the 1 MiB size limit for?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Env Vars vs Mounted Files",
+      "points": [
+        "Env var injection: `env.valueFrom.configMapKeyRef / secretKeyRef` for one key, `envFrom` for all keys of an object; value is fixed at container start",
+        "Volume mount: each key becomes a file under the mountPath; the kubelet refreshes the files when the object changes (after a delay of up to about a minute)",
+        "Env vars never update without a pod restart; mounted files update automatically, except with `subPath` mounts and `immutable: true` objects, which do not",
+        "Comparison: env = simple, 12-factor friendly but visible via `kubectl exec env` and crash dumps; files = better for secrets, large or multi-line configs, and live reload. Prefer mounting secrets as files, with `defaultMode: 0400`",
+        "Interview Point: Env var or volume for a DB password, and why? Does a running pod see a ConfigMap change? What does subPath break? How do you roll pods after a config change?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Namespaces: Scoping and Isolation",
+      "points": [
+        "Namespace = a virtual cluster partition that scopes names; default namespaces: `default`, `kube-system`, `kube-public`, `kube-node-lease`",
+        "ConfigMaps, Secrets, Pods, Services, Roles and ServiceAccounts are namespaced. Nodes, PersistentVolumes, Namespaces, ClusterRoles and StorageClasses are cluster-scoped (`kubectl api-resources --namespaced=false`)",
+        "A pod can only reference ConfigMaps and Secrets in its own namespace, so copy or recreate the object per namespace. Cross-namespace DNS: `svc.namespace.svc.cluster.local`",
+        "Namespaces are not a network or security boundary by themselves: add NetworkPolicy, ResourceQuota/LimitRange and RBAC. Set the default with `kubectl config set-context --current --namespace=dev`",
+        "Interview Point: Which resources are cluster-scoped? Can a pod in ns A mount a Secret from ns B? Does a namespace isolate network traffic? How do you limit a team's resource use?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "RBAC and Service Accounts Basics",
+      "points": [
+        "RBAC is additive allow-only: Role (namespaced rules) or ClusterRole (cluster-wide rules) lists apiGroups, resources, verbs (get, list, watch, create, update, patch, delete); no deny rules",
+        "RoleBinding grants a Role or ClusterRole to a subject (User, Group, ServiceAccount) within ONE namespace; ClusterRoleBinding grants it cluster-wide",
+        "ServiceAccount = identity for pods, one `default` SA per namespace; set `spec.serviceAccountName`. Tokens are short-lived projected tokens mounted at `/var/run/secrets/kubernetes.io/serviceaccount`; `automountServiceAccountToken: false` when the pod does not call the API",
+        "Example: `kubectl create role cm-reader --verb=get,list --resource=configmaps -n dev` then `kubectl create rolebinding rb --role=cm-reader --serviceaccount=dev:app-sa -n dev`; test with `kubectl auth can-i get secrets --as=system:serviceaccount:dev:app-sa -n dev`",
+        "Interview Point: Role vs ClusterRole vs the bindings? Why avoid the default SA and cluster-admin? How do you check what an identity can do? Why is `list` on secrets dangerous?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Everyday Commands and Common Mistakes",
+      "points": [
+        "Create: `kubectl create configmap app --from-literal=K=V --from-file=app.properties`; `kubectl create secret generic db --from-literal=pw=s3cret`; inspect with `kubectl get secret db -o jsonpath='{.data.pw}' | base64 -d`",
+        "Mistake: `echo 'pw' | base64` includes a trailing newline, so use `echo -n` (or stringData) or the password silently fails to match",
+        "Mistake: expecting a config change to reach a running pod. Env vars need `kubectl rollout restart deploy/app`; a missing referenced key or object leaves the pod in CreateContainerConfigError (use `optional: true` to tolerate)",
+        "Mistake: committing Secret YAML to Git (base64 is not hiding it), leaving the default SA over-privileged, or granting cluster-admin and wildcard `*` verbs to fix a Forbidden error",
+        "Interview Point: How do you debug CreateContainerConfigError or a 403 Forbidden from the API? How do you keep secrets out of Git? Which command restarts pods after a config change?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheat Sheet: Config, Secrets, Namespaces, RBAC",
+      "points": [
+        "Config cheat: ConfigMap = plain config, Secret = base64 (not encrypted) + enable etcd encryption and RBAC. `data` base64, `stringData` plain. Size limit 1 MiB",
+        "Consume cheat: env (`valueFrom`, `envFrom`) = static until restart; volume = auto-updates, except subPath and immutable. Secrets: mount as files, mode 0400",
+        "Scope cheat: ConfigMap, Secret, Role, RoleBinding and ServiceAccount are namespaced; ClusterRole, Node and PV are cluster-scoped. `-n <ns>`, `-A`, set-context for the default namespace",
+        "RBAC cheat: Role + RoleBinding (one namespace), ClusterRole + ClusterRoleBinding (all). Least privilege, no deny rules. Verify with `kubectl auth can-i <verb> <res> --as=system:serviceaccount:<ns>:<sa>`",
+        "Interview Point: Summarise in 30 seconds how a pod gets a DB password securely with a limited identity. What are the first three things you check when a pod cannot read its config?"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,675 @@
+{
+  "schema": 1,
+  "subject": "rest-api",
+  "chapter": "rate-limiting-idempotency",
+  "category": "handbook",
+  "inputsHash": "47a695d646f902a96858e78403eda81803f29d36f509633f49a01bb60d9a98b9",
+  "generatedAt": "2026-10-19T11:06:16.616Z",
+  "sections": [
+    {
+      "title": "Rate Limiting Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Rate Limiting Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What It Does",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Rate limiting== caps requests per client per time window",
+                "Excess requests are **rejected** or **delayed**",
+                "Protects the server and enforces ==fairness=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Key and Knobs",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Limit key",
+                "Shares one budget across"
+              ],
+              "rows": [
+                [
+                  "API key",
+                  "one client app"
+                ],
+                [
+                  "User ID",
+                  "one account"
+                ],
+                [
+                  "IP address",
+                  "{red:everyone behind one NAT}"
+                ],
+                [
+                  "Route",
+                  "one endpoint"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Sustained rate}: requests per second, long-run",
+                "{orange:Burst size}: how many can arrive at once"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Where It Runs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Server-side",
+                "Client-side"
+              ],
+              "rows": [
+                [
+                  "Protects",
+                  "the service",
+                  "your own quota"
+                ],
+                [
+                  "Goal",
+                  "reject excess",
+                  "stay under provider limit"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "INCR rl:user42:minute_28",
+                "EXPIRE rl:user42:minute_28 60"
+              ],
+              "note": "shared atomic counter in Redis (or one Lua script)"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Per-node counters",
+              "text": "3 nodes each allowing 100/min really allow ==300/min==. Share one atomic counter."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Token Bucket, Fixed and Sliding Window",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Token Bucket, Fixed and Sliding Window",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Token Bucket",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Holds up to ==capacity== tokens, refills at rate ==r per second==",
+                "Each request spends **1 token**",
+                "Empty bucket → {red:reject}",
+                "Bursts up to capacity are allowed"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Refill is ==lazy==: no timer thread",
+                "State per key: `tokens`, `last_refill_time`"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "tokens = min(capacity, tokens + elapsed * rate)",
+                "last_refill_time = now"
+              ],
+              "note": "run on each request"
+            },
+            {
+              "type": "heading",
+              "text": "2. Fixed Window",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Count per calendar window (e.g. per minute)",
+                "Reset counter at the boundary",
+                "Cheap: ==one counter== per key"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Boundary flaw",
+              "text": "Full limit at the end of one window plus full limit at the start of the next gives up to ==2x the limit== in a short span."
+            },
+            {
+              "type": "heading",
+              "text": "3. Sliding Window",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Variant",
+                "Stores",
+                "Accuracy"
+              ],
+              "rows": [
+                [
+                  "Log",
+                  "every request timestamp",
+                  "{green:exact}, memory-heavy"
+                ],
+                [
+                  "Counter",
+                  "two window counters",
+                  "{orange:approximate}, cheap"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Counter weights the previous window: `current + previous * (1 - elapsed fraction)`"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "429 Too Many Requests and Retry-After",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "429 Too Many Requests and Retry-After",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Status and Headers",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:429} = standard ==rate-limit== rejection; {orange:503} = general overload",
+                "Neither is a payload bug: don't edit the request",
+                "`RateLimit-*` / `X-RateLimit-*`: ==informational==, not universal; read docs"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Retry-After",
+                "Form"
+              ],
+              "rows": [
+                [
+                  "`30`",
+                  "delay-seconds"
+                ],
+                [
+                  "`Wed, 21 Oct 2026 07:28:00 GMT`",
+                  "HTTP-date"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Client Rule",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "429",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Retry-After?",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Wait at least that",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Retry",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Parse **both** forms; ==prefer== it over your own backoff"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "from email.utils import parsedate_to_datetime as p",
+                "from datetime import datetime, timezone",
+                "def wait_s(v):",
+                "    if v.isdigit(): return int(v)",
+                "    d = p(v) - datetime.now(timezone.utc)",
+                "    return max(0, d.total_seconds())"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistake and Interview Point",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Tight retry loop",
+              "text": "Retrying a 429 ==immediately== worsens overload and can extend the ban."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Retry-After vs backoff?** Retry-After wins; backoff is the fallback",
+                "**429 vs 503?** Rate limit vs general overload"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Retries and Idempotency Keys",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Retries and Idempotency Keys",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What to Retry",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Retry} transient failures: timeout, ==429==, ==502==, ==503==, ==504==",
+                "{red:Never retry} 4xx like ==400==, ==401==, ==404==: they fail again"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Backoff and Jitter",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Doubling**: wait 1s, 2s, 4s, ...",
+                "**Cap**: a maximum wait per attempt",
+                "**Max attempts**: stop after N tries",
+                "**Jitter**: randomise the delay so clients do not retry in lockstep (==retry storm==)"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import random, uuid",
+                "key = str(uuid.uuid4())  # once per operation",
+                "headers = {\"Idempotency-Key\": key}",
+                "wait = random.uniform(0, min(30, 2 ** n))"
+              ],
+              "note": "fragment: n = attempt number, cap 30s"
+            },
+            {
+              "type": "heading",
+              "text": "3. Idempotency Keys",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Method",
+                "Effect of a retry"
+              ],
+              "rows": [
+                [
+                  "GET, PUT, DELETE",
+                  "{green:safe}: same state"
+                ],
+                [
+                  "POST",
+                  "{red:unsafe}: duplicate, e.g. double charge"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "POST + key",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Server",
+                    "sub": "stores key + first result",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Repeat",
+                    "sub": "same stored result",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Key rule",
+              "text": "Reuse the ==same key== on every retry. A **new key** only for a new operation."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Webhooks Basics",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Webhooks Basics",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What a Webhook Is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "An ==HTTP POST== the provider sends to your registered URL",
+                "Event happens → provider **pushes**; you stop polling",
+                "Delivery is ==at-least-once== and **unordered**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Handling an Event",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Verify HMAC",
+                    "sub": "raw body",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Return 2xx",
+                    "sub": "fast",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Queue job",
+                    "sub": "async work",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Dedupe",
+                    "sub": "event ID",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Provider signs the ==raw bytes== with a shared secret (HMAC-SHA256)",
+                "Never verify re-serialised JSON",
+                "Slow or failed response → provider **retries**",
+                "Store the ==event ID==; skip seen ones to stay idempotent"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import hmac, hashlib",
+                "mac = hmac.new(secret, raw_body,",
+                "               hashlib.sha256).hexdigest()",
+                "ok = hmac.compare_digest(mac, sig_header)"
+              ],
+              "note": "recompute, then compare in constant time"
+            },
+            {
+              "type": "heading",
+              "text": "3. Common Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Trusting the payload",
+              "text": "Skipping the ==signature== or **timestamp** check allows spoofed and replayed events."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Rate Limiting and Retries Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Rate Limiting and Retries Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Algorithms",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Algorithm",
+                "Behaviour",
+                "Cost"
+              ],
+              "rows": [
+                [
+                  "Token bucket",
+                  "bursts, steady average",
+                  "2 values"
+                ],
+                [
+                  "Fixed window",
+                  "2x boundary burst",
+                  "1 counter"
+                ],
+                [
+                  "Sliding counter",
+                  "smooth, approximate",
+                  "2 counters"
+                ],
+                [
+                  "Sliding log",
+                  "exact",
+                  "memory per request"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Reject and retry",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Server: ==429== + `Retry-After` (seconds or HTTP-date) + `RateLimit-*` headers",
+                "Retry timeouts, 429, 502, 503, 504; never other 4xx, 500 or 501",
+                "Honour `Retry-After`, else exponential backoff with cap and {orange:jitter}"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Send",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Retryable?",
+                    "sub": "429, 502-504",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Wait",
+                    "sub": "Retry-After or backoff",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Attempts left?",
+                    "sub": "else give up",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Idempotency and webhooks",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One ==Idempotency-Key== per logical POST, reused on every retry",
+                "Server returns the stored result for repeats",
+                "Webhook: verify ==HMAC== on the **raw body**, return 2xx fast, queue work",
+                "Dedupe by event ID"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Mistake",
+              "text": "Instant 429 retries worsen overload; a new key per retry duplicates the POST."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Why jitter?** Clients stop retrying in lockstep.",
+                "**Why the raw body?** Re-serialised JSON changes the signed bytes."
+              ],
+              "style": "dot",
+              "frame": "dashed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Fixed window, limit 100/min. A client sends 100 requests at 12:00:59 and 100 more at 12:01:00. How many get through?",
+              "a_bullets": [
+                "All 200: they land in two different windows.",
+                "That is 2x the limit in about a second, the boundary flaw."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A POST /charge times out. The client retries with a freshly generated Idempotency-Key each time. What goes wrong?",
+              "a_bullets": [
+                "The server sees new keys, so it may charge twice.",
+                "Create the key once per operation and reuse it on every retry."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A webhook handler credits an account on every delivery. Event evt_7 arrives twice. What is the bug?",
+              "a_bullets": [
+                "Delivery is at-least-once, so duplicates happen.",
+                "Store the event ID and skip ones already processed."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
