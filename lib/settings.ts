@@ -93,6 +93,8 @@ export type Settings = {
   /** The kokoro voice and pace the studio reads a jobs reel in; hf_alpha is Indian English. */
   jobsKokoroVoice: string;
   jobsKokoroSpeed: number;
+  /** The kokoro pace for designed explainers: slower than a reel's, so a 30 second brief stays near 30 seconds. */
+  explainerKokoroSpeed: number;
 };
 
 const DEFAULTS: Settings = {
@@ -155,6 +157,7 @@ const DEFAULTS: Settings = {
   // The plugin cuts each slide to its line, so a jobs reel can take a presenter's pace
   // rather than the 1.35 a fixed-length reel needs.
   jobsKokoroSpeed: 1.1,
+  explainerKokoroSpeed: 1.08,
 };
 
 function file() {

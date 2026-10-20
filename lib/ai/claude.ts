@@ -39,21 +39,33 @@ export function parseStreamLine(line: string): { tools: ToolCall[]; result?: str
   return { tools };
 }
 
-export function runClaude(
-  prompt: string,
-  opts: { timeoutMs?: number; allowedTools?: string[]; onTool?: (call: ToolCall) => void } = {}
-): Promise<string> {
+export type RunClaudeOpts = {
+  timeoutMs?: number;
+  allowedTools?: string[];
+  onTool?: (call: ToolCall) => void;
+  /** Where the CLI runs: an agentic caller points it at the project it is allowed to edit. */
+  cwd?: string;
+  /** `--model`: an alias such as `opus`, or a full model name. */
+  model?: string;
+  /** `--permission-mode`, for a run that has to write files without anyone to approve each one. */
+  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+};
+
+export function runClaude(prompt: string, opts: RunClaudeOpts = {}): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
   // A caller that wants to watch the tools go by gets the streamed form; the answer is
   // then the `result` line rather than everything printed.
   const streaming = Boolean(opts.onTool);
   const args = streaming ? ['-p', '--output-format', 'stream-json', '--verbose'] : ['-p', '--output-format', 'text'];
   if (opts.allowedTools?.length) args.push('--allowedTools', opts.allowedTools.join(','));
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.permissionMode) args.push('--permission-mode', opts.permissionMode);
 
   return new Promise((resolve, reject) => {
     const child = spawn('claude', args, {
       shell: process.platform === 'win32',
       windowsHide: true,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
     });
 
     let stdout = '';

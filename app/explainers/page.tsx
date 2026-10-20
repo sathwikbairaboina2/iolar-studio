@@ -1,81 +1,52 @@
 'use client';
 import React from 'react';
-import {
-  Alert,
-  Button,
-  Card,
-  Empty,
-  Input,
-  InputNumber,
-  Segmented,
-  Select,
-  Space,
-  Switch,
-  Typography,
-} from 'antd';
-import { message } from '@/lib/ui/message';
-import { AppstoreOutlined, BarsOutlined, SearchOutlined } from '@ant-design/icons';
+import { Button, Card, Empty, Form, Input, InputNumber, Modal, Space, Tag, Typography } from 'antd';
+import { PlayCircleOutlined } from '@ant-design/icons';
 import { useRouter } from 'next/navigation';
+import { message } from '@/lib/ui/message';
+import { ago } from '@/lib/explainer/browse';
 import type { ExplainerSummary } from '@/lib/explainer/store';
-import { search } from '@/lib/explainer/browse';
-import ExplainerShelf from './ExplainerShelf';
-import ExplainerTable from './ExplainerTable';
+import type { Explainer2Summary } from '@/lib/explainer2/store';
 
-type Contract = { themes: string[]; themeModes: Record<string, 'light' | 'dark'> } | null;
-type View = 'shelf' | 'table';
+/**
+ * Explainers: each video is designed in code, in the aiiolar look, from a brief. The ten earlier board
+ * explainers stay below as read-only history: their poster and last render, nothing to edit.
+ */
 
-/** Which way you like to look at these outlives the tab; it is a preference, not state. */
-const VIEW_KEY = 'explainers.view';
+const GRID: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 14 };
+const TILE: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid rgba(128,128,128,.22)',
+  borderRadius: 12, background: 'rgba(128,128,128,.04)', cursor: 'pointer',
+};
+const FRAME: React.CSSProperties = { position: 'relative', width: '100%', aspectRatio: '9 / 16', overflow: 'hidden', background: 'rgba(128,128,128,.10)', display: 'grid', placeItems: 'center' };
+
+const STAGE_LABEL: Record<string, string> = { script: 'writing', factcheck: 'fact check', voice: 'voice', design: 'design', gates: 'checks', critic: 'critic', render: 'render', done: 'done' };
 
 export default function ExplainersPage() {
   const router = useRouter();
-  const [rows, setRows] = React.useState<ExplainerSummary[]>([]);
-  const [contract, setContract] = React.useState<Contract>(null);
+  const [rows, setRows] = React.useState<Explainer2Summary[]>([]);
+  const [legacy, setLegacy] = React.useState<ExplainerSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [title, setTitle] = React.useState('');
-  const [theme, setTheme] = React.useState<string | undefined>();
   const [creating, setCreating] = React.useState(false);
-  const [query, setQuery] = React.useState('');
-  const [view, setView] = React.useState<View>('shelf');
-  // Writing it here is the difference between opening a board about your topic and opening two
-  // rows called Before and After.
-  const [write, setWrite] = React.useState(false);
-  const [audience, setAudience] = React.useState('');
-  const [claim, setClaim] = React.useState('');
-  const [seconds, setSeconds] = React.useState(18);
+  const [playing, setPlaying] = React.useState<ExplainerSummary | null>(null);
+  const [form] = Form.useForm();
 
-  React.useEffect(() => {
-    // Read after mount, never during render: the server has no localStorage and the markup it
-    // sends has to match the first client paint.
-    try {
-      const saved = window.localStorage.getItem(VIEW_KEY);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (saved === 'shelf' || saved === 'table') setView(saved);
-    } catch { /* a browser that refuses storage still gets the default */ }
-  }, []);
-
-  const pickView = (next: View) => {
-    setView(next);
-    try { window.localStorage.setItem(VIEW_KEY, next); } catch { /* preference only */ }
-  };
-
-  // The `alive` guard is not ceremony: the page can be left while the fetch is in flight, and
-  // setting state after that is a leak the console will complain about.
   const load = React.useCallback(async () => {
-    const r = await fetch('/api/explainers', { cache: 'no-store' });
-    const body = await r.json();
-    return body as { explainers?: ExplainerSummary[]; contract?: Contract };
+    const [a, b] = await Promise.all([
+      fetch('/api/explainers2', { cache: 'no-store' }).then((r) => r.json()).catch(() => ({})),
+      fetch('/api/explainers', { cache: 'no-store' }).then((r) => r.json()).catch(() => ({})),
+    ]);
+    return { rows: (a.explainers ?? []) as Explainer2Summary[], legacy: (b.explainers ?? []) as ExplainerSummary[] };
   }, []);
 
   React.useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const body = await load();
+        const got = await load();
         if (!alive) return;
-        setRows(body.explainers ?? []);
-        setContract(body.contract ?? null);
-        if (body.contract?.themes?.length) setTheme((t) => t ?? body.contract!.themes[0]);
+        setRows(got.rows);
+        setLegacy(got.legacy.filter((r) => r.renderedAt));
       } finally {
         if (alive) setLoading(false);
       }
@@ -83,156 +54,106 @@ export default function ExplainersPage() {
     return () => { alive = false; };
   }, [load]);
 
-  const create = async () => {
-    if (!title.trim()) return;
+  const create = async (values: { topic: string; audience: string; claim: string; seconds: number }) => {
     setCreating(true);
     try {
-      const r = await fetch('/api/explainers', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          title: title.trim(),
-          theme,
-          brief: write && claim.trim()
-            ? { topic: title.trim(), audience: audience.trim() || 'engineers', claim: claim.trim(), seconds }
-            : undefined,
-        }),
+      const r = await fetch('/api/explainers2', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...values, start: true }),
       });
       const body = await r.json();
       if (!r.ok) { message.error(body.error ?? 'could not create it'); return; }
-      // A model that would not answer still leaves an explainer to work in; say so rather than
-      // opening a blank board with no explanation.
-      if (write && body.drafted === false) message.warning(body.error ?? 'it was created, but not written');
-      router.push(`/explainers/${body.slug}`);
+      router.push(`/explainers/designed/${body.slug}`);
     } finally {
       setCreating(false);
     }
   };
-
-  const remove = async (slug: string) => {
-    const r = await fetch(`/api/explainers/${slug}`, { method: 'DELETE' });
-    if (!r.ok) { message.error('could not delete it'); return; }
-    // Drop it here rather than refetching: the list is already right, and a round trip would make
-    // the row sit there for a beat after you confirmed it was gone.
-    setRows((all) => all.filter((row) => row.slug !== slug));
-    message.success('deleted');
-  };
-
-  const open = (slug: string) => router.push(`/explainers/${slug}`);
-  const shown = React.useMemo(() => search(rows, query), [rows, query]);
 
   return (
     <Space orientation="vertical" size={18} style={{ width: '100%' }}>
       <div>
         <Typography.Title level={3} style={{ margin: 0 }}>Explainers</Typography.Title>
         <Typography.Text type="secondary">
-          One scene that changes. The board holds still while its numbers move — which is what makes
-          a before and after read as a comparison rather than two screens.
+          Give it a topic and the one thing that must land. It writes and fact-checks the script, speaks it, designs the video in code
+          and renders it, stage by stage, so a stage that fails can be run again on its own.
         </Typography.Text>
       </div>
 
-      {!contract && !loading ? (
-        <Alert
-          type="warning"
-          showIcon
-          title="The templates service is not answering on 26200"
-          description="You can still write and edit here. Rendering, and the list of themes, need it running — start it from Plugins."
-        />
-      ) : null}
-
-      <Card size="small">
-        <Space.Compact style={{ width: '100%' }}>
-          <Input
-            placeholder="What does this one explain?  e.g. What a CDN actually buys you"
-            value={title}
-            maxLength={48}
-            onChange={(e) => setTitle(e.target.value)}
-            onPressEnter={() => void create()}
-          />
-          <Select
-            value={theme}
-            onChange={setTheme}
-            style={{ width: 190 }}
-            placeholder="theme"
-            options={(contract?.themes ?? []).map((t) => ({
-              value: t,
-              label: `${t}  ·  ${contract?.themeModes?.[t] ?? ''}`,
-            }))}
-            disabled={!contract}
-          />
-          <Button type="primary" loading={creating} onClick={() => void create()} disabled={!title.trim()}>
-            {write ? 'Write it' : 'New explainer'}
-          </Button>
-        </Space.Compact>
-
-        <Space style={{ marginTop: 10 }} size={8}>
-          <Switch size="small" checked={write} onChange={setWrite} />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Write the first draft with the model
-          </Typography.Text>
-        </Space>
-
-        {write ? (
-          <Space orientation="vertical" size={8} style={{ width: '100%', marginTop: 10 }}>
-            <Input
-              placeholder="Audience — who it is for"
-              value={audience}
-              onChange={(e) => setAudience(e.target.value)}
-            />
-            <Input.TextArea
-              placeholder="The one thing that must land"
-              autoSize={{ minRows: 2, maxRows: 3 }}
-              value={claim}
-              onChange={(e) => setClaim(e.target.value)}
-            />
-            <Space>
-              <InputNumber min={6} max={60} value={seconds} onChange={(v) => setSeconds(Number(v ?? 16))} suffix="s" />
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                The reference channel sits between 14 and 21 seconds.
-              </Typography.Text>
-            </Space>
-          </Space>
-        ) : null}
+      <Card size="small" title="New explainer">
+        <Form form={form} layout="vertical" initialValues={{ seconds: 30 }} onFinish={(v) => void create(v)}>
+          <Form.Item name="topic" label="Topic" rules={[{ required: true, message: 'what is it about?' }]}>
+            <Input placeholder="e.g. Why caching feels instant" maxLength={120} />
+          </Form.Item>
+          <Form.Item name="audience" label="Audience" rules={[{ required: true, message: 'who is it for?' }]}>
+            <Input placeholder="e.g. backend engineers preparing for system design interviews" maxLength={120} />
+          </Form.Item>
+          <Form.Item name="claim" label="The one claim that must land" rules={[{ required: true, message: 'what should they remember?' }]}>
+            <Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} maxLength={300} />
+          </Form.Item>
+          <Form.Item name="seconds" label="Length" rules={[{ required: true }]}>
+            <InputNumber min={20} max={45} suffix="s" />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" loading={creating}>Create and design</Button>
+        </Form>
       </Card>
 
       {rows.length === 0 && !loading ? (
-        <Empty description="Nothing here yet. Name one above and it opens with a working two-row board." />
+        <Empty description="Nothing designed yet. Fill in a brief above." />
       ) : (
-        <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <Input
-              prefix={<SearchOutlined />}
-              placeholder="Search title, theme or slug"
-              allowClear
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              style={{ maxWidth: 320 }}
-            />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {query.trim() && shown.length !== rows.length
-                ? `${shown.length} of ${rows.length}`
-                : `${rows.length} explainer${rows.length === 1 ? '' : 's'}`}
-            </Typography.Text>
-            <div style={{ flex: 1 }} />
-            <Segmented
-              value={view}
-              onChange={(v) => pickView(v as View)}
-              options={[
-                { value: 'shelf', icon: <AppstoreOutlined /> },
-                { value: 'table', icon: <BarsOutlined /> },
-              ]}
-            />
-          </div>
-
-          {shown.length === 0 ? (
-            <Empty description={`Nothing matches “${query.trim()}”.`} />
-          ) : view === 'shelf' ? (
-            <ExplainerShelf rows={shown} onOpen={open} onDelete={(s) => void remove(s)} />
-          ) : (
-            <ExplainerTable rows={shown} loading={loading} onOpen={open} onDelete={(s) => void remove(s)} />
-          )}
-        </>
+        <div style={GRID}>
+          {rows.map((r) => (
+            <div key={r.slug} style={TILE} role="button" tabIndex={0} onClick={() => router.push(`/explainers/designed/${r.slug}`)} onKeyDown={(e) => { if (e.key === 'Enter') router.push(`/explainers/designed/${r.slug}`); }}>
+              <div style={FRAME}>
+                {r.poster ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`/api/explainers2/${r.slug}/poster?v=${encodeURIComponent(r.renderId ?? '')}`} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>not rendered yet</Typography.Text>
+                )}
+              </div>
+              <div style={{ padding: '8px 10px' }}>
+                <Typography.Text strong ellipsis style={{ display: 'block' }}>{r.title ?? r.topic}</Typography.Text>
+                <Space size={6} wrap>
+                  <Tag color={r.failed ? 'red' : r.stage === 'done' ? 'green' : 'blue'} style={{ marginInlineEnd: 0 }}>
+                    {r.failed ?? STAGE_LABEL[r.stage] ?? r.stage}
+                  </Tag>
+                  {r.criticMin !== null ? <Tag color={r.criticMin >= 8 ? 'green' : 'orange'} style={{ marginInlineEnd: 0 }}>critic {r.criticMin}</Tag> : null}
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>{ago(r.updatedAt)}</Typography.Text>
+                </Space>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
+
+      {legacy.length ? (
+        <>
+          <div>
+            <Typography.Title level={4} style={{ margin: 0 }}>Legacy</Typography.Title>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>The earlier board explainers: their poster and last render only.</Typography.Text>
+          </div>
+          <div style={GRID}>
+            {legacy.map((r) => (
+              <div key={r.slug} style={TILE} role="button" tabIndex={0} onClick={() => setPlaying(r)} onKeyDown={(e) => { if (e.key === 'Enter') setPlaying(r); }}>
+                <div style={FRAME}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={`/api/explainers/${r.slug}/poster?v=${encodeURIComponent(r.renderedAt ?? '')}`} alt="" style={{ position: 'absolute', top: 0, left: 0, width: '100%' }} />
+                  <PlayCircleOutlined style={{ position: 'relative', fontSize: 34, color: '#fff', filter: 'drop-shadow(0 2px 6px #000)' }} />
+                </div>
+                <div style={{ padding: '8px 10px' }}>
+                  <Typography.Text strong ellipsis style={{ display: 'block' }}>{r.title}</Typography.Text>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>rendered {ago(r.renderedAt)}</Typography.Text>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      <Modal open={!!playing} title={playing?.title} footer={null} onCancel={() => setPlaying(null)} destroyOnHidden width={420}>
+        {playing ? (
+          <video controls autoPlay style={{ width: '100%', maxHeight: '70vh', background: '#000' }} src={`/api/explainers/${playing.slug}/mp4`} />
+        ) : null}
+      </Modal>
     </Space>
   );
 }

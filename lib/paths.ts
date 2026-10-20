@@ -104,3 +104,12 @@ export function explainerRenderPoster(slug: string, jobId: string) { return path
 export function explainerHistoryDir(slug: string) { return path.join(explainerDir(slug), 'history'); }
 export function explainerHistoryIndex(slug: string) { return path.join(explainerHistoryDir(slug), 'index.json'); }
 export function explainerHistorySnap(slug: string, seq: number) { return path.join(explainerHistoryDir(slug), `${seq}.json`); }
+
+/** One designed explainer, one folder: the brief, script, voice, the video code, its stills and its renders. */
+export function explainer2Root() { return path.join(dataRoot(), 'explainer-v2'); }
+export function explainer2Dir(slug: string) { return path.join(explainer2Root(), slug); }
+export function explainer2File(slug: string, name: string) { return path.join(explainer2Dir(slug), name); }
+export function explainer2VoiceDir(slug: string) { return path.join(explainer2Dir(slug), 'voice'); }
+export function explainer2VideoDir(slug: string) { return path.join(explainer2Dir(slug), 'video'); }
+export function explainer2StillsDir(slug: string) { return path.join(explainer2Dir(slug), 'stills'); }
+export function explainer2RendersDir(slug: string) { return path.join(explainer2Dir(slug), 'renders'); }
