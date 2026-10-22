@@ -8,7 +8,7 @@ export const CRITERIA = [
   { key: 'readable', rule: 'Everything is readable on a phone (at least 40 px at the 1080 x 1920 reference).' },
   { key: 'motion', rule: 'Nothing is static for more than 2 seconds.' },
   { key: 'emphasis', rule: 'The right thing is emphasised in each beat.' },
-  { key: 'clean', rule: 'There is no overlap or clipping.' },
+  { key: 'clean', rule: 'There is no overlap or clipping, and no beat\'s layout shows through the next one.' },
   { key: 'look', rule: 'It matches the aiiolar look (compare with the reference frames).' },
   { key: 'match', rule: 'What is on screen matches the narration, and a beat\'s visual changes when its narration starts, not seconds later.' },
 ] as const;

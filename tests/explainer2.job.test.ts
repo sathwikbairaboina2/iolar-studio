@@ -16,9 +16,9 @@ const script = (title = 'Spread the load') => ({
   beats: [1, 2, 3, 4].map((i) => beat(i)),
   facts: ['Round robin sends requests in turn.'],
 });
-const GOOD_VIDEO = `import { Stage } from '../../kit'
+const GOOD_VIDEO = `import { Stage, BeatLayer } from '../../kit'
 export const meta = { id: 'designed-x', durationInFrames: TOTAL, fps: 30, width: 1080, height: 1920 }
-export default function V() { return <Stage>{null}</Stage> }
+export default function V() { return <Stage><BeatLayer timing={null} beats="b1" /></Stage> }
 `;
 
 let data: string;

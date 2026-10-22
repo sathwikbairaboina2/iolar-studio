@@ -51,14 +51,92 @@ export function scanSource(source: string): string[] {
 /** Smallest font size the kit draws, in reference pixels; the generated video holds to it too. */
 const TEXT_FLOOR = 40;
 
-/** Every `fontSize` literal under the floor (`N` or `N * U`), as a sentence with its line number. Comments are ignored. */
+/** The source with comments blanked but their newlines kept, so line numbers still match the file. */
+function blankComments(source: string): string {
+  return stripComments(source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')));
+}
+
+/** Every numeric literal bound to `name`: `const name = N`, a default `name = N`, or a JSX attribute `name={N}`. */
+function numericBindings(src: string, name: string): number[] {
+  const out: number[] = [];
+  const patterns = [new RegExp(String.raw`\b${name}\s*=\s*(\d+(?:\.\d+)?)(?![\w.])`, 'g'), new RegExp(String.raw`\b${name}\s*=\s*\{\s*(\d+(?:\.\d+)?)\s*\}`, 'g')];
+  for (const re of patterns) for (const m of src.matchAll(re)) out.push(Number(m[1]));
+  return out;
+}
+
+/** The size of a `fontSize` expression made only of numbers, `U` and identifiers; null when it is anything else or an identifier has no numeric binding. */
+function evalFontSize(expr: string, src: string): { px: number; binding: string | null } | null {
+  const factors = expr.split('*').map((f) => f.trim());
+  let px = 1;
+  let binding: string | null = null;
+  for (const f of factors) {
+    if (/^\d+(?:\.\d+)?$/.test(f)) px *= Number(f);
+    else if (f === 'U') continue;
+    else if (/^[A-Za-z_$][\w$]*$/.test(f)) {
+      const candidates = numericBindings(src, f);
+      if (candidates.length === 0) return null;
+      const smallest = Math.min(...candidates);
+      px *= smallest;
+      binding = `${f} = ${smallest}`;
+    } else return null;
+  }
+  return { px, binding };
+}
+
+const trimNum = (n: number) => String(Math.round(n * 100) / 100);
+
+/** Every `fontSize` under the floor, as a sentence with its line number. Handles literals (`N`, `N * U`) and products of numbers, `U` and named numbers (`labelSize * U`, `size * 0.4 * U`); the smallest number bound to a name counts. Other expressions are skipped. Comments are ignored. */
 export function checkTextFloor(source: string): string[] {
-  // Comments are blanked, keeping their newlines, so line numbers still match the file.
-  const src = stripComments(source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')));
+  const src = blankComments(source);
   const errors: string[] = [];
   src.split('\n').forEach((line, i) => {
-    for (const m of line.matchAll(/\bfontSize\s*:\s*(\d+(?:\.\d+)?)\s*(?:\*\s*U\b)?\s*(?=[,}\s]|$)/g)) {
-      if (Number(m[1]) < TEXT_FLOOR) errors.push(`line ${i + 1}: fontSize ${m[1]} is too small; every text must be at least ${TEXT_FLOOR} px at the 1080 x 1920 reference (captions 44 px)`);
+    for (const m of line.matchAll(/\bfontSize\s*:\s*([\w$.\s*]+?)\s*(?=[,}]|$)/g)) {
+      const expr = m[1].trim();
+      if (/^\d+(?:\.\d+)?(?:\s*\*\s*U)?$/.test(expr)) {
+        const n = Number(expr.split('*')[0]);
+        if (n < TEXT_FLOOR) errors.push(`line ${i + 1}: fontSize ${expr.split('*')[0].trim()} is too small; every text must be at least ${TEXT_FLOOR} px at the 1080 x 1920 reference (captions 44 px)`);
+        continue;
+      }
+      const v = evalFontSize(expr, src);
+      if (v && v.px < TEXT_FLOOR) {
+        const why = v.binding ? ` (${v.binding})` : '';
+        errors.push(`line ${i + 1}: fontSize ${expr} is ${trimNum(v.px)} px${why}; every text must be at least ${TEXT_FLOOR} px at the 1080 x 1920 reference (captions 44 px)`);
+      }
+    }
+  });
+  return errors;
+}
+
+/** Video layouts must sit in `<BeatLayer>` so two beats never show together, and must not hand-roll a fade out at a beat boundary (`opacity: 1 - t01(frame, B3 - LEAD, ...)`). Conservative: only a one-line opacity that subtracts a `t01(`/`interpolate(` from 1 using a beat start as a frame is flagged. */
+export function checkBeatLayers(source: string): string[] {
+  const src = blankComments(source);
+  const errors: string[] = [];
+  if (!/<BeatLayer\b/.test(src)) errors.push('has no <BeatLayer>: put everything that belongs to a beat inside <BeatLayer timing={timing} beats="bN"> so beats never overlap');
+  const beatStart = /\bB\d+\b|\bbeats\s*\[[^\]]*\]\s*\.start\b|\.start\b/;
+  // A layer's beats are written as ids ("b2" or ['b2', 'b4']); a computed range can open a beat early and bring the overlap back.
+  const literalBeats = /^(?:"[\w-]+"|'[\w-]+'|\{\s*(?:"[\w-]+"|'[\w-]+')\s*\}|\{\s*\[\s*(?:"[\w-]+"|'[\w-]+')(?:\s*,\s*(?:"[\w-]+"|'[\w-]+'))?\s*\]\s*\})/;
+  src.split('\n').forEach((line, i) => {
+    for (const m of line.matchAll(/<BeatLayer\b[^>]*?\bbeats\s*=\s*/g)) {
+      if (!literalBeats.test(line.slice(m.index + m[0].length))) errors.push(`line ${i + 1}: <BeatLayer beats> must be literal beat ids ("b2" or {['b2', 'b4']}), not computed, so a layer cannot open a beat early`);
+    }
+  });
+  src.split('\n').forEach((line, i) => {
+    const op = line.match(/\bopacity\s*:(.*)$/);
+    if (!op) return;
+    for (const m of op[1].matchAll(/(?<![\w.])1\s*-\s*(?:t01|interpolate)\s*\(/g)) {
+      // The call's arguments run to its matching close paren; an unbalanced (multi-line) call is skipped.
+      let depth = 1;
+      let j = m.index + m[0].length;
+      const from = j;
+      while (j < op[1].length && depth > 0) {
+        if (op[1][j] === '(') depth++;
+        else if (op[1][j] === ')') depth--;
+        j++;
+      }
+      if (depth === 0 && beatStart.test(op[1].slice(from, j - 1))) {
+        errors.push(`line ${i + 1}: hand-rolled fade out at a beat boundary (\`${m[0].trim()}...\`); wrap the beat's layout in <BeatLayer> instead of writing your own opacity between beats`);
+        break;
+      }
     }
   });
   return errors;
@@ -113,7 +191,7 @@ export async function runGates(timing: Timing, deps: GateDeps): Promise<GateResu
   } catch {
     return { ok: false, errors: ['Video.tsx was not written'] };
   }
-  errors.push(...scanSource(source), ...checkDuration(source, timing), ...checkTextFloor(source));
+  errors.push(...scanSource(source), ...checkDuration(source, timing), ...checkTextFloor(source), ...checkBeatLayers(source));
 
   const run = await deps.tsc();
   const failed = run.ok ? null : ownTscErrors(run.output, deps.slug);

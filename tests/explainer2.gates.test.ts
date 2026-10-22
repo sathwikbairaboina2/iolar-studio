@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { checkDuration, checkTextFloor, runGates, scanSource } from '@/lib/explainer2/gates';
+import { checkBeatLayers, checkDuration, checkTextFloor, runGates, scanSource } from '@/lib/explainer2/gates';
 import type { Timing } from '@/lib/explainer2/schema';
 
 const TIMING: Timing = { fps: 30, totalFrames: 240, beats: [{ id: 'b1', start: 0, end: 90 }, { id: 'b2', start: 90, end: 240 }] };
@@ -7,7 +7,7 @@ const GOOD = `import React from 'react'
 import { useCurrentFrame, interpolate } from 'remotion'
 import { Stage, Backdrop } from '../../kit'
 export const meta = { id: 'designed-x', durationInFrames: 240, fps: 30, width: 1080, height: 1920 }
-export default function Video() { const f = useCurrentFrame(); return <Stage><Backdrop /></Stage> }
+export default function Video() { const f = useCurrentFrame(); return <Stage><Backdrop /><BeatLayer timing={timing} beats="b1" /></Stage> }
 `;
 
 describe('scanSource', () => {
@@ -110,6 +110,87 @@ const a = { fontSize: 30 }`)[0]).toContain('line 3');
   });
 });
 
+describe('checkTextFloor computed sizes', () => {
+  it('flags a product of a small named constant and U, naming the binding', () => {
+    const errs = checkTextFloor(`a
+const labelSize = 36
+<div style={{ fontSize: labelSize * U }} />`);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain('line 3');
+    expect(errs[0]).toContain('labelSize * U is 36 px (labelSize = 36)');
+    expect(errs[0]).toMatch(/at least 40/);
+  });
+  it('passes a default that keeps the product at or over 40', () => {
+    expect(checkTextFloor(`const C = ({ size = 120 }) => <div style={{ fontSize: size * 0.4 * U }} />`)).toEqual([]);
+  });
+  it('uses the smallest candidate, including a JSX attribute', () => {
+    const errs = checkTextFloor(`const C = ({ size = 120 }) => <div style={{ fontSize: size * 0.4 * U }} />
+<C size={80} />`);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain('line 1');
+    expect(errs[0]).toContain('32 px (size = 80)');
+  });
+  it('skips ternaries, sums, calls and unbound identifiers', () => {
+    expect(checkTextFloor(`const a = { fontSize: big ? 60 : 30 }
+const b = { fontSize: base + 4 }
+const c = { fontSize: Math.round(x) * U }
+const d = { fontSize: mystery * U }`)).toEqual([]);
+  });
+});
+
+describe('checkBeatLayers', () => {
+  const NO_LAYER = GOOD.replace('<BeatLayer timing={timing} beats="b1" />', '');
+  it('passes a video that uses BeatLayer', () => expect(checkBeatLayers(GOOD)).toEqual([]));
+  it('requires at least one BeatLayer', () => {
+    const errs = checkBeatLayers(NO_LAYER);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain('BeatLayer');
+  });
+  it('ignores a BeatLayer that only appears in a comment', () => {
+    expect(checkBeatLayers(`${NO_LAYER}
+// wrap it in <BeatLayer>
+/* <BeatLayer> */`)).toHaveLength(1);
+  });
+  it('accepts literal beat ids, alone or as a range', () => {
+    expect(checkBeatLayers(`${GOOD}
+<BeatLayer timing={timing} beats={['b2', 'b4']}>`)).toEqual([]);
+  });
+  it('flags a BeatLayer whose beats are computed, with its line number', () => {
+    const src = `${GOOD}
+<BeatLayer timing={TIMING} beats={[TIMING.beats[Math.max(0, a - 1)].id, TIMING.beats[b].id]}>`;
+    const errs = checkBeatLayers(src);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain(`line ${src.split('\n').length}`);
+    expect(errs[0]).toContain('literal');
+  });
+  it('flags a hand-rolled fade out at a beat boundary with its line number', () => {
+    const src = `${GOOD}
+const a = 1
+<div style={{ opacity: 1 - t01(frame, B3 - LEAD, B3 + 2) }} />
+`;
+    const errs = checkBeatLayers(src);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain(`line ${src.split('\n').findIndex((l) => l.includes('opacity')) + 1}`);
+    expect(errs[0]).toMatch(/BeatLayer/);
+  });
+  it('flags interpolate and beats[i].start frames too', () => {
+    const errs = checkBeatLayers(`${GOOD}
+<div style={{ opacity: 1 - interpolate(frame, [timing.beats[2].start - 4, timing.beats[2].start], [0, 1]) }} />
+`);
+    expect(errs).toHaveLength(1);
+  });
+  it('does not flag a fade inside a beat', () => {
+    expect(checkBeatLayers(`${GOOD}
+<div style={{ opacity: 1 - t01(frame, TAKE_AT, TAKE_AT + 8) }} />
+<div style={{ opacity: t01(frame, B3, B3 + 6) }} />`)).toEqual([]);
+  });
+  it('ignores a fade out written in a comment', () => {
+    expect(checkBeatLayers(`${GOOD}
+// opacity: 1 - t01(frame, B3 - LEAD, B3 + 2)
+/* opacity: 1 - t01(frame, B3, B3 + 2) */`)).toEqual([]);
+  });
+});
+
 describe('runGates', () => {
   const deps = (over: Record<string, unknown> = {}) => ({
     readVideo: vi.fn().mockResolvedValue(GOOD),
@@ -156,6 +237,11 @@ describe('runGates', () => {
     const r = await runGates(TIMING, deps({ readVideo: vi.fn().mockResolvedValue(`${GOOD}\nconst a = { fontSize: 30 * U }`) }));
     expect(r.ok).toBe(false);
     expect(r.errors.join('\n')).toMatch(/fontSize 30.*at least 40/);
+  });
+  it('reports a video without BeatLayer as a gate error', async () => {
+    const r = await runGates(TIMING, deps({ readVideo: vi.fn().mockResolvedValue(GOOD.replace('<BeatLayer timing={timing} beats="b1" />', '')) }));
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('BeatLayer');
   });
   it('fails on a missing video file', async () => {
     const r = await runGates(TIMING, deps({ readVideo: vi.fn().mockRejectedValue(new Error('ENOENT')) }));
