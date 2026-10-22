@@ -95,6 +95,10 @@ export type Settings = {
   jobsKokoroSpeed: number;
   /** The kokoro pace for designed explainers: slower than a reel's, so a 30 second brief stays near 30 seconds. */
   explainerKokoroSpeed: number;
+  /** Who speaks a launch reel: Higgsfield's qwen TTS, or local Kokoro. Kokoro is also the fallback for qwen. */
+  launchVoice: 'qwen' | 'kokoro';
+  /** The Kokoro voice for a launch reel; hm_psi is Indian English, male. */
+  launchKokoroVoice: string;
 };
 
 const DEFAULTS: Settings = {
@@ -158,6 +162,8 @@ const DEFAULTS: Settings = {
   // rather than the 1.35 a fixed-length reel needs.
   jobsKokoroSpeed: 1.1,
   explainerKokoroSpeed: 1.08,
+  launchVoice: 'qwen',
+  launchKokoroVoice: 'hm_psi',
 };
 
 function file() {

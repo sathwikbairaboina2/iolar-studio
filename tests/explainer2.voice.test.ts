@@ -79,4 +79,15 @@ describe('speakBeats', () => {
     const probe = vi.fn(async () => 0);
     await expect(speakBeats('caching', SCRIPT, { speak, probe })).rejects.toThrow(/b1/);
   });
+
+  it('writes the clips and timing.json where it is told to', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'launch-voice-'));
+    const out = { voiceDir: path.join(dir, 'voice'), timingFile: path.join(dir, 'timing.json') };
+    const script = { beats: [{ id: 'hook', narration: 'Google just shipped Gemini 4.' }, { id: 'cta', narration: 'Follow for more.' }] };
+    const fakeSpeak = async (_t: string, p: string) => fs.writeFile(p, '');
+    const timing = await speakBeats('any-slug', script, { speak: fakeSpeak, probe: async () => 2 }, out);
+    expect(timing.beats.map((b) => b.id)).toEqual(['hook', 'cta']);
+    expect(await fs.readdir(out.voiceDir)).toEqual(['cta.mp3', 'hook.mp3']);
+    expect(JSON.parse(await fs.readFile(out.timingFile, 'utf8')).totalFrames).toBe(timing.totalFrames);
+  });
 });

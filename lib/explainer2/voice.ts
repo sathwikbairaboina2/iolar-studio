@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { explainer2File, explainer2VoiceDir } from '@/lib/paths';
 import { EXPLAINER_SPEED } from './budget';
-import type { Script, Timing } from './schema';
+import type { Timing } from './schema';
 import { computeTiming } from './timing';
 import { alignBeat, type AlignDeps } from './words';
 
@@ -21,8 +21,11 @@ export type VoiceDeps = AlignDeps & {
  * spread when that is not available) and writes timing.json: the beat frames, how long each voice clip plays, and the
  * spoken words in absolute frames for the word-synced captions.
  */
-export async function speakBeats(slug: string, script: Script, deps: VoiceDeps): Promise<Timing> {
-  const dir = explainer2VoiceDir(slug);
+/** Any script with spoken beats: the explainer's, or a launch reel's. */
+export type SpokenScript = { beats: readonly { id: string; narration: string }[] };
+
+export async function speakBeats(slug: string, script: SpokenScript, deps: VoiceDeps, out?: { voiceDir: string; timingFile: string }): Promise<Timing> {
+  const dir = out?.voiceDir ?? explainer2VoiceDir(slug);
   await fs.mkdir(dir, { recursive: true });
   const fps = deps.fps ?? 30;
   const clips: { id: string; seconds: number }[] = [];
@@ -44,6 +47,6 @@ export async function speakBeats(slug: string, script: Script, deps: VoiceDeps):
     beats.push({ ...b, voice, words, method });
   }
   const timing: Timing = { fps: base.fps, totalFrames: base.totalFrames, beats };
-  await fs.writeFile(explainer2File(slug, 'timing.json'), JSON.stringify(timing, null, 2));
+  await fs.writeFile(out?.timingFile ?? explainer2File(slug, 'timing.json'), JSON.stringify(timing, null, 2));
   return timing;
 }

@@ -113,3 +113,18 @@ export function explainer2VoiceDir(slug: string) { return path.join(explainer2Di
 export function explainer2VideoDir(slug: string) { return path.join(explainer2Dir(slug), 'video'); }
 export function explainer2StillsDir(slug: string) { return path.join(explainer2Dir(slug), 'stills'); }
 export function explainer2RendersDir(slug: string) { return path.join(explainer2Dir(slug), 'renders'); }
+
+/** One launch reel, one folder: the brief, claims, script, voice, receipt screenshots and renders. */
+export function launchRoot() { return path.join(dataRoot(), 'launch'); }
+export function launchDir(slug: string) { return path.join(launchRoot(), slug); }
+export function launchFile(slug: string, name: string) { return path.join(launchDir(slug), name); }
+export function launchVoiceDir(slug: string) { return path.join(launchDir(slug), 'voice'); }
+export function launchAssetsDir(slug: string) { return path.join(launchDir(slug), 'assets'); }
+export function launchRendersDir(slug: string) { return path.join(launchDir(slug), 'renders'); }
+/** The channel's fixed anchor: data/launch/anchor.json, the locked portrait and the candidate faces. */
+export function launchAnchorDir() { return path.join(launchRoot(), 'anchor'); }
+export function launchAnchorFile() { return path.join(launchRoot(), 'anchor.json'); }
+/** References found by the daily watch: data/launch/inbox/<shortcode>.json, with their videos under media/. */
+export function launchInboxDir() { return path.join(launchRoot(), 'inbox'); }
+export function launchInboxMediaDir() { return path.join(launchInboxDir(), 'media'); }
+export function launchWatchStateFile() { return path.join(launchRoot(), '.watch-state.json'); }

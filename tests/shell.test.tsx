@@ -32,7 +32,7 @@ describe('AppShell', () => {
     expect(screen.getByText('Library')).toBeTruthy();
     expect(screen.getByText('Handbooks')).toBeTruthy();
     expect(screen.getByText('Knowledge graph')).toBeTruthy();
-    expect(screen.getByText('Reels').closest('li')?.className).not.toContain('ant-menu-item-disabled');
+    expect(screen.getByText('Launch reels').closest('li')?.className).not.toContain('ant-menu-item-disabled');
     expect(screen.getByText('Jobs').closest('li')?.className).not.toContain('ant-menu-item-disabled');
     expect(screen.getByText('How it works')).toBeTruthy();
 

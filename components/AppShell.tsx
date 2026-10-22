@@ -23,7 +23,7 @@ const items = [
     label: 'Create',
     children: [
       { key: '/handbooks', icon: <BookOutlined />, label: 'Handbooks' },
-      { key: '/reel', icon: <VideoCameraOutlined />, label: 'Reels' },
+      { key: '/launch', icon: <VideoCameraOutlined />, label: 'Launch reels' },
       { key: '/explainers', icon: <NodeIndexOutlined />, label: 'Explainers' },
       { key: '/jobs', icon: <ScheduleOutlined />, label: 'Jobs' },
       { key: '/stories', icon: <ClockCircleOutlined />, label: soon('Stories'), disabled: true },
