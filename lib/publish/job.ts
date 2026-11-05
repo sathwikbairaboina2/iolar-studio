@@ -84,7 +84,7 @@ function serialWriter(job: PublishJob) {
  * `notes` write the chapter's edition again with them; `rereview` deletes the saved review and reviews
  * (and fixes) the edition that is on disk without writing it again.
  */
-export async function startPublish(subject: string, chapters: string[], opts: { notes?: Record<string, string>; rereview?: boolean } = {}): Promise<PublishJob> {
+export async function startPublish(subject: string, chapters: string[], opts: { notes?: Record<string, string>; rereview?: boolean; keepLive?: boolean } = {}): Promise<PublishJob> {
   const existing = await readJob(subject);
   const liveFile = !!existing?.live && Date.now() - Date.parse(existing.startedAt) < STALE_MS;
   if (running.has(subject) || liveFile) throw new Error('busy');
@@ -101,7 +101,7 @@ export async function startPublish(subject: string, chapters: string[], opts: { 
     const job: PublishJob = { subject, live: true, startedAt: new Date().toISOString(), stage: 'reviews', steps };
     await writeJob(job);
     const writer = serialWriter(job);
-    void run(job, chapters, opts.notes ?? {}, !!opts.rereview, writer.mark)
+    void run(job, chapters, opts.notes ?? {}, !!opts.rereview, !!opts.keepLive, writer.mark)
       .catch(async (err) => {
         job.message = `The run stopped: ${err instanceof Error ? err.message : String(err)}`;
       })
@@ -119,11 +119,11 @@ export async function startPublish(subject: string, chapters: string[], opts: { 
   }
 }
 
-async function run(job: PublishJob, chapters: string[], notes: Record<string, string>, rereview: boolean, mark: Mark) {
+async function run(job: PublishJob, chapters: string[], notes: Record<string, string>, rereview: boolean, keepLive: boolean, mark: Mark) {
   const { subject } = job;
   const setMessage = (m: string) => { job.message = job.message ?? m; };
 
-  for (const chapter of chapters) await reviewChapter(subject, chapter, job, mark, setMessage, notes[chapter], rereview);
+  for (const chapter of chapters) await reviewChapter(subject, chapter, job, mark, setMessage, notes[chapter], rereview, keepLive);
 
   job.stage = 'order';
   await mark('', 'order', 'running');
@@ -156,6 +156,7 @@ async function reviewChapter(
   setMessage: (m: string) => void,
   notes?: string,
   rereview = false,
+  keepLive = false,
 ) {
   const markAll = async (passes: readonly string[], state: JobStep['state']) => { for (const p of passes) await mark(chapter, p, state); };
   const hash = await inputsHash(subject, chapter).catch(() => null);
@@ -167,7 +168,11 @@ async function reviewChapter(
   const reusable = !notes && !rereview && editionIsCurrent && state?.hash === hash && !!state.verdict && state.editionHash === editionHash(edition!) && !hasUnavailable(state.findings ?? []) && !!(await currentReview(subject, chapter));
   if (reusable) {
     await markAll(CHAPTER_STEPS, 'skipped');
-    await updateState(subject, (s) => autoApprove(s, chapter));
+    await updateState(subject, (s) => {
+      // Only a rereview asked to keep the old copy live holds a chapter; this run does not.
+      if (s.chapters[chapter]) delete s.chapters[chapter].keepLive;
+      autoApprove(s, chapter);
+    });
     return;
   }
 
@@ -236,15 +241,16 @@ async function reviewChapter(
       verdict,
       findings,
       reviewedAt: new Date().toISOString(),
+      ...(keepLive ? { keepLive: true } : {}),
     };
     autoApprove(s, chapter);
   });
 }
 
-/** The AI clears a passing chapter on its own unless this subject always asks. */
+/** The AI clears a passing chapter on its own unless this subject always asks; a held correction always waits for a person. */
 function autoApprove(s: PublishState, chapter: string) {
   const c = s.chapters[chapter];
-  if (c && c.verdict === 'pass' && !c.approvedBy && !c.rejected && !s.alwaysAsk) {
+  if (c && c.verdict === 'pass' && !c.approvedBy && !c.rejected && !c.keepLive && !s.alwaysAsk) {
     c.approvedBy = 'ai';
     c.approvedAt = new Date().toISOString();
   }

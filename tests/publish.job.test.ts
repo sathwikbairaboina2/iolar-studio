@@ -286,4 +286,101 @@ describe('publish job', () => {
     const job = await finish();
     expect(job.steps.filter((x) => x.chapter === 'loop').map((x) => x.state)).toEqual(['failed', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped']);
   });
+
+  describe('keepLive', () => {
+    const slugs = () => JSON.parse(readFileSync(published(), 'utf8')).chapters.map((c: { slug: string }) => c.slug);
+    const loopText = () => JSON.stringify(JSON.parse(readFileSync(published(), 'utf8')).chapters.find((c: { slug: string }) => c.slug === 'loop').parts);
+    /** Publishes both chapters, then corrects the loop edition on disk (same inputs, new text). */
+    async function corrected(alwaysAsk = false) {
+      const m = mocks();
+      const job = await import('@/lib/publish/job');
+      const { updateState } = await import('@/lib/publish/state');
+      const { loadEdition, saveEdition } = await import('@/lib/digital/edition');
+      await job.startPublish('py', ['loop', 'tasks']);
+      await finish();
+      expect(loopText()).toContain('body');
+      const e = (await loadEdition('py', 'loop'))!;
+      await saveEdition({ ...e, sections: [{ ...e.sections[0], pages: [{ title: 'Start', blocks: [{ type: 'paragraph', text: 'fixed fact' }] }] }] });
+      if (alwaysAsk) await updateState('py', (s) => { s.alwaysAsk = true; });
+      return { m, ...job };
+    }
+
+    it('keeps the old copy live while the corrected text waits for a person, even with Always ask off', async () => {
+      const { startPublish } = await corrected();
+      const { readState } = await import('@/lib/publish/state');
+      await startPublish('py', ['loop'], { rereview: true, keepLive: true });
+      await finish();
+      const loop = (await readState('py')).chapters.loop;
+      expect(loop).toMatchObject({ verdict: 'pass', keepLive: true });
+      expect(loop.approvedBy).toBeUndefined();
+      expect(slugs()).toEqual(['loop', 'tasks']);
+      expect(loopText()).not.toContain('fixed fact');
+    });
+
+    it('a rereview without the flag takes the edited chapter out of the file as before', async () => {
+      const { startPublish } = await corrected(true);
+      const { readState } = await import('@/lib/publish/state');
+      await startPublish('py', ['loop'], { rereview: true });
+      await finish();
+      expect((await readState('py')).chapters.loop.keepLive).toBeUndefined();
+      expect(slugs()).toEqual(['tasks']);
+    });
+
+    it('clears the flag on a plain run', async () => {
+      const { startPublish } = await corrected();
+      const { readState } = await import('@/lib/publish/state');
+      await startPublish('py', ['loop'], { rereview: true, keepLive: true });
+      await finish();
+      await startPublish('py', ['loop']);
+      await finish();
+      expect((await readState('py')).chapters.loop.keepLive).toBeUndefined();
+    });
+
+    it('keeps the old copy when the corrected text fails review', async () => {
+      const { m, startPublish } = await corrected();
+      const real = m.reviewAndFix.getMockImplementation()! as (...a: unknown[]) => Promise<object>;
+      m.reviewAndFix.mockImplementation(async (...args: unknown[]) => ({ ...(await real(...args)), verdict: 'fail', findings: [f('rules', 'blocker', 'rules.code')] }));
+      await startPublish('py', ['loop'], { rereview: true, keepLive: true });
+      await finish();
+      // the order is proposed again without the failed chapter, so the held copy keeps its place at the end
+      expect(slugs()).toEqual(['tasks', 'loop']);
+      expect(loopText()).not.toContain('fixed fact');
+    });
+
+    describe('route', () => {
+      const ctx = { params: Promise.resolve({ subject: 'py' }) };
+      const req = (body: unknown) => new Request('http://t/api', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+      it('answers 400 and starts no job when the chapter is not in the published file', async () => {
+        const startPublish = vi.fn().mockResolvedValue({ subject: 'py', live: true });
+        vi.doMock('@/lib/publish/job', async (orig) => ({ ...(await orig<object>()), startPublish }));
+        put('handbooks/py/loop/digital/edition.json', { schema: 1, subject: 'py', chapter: 'loop', inputsHash: 'h', generatedAt: 'now', sections: [] });
+        const route = await import('@/app/api/handbooks/[subject]/publish/route');
+        const res = await route.POST(req({ action: 'rereview', chapter: 'loop', keepLive: true }), ctx);
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toMatch(/published/);
+        expect(startPublish).not.toHaveBeenCalled();
+        vi.doUnmock('@/lib/publish/job');
+      });
+
+      it('passes the flag on when the chapter is published, and clears it on approve, reject and unselect', async () => {
+        const { startPublish: realStart } = await corrected();
+        void realStart;
+        const startPublish = vi.fn().mockResolvedValue({ subject: 'py', live: true });
+        vi.resetModules();
+        vi.doMock('@/lib/publish/job', async (orig) => ({ ...(await orig<object>()), startPublish }));
+        const route = await import('@/app/api/handbooks/[subject]/publish/route');
+        const { updateState, readState } = await import('@/lib/publish/state');
+        expect((await route.POST(req({ action: 'rereview', chapter: 'loop', keepLive: true }), ctx)).status).toBe(200);
+        expect(startPublish).toHaveBeenCalledWith('py', ['loop'], { rereview: true, keepLive: true });
+        for (const action of ['approve', 'reject', 'unselect']) {
+          await updateState('py', (s) => { s.chapters.loop.keepLive = true; });
+          const body = action === 'unselect' ? { action, chapters: ['loop'] } : { action, chapter: 'loop' };
+          expect((await route.POST(req(body), ctx)).status).toBe(200);
+          expect((await readState('py')).chapters.loop.keepLive).toBeUndefined();
+        }
+        vi.doUnmock('@/lib/publish/job');
+      });
+    });
+  });
 });

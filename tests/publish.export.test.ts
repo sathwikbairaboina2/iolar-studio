@@ -176,6 +176,99 @@ describe('exportSubject', () => {
     vi.doUnmock('@/lib/publish/hash');
   });
 
+  describe('keepLive', () => {
+    const stateNow = () => JSON.parse(readFileSync(path.join(root, 'handbooks/py/publish.json'), 'utf8'));
+    /** Exports once, then replaces loop with a corrected, not yet approved edition held by keepLive. */
+    async function heldLoop(extra: Record<string, unknown> = {}) {
+      await fixture();
+      const { exportSubject } = await import('@/lib/publish/export');
+      await exportSubject('py');
+      const before = readFileSync(out(), 'utf8');
+      const fresh = await publishedChapter('loop', 'corrected text {icon:python}');
+      delete (fresh as { approvedBy?: string }).approvedBy;
+      const state = stateNow();
+      state.chapters.loop = { ...fresh, keepLive: true, ...extra };
+      put('handbooks/py/publish.json', state);
+      return { exportSubject, before: JSON.parse(before), state };
+    }
+
+    it('keeps the previous entry byte for byte while the correction waits, and leaves other chapters alone', async () => {
+      const { exportSubject, before } = await heldLoop();
+      expect(await exportSubject('py')).toMatchObject({ written: true, chapters: 2 });
+      const file = read();
+      expect(file.order).toEqual(['loop', 'tasks']);
+      expect(file.chapters[0]).toEqual(before.chapters[0]);
+      expect(JSON.stringify(file.chapters[0])).toContain('loop text');
+      expect(JSON.stringify(file.chapters[0])).not.toContain('corrected');
+      expect(file.chapters[1]).toEqual(before.chapters[1]);
+      expect(Object.keys(file.icons)).toEqual(['python']);
+    });
+
+    it('publishes the new text once it is approved and the flag is gone', async () => {
+      const { exportSubject, state } = await heldLoop();
+      state.chapters.loop = { ...state.chapters.loop, approvedBy: 'human', approvedAt: 'now' };
+      delete state.chapters.loop.keepLive;
+      put('handbooks/py/publish.json', state);
+      await exportSubject('py');
+      expect(JSON.stringify(read().chapters[0])).toContain('corrected text');
+      expect(JSON.stringify(read().chapters[0])).not.toContain('loop text');
+    });
+
+    it('lets a rejected or unselected chapter leave the file', async () => {
+      const { exportSubject, state } = await heldLoop();
+      state.chapters.loop.rejected = true;
+      put('handbooks/py/publish.json', state);
+      await exportSubject('py');
+      expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['tasks']);
+      delete state.chapters.loop.rejected;
+      state.chapters.loop.selected = false;
+      put('handbooks/py/publish.json', state);
+      await exportSubject('py');
+      expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['tasks']);
+    });
+
+    it('still drops an edited chapter that is not held', async () => {
+      const { exportSubject, state } = await heldLoop();
+      delete state.chapters.loop.keepLive;
+      put('handbooks/py/publish.json', state);
+      await exportSubject('py');
+      expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['tasks']);
+    });
+
+    it('keeps a held chapter in the file while the order waits for approval', async () => {
+      const { exportSubject, state } = await heldLoop();
+      delete state.order.approvedBy;
+      put('handbooks/py/publish.json', state);
+      expect(await exportSubject('py')).toMatchObject({ written: false });
+      expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['loop', 'tasks']);
+      expect(JSON.stringify(read().chapters[0])).not.toContain('corrected');
+    });
+
+    it('does not delete the file when only held chapters remain', async () => {
+      const { exportSubject, state } = await heldLoop();
+      state.chapters.tasks.selected = false;
+      put('handbooks/py/publish.json', state);
+      await exportSubject('py');
+      expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['loop']);
+      expect(read().order).toEqual(['loop']);
+      expect(JSON.stringify(read().chapters[0])).not.toContain('corrected');
+    });
+
+    it('keeps the old copy when the corrected text failed review', async () => {
+      const { exportSubject } = await heldLoop({ verdict: 'fail' });
+      await exportSubject('py');
+      expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['loop', 'tasks']);
+      expect(JSON.stringify(read().chapters[0])).not.toContain('corrected');
+    });
+
+    it('leaves out a held chapter that has no previous entry', async () => {
+      const { exportSubject } = await heldLoop();
+      rmSync(out());
+      await exportSubject('py');
+      expect(read().chapters.map((c: { slug: string }) => c.slug)).toEqual(['tasks']);
+    });
+  });
+
   it('uses a different temporary file for every write', async () => {
     await fixture();
     const fs = await import('fs');

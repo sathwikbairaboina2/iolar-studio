@@ -17,6 +17,8 @@ export type ChapterState = {
   approvedBy?: 'ai' | 'human';
   approvedAt?: string;
   rejected?: boolean;
+  /** A correction waits for approval while the last published copy stays in the export. */
+  keepLive?: boolean;
 };
 export type OrderState = {
   order: string[];

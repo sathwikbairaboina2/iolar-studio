@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { existsSync } from 'fs';
+import { existsSync, promises as fs } from 'fs';
 import { chapterDir, isSlug } from '@/lib/paths';
 import { loadSubject } from '@/lib/store';
-import { exportSubject, isChapterCurrent } from '@/lib/publish/export';
+import { exportFile, exportSubject, isChapterCurrent } from '@/lib/publish/export';
 import { loadEdition } from '@/lib/digital/edition';
 import { readJob, startPublish } from '@/lib/publish/job';
 import { checkOrder } from '@/lib/publish/order';
@@ -98,8 +98,13 @@ export async function POST(req: Request, ctx: Ctx) {
         if (typeof chapter !== 'string' || !isSlug(chapter)) return bad('chapter must be a slug');
         if (!exists(chapter)) return bad('unknown chapter', 404);
         if (!(await loadEdition(subject, chapter))) return bad('this chapter has no edition to review yet');
+        const keepLive = body.keepLive === true;
+        if (keepLive) {
+          const published = await fs.readFile(exportFile(subject), 'utf8').then((t) => JSON.parse(t) as { chapters?: { slug: string }[] }).catch(() => null);
+          if (!published?.chapters?.some((c) => c.slug === chapter)) return bad('keepLive needs a chapter that is in the published file; this one is not published');
+        }
         try {
-          return NextResponse.json({ job: await startPublish(subject, [chapter], { rereview: true }) });
+          return NextResponse.json({ job: await startPublish(subject, [chapter], keepLive ? { rereview: true, keepLive } : { rereview: true }) });
         } catch (err) {
           if (err instanceof Error && err.message === 'busy') return bad('a publish run is already live for this subject', 409);
           throw err;
@@ -110,7 +115,10 @@ export async function POST(req: Request, ctx: Ctx) {
         if (!chapters) return bad('chapters must be a list of chapter slugs');
         if (!chapters.every(exists)) return bad('unknown chapter', 404);
         await updateState(subject, (s) => {
-          for (const c of chapters) s.chapters[c] = { ...s.chapters[c], selected: false };
+          for (const c of chapters) {
+            s.chapters[c] = { ...s.chapters[c], selected: false };
+            delete s.chapters[c].keepLive;
+          }
         });
         await exportSubject(subject);
         return NextResponse.json(await snapshot(subject));
@@ -129,8 +137,10 @@ export async function POST(req: Request, ctx: Ctx) {
             c.approvedAt = new Date().toISOString();
             c.selected = true;
             delete c.rejected;
+            delete c.keepLive;
           } else {
             c.rejected = true;
+            delete c.keepLive;
           }
           return null;
         });

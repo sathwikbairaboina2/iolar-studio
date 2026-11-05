@@ -27,12 +27,15 @@ export async function isChapterCurrent(subject: string, slug: string, cs: Chapte
   return !!hash && hash === cs.hash && !!e && e.inputsHash === hash && cs.editionHash === editionHash(e);
 }
 
-type Built = { handbook: Handbook | null; frozen: boolean; live: Map<string, string> };
+type Built = { handbook: Handbook | null; frozen: boolean; live: Map<string, string>; held: Set<string> };
+
+const readPrevious = (subject: string) => fs.readFile(exportFile(subject), 'utf8').then((t) => JSON.parse(t) as Handbook).catch(() => null);
 
 /**
  * The file as it should be now. `frozen` means the approved order does not cover what is live, so
  * the previous file stays until a person approves a new order. A chapter whose book.json or posts changed,
- * or whose edition is not the one that was reviewed, is left out until it is regenerated and reviewed again.
+ * or whose edition is not the one that was reviewed, is left out until it is regenerated and reviewed again,
+ * unless it is held (`keepLive`): then its previous entry stays, unchanged, until a person approves the correction.
  */
 async function build(subject: string): Promise<Built> {
   const state = await readState(subject);
@@ -47,15 +50,31 @@ async function build(subject: string): Promise<Built> {
     }
   }
   const live = [...current.keys()];
-  if (!live.length) return { handbook: null, frozen: false, live: current };
+  const held = new Set<string>();
+  const heldEntries = new Map<string, Handbook['chapters'][number]>();
+  let previous: Handbook | null = null;
+  const wanted = Object.entries(state.chapters).filter(([slug, c]) => c.keepLive && c.selected && !c.rejected && !current.has(slug));
+  if (wanted.length) {
+    previous = await readPrevious(subject);
+    for (const [slug] of wanted) {
+      const entry = previous?.chapters.find((c) => c.slug === slug);
+      if (entry) { held.add(slug); heldEntries.set(slug, entry); }
+    }
+  }
+  if (!live.length && !held.size) return { handbook: null, frozen: false, live: current, held };
   const order = state.order;
-  if (!order?.approvedBy || !live.every((s) => order.order.includes(s))) return { handbook: null, frozen: true, live: current };
+  if (!order?.approvedBy || !live.every((s) => order.order.includes(s))) return { handbook: null, frozen: true, live: current, held };
 
-  const slugs = order.order.filter((s) => live.includes(s));
+  const slugs = [...order.order.filter((s) => live.includes(s) || held.has(s)), ...[...held].filter((s) => !order.order.includes(s))];
   const meta = await loadSubject(subject);
   const iconSources: string[] = [];
   const chapters: Handbook['chapters'] = [];
   for (const slug of slugs) {
+    if (held.has(slug)) {
+      const entry = heldEntries.get(slug)!;
+      chapters.push({ ...entry, prerequisites: entry.prerequisites.filter((p) => slugs.includes(p)) });
+      continue;
+    }
     const cs = state.chapters[slug];
     const info = await loadChapterMeta(subject, slug);
     const book = await loadBook(subject, slug);
@@ -80,10 +99,13 @@ async function build(subject: string): Promise<Built> {
     const svg = iconSvg(name);
     if (svg && safeSvg(svg)) icons[name] = svg;
   }
+  // A held chapter keeps the icons it was published with.
+  if (held.size) for (const [name, svg] of Object.entries(previous?.icons ?? {})) if (!icons[name] && safeSvg(svg)) icons[name] = svg;
 
   return {
     frozen: false,
     live: current,
+    held,
     handbook: {
       schema: 1,
       slug: meta.slug,
@@ -118,12 +140,12 @@ export function exportSubject(subject: string): Promise<Exported> {
 /** Writes or deletes `published/<subject>.handbook.json`. An invalid file is never written; the contract's errors are thrown instead. */
 async function exportNow(subject: string): Promise<Exported> {
   const file = exportFile(subject);
-  const { handbook, frozen, live } = await build(subject);
+  const { handbook, frozen, live, held } = await build(subject);
   if (frozen) {
     // No new order yet, but a chapter that was unselected, rejected or edited must still leave the file.
-    const previous = await fs.readFile(file, 'utf8').then((t) => JSON.parse(t) as Handbook).catch(() => null);
+    const previous = await readPrevious(subject);
     if (previous) {
-      const keep = previous.chapters.filter((c) => live.get(c.slug) === c.hash);
+      const keep = previous.chapters.filter((c) => live.get(c.slug) === c.hash || held.has(c.slug));
       if (keep.length !== previous.chapters.length) {
         const slugs = keep.map((c) => c.slug);
         const next: Handbook = { ...previous, updatedAt: new Date().toISOString(), order: previous.order.filter((s) => slugs.includes(s)), chapters: keep.map((c) => ({ ...c, prerequisites: c.prerequisites.filter((p) => slugs.includes(p)) })) };
