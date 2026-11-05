@@ -1,0 +1,111 @@
+{
+  "title": "LLM Inference Optimization Quick Revision",
+  "summary": "Quick revision notes on how LLM serving works and how to make it fast: prefill vs decode, the KV cache, batching, quantization, speculative decoding, and the latency, throughput and time-to-first-token trade-offs.",
+  "chapters": [
+    {
+      "title": "Prefill vs Decode: The Mental Model",
+      "points": [
+        "Prefill processes the whole prompt in one parallel forward pass, so it is compute-bound and fills the KV cache",
+        "Decode generates one token per forward pass, reading all weights and the KV cache each step, so it is memory-bandwidth-bound",
+        "Autoregressive loop: each new token depends on the previous one, so decode steps cannot be parallelised within one request",
+        "Time to first token (TTFT) is roughly queue wait + prefill time; time per output token (TPOT) is the decode step time",
+        "Total latency = TTFT + (output tokens − 1) × TPOT, so long prompts hurt TTFT and long outputs hurt total time"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "The KV Cache",
+      "points": [
+        "Attention needs the keys and values of every previous token; caching them avoids recomputing the whole prefix each decode step",
+        "Cache size per token = 2 × layers × KV heads × head dim × bytes per value; it grows linearly with sequence length and batch size",
+        "Worked example: Llama-2-7B in FP16 uses about 0.5 MB per token, so a 4k-token sequence takes about 2 GB",
+        "GQA and MQA share KV heads across query heads to shrink the cache several times over",
+        "Paged attention (vLLM) stores the cache in fixed-size blocks, removing fragmentation and allowing prefix sharing",
+        "Common mistake: sizing GPU memory for weights only; the KV cache, not the weights, often caps batch size and context length"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Batching and Continuous Batching",
+      "points": [
+        "Decode is memory-bound, so batching many requests amortises one weight read across them and raises throughput almost for free",
+        "Static batching waits for the whole batch to finish, so short requests idle behind the longest one and GPU slots are wasted",
+        "Continuous (in-flight) batching schedules at every token step: finished sequences leave and queued requests join immediately",
+        "Chunked prefill splits long prompts into pieces mixed with decode steps, so one big prompt does not stall other users' tokens",
+        "Larger batches raise throughput but also per-request latency and KV cache use; the cap is GPU memory and the latency target"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Quantization: INT8 and INT4",
+      "points": [
+        "Quantization stores weights (and optionally activations or KV cache) in fewer bits: FP16 → INT8 halves memory, INT4 quarters it",
+        "Because decode is memory-bound, fewer bytes per weight gives faster tokens and lets a bigger model fit on one GPU",
+        "Weight-only INT4 (GPTQ, AWQ) is the common serving choice; INT8 weights and activations (SmoothQuant) also speed up compute-bound prefill",
+        "Quantization is lossy: INT8 is usually near-lossless, INT4 shows small quality drops, and outliers and small models suffer most",
+        "Common mistake: skipping evaluation after quantizing; always compare task accuracy and perplexity against the FP16 baseline"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Speculative Decoding and Latency vs Throughput",
+      "points": [
+        "Speculative decoding: a small draft model proposes k tokens, the large model verifies all k in one parallel pass and keeps the accepted prefix",
+        "Output distribution is unchanged because rejected tokens are resampled from the target model, so quality is lossless",
+        "Speedup depends on the acceptance rate: a poor draft model or high-temperature sampling gives little or negative gain",
+        "It helps low-batch, latency-sensitive serving; at large batch sizes the GPU is already busy and the gain shrinks",
+        "Latency vs throughput: bigger batches raise tokens per second overall but slow each user, so pick the batch size from the SLO (TTFT and TPOT targets)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "LLM Inference Cheat Sheet",
+      "points": [
+        "Prefill = compute-bound, sets TTFT; decode = memory-bound, sets TPOT",
+        "Latency = TTFT + (N − 1) × TPOT; KV bytes per token = 2 × layers × KV heads × head dim × bytes",
+        "Batching: continuous > static; add chunked prefill to protect TPOT and cap batch by KV memory",
+        "Precision: FP16 → INT8 is 2× smaller, INT4 is 4× smaller; always re-evaluate quality",
+        "Speculative decoding: draft k tokens, verify in one pass, lossless; best at low batch with high acceptance",
+        "Interview Point: know how to lower TTFT (shorter prompts, prefix caching, chunked prefill) versus raise throughput (bigger batches, quantization)"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

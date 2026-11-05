@@ -1,0 +1,651 @@
+{
+  "schema": 1,
+  "subject": "fastapi",
+  "chapter": "websockets-streaming",
+  "category": "handbook",
+  "inputsHash": "a469ea4605c8be20aab89260c5d0dac44a96abc80f20658978b623e2e055c6a0",
+  "generatedAt": "2026-10-27T11:20:30.580Z",
+  "sections": [
+    {
+      "title": "WebSockets and Streaming: The Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "WebSockets and Streaming: The Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Three Ways to Talk",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "HTTP",
+                "WebSocket",
+                "SSE"
+              ],
+              "rows": [
+                [
+                  "Flow",
+                  "One request, one response",
+                  "Both ways, any time",
+                  "Server to browser only"
+                ],
+                [
+                  "Connection",
+                  "Per request",
+                  "One upgraded TCP",
+                  "Plain HTTP"
+                ],
+                [
+                  "Type",
+                  "Any",
+                  "Full-duplex",
+                  "`text/event-stream`"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "WebSocket = ==one persistent== connection, upgraded from HTTP",
+                "Browser `EventSource` ==reconnects automatically== for SSE"
+              ],
+              "style": "dot",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Declaring Them",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@app.websocket('/ws')",
+                "async def f(websocket: WebSocket):",
+                "    ...",
+                "",
+                "StreamingResponse(gen(), media_type='text/plain')"
+              ],
+              "note": "gen() is a generator"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Path, query, header, cookie params work like normal routes",
+                "{red:No} `response_model`, {red:no} status code on a WebSocket",
+                "`StreamingResponse` sends ==chunks as produced==",
+                "Whole body is **never** held in memory"
+              ],
+              "style": "check",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Uploads",
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "UploadFile",
+              "text": "A ==spooled temp file==: small uploads stay in **memory**, large ones roll over to **disk**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "WebSocket Endpoint Workflow",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "WebSocket Endpoint Workflow",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Handshake first",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Declare with `@app.websocket('/ws')`",
+                "==await websocket.accept()== before any send or receive",
+                "Skipping it breaks the handshake"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Call order",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "`accept()`, then send/receive",
+                  "{green:OK}"
+                ],
+                [
+                  "send/receive first",
+                  "{red:RuntimeError}, Uvicorn answers **500**"
+                ],
+                [
+                  "`close()` before `accept()`",
+                  "Handshake rejected, **403**"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Receive, send, close",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each `receive_*` ==awaits== the next message",
+                "Echo loop: accept once, then receive and send forever"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Receive",
+                "Send"
+              ],
+              "rows": [
+                [
+                  "Text",
+                  "`receive_text()`",
+                  "`send_text(s)`"
+                ],
+                [
+                  "Bytes",
+                  "`receive_bytes()`",
+                  "`send_bytes(b)`"
+                ],
+                [
+                  "JSON",
+                  "`receive_json()`",
+                  "`send_json(data)`"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def echo(websocket):",
+                "    await websocket.accept()",
+                "    while True:",
+                "        data = await websocket.receive_text()",
+                "        await websocket.send_text(f\"You said: {data}\")"
+              ],
+              "note": "fragment: the handler body only"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Server closes with `await websocket.close(code=1000)`",
+                "==1008== = policy violation, the usual code for failed auth"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Order",
+              "text": "==accept()== first, always. Only then send, receive or close normally."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Disconnects and Broadcasting",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Disconnects and Broadcasting",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Disconnects",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Client leaves: the next receive raises ==WebSocketDisconnect==",
+                "Wrap the loop in `try/except WebSocketDisconnect`",
+                "{red:Clean up} in `except` or `finally`, or dead sockets pile up and sends fail"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Connection Manager",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "from fastapi import WebSocket",
+                "class ConnectionManager:",
+                "    active: list[WebSocket] = []; disconnect = lambda s, ws: ws in s.active and s.active.remove(ws)",
+                "    async def connect(self, ws): await ws.accept(); self.active.append(ws)",
+                "    async def broadcast(self, msg):",
+                "        for ws in list(self.active):",
+                "            try: await ws.send_text(msg)",
+                "            except Exception: self.disconnect(ws)"
+              ],
+              "note": "connect = accept + append; disconnect = remove"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "from fastapi import FastAPI, WebSocketDisconnect",
+                "app, manager = FastAPI(), ConnectionManager()",
+                "@app.websocket(\"/ws\")",
+                "async def chat(websocket: WebSocket):",
+                "    await manager.connect(websocket)",
+                "    try:",
+                "        while True: await manager.broadcast(await websocket.receive_text())",
+                "    except WebSocketDisconnect: manager.disconnect(websocket)"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Safe Broadcast",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Iterate a ==copy==: `list(self.active)`",
+                "Removing while iterating ==skips entries==",
+                "Drop sockets whose send raises"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Many Workers",
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "One process only",
+              "text": "`active` lives in a single process. Several workers or servers need ==Redis pub/sub== (or similar) to broadcast across them."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "StreamingResponse and Server-Sent Events",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "StreamingResponse and Server-Sent Events",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Streaming a generator",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`StreamingResponse(gen(), media_type='text/plain')` sends chunks as the generator ==yields== them",
+                "Takes a sync or async generator; prefer ==async def + yield==",
+                "A sync generator runs in a **threadpool**",
+                "`time.sleep` or blocking calls in an async generator {red:freeze every request}: use `await asyncio.sleep`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. SSE wire format",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each event is `data: <payload>\\n\\n`",
+                "The ==blank line== ends the event"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Field",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "`data:`",
+                  "the payload"
+                ],
+                [
+                  "`event:`",
+                  "event name"
+                ],
+                [
+                  "`id:`",
+                  "last event id"
+                ],
+                [
+                  "`retry:`",
+                  "reconnect delay (ms)"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Endpoint and client",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def gen():",
+                "    for i in range(3):",
+                "        yield f\"data: tick {i}\\n\\n\"",
+                "        await asyncio.sleep(1)",
+                "@app.get(\"/events\")",
+                "async def events():",
+                "    h = {\"Cache-Control\": \"no-cache\", \"X-Accel-Buffering\": \"no\"}",
+                "    return StreamingResponse(gen(), media_type=\"text/event-stream\", headers=h)"
+              ],
+              "note": "X-Accel-Buffering: no stops nginx buffering the stream"
+            },
+            {
+              "type": "code",
+              "lang": "javascript",
+              "lines": [
+                "const es = new EventSource('/events')",
+                "es.onmessage = e => console.log(e.data)"
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "EventSource limits",
+              "text": "==GET only== and no custom headers, so auth is awkward. Need that? Use a **WebSocket** or `fetch` streaming."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "File Responses and UploadFile",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "File Responses and UploadFile",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. FileResponse",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`FileResponse(path, filename='report.pdf')` ==streams== a file from disk",
+                "Sets `Content-Length`, `Content-Type`, `Content-Disposition`",
+                "Supports ==Range== requests",
+                "{red:Threat}: `../../etc/passwd` leaks files",
+                "{green:Fix}: `resolve()` the path, check it is inside base"
+              ],
+              "style": "dot",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@app.get(\"/files/{name}\")",
+                "async def get_file(name: str):",
+                "    path = (BASE / name).resolve()",
+                "    if not path.is_relative_to(BASE):",
+                "        raise HTTPException(404)",
+                "    return FileResponse(path, filename=\"report.pdf\")"
+              ],
+              "note": "BASE is your resolved base directory"
+            },
+            {
+              "type": "heading",
+              "text": "2. UploadFile",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`file: UploadFile` reads multipart form data; `list[UploadFile]` takes several",
+                "Both need `python-multipart` installed",
+                "Attributes: `filename`, `content_type`, `file`",
+                "Async methods: `read(size)`, `write()`, `seek()`, `close()`",
+                "`await file.read()` on a huge file loads it all into ==RAM=="
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def up(file: UploadFile):",
+                "    with open(dest, \"wb\") as out:",
+                "        while chunk := await file.read(1024 * 1024):",
+                "            out.write(chunk)"
+              ],
+              "note": "read in 1 MB chunks"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "bytes = File()",
+                "UploadFile"
+              ],
+              "rows": [
+                [
+                  "Storage",
+                  "all in memory",
+                  "spooled to disk"
+                ],
+                [
+                  "Use for",
+                  "tiny payloads",
+                  "anything large"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "3. Never Trust the Client",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`filename` and `content_type` are client-supplied",
+                "Validate ==size== and ==type==",
+                "Save under your own generated name"
+              ],
+              "style": "cross",
+              "ink": "red"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cheat Sheet: Realtime and Files",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Cheat Sheet: Realtime and Files",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. WebSocket and broadcast",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`accept()` first, then `receive_text/bytes/json()` and `send_text/bytes/json()`",
+                "Server close: `close(code=1000)`; ==1008== = failed auth"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def ws(websocket: WebSocket):",
+                "    await websocket.accept()",
+                "    try:",
+                "        while True:",
+                "            await websocket.send_text(await websocket.receive_text())",
+                "    except WebSocketDisconnect:",
+                "        pass",
+                "    finally: manager.disconnect(websocket)"
+              ],
+              "note": "remove the socket in finally"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Manager keeps an ==active list==; loop over `list(active)`",
+                "{red:Prune} sockets whose send raises",
+                "Many workers: ==Redis pub/sub=="
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Streams, SSE and files",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Call",
+                "Rule"
+              ],
+              "rows": [
+                [
+                  "Stream",
+                  "`StreamingResponse(gen(), media_type=...)`",
+                  "async generator"
+                ],
+                [
+                  "SSE",
+                  "`text/event-stream`, `data: x\\n\\n`",
+                  "`Cache-Control: no-cache`, GET only"
+                ],
+                [
+                  "Download",
+                  "`FileResponse(path, filename=...)`",
+                  "validated path"
+                ],
+                [
+                  "Upload",
+                  "`UploadFile`, chunked `read()`",
+                  "`python-multipart`; check name, type, size"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never block",
+              "text": "`time.sleep` in a generator freezes every request. Use `await asyncio.sleep`."
+            },
+            {
+              "type": "sidebox",
+              "title": "Interview Point",
+              "items": [
+                "**Client leaves?** Next receive raises `WebSocketDisconnect`.",
+                "**Why copy the list?** Removing while iterating skips entries.",
+                "**SSE auth?** EventSource is GET only."
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "The endpoint's first line is `data = await websocket.receive_text()`, with no accept. What happens?",
+              "a_bullets": [
+                "RuntimeError; Uvicorn answers the handshake with a 500.",
+                "Fix: `await websocket.accept()` first. close() before accept would give a 403."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Broadcast loops `for ws in self.active:` and calls `self.active.remove(ws)` when a send fails. What is the bug?",
+              "a_bullets": [
+                "Removing while iterating skips the next socket.",
+                "Iterate `list(self.active)` and prune the failures."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "An async generator behind an SSE endpoint calls `time.sleep(1)` between events. What breaks?",
+              "a_bullets": [
+                "It blocks the event loop, so every request freezes.",
+                "Use `await asyncio.sleep(1)`."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

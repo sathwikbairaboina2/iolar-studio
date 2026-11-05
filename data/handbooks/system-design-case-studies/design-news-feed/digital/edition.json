@@ -1,0 +1,2290 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-news-feed",
+  "category": "system-design",
+  "inputsHash": "ae29afb522daa35db6e245358a381fd3d31c65c7bf7d1dda941724bf0c572a5c",
+  "generatedAt": "2026-10-28T12:47:08.543Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Requirements and Scale",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Requirements and Scale",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope (Instagram Feed)",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Post== a photo or video",
+                "==Follow== and unfollow an account",
+                "==View== the home feed",
+                "==Like== a post",
+                "==Comment== on a post"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Out of scope}: stories",
+                "{red:Out of scope}: DMs",
+                "{red:Out of scope}: search"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "heading",
+              "text": "2. Requirements",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Feed shows posts from ==followed accounts== only",
+                "Order: **newest-relevant first**, not pure time",
+                "==Infinite scroll==: the client keeps asking for the next page"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Non-functional",
+                "Target",
+                "Meaning"
+              ],
+              "rows": [
+                [
+                  "Latency",
+                  "feed load ==p99 < 300 ms==",
+                  "99% of opens are faster than this"
+                ],
+                [
+                  "Availability",
+                  "==99.99%==",
+                  "about 52 min of downtime a year"
+                ],
+                [
+                  "Consistency",
+                  "**eventual**",
+                  "new post visible within ~5 s is fine"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Scale Estimates",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==500M DAU==, 100M new posts/day",
+                "Writes: 100M / 86,400 s = ~1,150 posts/s avg, ~3,500/s peak"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Feed reads",
+                "steps": [
+                  {
+                    "text": "500M DAU",
+                    "note": "daily users",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "x 10 opens",
+                    "note": "per user per day",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "5B opens/day",
+                    "note": "total reads",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "/ 86,400 s",
+                    "note": "~58K QPS avg",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Peak",
+                    "note": "~170K QPS",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Quantity",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Post writes",
+                  "100M / day",
+                  "~1,150/s avg, ~3,500/s peak"
+                ],
+                [
+                  "Feed reads",
+                  "500M x 10 = 5B / day",
+                  "~58K QPS avg, ~170K peak"
+                ],
+                [
+                  "Read:write",
+                  "58K / 1,150",
+                  "==~50:1== (read-heavy)"
+                ],
+                [
+                  "Media storage",
+                  "100M x 2 MB",
+                  "==200 TB/day==, ~73 PB/year"
+                ],
+                [
+                  "Metadata",
+                  "100M x ~1 KB",
+                  "100 GB/day"
+                ]
+              ],
+              "highlightRow": 3,
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Reads are ==~50x== writes, so optimize the **read path**. Media (200 TB/day) dwarfs metadata (100 GB/day): store them separately."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Eight Components",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Component",
+                "Job"
+              ],
+              "rows": [
+                [
+                  "==API gateway==",
+                  "Auth, rate limit, routes each call to a service"
+                ],
+                [
+                  "**Post Service**",
+                  "Validates a post, stores metadata, emits `PostCreated`"
+                ],
+                [
+                  "**Graph Service**",
+                  "Who follows whom: `followers(u)` and `following(u)`"
+                ],
+                [
+                  "**Fan-out Service**",
+                  "Workers that push `post_id` into followers' feeds"
+                ],
+                [
+                  "**Feed Service**",
+                  "Builds the home feed: cache, hydrate, merge"
+                ],
+                [
+                  "**Ranking Service**",
+                  "Orders candidates by predicted engagement"
+                ],
+                [
+                  "**Media Service**",
+                  "Pre-signed uploads, transcode, CDN URLs"
+                ],
+                [
+                  "**Counter Service**",
+                  "Likes and comment counts via Redis `INCR`"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Write Path: Post Then Fan Out",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Write path (~1,150 posts/s avg, ~3,500/s peak)",
+                "steps": [
+                  {
+                    "text": "Client",
+                    "note": "POST /v1/posts",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Post Service",
+                    "note": "validate, save",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "DB + Kafka",
+                    "note": "PostCreated event",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Fan-out workers",
+                    "note": "read followers",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Feed cache",
+                    "note": "Redis ZSET insert",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Post Service returns after ==DB write + event==, not after fan-out",
+                "Fan-out is ==async==: ~200 followers x 1,150/s = ~230K feed inserts/s",
+                "New post visible in feeds within ~5 s (eventual consistency)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Read Path: Cache, Hydrate, Rank",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "GET /v1/feed",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Feed Service",
+                    "sub": "entry point",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Redis feed",
+                    "sub": "post_ids only",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Hydrate",
+                    "sub": "posts + counters",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Rank",
+                    "sub": "Ranking Service",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Response",
+                    "sub": "20 posts",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Reads (~58K QPS avg, ~170K peak) touch only the ==precomputed cache==",
+                "Reads ==never block on fan-out==; a half-done fan-out just means a slightly stale feed",
+                "Target: feed p99 under ==300 ms=="
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Where Data Lives",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Store",
+                "Holds",
+                "Sharded by"
+              ],
+              "rows": [
+                [
+                  "==MySQL / Cassandra==",
+                  "Post metadata (~1 KB each)",
+                  "`author_id`"
+                ],
+                [
+                  "**Graph store**",
+                  "Follow edges, both directions",
+                  "`user_id`"
+                ],
+                [
+                  "**Redis**",
+                  "Feeds (ZSET of post_ids), counters",
+                  "`user_id`"
+                ],
+                [
+                  "**S3 + CDN**",
+                  "Photo/video blobs (~200 TB/day)",
+                  "object key"
+                ]
+              ],
+              "highlight": false,
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Async is the design",
+              "text": "**Kafka** decouples posting from fan-out: ==post latency stays low==, and read latency never depends on write load."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Post Service: Publishing a Post",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Post Service: Publishing a Post",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Upload Flow",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: **Instagram Feed**. Post Service owns ==metadata== only; media bytes go straight to S3."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Validate== the request: caption length, media_id exists and is owned by the author",
+                "==Store== post metadata in the posts table",
+                "==Emit== a `PostCreated` event to Kafka for fan-out",
+                "Media is uploaded **separately**, never through Post Service"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Pre-signed URL",
+                    "sub": "client asks Media Service",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PUT to S3",
+                    "sub": "direct upload",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "POST /v1/posts",
+                    "sub": "with media_id",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Transcode",
+                    "sub": "async workers",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "PUBLISHED",
+                    "sub": "visible in feeds",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Post States",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "u",
+                    "p",
+                    "d"
+                  ],
+                  [
+                    "f"
+                  ]
+                ],
+                "nodes": {
+                  "u": {
+                    "text": "UPLOADING",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "p": {
+                    "text": "PROCESSING",
+                    "shape": "box",
+                    "ink": "orange"
+                  },
+                  "d": {
+                    "text": "PUBLISHED",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "f": {
+                    "text": "FAILED",
+                    "shape": "pill",
+                    "ink": "red"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "u",
+                    "to": "p",
+                    "label": "POST /v1/posts"
+                  },
+                  {
+                    "from": "p",
+                    "to": "d",
+                    "label": "transcode ok"
+                  },
+                  {
+                    "from": "p",
+                    "to": "f",
+                    "label": "retries exhausted"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`posts(post_id, author_id, caption, media_ids, created_at)`",
+                "`post_id` = ==Snowflake== 64-bit, time-sortable, no central counter",
+                "==Sharded by author_id==: an author's posts live on one shard"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "API",
+                "Purpose",
+                "Notes"
+              ],
+              "rows": [
+                [
+                  "`POST /v1/posts`",
+                  "Create post",
+                  "needs `Idempotency-Key`"
+                ],
+                [
+                  "`GET /v1/posts/{id}`",
+                  "Read one post",
+                  "only PUBLISHED is visible"
+                ],
+                [
+                  "`DELETE /v1/posts/{id}`",
+                  "Remove post",
+                  "author only"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /v1/posts",
+                "Idempotency-Key: 7f3a-91c2",
+                "{\"media_id\":\"m_91\",\"caption\":\"Sunset\"}",
+                "",
+                "201 {\"post_id\":\"1846...\",",
+                "     \"status\":\"PROCESSING\"}"
+              ],
+              "note": "a retry with the same key returns the same post_id, no duplicate"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Transactional outbox",
+                "steps": [
+                  {
+                    "text": "One DB transaction",
+                    "note": "insert post + outbox row",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Relay polls outbox",
+                    "note": "reads unsent rows",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Publish PostCreated",
+                    "note": "to Kafka",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Mark row sent",
+                    "note": "crash before this = resend",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Failure: post saved but event lost, so followers never see it",
+                "==Outbox== guarantees `PostCreated` is published at least once",
+                "Consumers dedupe by `post_id`",
+                "Metric: publish ==p99 under 500 ms==",
+                "Metric: error rate ==under 0.1%=="
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Never write the DB and publish to Kafka as two separate steps. Use the ==outbox==, and make the POST idempotent with a key."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Follow Graph Service",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Follow Graph Service",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Data Model",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stores ==who follows whom== for the Instagram feed",
+                "Answers `followers(user)` and `following(user)` fast",
+                "Feeds the Fan-out Service (who to push to) and Feed Service (who to pull from)",
+                "Estimate: 500M users x 200 edges = ~100B rows, ~16 B each, ~1.6 TB per table"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Table",
+                "Columns",
+                "Shard key",
+                "Answers"
+              ],
+              "rows": [
+                [
+                  "`following`",
+                  "`user_id`, `followee_id`",
+                  "`user_id`",
+                  "Who do I follow?"
+                ],
+                [
+                  "`followers`",
+                  "`user_id`, `follower_id`",
+                  "`user_id`",
+                  "Who follows me?"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Follow Flow and APIs",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Write 2 edges",
+                    "sub": "following + followers",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Update counts",
+                    "sub": "follower / following",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Backfill",
+                    "sub": "followee's recent posts",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Follower's feed",
+                    "sub": "Redis list updated",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Call",
+                "Path",
+                "Does"
+              ],
+              "rows": [
+                [
+                  "`POST`",
+                  "`/v1/users/{id}/follow`",
+                  "Follow {id}"
+                ],
+                [
+                  "`DELETE`",
+                  "`/v1/users/{id}/follow`",
+                  "Unfollow {id}"
+                ],
+                [
+                  "`GET`",
+                  "`/v1/users/{id}/followers?cursor=`",
+                  "One page of followers"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each lookup is ==one shard==: the key is always `user_id`",
+                "Followers list is **cursor-paged**: a 600M list cannot use offsets"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failures",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "The two edges live on ==different shards==, so one write can land and the other fail",
+                "A **repair job** compares both tables and fixes the missing edge",
+                "Unfollow does NOT scan feeds: stale posts are purged ==lazily at read time=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Feed read after an unfollow",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Author still in following(user)?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Keep post",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "b": {
+                    "text": "Drop post",
+                    "shape": "box",
+                    "ink": "red"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Unfollow",
+              "text": "The cached feed keeps the old post_ids. The ==read-time filter== against `following` is what hides them, not a delete."
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Follow QPS}: writes to both tables, watch for spikes",
+                "{green:Graph read p99}: ==under 10 ms==",
+                "{orange:Edge-count skew}: max followers ~==600M== on one account",
+                "{red:Repair backlog}: edges still waiting to be reconciled"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Fan-out on Write vs Fan-out on Read",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Fan-out on Write vs Fan-out on Read",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "(Instagram Feed) Two ways to build a home feed: do the work when a post is written, or when the feed is opened."
+            },
+            {
+              "type": "heading",
+              "text": "1. Fan-out on Write (Push)",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "At post time, ==insert post_id== into **every follower's** feed list",
+                "Feed list lives in the Redis feed cache",
+                "Read = one cache lookup, ==O(1)== in the number of followed accounts",
+                "Write = **O(followers)** inserts per post"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Post created",
+                    "sub": "PostCreated event",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Graph lookup",
+                    "sub": "followers(author)",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Fan-out workers",
+                    "sub": "1 insert per follower",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Feed cache",
+                    "sub": "feed:{follower}",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Fan-out on Read (Pull)",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "At read time, fetch recent posts of **all N followed accounts**",
+                "Merge the N timelines by time, then rank",
+                "Write = a single post row, ==O(1)==",
+                "Read = **O(N)** fetches plus a merge on every open",
+                "Data is always {green:fresh}: nothing precomputed to go stale"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Cost and Comparison",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Push: 200 followers x 100M posts/day = ==20B feed inserts/day==",
+                "20B / 86,400 s = ~**230K inserts/s** (vs ~1,150 posts/s avg)",
+                "Pull: ~200 timelines merged per open, at ==170K QPS peak==",
+                "170K x 200 = ~**34M timeline fetches/s** at peak"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Push (on write)",
+                "Pull (on read)"
+              ],
+              "rows": [
+                [
+                  "Read speed",
+                  "{green:fast}, O(1) cache hit",
+                  "{red:slow}, N fetches + merge"
+                ],
+                [
+                  "Write cost",
+                  "{red:heavy}, one insert per follower",
+                  "{green:cheap}, one row"
+                ],
+                [
+                  "Freshness",
+                  "feed can lag by fan-out time",
+                  "always fresh"
+                ],
+                [
+                  "Waste",
+                  "inserts for **inactive** users",
+                  "repeated merges on every open"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Pushing to users who have not opened the app in ==30 days==",
+                "Their feed lists fill Redis for nobody to read",
+                "Skip them; ==rebuild on login== with a pull and write it back"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Push moves cost to the **write**, pull moves it to the **read**. Reads outnumber writes ~50:1, so the feed is ==pushed by default==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "The Celebrity Problem and Hybrid Fan-out",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "The Celebrity Problem and Hybrid Fan-out",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Problem",
+              "ink": "red"
+            },
+            {
+              "type": "paragraph",
+              "text": "Instagram Feed: pure push fan-out breaks on one account with a huge follower count."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Account with ==100M followers== posts once",
+                "Push writes ==100M feed inserts== for that one post",
+                "At ~230K inserts/s that takes ==minutes==, not seconds",
+                "Writes pile onto the same shards: {red:hot shards}",
+                "Followers see the post at very different times"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Hybrid Fan-out",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Author",
+                "Followers",
+                "Strategy",
+                "Post goes to"
+              ],
+              "rows": [
+                [
+                  "Normal user",
+                  "below ~1M",
+                  "{green:Push}",
+                  "each follower's feed list"
+                ],
+                [
+                  "Celebrity",
+                  "~1M and above",
+                  "{purple:Pull}",
+                  "author's own recent-posts list only"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Fan-out decision per post",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Followers over threshold?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Skip fan-out, keep in author list",
+                    "shape": "box",
+                    "ink": "purple"
+                  },
+                  "b": {
+                    "text": "Fan-out workers push to followers",
+                    "shape": "box",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Read-time Merge",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Feed = precomputed list + celebrity posts",
+                "steps": [
+                  {
+                    "text": "Feed list",
+                    "note": "post_ids pushed from normal users",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Celebrity fetch",
+                    "note": "last 20 posts per followed celebrity",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Merge",
+                    "note": "by time or score",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Rank and return",
+                    "note": "one page of 20",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Example: user follows ==5 celebrities==",
+                "Read fetches ==20 posts each== = 100 extra candidates",
+                "Each celebrity's last 20 is ==cached once==, shared by all followers",
+                "Merge them with the pushed list, newest or highest score first"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Threshold too low: more authors become pull, so ==read load== explodes",
+                "Every feed open merges more celebrity timelines",
+                "Threshold set by guess and never revisited"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Setting the threshold",
+              "items": [
+                "Derive it from ==measured write cost== per follower",
+                "Start near 1M followers, then tune",
+                "==Re-evaluate periodically== as traffic and follower counts change"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Push for normal users, ==pull for celebrities==, merge at read time. The threshold trades write cost against read cost."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Feed Cache and Feed Generation",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Feed Cache and Feed Generation",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Instagram News Feed: the home feed is read from a **Redis** cache of ids, never assembled from the database on the hot path."
+            },
+            {
+              "type": "heading",
+              "text": "1. What the Cache Holds",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Feed Service serves the home feed from ==Redis==",
+                "Stores ==post_ids only==, not full posts",
+                "Metadata and counters are fetched at read time, so edits and likes are never stale in the cache"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Key: sorted set `feed:{user_id}`",
+                "{blue:Member} = post_id (8 bytes)",
+                "{blue:Score} = post time in ==milliseconds==; ties on the same ms break by post_id",
+                "Capped at ==800 entries== per user: trim after every insert",
+                "Never use a raw 64-bit Snowflake id as the score: doubles hold integers exactly only up to 2^53"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "ZADD feed:42 1767000000123 98123",
+                "ZREMRANGEBYRANK feed:42 0 -801",
+                "ZREVRANGE feed:42 0 19"
+              ],
+              "note": "insert, keep newest 800, read newest 20"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Memory",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Per user",
+                  "800 post_ids x 8 B",
+                  "~6.4 KB"
+                ],
+                [
+                  "All users",
+                  "500M x 6.4 KB",
+                  "~3.2 TB, sharded Redis cluster"
+                ],
+                [
+                  "Inactive user",
+                  "no open for 7 days",
+                  "key expires (TTL 7 days)"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Read Flow and API",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "ZREVRANGE",
+                    "sub": "candidate ids",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Multi-get",
+                    "sub": "metadata + counters",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Merge",
+                    "sub": "celebrity posts",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Rank",
+                    "sub": "ML score",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Return",
+                    "sub": "20 posts + cursor",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`GET /v1/feed?cursor=&limit=20`",
+                "Cursor is the last `(score, post_id)` returned; the next page reads below it",
+                "{red:Cold miss} (new, expired or lost key): rebuild from the graph with ==pull==",
+                "Rebuild fetches followees' recent posts, then ==writes back== into the ZSET"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redis shard lost: its feeds vanish, nothing else breaks",
+                "Rebuild ==lazily== via pull on each user's next open",
+                "No bulk re-fan-out, so no write storm after recovery"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Targets",
+              "items": [
+                "Cache hit rate over ==95%==",
+                "Feed load p99 under ==300 ms==",
+                "Peak ~170K feed reads/s hit this cache"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "The cache holds **ids only** (800 x 8 B = ~6.4 KB per user, ~3.2 TB total). A lost shard is a ==cache miss==, not data loss: the graph can always rebuild it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Feed Ranking",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Feed Ranking",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What Ranking Does",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Order== candidates by **predicted engagement**, not pure time",
+                "Input: ~500 candidate post_ids from the feed cache plus the celebrity merge",
+                "Output: the top page of 20 posts for `GET /v1/feed`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Pipeline and Features",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Candidates",
+                    "sub": "~500 posts",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Light scoring",
+                    "sub": "cheap model, cut to 100",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Heavy ML model",
+                    "sub": "top ~100 only",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Diversity re-rank",
+                    "sub": "mix authors and media",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Feature",
+                "Signal",
+                "Example"
+              ],
+              "rows": [
+                [
+                  "Author affinity",
+                  "how often you engage with this author",
+                  "liked 8 of their last 10 posts"
+                ],
+                [
+                  "Post age",
+                  "time since `created_at`",
+                  "2 h old beats 2 days old"
+                ],
+                [
+                  "Past likes / comments",
+                  "your history on similar posts",
+                  "you often comment on travel"
+                ],
+                [
+                  "Media type",
+                  "photo, video or reel",
+                  "you watch videos to the end"
+                ],
+                [
+                  "Engagement velocity",
+                  "likes per minute since posting",
+                  "500 likes in the first 10 min"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Score and Latency Budget",
+              "ink": "purple"
+            },
+            {
+              "type": "sidebox",
+              "title": "Score",
+              "items": [
+                "`score = P(like)*w1 + P(comment)*w2 + P(share)*w3`",
+                "Then ==decay by post age== so old posts sink",
+                "Weights w1, w2, w3 are tuned by A/B tests",
+                "Heavy model budget: {red:under 50 ms}"
+              ],
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Stage",
+                "Posts in",
+                "Budget (est.)"
+              ],
+              "rows": [
+                [
+                  "Light scoring",
+                  "~500",
+                  "~5 ms"
+                ],
+                [
+                  "Heavy ML model",
+                  "~100",
+                  "~30 ms"
+                ],
+                [
+                  "Diversity re-rank",
+                  "~100",
+                  "~5 ms"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Ranker call",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Ranker answered in 50 ms?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Return ranked page",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "b": {
+                    "text": "Reverse-chronological order",
+                    "shape": "box",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "timeout"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Time spent== per session",
+                "==Like-through rate==: likes per impression",
+                "==Ranking latency p99== under 50 ms",
+                "==A/B experiment lift== vs the control ranker"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never block the feed",
+              "text": "A slow ranker must **never** fail the request: on timeout, serve newest-first from the cached post_ids."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Media Storage, Processing and CDN",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Media Storage, Processing and CDN",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Running example: **Instagram Feed**. Media is ==200 TB/day== (100M posts x 2 MB), so bytes never touch app servers."
+            },
+            {
+              "type": "heading",
+              "text": "1. Upload and Processing",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Pre-signed URL",
+                    "sub": "from Media Service",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PUT to S3",
+                    "sub": "direct from client",
+                    "ink": "green"
+                  },
+                  {
+                    "type": "x",
+                    "text": "Upload event",
+                    "sub": "Kafka",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Transcode workers",
+                    "sub": "async renditions",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Media READY",
+                    "sub": "post can PUBLISH",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Client asks for a ==pre-signed URL==, then PUTs straight to the object store (S3)",
+                "App servers are **bypassed**: no upload bandwidth or memory on the API tier",
+                "Large videos use ==multipart upload==: parallel parts, retry only the failed part",
+                "Workers transcode to ==240p, 480p, 720p, 1080p== and generate thumbnails",
+                "Processing is **async**: the upload call returns before transcode finishes"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Data Model and Storage",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Column",
+                "Holds"
+              ],
+              "rows": [
+                [
+                  "`media_id`",
+                  "primary key, referenced by `posts.media_ids`"
+                ],
+                [
+                  "`owner_id`",
+                  "uploader (author_id of the post)"
+                ],
+                [
+                  "`object_key`",
+                  "S3 key of the original blob"
+                ],
+                [
+                  "`type`",
+                  "photo or video"
+                ],
+                [
+                  "`renditions`",
+                  "list of resolution to object key"
+                ],
+                [
+                  "`status`",
+                  "PROCESSING, READY or FAILED"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Metadata lives in the DB; blobs live only in the object store",
+                "Durability: ==3x replication== or ==erasure coding== (cheaper per byte, slower rebuild)"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. CDN Delivery",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Clients fetch media from the ==edge cache==, not from S3",
+                "Target ==cache hit ratio over 95%==",
+                "Target ==edge latency under 50 ms==",
+                "Misses go to the origin (S3); the ==origin shield== collapses them into one fetch per object"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "sidebox",
+              "title": "Immutable URL rules",
+              "items": [
+                "Put the ==content hash== in the object key",
+                "Same bytes give the same URL; new bytes give a new URL",
+                "Cache with a long TTL, never purge",
+                "An edit is a new key, so no stale copies"
+              ],
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Transcode failure",
+                "steps": [
+                  {
+                    "text": "Job fails",
+                    "note": "worker crash or bad file",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Retry with backoff",
+                    "note": "increasing delay, capped attempts",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Mark FAILED",
+                    "note": "post stays unpublished",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "CDN hit ratio",
+                  "over 95%",
+                  "protects origin"
+                ],
+                [
+                  "Upload success rate",
+                  "over 99.5%",
+                  "lost uploads are lost posts"
+                ],
+                [
+                  "Time to first byte",
+                  "under 50 ms at edge",
+                  "feels instant on scroll"
+                ],
+                [
+                  "Egress cost per GB",
+                  "track weekly",
+                  "biggest bill at 200 TB/day"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Bytes go ==client to S3 to CDN==, never through app servers. Hash in the key means ==immutable==, so hit ratio stays high."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Pagination, Likes and Comments Counters",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Pagination, Likes and Comments Counters",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Cursor Pagination",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Offset} pagination breaks on feeds: a new post shifts every item down",
+                "Page 2 then repeats items already seen on page 1: ==duplicates==",
+                "Use a ==cursor==: an **opaque token** that encodes the last `(score, post_id)`",
+                "Score = ==millisecond timestamp==; same-millisecond ties are broken by `post_id`",
+                "Client sends the token back: `GET /v1/feed?cursor=<token>&limit=20`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "# page 1",
+                "ZREVRANGEBYSCORE feed:42 +inf -inf WITHSCORES LIMIT 0 20",
+                "# next page: score taken from the cursor",
+                "ZREVRANGEBYSCORE feed:42 1730100000123 -inf WITHSCORES LIMIT 0 20"
+              ],
+              "note": "Inclusive score; drop ids at that score already seen"
+            },
+            {
+              "type": "sidebox",
+              "title": "Cursor rules",
+              "items": [
+                "Opaque: the client never parses or builds it",
+                "Do not use a raw 64-bit Snowflake id as the score: doubles are exact only up to 2^53",
+                "New posts land above the cursor, so they never shift the next page"
+              ],
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Likes and Counters",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Like tap",
+                    "sub": "user_id, post_id",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "SET NX",
+                    "sub": "dedupe key",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "INCR",
+                    "sub": "only if new",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "LikeCreated",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Consumer",
+                    "sub": "INSERT likes, flush ~1 s",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Source of truth: `likes(post_id, user_id)` with a ==unique key==, so a retry is idempotent",
+                "Count kept ==separately==: `COUNT(*)` over millions of rows is too slow",
+                "Peak ~==100K like events/s==: Redis `INCR` absorbs them, the DB gets batched writes",
+                "A retried like finds the dedupe key set: no second INCR, no duplicate row"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Hot Posts and Comments",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Data",
+                "Key / layout",
+                "Read path"
+              ],
+              "rows": [
+                [
+                  "Normal like count",
+                  "`likes:{post_id}`",
+                  "one `GET`"
+                ],
+                [
+                  "Hot post count",
+                  "==16 sub-counters== per post",
+                  "`MGET` all 16, sum"
+                ],
+                [
+                  "Comments",
+                  "`(post_id, created_at)`",
+                  "cursor page, limit 20"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "INCR likes:9001:7   # shard = user_id % 16",
+                "MGET likes:9001:0 likes:9001:1 ... likes:9001:15"
+              ],
+              "note": "Writes spread over 16 keys; the sum is the count"
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Exact synchronous counts under contention: every like locks the same row or key",
+                "One counter key for a viral post: a single hot shard takes all the writes"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Accept approximate",
+              "text": "Show ==approximate== counts, then **reconcile nightly** from the likes table, the source of truth."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Running example: Instagram News Feed at 500M DAU, ~170K peak read QPS, feed p99 under 300 ms."
+            },
+            {
+              "type": "heading",
+              "text": "1. Scaling the feed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Data",
+                "Shard key",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Posts",
+                  "==author_id==",
+                  "one author's posts live on one shard"
+                ],
+                [
+                  "Feeds (Redis)",
+                  "==user_id==",
+                  "one feed read hits one shard, ~3.2 TB total"
+                ],
+                [
+                  "Follow graph",
+                  "`user_id`",
+                  "each lookup hits one shard"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Add ==read replicas== for posts and graph: reads are ~50:1 over writes",
+                "{blue:Multi-region}: a ==local feed cache== per region keeps p99 under 300 ms",
+                "Posts replicate across regions async; a new post visible in ~5 s is fine"
+              ],
+              "style": "dot",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Failure handling",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "PostCreated",
+                    "sub": "Kafka event",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Fan-out worker",
+                    "sub": "fails",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Retry",
+                    "sub": "3x, backoff",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Dead-letter queue",
+                    "sub": "alert + replay",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Idempotent fan-out}: `ZADD` of the same post_id is a no-op, so a replay adds no duplicates",
+                "{orange:Ranker timeout} (budget 50 ms): fall back to ==reverse-chronological== order",
+                "{red:Redis shard lost}: serve a ==cached stale feed==, rebuild lazily by pull"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Choice",
+                "We pick",
+                "We pay"
+              ],
+              "rows": [
+                [
+                  "Push vs pull",
+                  "push for normal users, pull for celebrities",
+                  "complexity of a read-time merge"
+                ],
+                [
+                  "Consistency vs availability",
+                  "==availability==, eventual feed",
+                  "a post can lag ~5 s"
+                ],
+                [
+                  "Storage vs read latency",
+                  "precomputed feeds, 800 IDs/user",
+                  "~3.2 TB of Redis for O(1) reads"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview questions",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Celebrity posts?** ==Hybrid fan-out==: push for normal users, pull above ~1M followers, merge at read time",
+                "**Duplicates in pagination?** ==Cursor on (score, post_id)== plus dedupe of seen ids; never offsets"
+              ],
+              "style": "star",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "ZREVRANGEBYSCORE feed:{user_id} <cursor_score> -inf LIMIT 0 40",
+                "# drop ids already seen or ties with post_id >= cursor post_id"
+              ],
+              "note": "ties on one millisecond are broken by post_id"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Every failure path has a ==fallback feed==: stale cache or chronological. A slow feed is worse than a plainer feed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "News Feed Cheatsheet",
+      "role": "outline",
+      "outlineIndex": 12,
+      "pages": [
+        {
+          "title": "News Feed Cheatsheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Numbers (Instagram News Feed)",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Daily active users",
+                  "==500M== DAU"
+                ],
+                [
+                  "Feed reads",
+                  "5B opens/day = ~**58K** QPS avg, **170K** peak"
+                ],
+                [
+                  "Post writes",
+                  "100M/day = ~**1,150**/s avg (3,500 peak)"
+                ],
+                [
+                  "Read:write",
+                  "~50:1"
+                ],
+                [
+                  "Media",
+                  "100M x 2 MB = ==200 TB/day=="
+                ],
+                [
+                  "Feed latency",
+                  "p99 under 300 ms"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "2. Fan-out and Feed Cache",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Fan-out choice per post",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Author above ~1M followers?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Pull: merge their last 20 posts at read",
+                    "shape": "box",
+                    "ink": "orange"
+                  },
+                  "b": {
+                    "text": "Push: add post_id to follower feeds",
+                    "shape": "box",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Skip inactive users} (30 days): rebuild their feed on login",
+                "Push cost: 200 followers x 100M posts = 20B inserts/day (~230K/s)",
+                "Feed = ==Redis ZSET== `feed:{user_id}`: score = timestamp ms, member = post_id",
+                "Capped at ==800== entries x 8 B = 6.4 KB/user; 500M users = ~==3.2 TB==",
+                "Cache hit rate over ==95%==; miss rebuilds by pull; TTL 7 days if inactive"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Ranking",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "~500 candidates",
+                    "sub": "cache + celebrities",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "ML top 100",
+                    "sub": "P(like), P(comment), P(share)",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Diversity re-rank",
+                    "sub": "mix authors, media",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Response",
+                    "sub": "under 50 ms budget",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Ranker timeout: fall back to {green:reverse-chronological} order"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Pagination and Counters",
+              "ink": "orange"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "ZREVRANGEBYSCORE feed:42 (1730000000000 -inf LIMIT 0 20"
+              ],
+              "note": "cursor = (score, post_id); drop already-seen ids"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Offset paging {red:duplicates} when new posts shift items",
+                "Likes: `INCR` in Redis, flush batched to DB about every 1 s via Kafka",
+                "Hot post: split into ==16 sub-counters==, sum on read",
+                "Counts are approximate; reconcile nightly from the likes table"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Push for normal users, pull for ==celebrities==, cache only post_ids, and never make a read wait on fan-out."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A user has read page 1 (items 1-20) of their feed. Five new posts arrive, then the client asks for page 2 with offset=20. What does the user see, and what is the fix?",
+              "a_bullets": [
+                "The five new posts push every older item down by 5 positions",
+                "Offset 20 now starts at what used to be item 16, so items 16-20 appear a second time",
+                "Fix: cursor pagination, where the cursor is the last (score, post_id) seen",
+                "The query becomes ZREVRANGEBYSCORE below the cursor, so new posts at the top cannot shift it"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A team sets the celebrity threshold to 10K followers, so every account above it is pull-based. Writes get cheaper. What breaks?",
+              "a_bullets": [
+                "Many more accounts become pull-based, so each feed read must fetch and merge many more celebrity timelines",
+                "That work lands on the read path, which already runs at ~170K QPS peak with a p99 budget of 300 ms",
+                "Feed latency rises and the ranking budget shrinks",
+                "Set the threshold from measured write cost (e.g. ~1M followers) and re-evaluate it periodically"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A user unfollows an account, but its old posts still show up in their feed. Why, and how should it be handled?",
+              "a_bullets": [
+                "The feed ZSET holds post_ids that were pushed in earlier, and unfollowing does not remove them",
+                "Eagerly scanning and deleting from the cached list is expensive and racy",
+                "Handle it lazily: at read time, hydrate the posts and drop any whose author is no longer followed",
+                "The old entries then age out as the list hits its 800-entry cap or its TTL"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The Post Service commits the post row to the DB, then crashes before publishing PostCreated to Kafka. What does the author see, and what prevents it?",
+              "a_bullets": [
+                "The post exists in the DB, so the author can open it",
+                "No fan-out workers ever get the event, so no follower's feed gets the post",
+                "Fix: transactional outbox. Write the post and an outbox row in the same DB transaction",
+                "A relay publishes outbox rows to Kafka and retries until it succeeds",
+                "Fan-out must be idempotent, because the relay can deliver an event more than once"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A viral post gets ~100K like events/s through a single Redis INCR key. Likes are also retried by clients. What goes wrong, and what is the fix for each problem?",
+              "a_bullets": [
+                "One key lives on one Redis shard, so that shard becomes a hot spot",
+                "Fix: split the counter into N sub-counters (e.g. 16), INCR a random one, and sum all 16 on read",
+                "A client retry would count the same like twice",
+                "Fix: insert into likes(post_id, user_id) with a unique key, and INCR only if the insert is new",
+                "The counts are approximate, so reconcile them from the likes table nightly"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

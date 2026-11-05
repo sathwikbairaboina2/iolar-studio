@@ -1,0 +1,115 @@
+{
+  "title": "Resilience Patterns: Timeouts, Retries, Circuit Breakers and Containing Failures",
+  "summary": "Quick revision notes on keeping a service alive when its dependencies misbehave: timeouts, retries with backoff and jitter, circuit breakers, bulkheads, rate limiting, fallbacks, and how to stop cascading failures.",
+  "chapters": [
+    {
+      "title": "Failure Containment Mental Model",
+      "points": [
+        "Resilience pattern = a rule that limits how far one slow or failing dependency can hurt its callers; slow is worse than down because callers hold threads, sockets and memory while waiting",
+        "Cascading failure: a slow service backs up callers' thread pools, their callers time out and retry, load multiplies upstream until the whole system collapses",
+        "Failure containment layers, outermost to innermost: rate limit (shed excess load), timeout (bound wait), retry (recover transient faults), circuit breaker (stop calling a sick dependency), bulkhead (isolate resources), fallback (degrade gracefully)",
+        "Transient vs permanent faults: retry only transient ones (timeouts, 503, connection reset, 429); never retry 4xx validation or auth errors (400, 401, 403, 404)",
+        "Little's Law: concurrency in flight = arrival rate x latency, so a latency spike from 50 ms to 5 s on 100 req/s needs 100x more threads and exhausts the pool"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Timeouts and Retries with Backoff and Jitter",
+      "points": [
+        "Every network call needs an explicit timeout: connect timeout (short, ~1 s) separate from read/request timeout (based on the dependency's p99 latency, e.g. p99 x 1.5); default of infinite or 30-60 s is the classic outage cause",
+        "Deadline propagation: pass one overall deadline down the call chain (e.g. gRPC deadline, X-Request-Deadline header) so downstream calls never outlive the caller who has already given up",
+        "Exponential backoff: wait = min(cap, base x 2^attempt), e.g. 100 ms, 200 ms, 400 ms, 800 ms capped at 10 s, giving the dependency room to recover",
+        "Jitter: randomize the wait to break synchronized retries; full jitter = random(0, min(cap, base x 2^attempt)) beats plain backoff in spreading load (AWS recommendation); equal jitter = half fixed plus half random",
+        "Retry rules: cap attempts (usually 3), retry only idempotent operations or use idempotency keys for POST/payments, honor Retry-After, and use a retry budget (e.g. retries <= 10% of requests) so retries cannot amplify load; retry at ONE layer only, since 3 layers x 3 attempts = 27 calls (retry amplification)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Circuit Breakers and Bulkheads",
+      "points": [
+        "Circuit breaker states: Closed (calls pass, failures counted), Open (calls fail fast without touching the dependency), Half-Open (a few trial calls test recovery)",
+        "Transitions: Closed to Open when failure rate or slow-call rate passes a threshold in a window (e.g. 50% of the last 20 calls, minimum call volume required); Open to Half-Open after a wait duration (e.g. 30 s); Half-Open to Closed if trial calls succeed, back to Open if any fail",
+        "Breaker config that matters: failure-rate threshold, slow-call threshold, minimum number of calls, sliding window (count or time based), wait in open state, permitted trial calls in half-open; keep one breaker per dependency, not one global",
+        "Bulkhead: give each dependency its own bounded pool (thread pool or semaphore, e.g. 10 concurrent calls to the payments API) so one slow dependency can only exhaust its own compartment, named after ship hull compartments",
+        "Breaker vs bulkhead: breaker reacts to observed failure and stops calls over time; bulkhead limits concurrent damage up front; use both, and when the bulkhead is full reject immediately rather than queue unboundedly"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Rate Limiting and Load Shedding",
+      "points": [
+        "Rate limiting caps requests per client per time window and returns HTTP 429 Too Many Requests with a Retry-After header; protects the server, while a circuit breaker protects the client",
+        "Token bucket: bucket holds up to B tokens refilled at R per second, each request spends one; allows bursts up to B with a steady average R; most common (API gateways, AWS, Stripe)",
+        "Leaky bucket: requests enter a queue drained at a fixed rate, which smooths output to a constant rate; fixed window counter is simplest but allows 2x burst at window boundaries, sliding window log/counter fixes that at higher memory cost",
+        "Distributed rate limiting needs shared state, e.g. Redis INCR with EXPIRE or an atomic Lua script keyed by user, API key or IP; choose the key deliberately (per user vs per IP vs per tenant) to stop noisy neighbours",
+        "Load shedding: when overloaded, deliberately reject low-priority work early (return 503 fast) instead of queueing, because a bounded queue and fast rejection keep latency of accepted requests healthy; client-side adaptive throttling is the mirror image"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Fallbacks and Containing Cascading Failures",
+      "points": [
+        "Fallback = a degraded but useful answer when the primary call fails or the breaker is open: cached or stale data, default value, static content, a simpler algorithm, or a queued request to process later",
+        "Fallback examples: recommendations service down so show popular items; pricing cache stale so serve last known price with a flag; reads fail over to a replica; payment write fails so enqueue and tell the user it is pending",
+        "Fail fast vs fail silent: fallback must be cheap, local and tested, never call another fragile dependency, and must not hide failure from monitoring (emit metrics and alerts when fallback is used)",
+        "Containment checklist for a service: timeouts on every call, capped retries with backoff and jitter, circuit breaker plus bulkhead per dependency, rate limit and load shedding at the edge, fallback for non-critical features, graceful degradation of optional features first",
+        "Common mistakes: retry storms (no jitter, no budget), timeout longer than the caller's timeout, shared thread pool for all dependencies, breaker with no minimum call volume that trips on 1 failure, untested fallback paths, and never exercising failure via chaos tests or load tests"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Resilience Cheat Sheet",
+      "points": [
+        "Timeout rule: always set connect (~1 s) and read (~p99 x 1.5) timeouts, and make downstream timeouts shorter than upstream ones, with a propagated deadline",
+        "Retry rule: max 3 attempts, delay = random(0, min(cap, base x 2^n)), idempotent calls only, one retry layer, retry budget about 10%",
+        "Circuit breaker: Closed to Open at failure rate over threshold (e.g. 50% of 20 calls), Open waits 30 s, Half-Open trials a few calls, one breaker per dependency",
+        "Bulkhead and rate limit: bounded pool per dependency; token bucket for bursts plus steady rate, 429 with Retry-After, shed load with fast 503 when saturated",
+        "Fallback and cascade prevention: serve cache or default, alert whenever fallback fires, test failure paths with chaos experiments; Interview Point: be ready to explain why retries without jitter or budget cause retry storms, how breaker states transition, and token bucket vs leaky bucket"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": []
+    }
+  ]
+}

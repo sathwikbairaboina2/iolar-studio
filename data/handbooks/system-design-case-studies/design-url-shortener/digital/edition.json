@@ -1,0 +1,2217 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-url-shortener",
+  "category": "system-design",
+  "inputsHash": "973ee6dd4b31a479ba6c7809a38700ca729b7a23796c310fdf6d7b71842ce52b",
+  "generatedAt": "2026-10-24T11:37:47.359Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Scope and Requirements (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope and Functional Needs",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:In scope}: ==create short link==, ==redirect==, ==custom alias==, ==expiry==, ==click analytics=="
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Out of scope}: user auth UI",
+                "Out of scope: link previews",
+                "Out of scope: spam ML"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Operation",
+                "Input",
+                "Output"
+              ],
+              "rows": [
+                [
+                  "Create",
+                  "`POST` long URL, ==alias optional==, ==TTL optional==",
+                  "short URL"
+                ],
+                [
+                  "Redirect",
+                  "`GET` short code",
+                  "redirect to the long URL"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Default TTL when none is given: ==5 years=="
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Non-Functional Targets",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redirect latency: ==p99 under 50 ms==",
+                "Read availability: ==99.99%== on redirects",
+                "Immutability: a created link ==never changes target==",
+                "Reads matter more than writes: a slow or failing redirect breaks every link ever shared"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Capacity Estimates",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "100M URLs/month",
+                    "sub": "new writes",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "~40 writes/s",
+                    "sub": "~400/s at 10x peak",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "x100 reads",
+                    "sub": "10B redirects/month",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "~4,000 QPS",
+                    "sub": "~40,000 at peak",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Estimate",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Writes",
+                  "100M / month",
+                  "~40/s avg, ~400/s peak"
+                ],
+                [
+                  "Reads",
+                  "100:1 read-to-write",
+                  "10B/month, ~4,000 QPS avg, ~40,000 peak"
+                ],
+                [
+                  "Storage",
+                  "500 B x 100M x 12 x 5 yrs",
+                  "==3 TB=="
+                ],
+                [
+                  "Cache",
+                  "20% of 350M daily = 70M x 500 B",
+                  "==~35 GB== RAM"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Size the cache from daily traffic",
+              "text": "Hot set = 20% of **daily redirects** (70M x 500 B = ==35 GB==), not 20% of all stored links, which would be 600 GB."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Components",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Component",
+                "Job",
+                "Scales by"
+              ],
+              "rows": [
+                [
+                  "**Load balancer**",
+                  "Spreads requests, health-checks nodes",
+                  "Add LB nodes"
+                ],
+                [
+                  "**Stateless API servers**",
+                  "Validate, encode, look up, redirect",
+                  "Add nodes"
+                ],
+                [
+                  "**ID generator**",
+                  "Unique integer per new URL",
+                  "Counter ranges or KGS"
+                ],
+                [
+                  "**Cache (Redis)**",
+                  "`code` → `long_url`, hit ratio above ==95%==",
+                  "About 35 GB, 3 shards"
+                ],
+                [
+                  "**Primary DB**",
+                  "Source of truth, `short_code` is the PK",
+                  "About 3 TB in 5 years"
+                ],
+                [
+                  "**Async analytics queue**",
+                  "Click events, off the redirect path",
+                  "More partitions"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "browser or app",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Load balancer",
+                    "sub": "any healthy node",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "API servers",
+                    "sub": "stateless",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Redis",
+                    "sub": "hot codes",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Primary DB",
+                    "sub": "all links",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Write and Read Paths",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Write path: POST /v1/urls, about 400/s at peak",
+                "steps": [
+                  {
+                    "text": "Client to API",
+                    "note": "long_url in the body",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "ID generator",
+                    "note": "next unique integer",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Base62 encode",
+                    "note": "integer to short code",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "DB insert",
+                    "note": "unique key on short_code",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Return short URL",
+                    "note": "201 Created",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Read path: GET /{code}, about 40,000 QPS at peak",
+                "rows": [
+                  [
+                    "req"
+                  ],
+                  [
+                    "hit"
+                  ],
+                  [
+                    "ok",
+                    "db"
+                  ],
+                  [
+                    "fill"
+                  ],
+                  [
+                    "ret"
+                  ]
+                ],
+                "nodes": {
+                  "req": {
+                    "text": "Client to LB to API",
+                    "shape": "box",
+                    "ink": "black"
+                  },
+                  "hit": {
+                    "text": "Code in Redis?",
+                    "shape": "diamond",
+                    "ink": "orange"
+                  },
+                  "ok": {
+                    "text": "Use cached long URL",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "db": {
+                    "text": "Read the DB",
+                    "shape": "box",
+                    "ink": "purple"
+                  },
+                  "fill": {
+                    "text": "Fill cache with TTL",
+                    "shape": "box",
+                    "ink": "orange"
+                  },
+                  "ret": {
+                    "text": "Return redirect",
+                    "shape": "pill",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "req",
+                    "to": "hit"
+                  },
+                  {
+                    "from": "hit",
+                    "to": "ok",
+                    "label": "hit"
+                  },
+                  {
+                    "from": "hit",
+                    "to": "db",
+                    "label": "miss"
+                  },
+                  {
+                    "from": "db",
+                    "to": "fill"
+                  },
+                  {
+                    "from": "fill",
+                    "to": "ret"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Separate Read and Write Services",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Reads run at ==100x== writes (100:1), so one shared fleet over-provisions one side",
+                "Split into a {green:read service} and a {blue:write service}, each with its own autoscaling",
+                "A write spike or deploy never slows redirects",
+                "The write service owns the ID generator and primary DB access"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Read service",
+                "Write service"
+              ],
+              "rows": [
+                [
+                  "Endpoint",
+                  "`GET /{code}`",
+                  "`POST /v1/urls`"
+                ],
+                [
+                  "Peak load",
+                  "~40,000 QPS",
+                  "~400 writes/s"
+                ],
+                [
+                  "Talks to",
+                  "Redis, then read replicas",
+                  "ID generator, primary DB"
+                ],
+                [
+                  "Autoscale on",
+                  "QPS and ==p99 latency==",
+                  "CPU, small fleet"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Stateless Servers Behind the LB",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Any node can serve ==any code==: the state is in Redis and the DB",
+                "So horizontal scaling needs ==no sticky sessions==; the LB uses round robin",
+                "A dead node loses nothing; the LB drops it after a failed health check",
+                "Peak 40,000 QPS at ~4,000 QPS per node needs about 10 API nodes"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "sidebox",
+              "title": "Stateless rules",
+              "items": [
+                "No per-user session on a node",
+                "Shared state only in Redis, DB, ID generator",
+                "Config from env vars, not local files",
+                "Expose a health check endpoint for the LB"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Reads are ==100x== writes: split the services, keep every node {red:stateless}, and never put the analytics queue on the redirect path."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Short Code Generation: Base62 and Length (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Short Code Generation: Base62 and Length (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Alphabet and Length",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Base62 alphabet: ==0-9, a-z, A-Z== = **62 symbols** per character",
+                "Avoid base64's `+` and `/`: {red:URL-unsafe}, they need escaping",
+                "Codes must be {green:unique}, {blue:short}, and non-guessable if links are private"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Length",
+                "Formula",
+                "Codes",
+                "Verdict"
+              ],
+              "rows": [
+                [
+                  "6 chars",
+                  "62^6",
+                  "==56.8B==",
+                  "Too tight for 6B URLs plus retries"
+                ],
+                [
+                  "7 chars",
+                  "62^7",
+                  "==3.52T==",
+                  "Covers 100M/month x 5 years = 6B URLs"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "6B URLs use about 0.17% of 62^7: {green:large headroom}",
+                "7 chars stays short enough for QR codes and SMS"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Encoding an ID",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Integer ID to base62",
+                "steps": [
+                  {
+                    "text": "Divide by 62",
+                    "note": "integer division",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Take remainder",
+                    "note": "index into alphabet",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Repeat on quotient",
+                    "note": "until it reaches 0",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Reverse digits",
+                    "note": "last remainder first",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "ID 125: 125 = 2x62 + 1, so remainders are 1 then 2",
+                "Reversed, the code is =='21'=="
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "A = \"0123456789abcdefghijklmnopqrstuvwxyz\" \\",
+                "    \"ABCDEFGHIJKLMNOPQRSTUVWXYZ\"",
+                "def b62(n):",
+                "    s = \"\"",
+                "    while n:",
+                "        n, r = divmod(n, 62)",
+                "        s = A[r] + s",
+                "    return s or \"0\""
+              ],
+              "note": "prepending replaces the final reverse"
+            },
+            {
+              "type": "heading",
+              "text": "3. Guessability and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Sequential base62 leaks",
+              "items": [
+                "Neighbouring codes reveal **creation order**",
+                "The newest code reveals total **volume**",
+                "Attackers can enumerate every private link",
+                "Fix: random-looking keys, not raw counters"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Unique, short, and unguessable pull against each other: a plain counter is unique and short but ==predictable==."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Track the {blue:code length distribution}",
+                "Track {purple:keyspace used %} of 62^7",
+                "{red:Alert at 50%} of 62^7 used"
+              ],
+              "style": "checkbox",
+              "frame": "dashed",
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Code Strategies: Counter vs Hash vs Random (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Code Strategies: Counter vs Hash vs Random (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Hash and Counter",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Hash==: MD5 or SHA-256 of the long URL, keep the first **7 base62 chars**",
+                "{green:Stateless}: any API server computes the same code for the same URL",
+                "{red:Collisions grow} past ~==1M links== (birthday bound on 7 chars)",
+                "Same long URL gives the same code, so it is **dedup-friendly**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "On insert, check the DB for the code",
+                "On conflict, ==append a salt or counter== to the URL and rehash",
+                "Cost: **one extra read per write**"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Hash collision loop",
+                "rows": [
+                  [
+                    "hash"
+                  ],
+                  [
+                    "ins"
+                  ],
+                  [
+                    "done",
+                    "salt"
+                  ]
+                ],
+                "nodes": {
+                  "hash": {
+                    "text": "hash(url) first 7 chars",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "ins": {
+                    "text": "Code free?",
+                    "shape": "diamond"
+                  },
+                  "done": {
+                    "text": "Store and return",
+                    "shape": "pill",
+                    "ink": "green"
+                  },
+                  "salt": {
+                    "text": "Add salt, rehash",
+                    "shape": "box",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "hash",
+                    "to": "ins"
+                  },
+                  {
+                    "from": "ins",
+                    "to": "done",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "ins",
+                    "to": "salt",
+                    "label": "no"
+                  },
+                  {
+                    "from": "salt",
+                    "to": "ins",
+                    "label": "retry"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Counter==: global auto-increment ID, encoded to base62",
+                "{green:Zero collisions}: every ID is unique by construction",
+                "{red:Needs a distributed counter}: a single one is a bottleneck and a SPOF",
+                "{red:Guessable}: next code is the previous one plus 1"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "2. Key Service and Counter Ranges",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==KGS==: keys are generated **offline**, all unique, 7 chars",
+                "Two tables: {green:unused} keys and {red:used} keys",
+                "An API server fetches a batch of ==1,000 keys== into memory",
+                "Keys are moved to used on handout, so no two servers share one",
+                "Codes look random, so they are not guessable"
+              ],
+              "style": "check",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Counter ranges",
+                "steps": [
+                  {
+                    "text": "ZooKeeper or DB",
+                    "note": "hands out a block",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "App server",
+                    "note": "owns 1M IDs",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Local counter",
+                    "note": "no network per ID",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Base62",
+                    "note": "short code",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A crashed server wastes ==at most its unused block== of 1M IDs",
+                "Waste is tiny against the 3.52T keyspace of 62^7"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Comparison",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Hash",
+                "Counter",
+                "KGS"
+              ],
+              "rows": [
+                [
+                  "Collisions",
+                  "retry on conflict",
+                  "none",
+                  "none"
+                ],
+                [
+                  "Guessable",
+                  "no",
+                  "{red:yes}",
+                  "no"
+                ],
+                [
+                  "Same URL, same code",
+                  "{green:yes}",
+                  "no",
+                  "no"
+                ],
+                [
+                  "Extra cost",
+                  "1 read per write",
+                  "distributed counter",
+                  "key service to run"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE UNIQUE INDEX ux_short_code",
+                "  ON urls (short_code);",
+                "INSERT INTO urls (short_code, long_url)",
+                "VALUES ('aB3xK9Q', 'https://example.com/a');"
+              ],
+              "note": "a duplicate code makes the insert fail, so the app retries"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Random without a guard",
+              "text": "Picking ==random 7 chars== with no unique constraint silently overwrites or duplicates codes. The **unique index on short_code** is the final collision guard."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Redirect Service: 301 vs 302 (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Redirect Service: 301 vs 302 (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. GET /{code} Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "GET /{code}",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "q2"
+                  ],
+                  [
+                    "ok"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Code found?",
+                    "shape": "diamond"
+                  },
+                  "q2": {
+                    "text": "Expired?",
+                    "shape": "diamond"
+                  },
+                  "ok": {
+                    "text": "3xx + Location: long URL",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "nf": {
+                    "text": "404 Not Found",
+                    "shape": "pill",
+                    "ink": "red"
+                  },
+                  "gone": {
+                    "text": "410 Gone",
+                    "shape": "pill",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "q2",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "nf",
+                    "label": "no"
+                  },
+                  {
+                    "from": "q2",
+                    "to": "ok",
+                    "label": "no"
+                  },
+                  {
+                    "from": "q2",
+                    "to": "gone",
+                    "label": "yes"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Look up ==long URL== by code, reply with a **3xx** and a `Location` header",
+                "{red:Unknown} code → ==404==",
+                "{orange:Expired} code → ==410 Gone==, not 404"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. 301 vs 302",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "301 Moved Permanently",
+                "302 Found (temporary)"
+              ],
+              "rows": [
+                [
+                  "Caching",
+                  "Browsers and CDNs ==cache it==",
+                  "Not cached, every click hits you"
+                ],
+                [
+                  "Repeat clicks",
+                  "Skip your server",
+                  "Reach your server"
+                ],
+                [
+                  "Load",
+                  "{green:Lower}",
+                  "{red:Higher}"
+                ],
+                [
+                  "Analytics",
+                  "{red:Lose cached clicks}",
+                  "{green:Full, every click}"
+                ],
+                [
+                  "Change or expire target",
+                  "{red:Hard}",
+                  "{green:Easy}"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Analytics and expiry needed → ==302== (or **307**), or a 301 with a short private `max-age` as Bitly does",
+                "Pure-SEO permanent links → ==301==",
+                "`Cache-Control: private, max-age=60` on a 301 keeps clicks reaching you"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "HTTP/1.1 302 Found",
+                "Location: https://example.com/very/long/path",
+                "Cache-Control: no-store"
+              ],
+              "note": "temporary redirect: every click is counted"
+            },
+            {
+              "type": "heading",
+              "text": "3. Pitfall and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "301 is hard to undo",
+              "text": "A wrongly-cached permanent redirect with a long `max-age` stays in browsers for ==months==. You cannot recall it, so never ship a long 301 `max-age` for links you may change or expire."
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Redirect latency",
+                  "track **p50** and ==p99==, p99 under 50 ms"
+                ],
+                [
+                  "Cache hit ratio",
+                  "above ==95%=="
+                ],
+                [
+                  "4xx rate",
+                  "watch 404 and 410 spikes (scanners, expiry)"
+                ],
+                [
+                  "Redirect QPS",
+                  "about 4,000 avg, 40,000 peak"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Custom Aliases and Link Expiry (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Custom Aliases and Link Expiry (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Expiry Flow",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "GET /{code}",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "expires_at set and in the past?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "410 Gone",
+                    "shape": "box",
+                    "ink": "red"
+                  },
+                  "b": {
+                    "text": "302 to long_url",
+                    "shape": "box",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{orange:Lazy expiry}: check `expires_at` on **every read**, return ==410==",
+                "No timer per link; an expired row costs nothing until it is read",
+                "{blue:Daily batch job} deletes expired rows and ==recycles the keys==",
+                "Batch is cleanup only; correctness comes from the read check"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "heading",
+              "text": "2. Data Model",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Column",
+                "Role"
+              ],
+              "rows": [
+                [
+                  "`short_code`",
+                  "==PK==, unique index; holds alias or generated code"
+                ],
+                [
+                  "`long_url`",
+                  "Target, never changes after create"
+                ],
+                [
+                  "`user_id`",
+                  "Owner of the link"
+                ],
+                [
+                  "`created_at`",
+                  "Creation time"
+                ],
+                [
+                  "`expires_at`",
+                  "Nullable; null means default TTL"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "About ==500 bytes== per row",
+                "Alias and generated code share **one** unique index on `short_code`",
+                "Insert-or-fail is ==atomic==: no check-then-insert race"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "INSERT INTO urls (short_code, long_url, user_id,",
+                "                  created_at, expires_at)",
+                "VALUES ('my-sale', 'https://example.com/sale',",
+                "        42, now(), '2027-01-01');",
+                "-- duplicate key error -> API returns 409"
+              ],
+              "note": "let the unique index decide, never SELECT first"
+            },
+            {
+              "type": "heading",
+              "text": "3. Create API and Alias Rules",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /v1/urls",
+                "{\"long_url\": \"https://example.com/sale\",",
+                " \"custom_alias\": \"my-sale\",",
+                " \"expires_at\": \"2027-01-01T00:00:00Z\"}",
+                "",
+                "HTTP/1.1 201 Created",
+                "{\"short_url\": \"https://sho.rt/my-sale\"}"
+              ],
+              "note": "custom_alias and expires_at are optional"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Status",
+                "When"
+              ],
+              "rows": [
+                [
+                  "{green:201}",
+                  "Created; body has `short_url`"
+                ],
+                [
+                  "{red:409}",
+                  "`custom_alias` already taken"
+                ],
+                [
+                  "{red:400}",
+                  "Alias breaks the rules or is reserved"
+                ],
+                [
+                  "{red:410}",
+                  "Redirect hit an expired link"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Length ==4-30== chars",
+                "Charset `[A-Za-z0-9_-]`",
+                "**Case-sensitive**: `Sale` and `sale` are different codes",
+                "Reserved words blocked: `api`, `admin`, `login`"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure: Concurrent Alias Claim",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "User A + B",
+                    "sub": "claim `my-sale`",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "INSERT x2",
+                    "sub": "same short_code",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Unique index",
+                    "sub": "one commit wins",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "A: 201, B: 409",
+                    "sub": "loser picks another",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "No check-then-insert",
+              "text": "A SELECT before the INSERT lets both users pass. The ==unique constraint== is the only guard: one wins, the other gets **409**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Click Analytics Pipeline (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Click Analytics Pipeline (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Off the Redirect Path",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Never write analytics on the redirect path==",
+                "Redirect returns first, then **publishes** a click event to Kafka",
+                "Event: `{code, ts, ip, user_agent, referrer}`",
+                "Publish is ==asynchronous==: the redirect never waits for Kafka"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Redirect",
+                    "sub": "302 sent",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "click event",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Consumers",
+                    "sub": "aggregate",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "ClickHouse",
+                    "sub": "column store",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Consumers aggregate into ==ClickHouse==",
+                "Counts per **code** per **minute**, **country**, **device**"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Volume and Retention",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Estimate",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Peak ingest",
+                  "40,000 clicks/s x ~200 B",
+                  "**8 MB/s**"
+                ],
+                [
+                  "Monthly raw",
+                  "10B clicks x 200 B",
+                  "**~2 TB**"
+                ],
+                [
+                  "Raw events",
+                  "kept {orange:30 days}",
+                  "then dropped"
+                ],
+                [
+                  "Rollups",
+                  "per minute, country, device",
+                  "kept {green:forever}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Stats API",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /v1/urls/{code}/stats?range=7d"
+              ],
+              "note": "returns total clicks, clicks by day, top countries, top referrers"
+            },
+            {
+              "type": "sidebox",
+              "title": "Failure: Kafka down",
+              "items": [
+                "Redirects must ==keep working==",
+                "Fire-and-forget into a **bounded buffer**",
+                "Buffer full: drop the event, never block",
+                "Accept ==losing some clicks=="
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Event lag under ==10 s==",
+                "**Drop rate** of events from the bounded buffer",
+                "Consumer throughput vs 40,000/s peak",
+                "Bot traffic **filtered** by `user_agent`"
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Analytics is ==best-effort==: a lost click is acceptable, a slow or failed redirect is **not**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Read-Heavy Caching Layer (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Read-Heavy Caching Layer (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Cache-Aside Read Path",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "GET /{code}",
+                "rows": [
+                  [
+                    "q"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ],
+                  [
+                    "c"
+                  ]
+                ],
+                "nodes": {
+                  "q": {
+                    "text": "Redis GET code",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Hit: redirect",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "b": {
+                    "text": "Miss: read DB",
+                    "shape": "box",
+                    "ink": "orange"
+                  },
+                  "c": {
+                    "text": "SET with TTL, redirect",
+                    "shape": "box",
+                    "ink": "blue"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q",
+                    "to": "a",
+                    "label": "hit"
+                  },
+                  {
+                    "from": "q",
+                    "to": "b",
+                    "label": "miss"
+                  },
+                  {
+                    "from": "b",
+                    "to": "c",
+                    "label": "fill"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Key is the ==short code==, value is the `long_url`",
+                "On miss: read the DB, then ==SET with a TTL==",
+                "{green:Writes also populate the cache}: a new link is hot at once",
+                "Target: ==95%+ hit ratio==, miss path under ==10 ms== DB read"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "GET abc1234",
+                "SET abc1234 \"https://example.com/long\" EX 3600"
+              ],
+              "note": "hit returns the URL; on miss, fill with an EX TTL"
+            },
+            {
+              "type": "heading",
+              "text": "2. Sizing and Eviction",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Item",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Daily redirects",
+                  "350M"
+                ],
+                [
+                  "Hot share",
+                  "20% = 70M keys"
+                ],
+                [
+                  "Record size",
+                  "500 B"
+                ],
+                [
+                  "Cache size",
+                  "70M x 500 B = ==35 GB=="
+                ],
+                [
+                  "Layout",
+                  "one Redis cluster, 3 shards (~12 GB each)"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Policy: `maxmemory-policy allkeys-lru` evicts the coldest keys",
+                "Per-key TTL = ==min(default TTL, time to link expiry)==",
+                "A cached link must never outlive its `expires_at`"
+              ],
+              "style": "check",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failure Scenarios",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Trigger",
+                "Fix"
+              ],
+              "rows": [
+                [
+                  "Cache stampede",
+                  "Viral link key expires, thousands miss at once",
+                  "==Request coalescing== or a lock: one request refills"
+                ],
+                [
+                  "Code scanning",
+                  "Attacker hits random codes, every one misses",
+                  "==Negative cache== 404s for 60 s: `SET nf:zz9Qx1 1 EX 60`"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Protect the DB",
+              "text": "Everything else waits on the ==one refill== for a stampede, and a scan hits the ==negative key== for 60 s instead of the DB."
+            },
+            {
+              "type": "heading",
+              "text": "4. Edge Cache",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Add a ==CDN or edge cache== in front of Redis",
+                "Cache 301s, and only hot 302 targets with a short TTL",
+                "Edge hits never reach the API, so redirect p99 stays under 50 ms",
+                "Cached edge entries cannot be revoked at once: keep TTL short"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "sidebox",
+              "title": "Cache targets",
+              "items": [
+                "Hit ratio above ==95%==",
+                "Miss path: DB read under ==10 ms==",
+                "Negative cache TTL: ==60 s==",
+                "Cache size: ==35 GB== on 3 shards"
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Database Design and Sharding (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Database Design and Sharding (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Access Pattern",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Only query: ==lookup by `short_code`== returns `long_url`",
+                "No joins, no range scans, no secondary reads on the hot path",
+                "{green:NoSQL} (DynamoDB, Cassandra) and {blue:sharded SQL} both fit",
+                "Writes: about ==400/s== at 10x peak; reads: about 40,000 QPS peak"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Sharding and Sizing",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Shard key = ==hash(short_code)== placed on a **consistent hashing** ring",
+                "Hashing spreads load evenly: no range hot spots from {red:sequential IDs}",
+                "Adding a shard moves only a slice of keys, not everything"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "short_code",
+                    "sub": "lookup key",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "hash()",
+                    "sub": "consistent ring",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Shard 1 of 6",
+                    "sub": "owns a ring slice",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Primary + 2 replicas",
+                    "sub": "writes / reads",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Plan",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Data over 5 years",
+                  "**3 TB** (500 B x 100M/month x 60)"
+                ],
+                [
+                  "Node capacity",
+                  "1 TB"
+                ],
+                [
+                  "3 shards x 1 TB",
+                  "{red:100% full}, no headroom"
+                ],
+                [
+                  "6 shards x 1 TB",
+                  "{green:~50% fill}, room to grow"
+                ],
+                [
+                  "6 shards x (1 primary + 2 replicas)",
+                  "==18 nodes=="
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "heading",
+              "text": "3. Replication and Failure",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Async read replicas== serve redirects",
+                "Primary takes **writes only**, about 400/s at peak",
+                "Async copy keeps the write path fast, but replicas can ==lag=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Shard loss",
+                "steps": [
+                  {
+                    "text": "Primary dies",
+                    "note": "health check fails",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Promote replica",
+                    "note": "most caught-up one",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Repoint writes",
+                    "note": "ring unchanged",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Rebuild replica",
+                    "note": "restore 2 replicas",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Replica lag: a ==fresh link can 404== on a replica not yet updated",
+                "Fix: **read the primary right after create**, replicas for everything else"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Fresh link 404",
+              "text": "Created links must work at once. After `POST`, the first reads go to the ==primary==, never a lagging replica."
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Replication lag under ==1 s==",
+                "Shard size skew: biggest vs average shard",
+                "Disk usage per node: stay near ~50%, alert before it fills",
+                "p99 query latency: miss path under 10 ms"
+              ],
+              "style": "check",
+              "ink": "purple"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failures, Trade-offs and Interview Questions (URL Shortener)",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Scaling, Failures, Trade-offs and Interview Questions (URL Shortener)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale Path, Regions and Abuse",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "API autoscale",
+                    "sub": "stateless, ~10 nodes",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Redis cluster",
+                    "sub": "3 shards, ~35 GB",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Read replicas",
+                    "sub": "async, lag under 1 s",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "CDN",
+                    "sub": "hot 301/302 targets",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Shard last",
+                    "sub": "~6 shards, ~50% fill",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Peak ==40,000 QPS== / 4,000 QPS per node = about {green:10 API nodes}",
+                "Stateless nodes: add or remove freely, no sticky sessions",
+                "Sharding is last: ~3 TB in 5 years needs ~6 shards at ~50% fill (3 is the bare minimum)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Reads}: ==active-active== in every region, each with a regional cache",
+                "{orange:Writes}: go to a ==home region==",
+                "Each region owns its own ==key range==, so IDs never clash"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "sidebox",
+              "title": "Abuse controls",
+              "items": [
+                "Rate limit creation: ==100 URLs/hour== per user",
+                "Scan target URLs against malware and phishing lists",
+                "Block redirect loops: reject targets that point at the shortener's own domain"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Interview Questions",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Avoid collisions at 100M/month?** KGS or 1M-ID counter blocks; unique index on `short_code` is the last guard",
+                "**Count clicks without slowing redirects?** Fire-and-forget event to Kafka; ClickHouse aggregates off the hot path",
+                "**Cache dies?** Misses fall to replicas; coalesce refills so one request fills each key; rewarm hot keys",
+                "**Make codes unguessable?** Random KGS keys, not sequential base62; 62^7 = 3.52T space; rate limit 404s",
+                "**Remove a link cached in CDN or browser?** Serve 302, or 301 with a short `max-age`; long 301s linger for months"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "HTTP/1.1 301 Moved Permanently",
+                "Location: https://example.com/long/path",
+                "Cache-Control: private, max-age=60"
+              ],
+              "note": "short private max-age: clicks still reach you, expiry takes effect within 60 s"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Cached redirects cannot be recalled",
+              "text": "A 301 with a long `max-age` stays in browsers for ==months==. Delete or expire needs a **302** or a **short max-age** from day one."
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Decision",
+                "Option",
+                "Wins",
+                "Costs"
+              ],
+              "rows": [
+                [
+                  "Redirect",
+                  "301",
+                  "Browsers and CDN cache it; less load",
+                  "Lost clicks; hard to undo"
+                ],
+                [
+                  "Redirect",
+                  "302",
+                  "Every click counted; can expire",
+                  "Higher load"
+                ],
+                [
+                  "Code gen",
+                  "Hash",
+                  "Stateless, dedup-friendly",
+                  "Collision retries"
+                ],
+                [
+                  "Code gen",
+                  "Counter",
+                  "No collisions",
+                  "Guessable; needs coordinator"
+                ],
+                [
+                  "Code gen",
+                  "KGS",
+                  "Unique, random-looking",
+                  "Extra service to run"
+                ],
+                [
+                  "Storage",
+                  "Sharded SQL",
+                  "Unique index, familiar",
+                  "Manual sharding"
+                ],
+                [
+                  "Storage",
+                  "NoSQL",
+                  "Pure key-value fit, auto-shard",
+                  "Weaker ad-hoc queries"
+                ],
+                [
+                  "New links",
+                  "Strong",
+                  "Fresh link never 404s",
+                  "Reads hit primary"
+                ],
+                [
+                  "New links",
+                  "Eventual",
+                  "Replicas scale reads",
+                  "Fresh link may 404 for under 1 s"
+                ]
+              ],
+              "frame": "dashed"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "URL Shortener Cheatsheet",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "URL Shortener Cheatsheet",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Revision notes for the bit.ly-style **URL Shortener**: numbers, status codes, code generation, cache, analytics."
+            },
+            {
+              "type": "heading",
+              "text": "1. Estimates",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Writes",
+                  "==40/s== avg, 400/s at 10x peak"
+                ],
+                [
+                  "Reads (100:1)",
+                  "==4,000 QPS== avg, ==40,000== peak"
+                ],
+                [
+                  "Storage",
+                  "500 B x 100M x 12 x 5 yr = ==3 TB=="
+                ],
+                [
+                  "Keyspace",
+                  "62^7 = ==3.52T== codes (62^6 = 56.8B)"
+                ],
+                [
+                  "Cache",
+                  "20% of daily 350M redirects = ~35 GB"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**7 chars** of base62 cover 6B URLs (5 years) with large headroom",
+                "Alert at ==50%== of 62^7 used"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Redirect",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Response",
+                "Meaning",
+                "Note"
+              ],
+              "rows": [
+                [
+                  "`302`",
+                  "Temporary",
+                  "Every click hits you: analytics, expiry"
+                ],
+                [
+                  "`301`",
+                  "Permanent",
+                  "Browsers/CDN cache it; clicks are lost"
+                ],
+                [
+                  "`404`",
+                  "Unknown code",
+                  "Negative-cache it"
+                ],
+                [
+                  "`410`",
+                  "Expired",
+                  "Gone, checked on read"
+                ],
+                [
+                  "`409`",
+                  "Alias taken",
+                  "On POST create"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Need every click or expiry → {green:302} (or 301 with a short private max-age)",
+                "Permanent 301 is hard to undo: it stays in browsers for months"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Code Generation",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:KGS}: pre-generated unique keys, API fetches batches of 1,000",
+                "{blue:Counter ranges}: each server gets a 1M-ID block, then base62",
+                "{orange:Hash}: first 7 chars of MD5/SHA-256 ==needs collision retry== (salt, rehash)",
+                "==Unique index on `short_code`== is the last guard; insert-or-fail, never check-then-insert"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Cache and Analytics",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Redis",
+                    "sub": "cache-aside, LRU",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Hit",
+                    "sub": "redirect",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Miss",
+                    "sub": "read DB, set key",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Return",
+                    "sub": "3xx + Location",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Target hit ratio ==above 95%==",
+                "**Negative cache** 404s for 60 s against random-code scans",
+                "**Coalesce** misses on a viral link: one request refills the key"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Redirect",
+                    "note": "emit click event",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Kafka",
+                    "note": "async, bounded buffer",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "ClickHouse",
+                    "note": "counts per code/min",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never block the redirect",
+              "text": "Analytics is ==async== via Kafka. If Kafka is down, redirects still work and some clicks are dropped."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A counter hands out ID 3844 (that is 62 squared). With the alphabet 0-9, a-z, A-Z, what short code does base62 encoding produce? What does the next ID tell you about this scheme?",
+              "a_bullets": [
+                "3844 % 62 = 0, then 62 % 62 = 0, then 1 % 62 = 1; reversed, the remainders give `100`",
+                "Index 0 is '0' and index 1 is '1', so the code is `100`, which is 1x62^2",
+                "The next ID, 3845, encodes to `101`, so neighbouring codes are neighbouring links",
+                "Sequential base62 leaks creation order and volume, and anyone can guess other codes",
+                "If links are private, use a key service or random-looking codes instead"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Spot the bug: a team serves every redirect as 301 with `Cache-Control: max-age=31536000`. Later they notice click counts fall short and an expired link still opens for some users. Why?",
+              "a_bullets": [
+                "Browsers and CDNs cache a 301, so repeat clicks never reach your server and are never counted",
+                "Your server's expiry check (410) never runs for those clients, because they skip the lookup",
+                "A wrongly cached permanent redirect stays in browsers for months and is hard to undo",
+                "Fix: use 302 (or 307), or a 301 with a short private max-age, when you need analytics and expiry"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Spot the bug: two users submit the alias `summer` at the same moment. What can go wrong here, and what is the right fix?",
+              "example_code": [
+                "if not db.exists(alias):",
+                "    db.insert(alias, long_url)",
+                "return 201"
+              ],
+              "a_bullets": [
+                "Both requests can pass `exists` before either inserts, so check-then-insert is a race",
+                "Depending on the store, both get 201 and one link silently overwrites or duplicates the other",
+                "Fix: just insert, with a unique index on `short_code`, so the insert is atomic",
+                "The database lets one insert win; the loser gets a conflict and you return 409",
+                "The same unique index is the last guard for generated codes too"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Spot the bug: the redirect handler waits for the click event to be published to Kafka before it sends the 302. Kafka has an outage. What do users see, and how should it be built?",
+              "a_bullets": [
+                "Each redirect blocks on the publish, so redirects time out or fail even though the DB and cache are healthy",
+                "An analytics outage then breaks the core feature, and the read path loses its 99.99% availability",
+                "Fix: publish fire-and-forget into a bounded in-memory buffer, then send the 302 right away",
+                "When the buffer is full, drop events; losing some clicks is better than failing redirects",
+                "Watch the drop rate and the event lag (under 10 s) to know how much was lost"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A user creates a link and clicks it a moment later, but gets a 404. Seconds later it works. Redirects are served from async read replicas. What happened and how do you fix it?",
+              "a_bullets": [
+                "The write went to the primary, but the replica handling the click had not received it yet (replication lag)",
+                "The code was missing there, so the service returned 404 for a link that exists",
+                "Fix: read from the primary (or populate the cache on write) for a fresh link right after creation",
+                "Populating the cache on write also means the first click is a cache hit",
+                "Alert on replication lag (target under 1 s) to catch this early"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

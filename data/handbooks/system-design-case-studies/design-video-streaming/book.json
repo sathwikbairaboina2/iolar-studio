@@ -1,0 +1,230 @@
+{
+  "title": "Design a Video Streaming Platform (YouTube / Netflix)",
+  "summary": "End-to-end system design case study of a video streaming platform: upload, transcoding into renditions, adaptive bitrate delivery over HLS/DASH, CDN, metadata, view counts and recommendations, with scale estimates, failure handling and interview questions.",
+  "chapters": [
+    {
+      "title": "Video Streaming Platform: What This Handbook Covers",
+      "points": [
+        "Problem and scope",
+        "Requirements and scale",
+        "High-level architecture",
+        "Upload pipeline",
+        "Transcoding renditions",
+        "Adaptive bitrate streaming",
+        "CDN delivery",
+        "Metadata service",
+        "View counts",
+        "Recommendations",
+        "Scaling and interviews"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "points": [
+        "Scope in: upload, transcode, stream, search metadata, view counts, recommendations; out: live streaming, DRM licensing, ads, comments (Video Streaming Platform)",
+        "Functional: upload a video, watch on any device, search, like/comment-free watch history, resume playback from last position",
+        "Non-functional: playback start under 2 s p95, rebuffer ratio under 0.5%, 99.99% playback availability, uploads durable at 11 nines",
+        "Scale estimate: 500M DAU, 5 videos watched per user per day = 2.5B plays/day, about 29K play QPS avg and 90K peak",
+        "Storage estimate: 500K uploads/day x 500 MB raw = 250 TB/day raw; with 6 renditions about 2x raw = 500 TB/day; ~180 PB/year",
+        "Egress estimate: 2.5B plays x 100 MB avg = 250 PB/day, about 23 Tbps average, so a CDN is mandatory; read:write ratio about 5000:1"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "points": [
+        "Two separate planes: write path (upload, transcode, publish) and read path (metadata, manifest, CDN segments); they scale independently",
+        "Control plane vs data plane: API servers handle metadata and signed URLs; video bytes never pass through API servers",
+        "Component map: API gateway, upload service, object store, transcode workers, metadata DB, CDN, view-count pipeline, recommender",
+        "Async by default: upload completion emits an event on Kafka/queue that drives transcoding, thumbnailing, indexing",
+        "Build vs buy: object store (S3) and CDN (CloudFront/Akamai) bought; transcoding and recommendation built; own CDN only above ~Tbps scale (Netflix Open Connect)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Upload Pipeline",
+      "points": [
+        "Responsibilities: accept large files reliably, validate, store raw original durably, then trigger processing",
+        "Design: client uploads straight to object storage via pre-signed URL, chunked multipart (5-10 MB parts, parallel), so API servers never carry bytes",
+        "Flow: POST /uploads creates upload_id -> client PUTs parts -> POST /uploads/{id}/complete -> state UPLOADED -> event to transcode queue",
+        "Data model: uploads(upload_id, user_id, size, parts_done, state, raw_object_key, created_at); state machine INITIATED -> UPLOADED -> PROCESSING -> READY or FAILED",
+        "Failures: resumable by listing uploaded parts after a dropped connection; orphan parts cleaned by 24 h lifecycle rule; file type/size/malware checked after upload",
+        "Metrics: upload success rate above 99%, p95 time-to-complete, resume rate, bytes uploaded/s, abandoned upload %"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Transcoding Pipeline and Renditions",
+      "points": [
+        "Responsibilities: convert one raw file into a ladder of renditions (e.g. 240p 0.4 Mbps to 4K 16 Mbps) plus audio tracks and thumbnails",
+        "Design: split video into 2-10 s GOP-aligned chunks, transcode chunks in parallel on a worker fleet (DAG of tasks), then package; a 1 h video finishes in minutes, not hours",
+        "Flow: split -> parallel encode H.264 / VP9 / AV1 per rung -> package into fMP4/TS segments -> write manifests -> mark READY",
+        "Data model: transcode_jobs(job_id, video_id, rendition, chunk_idx, status, attempts, worker_id); renditions(video_id, codec, resolution, bitrate, manifest_path)",
+        "Per-title encoding: complexity-based ladder (Netflix) saves ~20% bitrate; AV1 saves ~30% vs H.264 but encodes 5-10x slower, so use it only for popular titles",
+        "Failures: idempotent chunk tasks with 3 retries and a dead-letter queue; spot-instance preemption just reruns the chunk; poison video quarantined",
+        "Metrics: queue depth, time-to-ready p95 (target under 2x video duration), cost per encoded minute, failure rate, VMAF quality score"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Adaptive Bitrate Streaming: HLS and DASH",
+      "points": [
+        "ABR: video is cut into 2-6 s segments at every bitrate; the player picks the next segment's rendition based on measured throughput and buffer level",
+        "Manifest: HLS uses .m3u8 playlists (master -> media playlist), DASH uses an XML .mpd; both list renditions and segment URLs",
+        "Player algorithm: throughput-based (EWMA of last segments) vs buffer-based (BBA) vs hybrid; switch down fast, switch up slowly to avoid oscillation",
+        "Example: 4 Mbps link, buffer 8 s -> player fetches the 3 Mbps 720p segment; throughput drops to 1 Mbps -> next segment is 480p, no stall",
+        "HLS vs DASH: HLS native on Apple, DASH codec-agnostic and open standard; CMAF fMP4 lets one set of segments serve both, halving storage and cache footprint",
+        "Mistakes: segments too long (slow switching, 10 s+), too short (request overhead), unaligned keyframes across renditions, ladder with huge gaps between rungs"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "CDN Delivery and Caching",
+      "points": [
+        "Responsibilities: serve segments from close to the viewer; target 95%+ edge hit ratio so origin sees under 5% of 23 Tbps",
+        "Design: tiered caching: edge POP -> regional mid-tier -> origin shield -> object store; Netflix places appliances inside ISPs",
+        "Flow: player requests segment URL -> DNS/anycast routes to nearest edge -> HIT served; MISS goes to mid-tier, origin shield collapses concurrent misses into one origin fetch",
+        "Cache policy: segments immutable, TTL 1 year with versioned paths; manifests short TTL (VOD 1 h, live 2 s); popularity-based pre-warm of new releases to edges",
+        "APIs: signed URLs/cookies with expiry (e.g. 6 h) and token bound to video_id to stop hotlinking; range requests supported",
+        "Failures: edge down -> DNS failover to next POP; origin overload -> request coalescing and stale-if-error; multi-CDN with health-based traffic steering",
+        "Metrics: cache hit ratio, origin egress Gbps, startup time p95, rebuffer ratio, 5xx rate per POP, cost per GB"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Metadata Service and Search",
+      "points": [
+        "Responsibilities: store title, description, tags, owner, visibility, rendition pointers; serve watch page and search; read-heavy, ~90K peak reads/s",
+        "Design: sharded SQL/NoSQL (MySQL + Vitess or Cassandra) by video_id; Redis cache in front with 99% hit target; Elasticsearch index fed by change events (CDC)",
+        "Flow: watch page -> cache lookup -> DB on miss -> returns metadata + signed manifest URL; edit -> DB write -> invalidate cache -> CDC -> search index within seconds",
+        "Data model: videos(video_id PK, owner_id, title, description, state, duration, created_at), video_tags, renditions; id = 64-bit snowflake, owner_id indexed",
+        "APIs: GET /videos/{id}, PATCH /videos/{id}, GET /search?q=&page_token= with cursor pagination",
+        "Failures: cache stampede handled by request coalescing and jittered TTL; replica lag means a fresh upload may 404 for seconds; search index rebuilt from DB if lost",
+        "Metrics: read p99 under 50 ms, cache hit ratio, replication lag, index freshness lag, search p95 under 200 ms"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "View Counts and Watch History",
+      "points": [
+        "Responsibilities: count views accurately enough for display and payouts, track resume position; 29K view starts/s avg, 90K peak, and periodic heartbeats multiply total event volume several-fold",
+        "Design: players send view/heartbeat events to Kafka; stream processor (Flink) aggregates per video in 1-min windows; counter store updated in batches, not per event",
+        "Flow: event -> Kafka partitioned by video_id -> dedup by (user, video, 30 s window) + bot filter -> window aggregate -> write to Cassandra counter and Redis for display",
+        "Data model: view_events(video_id, user_id, ts, watch_ms); view_counts(video_id, count); watch_history(user_id, video_id, position_ms, updated_at)",
+        "Display count is eventually consistent (seconds-minutes lag, approximate); billing count is recomputed exactly offline by batch job from the raw log",
+        "Failures: hot video shards a counter into N sub-counters summed on read; Kafka replay with idempotent event_id; late events handled by watermark of 5 min",
+        "Metrics: event ingestion lag p99 under 10 s, dedup ratio, count drift vs batch truth under 0.1%, bot-filtered %"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Recommendations (High Level)",
+      "points": [
+        "Responsibilities: rank personalized home feed and up-next list; drives most watch time, so it must be fast and fresh",
+        "Design: two-stage funnel: candidate generation (collaborative filtering / two-tower embeddings, ~500 from millions) then ranking model (~500 -> 20 using watch time, CTR features)",
+        "Flow: request -> fetch user features from feature store -> ANN lookup of candidates -> rank -> filter watched/blocked -> diversify -> return; offline training daily, embeddings refreshed hourly",
+        "Data model: user_embedding(user_id, vec), video_embedding(video_id, vec), feature store (watch history, genre affinity); events logged for retraining",
+        "API: GET /feed?user_id=&n=20 and GET /videos/{id}/related with p99 under 150 ms budget",
+        "Failures: model or feature store down -> fall back to cached trending list per region; cold-start users get popularity + onboarding picks",
+        "Metrics: CTR, average watch time per session, coverage/diversity, p99 latency, offline AUC vs online A/B lift"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "points": [
+        "Scaling levers: shard metadata by video_id, autoscale transcode on queue depth, CDN absorbs 95%+ of read traffic, multi-region active-active for read path",
+        "Failure handling: region failover for metadata with RPO under 1 min; object store replicated cross-region; graceful degradation (drop to lower renditions, hide recommendations)",
+        "Trade-offs: storage vs compute (pre-encode all renditions vs on-demand for long-tail), quality vs cost (AV1 only for hot titles), accuracy vs latency in view counts",
+        "Interview Q1: how do you handle a viral video? Answer: CDN pre-warm, origin shield, sharded counters, rate limits on metadata reads",
+        "Interview Q2: why not stream the upload through your API servers? Answer: bandwidth bottleneck and no resumability; use pre-signed multipart URLs",
+        "Interview Q3: how do you cut storage costs? Answer: tiered storage, delete unused renditions after 90 days of no views, per-title encoding, dedupe re-uploads by content hash"
+      ],
+      "shape": [
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Video Streaming Design Cheatsheet",
+      "points": [
+        "Numbers: 500M DAU, 2.5B plays/day, 29K QPS avg, 250 PB/day egress, 500 TB/day storage added",
+        "Upload: pre-signed multipart direct to object store; state INITIATED -> UPLOADED -> PROCESSING -> READY",
+        "Transcode: chunk-parallel DAG, ladder 240p-4K, H.264 default, AV1 for hot titles, CMAF fMP4 segments",
+        "ABR: 2-6 s segments, HLS .m3u8 / DASH .mpd, switch down fast and up slow",
+        "Delivery and counting: CDN hit ratio 95%+, immutable segments with signed URLs; Kafka -> Flink windowed view counts, display approximate and billing exact"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

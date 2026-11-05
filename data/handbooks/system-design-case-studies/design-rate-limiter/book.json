@@ -1,0 +1,209 @@
+{
+  "title": "Distributed API Rate Limiter: Case Study",
+  "summary": "End-to-end design of a distributed rate limiter for an API gateway: algorithms (token bucket, leaky bucket, fixed and sliding windows), Redis-backed counters, placement, per-user/IP/API-key limits, response headers, race conditions and failure modes.",
+  "chapters": [
+    {
+      "title": "What This Handbook Covers",
+      "points": [
+        "Rate limiting algorithms",
+        "Redis atomic counters",
+        "Placement in the stack",
+        "Limits by user, IP, key",
+        "429 and headers",
+        "Race conditions, failure modes"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem, Scope and Requirements (API Rate Limiter)",
+      "points": [
+        "Problem: cap requests per client per time window to protect backends from abuse, overload and noisy neighbours; out of scope: DDoS scrubbing at L3/L4, billing",
+        "Functional: configurable rules (client, endpoint, limit, window), allow/reject decision, return 429 with Retry-After, rule changes live without redeploy",
+        "Scale estimate: 1M req/s peak across 50 gateway nodes, 10M active clients, about 100 bytes of state per client-rule, so about 1 GB of counters",
+        "Non-functional: added latency under 2 ms p99, 99.99% availability, limiter must never be the cause of an outage, eventual consistency tolerated within about 5% overshoot",
+        "Example rule: free tier 100 req/min per API key, paid tier 1,000 req/min, login endpoint 5 req/min per IP"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (API Rate Limiter)",
+      "points": [
+        "Request path: client → load balancer → gateway with limiter middleware → Redis cluster check → backend or 429",
+        "Placement options: client-side (untrusted), API gateway or middleware (default choice), separate rate limiter service (extra hop, about 1 ms), sidecar per service",
+        "Components: rules store, limiter middleware, Redis cluster, metrics pipeline, config service pushing rules to gateways",
+        "Rule: enforce at the edge so rejected traffic never reaches backend; in-process local check first, Redis second",
+        "Trade-off table: gateway embedded = lowest latency, shared service = reusable but adds a network hop and a new failure point"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Token Bucket and Leaky Bucket (API Rate Limiter)",
+      "points": [
+        "Token bucket: capacity B, refill rate R tokens/s, each request takes 1 token, empty bucket means reject; allows bursts up to B",
+        "Lazy refill: store only tokens and last_refill timestamp; on request compute tokens = min(B, tokens + (now − last) × R); no background timer needed",
+        "Example: B=10, R=5/s: a burst of 10 passes instantly, then 5 req/s sustained; state is 2 numbers per key",
+        "Leaky bucket: FIFO queue of size N drained at constant rate; overflow dropped; smooths output but bursts add queueing delay and old requests can starve new ones",
+        "Mistake: using the client's clock for refill; always use server or Redis TIME"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Fixed and Sliding Window Algorithms (API Rate Limiter)",
+      "points": [
+        "Fixed window counter: key = client:floor(now/window), INCR, EXPIRE; O(1) memory, simplest",
+        "Boundary burst flaw: limit 100/min can pass 100 at 12:00:59 and 100 at 12:01:00, so 200 in 2 seconds",
+        "Sliding window log: store a timestamp per request in a sorted set, drop old ones; exact but O(N) memory, 100 limit means 100 entries per client",
+        "Sliding window counter: estimate = current + previous × (1 − elapsed fraction); example 30% into window, prev=84, cur=36 gives 36 + 84×0.7 = 94.8; O(1) memory, error about 0.003% per Cloudflare's measurement",
+        "Comparison: token bucket (burst-friendly, 2 numbers), leaky bucket (smooth), fixed window (cheap, boundary burst), sliding log (exact, costly), sliding counter (best default balance)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Redis-Based Counters and Data Model (API Rate Limiter)",
+      "points": [
+        "Key schema: rl:{rule_id}:{client_id}:{window_start}; use hash tags {client_id} so all keys for a client land on one Redis Cluster slot",
+        "Fixed window: INCR key then EXPIRE key window on first hit; set TTL = 2 × window so keys clean themselves up",
+        "Sliding log: ZADD ts, ZREMRANGEBYSCORE 0 to now−window, ZCARD; token bucket: HSET tokens and ts on a hash with TTL",
+        "Memory estimate: 10M clients × 2 rules × about 100 B = about 2 GB, so throughput, not memory, sets the shard count: 8 masters (about 250 MB each), each with 1 replica",
+        "Mistake: INCR and EXPIRE as two separate commands, a crash between them leaves a key that never expires"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Race Conditions and Atomicity (API Rate Limiter)",
+      "points": [
+        "Check-then-set race: two gateways GET count=99, both allow, both SET 100, so one extra request slips through",
+        "Fix 1: atomic INCR then compare to the limit, single round trip, works for fixed windows",
+        "Fix 2: Lua script via EVALSHA runs atomically on Redis's single thread: read, refill, decide, write; one round trip, about 0.2 ms",
+        "Fix 3: MULTI/EXEC or WATCH optimistic locking, retries under contention, slower than Lua",
+        "Mistake: reading time on the app server in the script; use redis.call('TIME') so all nodes share one clock"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Limit Keys and Rules: User, IP, API Key (API Rate Limiter)",
+      "points": [
+        "Identify in order: API key, then authenticated user ID, then IP as fallback for anonymous traffic",
+        "Per-IP weakness: NAT or office shares one IP so legitimate users get blocked; attackers rotate IPs; trust X-Forwarded-For only from your own proxies",
+        "Multi-tier rules: per-second burst limit (20/s) plus per-minute (1,000/min) plus per-day quota (50,000/day), request denied if any tier fails",
+        "Per-endpoint cost: weight expensive calls, for example search costs 5 tokens and read costs 1",
+        "Mistake: one global limit for all clients, one abusive tenant exhausts it for everyone"
+      ],
+      "shape": [
+        "definition",
+        "comparison",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Response Headers and Client Behaviour (API Rate Limiter)",
+      "points": [
+        "Reject with HTTP 429 Too Many Requests, never 503 or 403",
+        "Headers: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (epoch seconds), plus Retry-After in seconds on 429; IETF draft uses RateLimit-Limit, -Remaining, -Reset",
+        "Example response: 429, Retry-After: 30, X-RateLimit-Limit: 100, X-RateLimit-Remaining: 0, X-RateLimit-Reset: 1735689600",
+        "Client side: exponential backoff with full jitter, sleep = random(0, min(cap, base × 2^attempt)), avoids synchronized retry storms",
+        "Mistake: rejected requests that still count against the limit, or retries with no jitter so all clients return at the same second"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Distributed Deployment and Synchronization (API Rate Limiter)",
+      "points": [
+        "Centralized Redis: exact counts, one network hop of about 0.5 ms per request, Redis becomes a hot dependency",
+        "Local counters with periodic sync every 100 ms: no hop, but overshoot up to nodes × local batch size",
+        "Batching: each gateway leases 10 tokens from Redis and spends them locally, cutting Redis calls 10×",
+        "Sticky routing by client hash puts a client on one node, so a local limit is exact but node loss resets counters",
+        "Mistake: dividing the limit by node count (100 limit ÷ 50 nodes = 2 each), which breaks with uneven load balancing"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Failure Modes and Metrics (API Rate Limiter)",
+      "points": [
+        "Redis down: fail-open (allow all, protects availability, default for most APIs) vs fail-closed (reject, for security-critical endpoints such as login or payments)",
+        "Redis timeout 5 ms with circuit breaker: after 5 consecutive failures skip Redis for 10 s and fall back to in-memory local limits",
+        "Hot key: one huge client hammering one Redis shard; mitigate with local pre-check and a per-key local cache",
+        "Clock skew between nodes: use Redis TIME inside Lua; a replica failover can lose last 1 s of counters, accepted overshoot",
+        "Metrics: allowed vs rejected per rule, rate limiter p99 latency under 2 ms, Redis CPU and memory, fail-open count, top 10 rejected clients"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Scaling, Trade-offs and Interview Questions (API Rate Limiter)",
+      "points": [
+        "Scale path: 1M req/s needs about 8 Redis shards at 150k ops/s each, add replicas for failover, add a local cache to cut Redis calls by 80%",
+        "Trade-off: accuracy vs latency vs memory; sliding counter plus Lua script is the standard interview answer",
+        "Multi-region: per-region limits with async replication, global limit approximate; split quota such as 60/40 by traffic share",
+        "Interview Q: how do you stop a boundary burst? sliding window counter or token bucket",
+        "Interview Q: what if Redis dies? fail-open with local fallback limits, alerting, and fail-closed on sensitive endpoints"
+      ],
+      "shape": [
+        "summary",
+        "comparison",
+        "example"
+      ]
+    },
+    {
+      "title": "Rate Limiter Cheatsheet (API Rate Limiter)",
+      "points": [
+        "Token bucket: B, R, lazy refill, burst friendly; sliding counter: cur + prev × (1 − fraction)",
+        "Redis: Lua via EVALSHA, hash tag per client, TTL = 2 × window",
+        "Order of keys: API key, then user, then IP; deny if any tier fails",
+        "429 plus Retry-After, X-RateLimit-Limit/Remaining/Reset; client uses jittered backoff",
+        "Fail-open by default, fail-closed on login and payments; Redis timeout 5 ms with circuit breaker"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

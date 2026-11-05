@@ -1,0 +1,214 @@
+{
+  "title": "SQL Joins: Nested Loop, Hash and Merge",
+  "summary": "Quick revision notes on the three join algorithms, when the planner chooses each, how join order and indexes affect cost, and how to read join nodes in EXPLAIN ANALYZE.",
+  "chapters": [
+    {
+      "title": "The Three Join Algorithms",
+      "points": [
+        "Join algorithm = how the engine matches rows from two inputs on a join condition; the planner picks one per join node, so one query can mix several",
+        "Nested Loop: for each outer row, probe the inner side for matches; cost ≈ outer rows × cost of one inner lookup",
+        "Hash Join: build an in-memory hash table on the smaller input (build side), then scan the larger input (probe side) and look up each row; equality conditions only",
+        "Merge Join: both inputs sorted on the join key, then walk both in step like a zipper; handles =, and sorted output is reusable by ORDER BY",
+        "Every join node has two children: the first shown is the outer (probe) side, the second is the inner (build/lookup) side"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "title"
+        },
+        {
+          "type": "table",
+          "note": "algorithm vs idea vs best case"
+        },
+        {
+          "type": "diagram",
+          "note": "nested loop, hash and merge flow"
+        },
+        {
+          "type": "callout",
+          "note": "hash and merge need equality; nested loop handles any condition"
+        }
+      ]
+    },
+    {
+      "title": "When the Planner Picks Each",
+      "points": [
+        "Nested Loop wins when the outer side is small (few rows) and the inner side has an index on the join column: cost ≈ N index lookups",
+        "Hash Join wins for large unsorted inputs with an equality join and no useful index; cost ≈ one scan of each side plus building the hash",
+        "Merge Join wins when both inputs are already sorted (index scan or prior sort) or when sorted output is needed downstream; sort cost dominates otherwise",
+        "Non-equality joins (<, >, BETWEEN, LIKE) and CROSS joins can only use Nested Loop; Hash and Merge require = conditions",
+        "Hash Join spilling: if the hash table exceeds work_mem it splits into multiple batches written to disk (Batches > 1 in EXPLAIN), which slows it sharply"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "title"
+        },
+        {
+          "type": "table",
+          "note": "algorithm, input size, index, condition type, memory"
+        },
+        {
+          "type": "bullets",
+          "note": "decision rules"
+        },
+        {
+          "type": "callout",
+          "note": "Batches > 1 means spill to disk"
+        }
+      ]
+    },
+    {
+      "title": "Join Order and Indexes That Help",
+      "points": [
+        "Join order matters because intermediate result size drives cost: the planner joins the most selective pair first to shrink rows early",
+        "The planner reorders inner joins freely, but only searches all orders up to join_collapse_limit / from_collapse_limit (default 8); beyond that it follows the written order",
+        "Outer joins restrict reordering: a LEFT JOIN keeps the preserved table on the outer side, so the planner cannot swap it freely",
+        "Index the foreign key (inner side) column used in the join: it enables a Nested Loop with Index Scan and turns inner cost from a full scan into a lookup",
+        "Index on the join key also gives pre-sorted input for Merge Join; a composite index (join_col, filter_col) can allow Index Only Scan on the inner side"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "title"
+        },
+        {
+          "type": "bullets",
+          "note": "join order rules"
+        },
+        {
+          "type": "code",
+          "note": "CREATE INDEX on orders(customer_id)"
+        },
+        {
+          "type": "callout",
+          "note": "foreign keys are not auto-indexed in PostgreSQL"
+        }
+      ]
+    },
+    {
+      "title": "Reading Joins in EXPLAIN ANALYZE",
+      "points": [
+        "Run EXPLAIN (ANALYZE, BUFFERS) to get actual rows, time and loops alongside the planner's estimates; ANALYZE really executes the query, so wrap writes in a transaction and ROLLBACK",
+        "Plan reads inside-out: the deepest, most-indented child nodes run first; the join node sits above its two children",
+        "actual time and rows are per loop: multiply by loops for the true total; for a Nested Loop inner node, loops equals the outer row count",
+        "Compare estimated rows vs actual rows: a large gap (10x or more) means stale stats, so run ANALYZE; this is the top cause of a bad join choice",
+        "Hash Join shows a Hash node child with 'Buckets, Batches, Memory Usage'; Merge Join shows Sort children unless an index provides order; Nested Loop with Seq Scan on the inner side is the red flag"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "title"
+        },
+        {
+          "type": "code",
+          "note": "sample plan with Hash Join annotated"
+        },
+        {
+          "type": "table",
+          "note": "plan field vs meaning"
+        },
+        {
+          "type": "callout",
+          "note": "actual time is per loop"
+        }
+      ]
+    },
+    {
+      "title": "Common Join Mistakes",
+      "points": [
+        "Missing index on the foreign key column makes Nested Loop do a Seq Scan on the inner table for every outer row: O(N×M)",
+        "Stale statistics after bulk loads cause underestimated rows and a Nested Loop where a Hash Join was needed; run ANALYZE after big loads",
+        "Joining on mismatched types or wrapping the column in a function (ON lower(a.x) = b.y, int vs bigint casts) stops index use; fix the types or add an expression index",
+        "Forcing plans with enable_nestloop = off in production hides the root cause; use it only to test whether another algorithm would be faster",
+        "Joining too many tables with many-to-many keys multiplies rows silently; check the join node's actual rows against the expected count"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "title"
+        },
+        {
+          "type": "bullets",
+          "note": "mistake and fix pairs"
+        },
+        {
+          "type": "code",
+          "note": "bad vs good join condition"
+        },
+        {
+          "type": "callout",
+          "note": "run ANALYZE after bulk loads"
+        }
+      ]
+    },
+    {
+      "title": "Join Cheat Sheet",
+      "points": [
+        "Nested Loop: small outer + indexed inner, any condition; Hash Join: large inputs, equality, no index; Merge Join: pre-sorted inputs, equality",
+        "Hash spills to disk when Batches > 1: raise work_mem for that session or reduce the build side",
+        "EXPLAIN (ANALYZE, BUFFERS): read inside-out, multiply actual time by loops, compare estimated vs actual rows",
+        "Index every foreign key used in joins; run ANALYZE after bulk loads; keep join column types identical",
+        "Planner searches all join orders only up to join_collapse_limit (8); outer joins limit reordering"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "title"
+        },
+        {
+          "type": "table",
+          "note": "algorithm quick-pick table"
+        },
+        {
+          "type": "bullets",
+          "note": "EXPLAIN reading checklist"
+        },
+        {
+          "type": "callout",
+          "note": "top three fixes: index, ANALYZE, matching types"
+        }
+      ]
+    }
+  ]
+}

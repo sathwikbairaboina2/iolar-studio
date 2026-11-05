@@ -1,0 +1,2296 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-file-storage",
+  "category": "system-design",
+  "inputsHash": "6505f5e1546138701a596b78c5ba434ef12ba5173de4ed3afbfe2bcdbca545f8",
+  "generatedAt": "2026-10-24T11:28:31.116Z",
+  "sections": [
+    {
+      "title": "Cloud File Storage (Dropbox-style): What This Handbook Covers",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Cloud File Storage (Dropbox-style): What This Handbook Covers",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Requirements and Architecture",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Users",
+                  "==50M== registered, 10M DAU"
+                ],
+                [
+                  "Storage",
+                  "2 GB avg x 50M = ==100 PB== logical, ~70 PB raw after 30% dedup"
+                ],
+                [
+                  "Uploads",
+                  "20M/day = ~230 QPS avg, 700 QPS peak"
+                ],
+                [
+                  "Sync checks",
+                  "1B/day = ~12K QPS avg, 40K QPS peak"
+                ],
+                [
+                  "Chunks",
+                  "100 PB / 4 MB = 25B chunks"
+                ],
+                [
+                  "Targets",
+                  "11 nines durability, 99.95% availability, sync < 5 s"
+                ],
+                [
+                  "Limits",
+                  "files up to 50 GB; restore last 30 days; no co-editing or search"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "watcher, chunker, SQLite",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "API gateway",
+                    "sub": "auth, JSON",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Metadata",
+                    "sub": "sharded SQL, Redis",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Block store",
+                    "sub": "S3-like objects",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Notifier",
+                    "sub": "Kafka + sockets",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Control plane}: metadata and auth through the API, small JSON",
+                "{orange:Data plane}: file bytes go ==direct to the block store== via presigned URLs",
+                "Metadata is ~1 KB per file: tiny but hot, so it is the first bottleneck"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Chunking, Dedup, Block Storage",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "File = ordered list of ==SHA-256== chunk hashes (block list); 1 GB = ~256 chunks",
+                "Fixed 4 MB is simple; ==content-defined== (min 1 MB, avg 4 MB, max 8 MB) survives mid-file inserts",
+                "Dedup is {green:global} by hash, saves ~30%; confirm with proof of possession to avoid leaks",
+                "Blocks are ==immutable==: put is idempotent, nothing to invalidate",
+                "3x replication over 3 AZs, or erasure coding 10+4 (1.4x): 98 PB vs 210 PB",
+                "Edit 1 chunk of a 1 GB file: send 4 MB, not 1 GB"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Save sequence",
+                "steps": [
+                  {
+                    "text": "Chunk + hash",
+                    "note": "on the client",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Ask missing",
+                    "note": "POST /chunks/missing",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Upload missing",
+                    "note": "presigned PUT",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Commit",
+                    "note": "atomic new version",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Upload, Sync, Conflicts, Versions, Sharing",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Topic",
+                "Rule"
+              ],
+              "rows": [
+                [
+                  "Upload",
+                  "4-8 parallel streams; session lives 7 days and resumes only the remaining chunks"
+                ],
+                [
+                  "Sync",
+                  "cursor + `GET /changes?cursor=N`; notifier pushes {namespace_id, seq}, pull in ~1 s"
+                ],
+                [
+                  "Conflict",
+                  "commit carries `base_version`; mismatch = first wins, loser saved as a conflicted copy"
+                ],
+                [
+                  "Delete vs edit",
+                  "the ==edit wins==; versions are server-assigned, never wall-clock"
+                ],
+                [
+                  "Versions",
+                  "all kept 30 days, then 1 per day until day 120; restore = one metadata write"
+                ],
+                [
+                  "Sharing",
+                  "viewer, commenter, editor, owner; ACLs inherit down the tree; 5 min signed block URLs"
+                ],
+                [
+                  "GC",
+                  "refcount hits 0, then 7-day grace; orphans deleted after session expiry"
+                ]
+              ],
+              "highlightRow": 2,
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Scaling, Failures, Interviews",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Bottleneck order: {red:metadata DB}, then notifier connections, then block bandwidth",
+                "Metadata: 64+ shards by `namespace_id`; stateless API; CDN absorbs hot downloads",
+                "AZ loss: RPO 0, RTO < 30 s. Region loss: async replica, RPO ~1 min",
+                "Trade-offs: fixed vs CDC chunks, global vs per-user dedup, 3x vs erasure coding, long-poll vs WebSocket"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**50 GB file, 1 MB edit?** Send only the changed 4 MB chunk, commit a new block list",
+                "**Two devices overwrite?** `base_version` check; the loser becomes a conflicted copy",
+                "**Dedup without leaks?** Proof of possession on a sampled range before skipping upload",
+                "**GDPR erase with shared blocks?** Drop the user's version rows; delete a block only at refcount 0"
+              ],
+              "style": "star"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "File bytes through app servers",
+                "Trusting client-supplied hashes",
+                "Wall-clock time for versions",
+                "Deleting a block before verifying refcount",
+                "Polling every second instead of notifying"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Bytes go ==direct to the block store==; metadata decides what exists. A version commits only when **every chunk is present**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope and Functional Requirements",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Upload== and ==download== files",
+                "==Sync== across a user's devices",
+                "==Share== files and folders",
+                "==Version history== with restore"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Real-time co-editing (OT/CRDT)",
+                "Full-text search",
+                "Media transcoding"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Files up to ==50 GB==, organised in **folders**",
+                "==Resumable== transfers after a dropped connection",
+                "**Offline edits** queue locally and sync later",
+                "Share by **link** or by **user**, with ==view== or ==edit== roles",
+                "Restore any version from the last ==30 days=="
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Non-Functional Targets",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Goal",
+                "Target",
+                "Meaning"
+              ],
+              "rows": [
+                [
+                  "Durability",
+                  "==99.999999999%== (11 nines)",
+                  "Stored data is effectively never lost"
+                ],
+                [
+                  "Availability",
+                  "==99.95%==",
+                  "About 4.4 h downtime per year"
+                ],
+                [
+                  "Write safety",
+                  "**No acknowledged write is ever lost**",
+                  "Ack only after a durable commit"
+                ],
+                [
+                  "Sync latency",
+                  "==under 5 s==",
+                  "For small files"
+                ],
+                [
+                  "Restore window",
+                  "30 days",
+                  "Every version in that window"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "3. Scale Estimates",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Load",
+                "Math",
+                "Avg",
+                "Peak"
+              ],
+              "rows": [
+                [
+                  "Uploads",
+                  "10M DAU × 2/day = 20M/day",
+                  "~==230 QPS==",
+                  "~==700 QPS=="
+                ],
+                [
+                  "Sync checks",
+                  "10M DAU × 100/day = 1B/day",
+                  "~==12K QPS==",
+                  "~==40K QPS=="
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Storage: from users to raw bytes",
+                "steps": [
+                  {
+                    "text": "Logical data",
+                    "note": "50M users × 2 GB = 100 PB",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Chunks",
+                    "note": "100 PB / 4 MB = 25B chunks",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Dedup",
+                    "note": "saves about 30%",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Raw storage",
+                    "note": "about 70 PB before replication",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Read-heavy metadata",
+              "text": "Sync checks (~==12K QPS==) outnumber uploads (~==230 QPS==) about **50x**. The 70 PB figure is **before** replication or erasure coding."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Components",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "cards",
+              "spec": {
+                "cards": [
+                  {
+                    "title": "Client",
+                    "lines": [
+                      "Desktop / mobile",
+                      "Local watcher",
+                      "Chunker"
+                    ],
+                    "ink": "blue"
+                  },
+                  {
+                    "title": "API gateway",
+                    "lines": [
+                      "Auth, routing",
+                      "Rate limits"
+                    ],
+                    "ink": "purple"
+                  },
+                  {
+                    "title": "Metadata service",
+                    "lines": [
+                      "Namespace, versions",
+                      "Block lists"
+                    ],
+                    "ink": "green"
+                  },
+                  {
+                    "title": "Block service",
+                    "lines": [
+                      "Presigned URLs",
+                      "Hash verify"
+                    ],
+                    "ink": "orange"
+                  },
+                  {
+                    "title": "Notification service",
+                    "lines": [
+                      "Tells devices to pull"
+                    ],
+                    "ink": "pink"
+                  },
+                  {
+                    "title": "Object store",
+                    "lines": [
+                      "Immutable 4 MB blocks"
+                    ],
+                    "ink": "black"
+                  },
+                  {
+                    "title": "Metadata DB",
+                    "lines": [
+                      "Sharded SQL"
+                    ],
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Control Plane vs Data Plane",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Control plane",
+                "Data plane"
+              ],
+              "rows": [
+                [
+                  "Carries",
+                  "Metadata, auth, block lists (small JSON)",
+                  "File bytes in 4 MB chunks"
+                ],
+                [
+                  "Path",
+                  "Client → API gateway → metadata service",
+                  "Client → block store via {orange:presigned URL}"
+                ],
+                [
+                  "Load",
+                  "==12K QPS== avg",
+                  "Bytes skip app servers"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "sidebox",
+              "title": "Data plane rules",
+              "items": [
+                "File bytes **never** pass through app servers",
+                "Presigned PUT URL is short-lived (15 min)",
+                "Auth is checked before any URL is issued"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Sync agent keeps a local ==SQLite== DB: file path, hash list, version",
+                "Change detection uses OS file events, not scanning",
+                "{green:Linux} `inotify`, {blue:macOS} `FSEvents`, {purple:Windows} `ReadDirectoryChangesW`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Sequence for a Save",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "One file save",
+                "steps": [
+                  {
+                    "text": "Chunk + hash",
+                    "note": "4 MB blocks, SHA-256",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Ask metadata",
+                    "note": "which hashes are missing?",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Upload missing",
+                    "note": "PUT to block store only",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Commit version",
+                    "note": "one atomic transaction",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Storage Choices",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Data",
+                "Store",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Tree, versions, ACLs",
+                  "Sharded SQL (MySQL/Postgres)",
+                  "Transactions, optimistic commit"
+                ],
+                [
+                  "File blocks",
+                  "S3-like object store",
+                  "Durable, cheap, immutable"
+                ],
+                [
+                  "Change events",
+                  "Kafka",
+                  "Ordered feed for the notifier"
+                ],
+                [
+                  "Hot lookups, sessions",
+                  "Redis",
+                  "Fast reads, TTL expiry"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Bytes go **direct** to the block store; only the ==commit== makes a new version visible."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Chunking and Deduplication Service (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Chunking and Deduplication Service (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Split== each file into blocks",
+                "==Fingerprint== each block with **SHA-256**",
+                "==Skip== blocks the server already has"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Fixed 4 MB",
+                "Content-defined (CDC)"
+              ],
+              "rows": [
+                [
+                  "Boundaries",
+                  "every 4 MB",
+                  "rolling hash picks cut points"
+                ],
+                [
+                  "Size",
+                  "always 4 MB",
+                  "avg 4 MB, min 1 MB, max 8 MB"
+                ],
+                [
+                  "Insert in middle",
+                  "{red:all later chunks shift}",
+                  "{green:only neighbours change}"
+                ],
+                [
+                  "Cost",
+                  "{green:simple}",
+                  "more CPU on the client"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "2. Design and Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "File = ==ordered list of chunk hashes== (the **block list**)",
+                "1 GB file = about ==256 chunks== at 4 MB",
+                "Dedup is ==global across users== by hash: saves about **30%** of storage",
+                "Cross-user dedup {red:leaks existence}: client must upload proof of possession for a sampled range",
+                "**Compress, then encrypt** per chunk (encrypted data does not compress)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Hash chunks",
+                    "sub": "SHA-256 each",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Send hash list",
+                    "sub": "to server",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Missing hashes",
+                    "sub": "server reply",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Upload missing",
+                    "sub": "only those",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Edit 1 chunk of a 1 GB file: send ==4 MB==, not 1 GB"
+              ],
+              "style": "star",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE chunk (hash CHAR(64) PRIMARY KEY, size INT,",
+                "  storage_key TEXT, refcount INT, created_at TIMESTAMP);",
+                "CREATE TABLE file_version (file_id BIGINT, version INT,",
+                "  chunk_hashes TEXT[], PRIMARY KEY (file_id, version));"
+              ],
+              "note": "hash is the primary key, so a lookup is one point read"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /chunks/missing",
+                "{\"hashes\": [\"a1f\", \"b72\", \"c09\"]}"
+              ],
+              "note": "returns only the subset the server lacks"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "{\"missing\": [\"b72\", \"c09\"]}"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Hash collision: negligible with SHA-256, about ==2^-128== scale",
+                "Refcount race can delete a **live** chunk: gc only after a ==7-day grace period==",
+                "Trusting client hashes: server must verify them when the chunk arrives"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Dedup ratio",
+                  "**30%**"
+                ],
+                [
+                  "Bytes saved / day",
+                  "tracked daily, watch the trend"
+                ],
+                [
+                  "Chunk lookup p99",
+                  "under **10 ms**"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Block Storage Service (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Block Storage Service (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Durably store== immutable **4 MB blocks** keyed by hash, and serve them fast",
+                "Immutable means ==no update==, so there is {green:no cache invalidation}",
+                "A retry is safe: `PUT` of the same hash is ==idempotent==",
+                "Hot blocks are cached on the **CDN/edge**",
+                "Blocks ==not read for 90 days== move to a cheaper cold tier"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "3x replication",
+                "Erasure coding 10+4"
+              ],
+              "rows": [
+                [
+                  "Layout",
+                  "3 copies in 3 AZs",
+                  "10 data + 4 parity shards"
+                ],
+                [
+                  "Overhead",
+                  "**3x**",
+                  "**1.4x**"
+                ],
+                [
+                  "70 PB raw becomes",
+                  "{red:210 PB}",
+                  "{green:98 PB}"
+                ],
+                [
+                  "Used for",
+                  "hot blocks, fast reads",
+                  "cold blocks (90+ days unread)"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Block lifecycle",
+                "steps": [
+                  {
+                    "text": "Hot",
+                    "note": "3x replicas + CDN",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Idle 90 days",
+                    "note": "no reads",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Cold",
+                    "note": "erasure coded 10+4",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Put Flow, Data Model, API",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Presigned PUT",
+                    "sub": "valid 15 min",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Direct upload",
+                    "sub": "client to store",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Verify hash",
+                    "sub": "block service",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Mark present",
+                    "sub": "ready to commit",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`block(hash, storage_key, tier, size, refcount, last_access)`",
+                "Key = ==hash prefix==, so S3 sharding spreads load evenly",
+                "Bytes never pass through app servers"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "PUT /blocks/{hash}   # presigned URL, 15 min",
+                "GET /blocks/{hash}   # CDN first, then store",
+                "key = hash[0:2]/hash[2:4]/hash"
+              ],
+              "note": "hash prefix in the key spreads shards"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Caught by",
+                "Fix"
+              ],
+              "rows": [
+                [
+                  "Corrupt block",
+                  "hash check on **read**",
+                  "repair from another replica"
+                ],
+                [
+                  "Silent bit rot",
+                  "==weekly scrubber== re-verifies hashes",
+                  "repair from replica or parity"
+                ],
+                [
+                  "Orphan (uploaded, never committed)",
+                  "no live upload session lists it",
+                  "delete after **7-day** session expiry"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Durability audits** pass rate",
+                "put/get p99 ==under 200 ms== per 4 MB block",
+                "**Repair backlog** size and age"
+              ],
+              "style": "check",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never gc an orphan early",
+              "text": "A resumable upload session lives ==7 days==. Delete an uncommitted block only once **no live session** references it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Metadata Service and Database (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Metadata Service and Database (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Owns the ==namespace==: folders, names, paths",
+                "Owns the ==file-to-block mapping==, versions, ACLs and device cursors",
+                "Source of truth for what exists; about **1 KB per file**: small but {red:hot}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "API gateway",
+                    "sub": "namespace_id",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Redis",
+                    "sub": "hot listings",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Shard primary",
+                    "sub": "1 of 64+",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "2 replicas",
+                    "sub": "sync copies",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Shard by namespace_id==: one user's tree lives on one shard",
+                "Listing and move need **no cross-shard join**",
+                "~1,000 files/user: 50M x 1,000 x 1 KB = ==about 50 TB==",
+                "Run **64+ shards** (about 800 GB each), each 1 primary + 2 replicas",
+                "Redis caches hot folder listings"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Data Model",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Table",
+                "Columns"
+              ],
+              "rows": [
+                [
+                  "`file`",
+                  "`file_id`, `namespace_id`, `parent_id`, `name`, `is_dir`, `latest_version`, `deleted`"
+                ],
+                [
+                  "`version`",
+                  "`file_id`, `version`, `size`, `chunk_hashes[]`, `device_id`, `ts`"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`unique(parent_id, name)`: no two siblings share a name",
+                "==Rename and move== change `parent_id` / `name` only: **zero bytes copied**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET  /folders/{id}/list",
+                "POST /files/commit  {file_id, base_version, chunk_hashes[]}",
+                "GET  /changes?cursor=N"
+              ],
+              "note": "list a folder, commit a version, pull changes since a cursor"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Commit = one DB transaction",
+                "steps": [
+                  {
+                    "text": "Begin",
+                    "note": "single shard",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Check base_version",
+                    "note": "== latest_version?",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Insert version row",
+                    "note": "new chunk_hashes[]",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Bump latest_version",
+                    "note": "optimistic lock",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Commit",
+                    "note": "mismatch = conflict",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Handling"
+              ],
+              "rows": [
+                [
+                  "Primary dies",
+                  "Failover in **under 30 s** to a sync replica"
+                ],
+                [
+                  "Hot shard (1M-file team folder)",
+                  "Split by ==sub-tree=="
+                ],
+                [
+                  "Stale cache read",
+                  "Bounded by Redis **TTL of 5 s**"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Commit p99 under ==100 ms==",
+                "Replication lag under ==1 s==",
+                "Shard QPS skew: spot hot shards early"
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never skip the base_version check",
+              "text": "A commit without ==base_version== lets two devices silently overwrite each other. The check and the version insert must share **one transaction**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Upload and Download Flow (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Upload and Download Flow (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Upload Sequence",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "1. Chunk and hash",
+                    "note": "4 MB chunks, SHA-256",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "2. POST /uploads/init",
+                    "note": "send the hash list",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "3. Presigned URLs",
+                    "note": "only for missing chunks",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "4. PUT chunks",
+                    "note": "4-8 parallel streams",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "5. POST /files/commit",
+                    "note": "version visible atomically",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Bytes go ==straight to the block store== via presigned URLs, never through app servers",
+                "Chunks the server already has are skipped, so an edit uploads only the changed chunks",
+                "Nothing is visible to other devices until ==commit== succeeds"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Resumable Upload and Download",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Upload session = `upload_id` + ==bitmap of received chunks==, kept for **7 days**",
+                "Drop after **600 of 1000** chunks: resume sends only the remaining ==400==",
+                "Per-chunk retry with ==exponential backoff==, **3 tries**, then the session stays resumable"
+              ],
+              "style": "check",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "GET manifest",
+                    "sub": "/files/{id}/manifest",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Fetch chunks",
+                    "sub": "parallel, signed CDN URLs",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Verify",
+                    "sub": "SHA-256 per chunk",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Reassemble",
+                    "sub": "in hash-list order",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Manifest = ordered hash list plus signed CDN URLs",
+                "==Range requests== give streaming and partial reads"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "upload_session(",
+                "  upload_id, file_id, base_version,",
+                "  expected_hashes[],",
+                "  received_bitmap,",
+                "  expires_at   -- created + 7 days",
+                ")"
+              ],
+              "note": "one row per in-flight upload"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Commit rejects== if any listed chunk is not present",
+                "So a version **never points at a missing block**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Handling"
+              ],
+              "rows": [
+                [
+                  "Commit crash after upload",
+                  "Orphan chunks, gc only after the session expires (**7 days**)"
+                ],
+                [
+                  "Client lies about hashes",
+                  "Caught by ==server-side verify== on upload"
+                ],
+                [
+                  "Upload flood",
+                  "Throttle **1 session per 100 Mbps**"
+                ]
+              ]
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Upload success rate",
+                  "over **99.9%**"
+                ],
+                [
+                  "Time-to-first-byte",
+                  "under **300 ms**"
+                ],
+                [
+                  "Resume rate, throughput per stream",
+                  "tracked, no fixed target"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Orphan gc waits for the session",
+              "text": "Deleting uncommitted chunks before the **7-day** session expiry breaks resume: the bitmap says a chunk is there, but it is gone."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Sync Engine and Conflict Resolution (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Sync Engine and Conflict Resolution (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Goal: ==converge== every device to the same tree",
+                "Each device stores a ==cursor== = last change-log `seq` it applied",
+                "Sync = **pull** `GET /changes?cursor=N`, apply locally, **push** local edits via commit"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Pull",
+                    "sub": "GET /changes?cursor=N",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Apply locally",
+                    "sub": "diff chunk hashes",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Push edits",
+                    "sub": "POST /files/commit",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Advance cursor",
+                    "sub": "to last seq",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Server keeps a per-namespace ==append-only change log==: (file_id, version, op, seq)",
+                "Client compares **local hash list vs remote**, transfers only differing chunks",
+                "Offline edits **queue** locally and replay on reconnect, each with its base_version"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Conflict Detection and Resolution",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Every commit carries ==base_version== (the version the edit started from)",
+                "Server's `latest_version` != base_version means two devices edited the same base",
+                "Optimistic check (or version vector): **never** a silent overwrite"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "POST /files/commit",
+                "  {file_id, base_version: 7, chunk_hashes[]}",
+                "latest_version == 7  -> accept as version 8",
+                "latest_version == 8  -> conflict, keep as copy"
+              ],
+              "note": "check and write in one DB transaction"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "latest_version == base_version?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Accept: new version, seq appended",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "b": {
+                    "text": "Loser saved as conflicted copy",
+                    "shape": "box",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Case",
+                "Outcome"
+              ],
+              "rows": [
+                [
+                  "Two edits, same base",
+                  "**First commit wins**; loser becomes a conflicted copy"
+                ],
+                [
+                  "Copy name",
+                  "`report (Alice's laptop's conflicted copy 2026-10-24).docx`"
+                ],
+                [
+                  "Delete vs edit",
+                  "==Edit wins==, so data is never lost"
+                ],
+                [
+                  "Mergeable docs (Google Docs)",
+                  "OT / CRDT instead; {red:out of scope here}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failures and Metrics",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Handling"
+              ],
+              "rows": [
+                [
+                  "Clock skew between devices",
+                  "Server-assigned versions, **never** wall-clock time"
+                ],
+                [
+                  "Cursor older than 90-day log retention",
+                  "==Full resync== by tree diff"
+                ],
+                [
+                  "Lost or repeated pull",
+                  "Cursor makes the pull idempotent"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Sync lag== p95 under **5 s**",
+                "==Conflict rate== about **0.1%** of commits",
+                "==Full-resync count==, watch for spikes"
+              ],
+              "style": "checkbox",
+              "ink": "blue"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Common mistake",
+              "text": "Ordering edits by device **wall-clock time** (last-writer-wins) silently loses data. Order by the server's ==version== and keep the loser as a conflicted copy."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Versioning, Trash and Garbage Collection (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Versioning, Trash and Garbage Collection (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What a Version Is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Goal: keep ==history== so any mistake can be undone",
+                "Each commit adds a new **immutable** version row",
+                "The row points at a ==block list== (ordered chunk hashes)",
+                "Unchanged chunks are **shared** between versions"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Version 1",
+                    "sub": "1 GB, 256 chunks",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Edit 1 chunk",
+                    "sub": "commit",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Version 2",
+                    "sub": "255 shared + 1 new",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Extra cost",
+                    "sub": "only 4 MB",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Retention Policy",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Age / state",
+                "Kept",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Day 0 to 30",
+                  "**every** version",
+                  "the promised restore window"
+                ],
+                [
+                  "Day 30 to 120",
+                  "{blue:1 per day}",
+                  "thinned history"
+                ],
+                [
+                  "Over 100 versions",
+                  "trim **older than 30 days** only",
+                  "cap never cuts the window"
+                ],
+                [
+                  "Deleted file",
+                  "trash flag, {orange:30 days}",
+                  "then purged"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Delete = ==soft delete== flag; file moves to trash, nothing freed yet",
+                "Cap: **100 versions per file**, applied only past day 30",
+                "Expired version row decrements its chunk refcounts"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Restore",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Restore creates a ==new head version== with the old block list",
+                "**No bytes copied**: one metadata write",
+                "History stays intact; the restore is itself a version"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /files/{id}/restore",
+                "{\"version\": 7}"
+              ],
+              "note": "returns the new head version number"
+            },
+            {
+              "type": "heading",
+              "text": "4. Garbage Collection",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Commit",
+                    "note": "refcount +1",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Version expires",
+                    "note": "refcount -1",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Refcount 0",
+                    "note": "mark for sweep",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Wait 7 days",
+                    "note": "grace period",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Two checks",
+                    "note": "then delete block",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Weekly full reconciliation== recounts refs and catches refcount drift",
+                "Storage by versions: target {green:under 25%} of total",
+                "Track gc deletes/day and restore success rate"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "sidebox",
+              "title": "Delete a block only if",
+              "items": [
+                "Refcount is **0**",
+                "A scan of ==live manifests== finds no reference",
+                "7-day grace period has passed"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Worst failure",
+              "text": "A gc bug that deletes a ==live block== loses user data for good. Never trust the refcount alone: **two independent checks** before every delete."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Sharing and Permissions (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Sharing and Permissions (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Owners grant files and folders to ==users==, ==groups== or {blue:anyone with a link}",
+                "Check runs on **every metadata call** and on **every block URL issue**",
+                "No role check = no signed URL, so bytes never leave without an authz pass"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Role",
+                "Can do"
+              ],
+              "rows": [
+                [
+                  "{blue:viewer}",
+                  "list, read, download"
+                ],
+                [
+                  "{purple:commenter}",
+                  "viewer + comment"
+                ],
+                [
+                  "{orange:editor}",
+                  "commenter + upload versions, rename, move"
+                ],
+                [
+                  "{red:owner}",
+                  "editor + share, unshare, delete, transfer"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "heading",
+              "text": "2. Design and Data Model",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "File ACL",
+                    "sub": "explicit entry?",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Parent folder",
+                    "sub": "walk up",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Root",
+                    "sub": "last stop",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Nearest entry wins",
+                    "sub": "none = deny",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "ACL entries attach to a file or folder and ==inherit down the tree==",
+                "Effective permission = ==nearest explicit entry== walking up the parent chain",
+                "Cached per `(user, node)` for **60 s**",
+                "Shared folder shows in the recipient's namespace as a ==mount==",
+                "Link tokens are {green:128-bit random}, never sequential IDs"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "acl(node_id, principal_type, principal_id,",
+                "    role, expires_at)",
+                "share_link(token, node_id, role,",
+                "    password_hash, expires_at)"
+              ],
+              "note": "principal_type: user | group; token = 128-bit random"
+            },
+            {
+              "type": "heading",
+              "text": "3. APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST   /shares {node_id, principal, role}",
+                "DELETE /shares/{id}",
+                "GET    /s/{token}"
+              ],
+              "note": "grant, revoke, open a link"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Block downloads use ==signed URLs valid 5 min==",
+                "Revoke takes effect within minutes, since no new URL is issued",
+                "Never a permanent public URL"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stale cache after revoke: bounded by the **60 s TTL**",
+                "Leaked link: revoke by ==deleting the token==",
+                "Moving a file into a shared folder: ==show a warning== first"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Track",
+              "items": [
+                "authz p99 under **20 ms**",
+                "permission denials",
+                "public links active"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Revoke is not instant",
+              "text": "Worst case a revoked user still acts for ==60 s== (cache) and a URL already issued works up to **5 min**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Notification Service for Device Sync (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Notification Service for Device Sync (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Job and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Tell ==online devices== that something changed so they **pull now** instead of polling",
+                "Payload is only {blue:namespace_id} + {blue:new seq}: ==no file data==",
+                "The client then calls `GET /changes?cursor=N` to fetch the real changes"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each client holds a ==long-poll or WebSocket== connection to a notification server",
+                "10M DAU, about **3M concurrent** connections, 50K per server = ==about 60 servers==",
+                "Changes publish to a **Kafka** topic partitioned by `namespace_id`",
+                "Subscribers consume the topic and fan out to the connected devices"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Notify Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Commit to device pull, about 1 s",
+                "steps": [
+                  {
+                    "text": "Commit ok",
+                    "note": "metadata DB transaction",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Change log + event",
+                    "note": "publish to Kafka",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Redis lookup",
+                    "note": "device_id to server",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Push",
+                    "note": "{namespace_id, seq}",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Device pulls",
+                    "note": "GET /changes?cursor=N",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Offline} device: mobile push via ==APNs / FCM==",
+                "On next open it catches up from its **cursor**"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Connection Data and API",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redis `connection(device_id, server_id, last_seen)`",
+                "Key expires after a ==60 s heartbeat TTL==, so dead sockets vanish by themselves"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /subscribe?cursor=N   (hold up to 60 s)",
+                "200 -> {changes[], cursor}   // something changed",
+                "204                          // timeout, none: re-poll"
+              ],
+              "note": "long-poll: 200 with changes or 204 with none"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Lost notification is ==harmless==: client also polls every **5 min** as a fallback",
+                "The cursor makes every pull ==idempotent==, so a duplicate push is safe",
+                "Notifier crash causes a **reconnect storm**: clients retry with ==jittered backoff=="
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "End-to-end notify latency",
+                  "p99 under **2 s**"
+                ],
+                [
+                  "Connected sockets",
+                  "about 3M, 50K per server"
+                ],
+                [
+                  "Dropped events",
+                  "tracked, alert on rise"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "A notification is only a ==hint== carrying `{namespace_id, seq}`. The **cursor + /changes** pull is the source of truth."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (Cloud File Storage)",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (Cloud File Storage)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scaling Cheatsheet",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Metadata}: shard by ==namespace_id==, 64 to 1K shards, 1 primary + 2 replicas each",
+                "{blue:API tier}: ==stateless== behind a load balancer, add instances freely",
+                "{purple:Block store}: grows linearly, add nodes, ==no rebalance== because blocks are immutable",
+                "{orange:CDN}: absorbs hot downloads so they never reach the block store",
+                "Block bandwidth is small: 10M DAU x 4 MB = ==40 TB/day==, about 3.7 Gbps avg"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Metadata DB",
+                    "sub": "12K to 40K QPS, breaks first",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Notifier sockets",
+                    "sub": "3M conns, 60 servers",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Block bandwidth",
+                    "sub": "breaks last",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Failure Cheatsheet",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:AZ loss}: 3-AZ block replicas + metadata ==sync replica failover==, RPO 0, RTO under 30 s",
+                "{purple:Region loss}: ==async cross-region== replication, RPO about 1 min",
+                "{green:Client crash}: safe, the ==upload session== and the ==cursor== are durable",
+                "Resume the upload from the session bitmap, resume sync from the cursor"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Choice",
+                "Option A",
+                "Option B"
+              ],
+              "rows": [
+                [
+                  "Chunking",
+                  "Fixed 4 MB: {green:simple}",
+                  "Content-defined: {green:edit-stable}"
+                ],
+                [
+                  "Dedup scope",
+                  "Global: ==30% saving==",
+                  "Per-user: {green:no privacy leak}"
+                ],
+                [
+                  "Durability",
+                  "3x replication: {green:fast reads}",
+                  "Erasure coding: ==1.4x cost==, slower reads"
+                ],
+                [
+                  "Notify channel",
+                  "Long-poll: simple, 60 s cycle",
+                  "WebSocket: lower latency, more state"
+                ],
+                [
+                  "Conflicts",
+                  "Last-writer-wins: {red:loses data}",
+                  "Conflicted copies: {orange:user clutter}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Sending file bytes through app servers, use ==presigned URLs== to the block store",
+                "Trusting client-supplied hashes, ==verify server-side==",
+                "Using wall-clock time for versions, use ==server-assigned== versions",
+                "Deleting a block before verifying refcount and live manifests",
+                "Polling every second instead of notifying via long-poll or WebSocket"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "5. Interview Questions",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Question",
+                "Short answer"
+              ],
+              "rows": [
+                [
+                  "Sync a 50 GB file after a 1 MB edit?",
+                  "Chunk + hash, send hash list, upload only the ==1 changed 4 MB chunk==, commit new version"
+                ],
+                [
+                  "Stop two devices overwriting each other?",
+                  "Commit carries ==base_version==; mismatch means a ==conflicted copy==, never a silent overwrite"
+                ],
+                [
+                  "Dedup without leaking other users' files?",
+                  "Skip upload only after ==proof of possession== on a sampled range of the chunk"
+                ],
+                [
+                  "Honor GDPR erase when blocks are shared?",
+                  "Drop the user's versions, decrement refcounts, delete a block only at ==refcount 0== after the 7-day grace"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Bytes go to the ==block store==, truth lives in ==metadata==. Versions are server-assigned, blocks are immutable, and a block is deleted only after two checks."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A GC job deletes any chunk whose refcount is 0. A 50 GB upload has sent 600 of 1000 chunks, and the commit has not happened yet. What goes wrong, and what is the fix?",
+              "a_bullets": [
+                "The 600 uploaded chunks have ==refcount 0==, because no committed version points at them yet",
+                "GC deletes them, so the resume finds them gone, or the commit is rejected because listed chunks are missing",
+                "Fix: delete only after a ==grace period==, which is the 7-day upload session expiry",
+                "Also require two checks before deleting: refcount is 0 and no live manifest or session references the chunk"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Phone and laptop both hold version 5 of report.docx. The laptop commits with base_version=5. Later the offline phone commits its own edit with base_version=5. What does the server do?",
+              "a_bullets": [
+                "The laptop's commit succeeds, so latest_version becomes 6",
+                "The phone's commit has latest_version 6 != base_version 5, so the optimistic check fails",
+                "Nothing is overwritten: the phone's edit is saved as a ==conflicted copy== next to the original",
+                "The check uses server-assigned versions, not wall-clock time, so clock skew on the phone cannot change the outcome"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The client uses fixed 4 MB chunks on a 1 GB file (256 chunks). Case A: one byte in the middle is overwritten. Case B: one byte is inserted at the very start. How much is uploaded in each case?",
+              "a_bullets": [
+                "Case A: only the one chunk containing that byte changes, so about ==4 MB== is uploaded",
+                "Case B: every byte shifts by 1, so all 256 chunk boundaries and hashes change, and about ==1 GB== is uploaded",
+                "Content-defined chunking (rolling hash) places boundaries by content, so an insert changes only the chunks near it",
+                "The trade-off is that content-defined chunking is more complex than fixed chunking"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Alice revokes Bob's access to a shared folder. The permission cache TTL is 60 s and block URLs are signed for 5 min. What is the worst case before Bob is fully locked out?",
+              "a_bullets": [
+                "For up to ==60 s== the stale cache can still say Bob is allowed, so he can still be issued a new block URL",
+                "A URL issued at the last moment stays valid for ==5 min==",
+                "Worst case is about 6 minutes: revocation takes effect within minutes, not instantly",
+                "A permanent public URL would never expire, which is why block URLs are short-lived and signed"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A notifier server crashes, so its devices miss the push saying namespace 42 reached seq 900. Is data lost, and how do the devices recover?",
+              "a_bullets": [
+                "No data is lost: the push carries only {namespace_id, seq}, and the real changes live in the change log",
+                "Each client polls /changes every 5 min as a fallback, using its stored cursor",
+                "The pull is idempotent, so the device fetches everything after its cursor and ends up at seq 900",
+                "Reconnecting devices use jittered backoff so they do not all hit the notifiers at once"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "title": "Node.js Database Access: Pools, pg, ORMs, Transactions and MongoDB",
+  "summary": "Quick revision notes on connecting Node.js apps to databases: connection pools, safe parameterised queries with pg, ORM vs query builder trade-offs (Prisma, Drizzle), transactions, MongoDB driver basics, and clean pool shutdown.",
+  "chapters": [
+    {
+      "title": "Connection Pools: The Mental Model",
+      "points": [
+        "A pool keeps a fixed set of open DB connections and lends them out, because opening a TCP+auth connection per query is slow and the server caps connections",
+        "Lifecycle: acquire a client, run queries, release it back; if all are busy, requests queue until one frees or the acquire timeout fires",
+        "pg Pool options: max (default 10), idleTimeoutMillis (default 10000), connectionTimeoutMillis (default 0 = wait forever)",
+        "Size the pool: total across all app instances (instances × max) must stay below the server's max_connections (Postgres default 100)",
+        "Mistake: creating a new Pool per request or per module import leaks connections; create one Pool at startup and share it"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Parameterised Queries with pg",
+      "points": [
+        "pool.query(text, values) with $1, $2 placeholders sends values separately from SQL, so input is never parsed as SQL (prevents injection)",
+        "Example: await pool.query('SELECT * FROM users WHERE email = $1 AND active = $2', [email, true]); rows are in result.rows, count in result.rowCount",
+        "Placeholders only replace values, not identifiers: table/column names or ORDER BY direction cannot be $1; whitelist them in code or use format with %I",
+        "Mistake: template string interpolation `WHERE id = ${id}` is SQL injection even if the value 'looks' safe",
+        "Mistake: using pool.query for multi-statement transactions, since each call may use a different connection; use pool.connect() for a dedicated client and always client.release() in finally"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Transactions",
+      "points": [
+        "A transaction groups statements so they all commit or all roll back (ACID); every statement must run on the same connection",
+        "pg pattern: const client = await pool.connect(); try { await client.query('BEGIN'); ...; await client.query('COMMIT') } catch (e) { await client.query('ROLLBACK'); throw e } finally { client.release() }",
+        "Prisma: prisma.$transaction([op1, op2]) for a batch, or prisma.$transaction(async (tx) => {...}) for interactive logic with default 5s timeout",
+        "Drizzle: db.transaction(async (tx) => {...}); throwing inside or calling tx.rollback() rolls back",
+        "Mistake: calling db/prisma instead of tx inside the callback runs that query outside the transaction; also holding a transaction open across slow network calls pins a pooled connection"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "ORMs vs Query Builders: Prisma and Drizzle",
+      "points": [
+        "Query builder (Knex, Kysely) builds SQL via chained methods and stays close to SQL; ORM maps tables to objects/models with relations and a schema layer",
+        "Prisma: schema.prisma is the source of truth, prisma generate creates a typed client, prisma migrate dev creates and applies migrations; example: prisma.user.findMany({ where: { active: true }, include: { posts: true } })",
+        "Drizzle: schema defined in TypeScript, SQL-like API with no codegen step, example: db.select().from(users).where(eq(users.active, true)); drizzle-kit generates migrations",
+        "Trade-off: Prisma gives the most productive DX and relation loading but a heavier client and less SQL control; Drizzle/builders are lighter and more explicit, with more manual joins; use raw SQL (prisma.$queryRaw with tagged template, sql`` in Drizzle) for complex queries",
+        "Mistake: N+1 queries from looping and fetching relations per row; use include/with or a join instead"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "MongoDB Driver Basics and Clean Shutdown",
+      "points": [
+        "MongoClient manages its own connection pool internally (maxPoolSize default 100); create one client per process, call await client.connect() once, and reuse it, never one per request",
+        "Access: const col = client.db('app').collection('users'); no schema is enforced, documents are BSON objects with an auto-added _id (ObjectId)",
+        "CRUD: insertOne/insertMany, find(filter).toArray(), findOne, updateOne(filter, { $set: {...} }), deleteOne; find returns a cursor, so call toArray() or iterate it",
+        "Mistake: passing user input straight into a filter allows operator injection (e.g. { password: { $ne: null } }); validate that values are plain strings and be cautious with $where",
+        "Shutdown: on SIGTERM/SIGINT stop accepting requests first, then await pool.end() (pg), await prisma.$disconnect(), await client.close() (Mongo), then exit; pool.end() waits for checked-out clients to be released, so release them or the process hangs"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Database Access Cheat Sheet",
+      "points": [
+        "Pool: one per process; max × instances < server max_connections; options max, idleTimeoutMillis, connectionTimeoutMillis",
+        "pg: pool.query(sql, [vals]) with $1; pool.connect() then release() in finally for transactions; never interpolate values",
+        "Transaction skeleton: BEGIN, COMMIT, ROLLBACK on error, release; Prisma $transaction([...]) or interactive; Drizzle db.transaction(tx => ...), always use tx",
+        "Pick: Prisma = most DX and generated types; Drizzle/Kysely = SQL-like, lightweight; raw pg = full control",
+        "Shutdown order: stop server, then pool.end() / prisma.$disconnect() / mongoClient.close(), then process.exit"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": []
+    }
+  ]
+}

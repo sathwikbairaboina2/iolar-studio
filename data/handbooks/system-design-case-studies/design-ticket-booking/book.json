@@ -1,0 +1,237 @@
+{
+  "title": "Movie Ticket Booking System Design (BookMyShow)",
+  "summary": "End-to-end design of a BookMyShow-style ticket booking platform: catalog and seat maps, seat holds with expiry, double-booking prevention, payments, virtual queues for blockbuster releases, and cancellations with refunds. Closes with scaling, failure handling, trade-offs and interview questions.",
+  "chapters": [
+    {
+      "title": "Movie Ticket Booking System Design: What This Handbook Covers",
+      "points": [
+        "Scope and requirements",
+        "High-level architecture",
+        "Catalog, shows and seat maps",
+        "Seat hold with expiry",
+        "Double-booking prevention",
+        "Payments and booking confirmation",
+        "Virtual queue for blockbusters",
+        "Cancellations and refunds",
+        "Scaling, failures, interview Qs",
+        "Cheatsheet"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements (BookMyShow)",
+      "points": [
+        "Scope in: browse cities, theatres, shows; pick seats; pay; get e-ticket; cancel with refund. Scope out: ads, reviews, food ordering, theatre onboarding UI",
+        "Functional: search shows by city/movie/date, view live seat map, hold seats for 8 minutes, pay, confirm, cancel, refund",
+        "Scale: 50M MAU, 5M bookings/day (about 60 bookings/s average), 10x peak on evening hours = 600/s",
+        "Blockbuster opening: 1M users hit one release in 5 minutes = about 3,300 req/s on one movie's seat maps, 100x normal per-show load",
+        "Non-functional: zero double-booked seats (strong consistency on seats), seat map read p99 under 200 ms, availability 99.99% on browse, 99.9% on booking",
+        "Storage estimate: 5M bookings/day x 1 KB = 5 GB/day, about 1.8 TB/year; 10,000 screens x 5 shows x 200 seats = 10M seat rows/day"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (BookMyShow)",
+      "points": [
+        "Services: Catalog, Show and Seat Inventory, Booking, Payment, Queue/Waiting Room, Notification, Refund",
+        "Read path (browse, search) is cached and CDN-fronted; write path (hold, book) goes to the seat store of record",
+        "Seat store of record: relational DB (Postgres/MySQL) sharded by show_id, because a booking only touches one show",
+        "Redis for hot seat-map cache and hold TTL keys; Kafka for booking events to notifications, analytics, refunds",
+        "Sync vs async: seat hold and payment init are synchronous; ticket email/SMS, invoices and analytics are async via Kafka",
+        "Monolith vs microservices for this product: split Inventory and Payment first, since they have different consistency and scaling needs"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison"
+      ]
+    },
+    {
+      "title": "Catalog, Shows and Seat Maps (BookMyShow)",
+      "points": [
+        "Responsibilities: serve cities, theatres, movies and shows; render a seat map with per-seat status (available, held, booked)",
+        "Design: static layout (rows, columns, categories) cached at CDN; dynamic status layered on top from Redis bitmap per show (200 seats = 25 bytes)",
+        "Flow: user opens show, client fetches layout once, then polls or subscribes for status every 5 s, merging both",
+        "Tables: movie(id, title, lang), theatre(id, city_id), screen(id, theatre_id, layout_json), show(id, screen_id, movie_id, start_time, price_tier), show_seat(show_id, seat_id, status, version)",
+        "APIs: GET /cities/{id}/shows?movie=&date=, GET /shows/{id}/seats returns layout version plus status bitmap",
+        "Failure: stale seat map shows a seat free that is held, so the hold API is the source of truth and the client treats the map as a hint",
+        "Metrics: seat-map p99 under 200 ms, cache hit ratio above 95%, stale-map click rejection rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Seat Hold with Expiry (BookMyShow)",
+      "points": [
+        "Responsibilities: temporarily reserve up to 6 seats for 8 minutes while the user pays, then auto-release",
+        "Design: hold is a row in DB (status HELD, hold_id, expires_at) plus a Redis key hold:{show}:{seat} with TTL 480 s for fast release signalling",
+        "Seat states: AVAILABLE to HELD on hold, HELD to BOOKED on payment success, HELD to AVAILABLE on expiry or cancel",
+        "Flow: POST /holds with seat_ids, atomic all-or-nothing, returns hold_id and expires_at; client shows a countdown",
+        "Tables: hold(hold_id, user_id, show_id, expires_at, status), hold_seat(hold_id, show_id, seat_id)",
+        "APIs: POST /holds, DELETE /holds/{id}, POST /holds/{id}/extend allowed once by 2 minutes during payment",
+        "Failure: Redis TTL lost on restart, so a sweeper job runs every 10 s releasing rows where expires_at < now(), DB is the truth",
+        "Metrics: hold-to-purchase conversion about 60%, expired-hold ratio, sweeper lag under 15 s, hold API p99 under 100 ms"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Preventing Double Booking (BookMyShow)",
+      "points": [
+        "Invariant: one (show_id, seat_id) can be BOOKED by at most one booking; enforce it in the DB, never only in app code",
+        "Optimistic: UPDATE show_seat SET status='HELD', version=version+1 WHERE show_id=? AND seat_id=? AND status='AVAILABLE'; rows affected = 0 means lost the race",
+        "Pessimistic: SELECT ... FOR UPDATE on the seat rows ordered by seat_id to avoid deadlocks; holds the lock for a few ms only",
+        "Unique constraint on booking_seat(show_id, seat_id) as the last safety net, so even a buggy path cannot double book",
+        "Comparison: optimistic wins at low contention, pessimistic wins when many users fight for the same seats; Redis SETNX is fast but not durable, so use it only as a front filter",
+        "Mistake: check-then-update in two statements (read AVAILABLE, then write) creates a race; use one conditional UPDATE",
+        "Mistake: holding a DB transaction open while the user pays for 8 minutes; the hold is a status, not a lock"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Payments and Booking Confirmation (BookMyShow)",
+      "points": [
+        "Responsibilities: charge the user for a hold, confirm booking exactly once, issue the ticket with QR code",
+        "Design: Payment service wraps gateways (UPI, card, wallet) behind one interface; the gateway webhook, not the browser redirect, confirms success",
+        "Flow: create payment intent for hold_id, redirect to gateway, webhook arrives, in one DB transaction mark seats BOOKED and booking CONFIRMED, emit BookingConfirmed event",
+        "Tables: payment(id, hold_id, amount, gateway_ref, status, idempotency_key), booking(id, user_id, show_id, status, total), booking_seat(booking_id, show_id, seat_id)",
+        "APIs: POST /payments with Idempotency-Key header, POST /webhooks/gateway verified by HMAC signature, GET /bookings/{id}",
+        "Failure: payment succeeds after hold expired, so if seats are still free re-take them, else auto-refund within the same webhook handler",
+        "Failure: duplicate webhook delivery, so dedupe with a conditional UPDATE from PENDING to SUCCESS (0 rows affected = duplicate, return 200), with a unique index on gateway_ref as backstop; gateway timeout, so poll the gateway status API after 30 s",
+        "Metrics: payment success rate above 92%, webhook-to-confirm latency under 2 s, auto-refund count, ticket-delivery p99 under 10 s"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Virtual Queue for High-Demand Releases (BookMyShow)",
+      "points": [
+        "Responsibilities: protect Inventory and Payment from a flash crowd of 1M users and admit users fairly in controlled batches",
+        "Design: waiting room in front of the booking flow, enabled per movie by ops or auto-triggered when requests exceed 2,000/s; served from CDN edge plus Redis sorted set",
+        "Flow: user joins queue and gets a position, client polls every 5 s, admitter releases N users per tick matching measured booking throughput (for example 500/s), user receives a signed token valid 10 minutes",
+        "Data: Redis ZSET queue:{movie} score = arrival timestamp, member = user_id; admission token is a signed JWT with movie_id and expiry",
+        "APIs: POST /queue/join, GET /queue/status returns position and ETA, booking APIs reject requests without a valid token",
+        "Failure: user refreshes and loses place, so key position by user_id and make join idempotent; bots, so require login, CAPTCHA and one queue slot per account",
+        "Metrics: queue length, admit rate vs booking success rate, time in queue p95, abandon rate, 5xx rate on Inventory staying under 0.1%"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Cancellations and Refunds (BookMyShow)",
+      "points": [
+        "Responsibilities: let users cancel before a cutoff, release the seats, and return money per policy",
+        "Policy: full refund until 4 hours before showtime, 50% until 2 hours, none after; convenience fee non-refundable; theatre-cancelled shows refund 100% automatically",
+        "Flow: POST cancel, state CONFIRMED to CANCELLING, seats back to AVAILABLE, refund request created, gateway refund called, state to CANCELLED then REFUNDED",
+        "Tables: refund(id, booking_id, amount, status, gateway_ref, idempotency_key), booking_audit(booking_id, from_state, to_state, at)",
+        "APIs: POST /bookings/{id}/cancel, GET /refunds/{id}; refunds issued to the original payment method, taking 3 to 7 days",
+        "Failure: gateway refund call fails, so retry with exponential backoff using the same idempotency key, never double refund; show cancelled by theatre triggers a batch of up to 50,000 refunds throttled to gateway limits",
+        "Metrics: refund success rate, time to refund initiation under 1 minute, refunds stuck over 24 h, cancellation rate about 8%"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Notifications and Ticket Delivery (BookMyShow)",
+      "points": [
+        "Responsibilities: send booking confirmation, QR ticket, show reminders and cancellation/refund updates over push, SMS and email",
+        "Design: Kafka consumers on BookingConfirmed, BookingCancelled and RefundProcessed topics; per-channel workers with provider fallback",
+        "Flow: event consumed, template rendered, QR generated from a signed booking_id, sent, delivery status recorded; reminder scheduled 2 hours before showtime",
+        "Tables: notification(id, booking_id, channel, status, attempts, sent_at); template(id, channel, locale, body)",
+        "APIs: internal POST /notify, GET /bookings/{id}/ticket always works from the app even if SMS fails",
+        "Failure: SMS provider down, so fail over to a second provider after 3 attempts; duplicate events, so dedupe on (booking_id, type)",
+        "Metrics: confirmation delivered within 10 s for 99%, delivery failure rate under 1%, consumer lag under 5 s"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (BookMyShow)",
+      "points": [
+        "Scale: shard seat store by show_id (one show is one shard, so no cross-shard transactions); read replicas and Redis serve seat maps, 5M bookings/day fits a few Postgres shards",
+        "Hot-show problem: one blockbuster show cannot be split across shards, so contention is bounded by queue admission rate plus per-show row locking",
+        "Failure handling: payment/hold timeouts release seats, outbox pattern publishes events reliably after DB commit, multi-AZ DB with failover under 30 s",
+        "Trade-off: strong consistency for seats vs availability, we choose consistency since an oversold seat is worse than a briefly failed booking",
+        "Trade-off: hold TTL length, short TTL frees seats faster but loses slow payers, 8 minutes balances UPI delays with inventory churn",
+        "Interview Qs: how to avoid double booking, what if payment succeeds after hold expiry, how to handle 1M users on release day, how to design the seat map for 10,000 seats in a stadium",
+        "Mistake: caching seat status as truth, relying on Redis TTL alone for release, or confirming from the browser redirect instead of the webhook"
+      ],
+      "shape": [
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheatsheet: Movie Ticket Booking Design (BookMyShow)",
+      "points": [
+        "Seat states: AVAILABLE, HELD (8 min TTL), BOOKED; booking states: CONFIRMED, CANCELLING, CANCELLED, REFUNDED",
+        "Double-booking guard: conditional UPDATE where status='AVAILABLE' plus unique (show_id, seat_id) on booking_seat",
+        "Confirm via gateway webhook with idempotency key and unique gateway_ref, never via browser redirect",
+        "Queue: ZSET by arrival time, admit at measured booking throughput, signed 10-minute token",
+        "Refund policy: 100% over 4 h, 50% over 2 h, 0% after; retries reuse the same idempotency key",
+        "Numbers: 60 bookings/s avg, 600/s peak, 3,300 req/s per blockbuster, seat map p99 under 200 ms"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

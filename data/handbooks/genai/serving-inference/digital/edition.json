@@ -1,0 +1,685 @@
+{
+  "schema": 1,
+  "subject": "genai",
+  "chapter": "serving-inference",
+  "category": "handbook",
+  "inputsHash": "d752e2e2b798ce8d3ccb60c0b37d6f47a337c89d3a5b363b623b30754806cec6",
+  "generatedAt": "2026-10-28T12:37:55.086Z",
+  "sections": [
+    {
+      "title": "Prefill vs Decode: The Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Prefill vs Decode: The Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Two Phases",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Prefill",
+                "Decode"
+              ],
+              "rows": [
+                [
+                  "Tokens per pass",
+                  "whole prompt",
+                  "one token"
+                ],
+                [
+                  "Bound by",
+                  "{orange:compute}",
+                  "{blue:memory bandwidth}"
+                ],
+                [
+                  "Cache",
+                  "fills KV cache",
+                  "reads KV cache + weights"
+                ],
+                [
+                  "Sets",
+                  "TTFT",
+                  "TPOT"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Prefill is one ==parallel== forward pass",
+                "Decode reads ==all weights== every step",
+                "Each token needs the previous: ==no parallelism== in one request"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. The Loop",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Queue",
+                    "sub": "wait",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Prefill",
+                    "sub": "prompt",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "1st token",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Decode",
+                    "sub": "repeat",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Latency Maths",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==TTFT== ≈ queue wait + prefill time",
+                "==TPOT== = one decode step",
+                "Long prompt hurts TTFT; long output hurts total"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Total latency",
+              "text": "==TTFT + (N − 1) × TPOT==, N = output tokens"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Why is decode memory-bound?** One token per pass, little compute per weight read",
+                "**What lowers TTFT?** Shorter prompts, less queue wait"
+              ],
+              "style": "check"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "The KV Cache",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "The KV Cache",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Why Cache",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Attention needs ==K and V of every previous token==",
+                "Cached, so no prefix recompute per decode step"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Cache Size",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Per token = ==2 × layers × KV heads × head dim × bytes==",
+                "Grows **linearly** with sequence length and batch size"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Llama-2-7B, FP16",
+                "Value"
+              ],
+              "rows": [
+                [
+                  "Layers × KV heads × head dim",
+                  "32 × 32 × 128"
+                ],
+                [
+                  "Bytes per value",
+                  "2"
+                ],
+                [
+                  "Per token",
+                  "≈ 0.5 MB"
+                ],
+                [
+                  "4k-token sequence",
+                  "≈ 2 GB"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "heading",
+              "text": "3. Shrink It",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:GQA / MQA}: query heads share KV heads, cache several times smaller",
+                "{purple:Paged attention} (vLLM): fixed-size blocks, no fragmentation, prefix sharing"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Weights-only sizing",
+              "text": "The ==KV cache==, not the weights, often caps batch size and context length."
+            },
+            {
+              "type": "sidebox",
+              "title": "Interview Point",
+              "items": [
+                "**Why cache K and V?** Skips prefix recompute each step.",
+                "**Why does GQA help?** Fewer KV heads, smaller cache.",
+                "**Why page the cache?** No fragmentation, shared prefixes."
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Batching and Continuous Batching",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Batching and Continuous Batching",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Why Batch",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Decode is ==memory-bound==: each step reads all weights",
+                "Batching shares **one weight read** across many requests",
+                "Throughput rises ==almost free=="
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Static vs Continuous",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Static",
+                "Continuous"
+              ],
+              "rows": [
+                [
+                  "Schedules",
+                  "whole batch",
+                  "every token step"
+                ],
+                [
+                  "Finished request",
+                  "idles behind longest",
+                  "{green:leaves}, slot freed"
+                ],
+                [
+                  "New request",
+                  "waits for next batch",
+                  "{green:joins} immediately"
+                ],
+                [
+                  "GPU slots",
+                  "{red:wasted}",
+                  "kept full"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "3. Chunked Prefill and Limits",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Chunked prefill==: long prompt split into pieces, mixed with decode steps",
+                "One big prompt no longer stalls **other users' tokens**",
+                "Bigger batch: more throughput, but ==higher per-request latency== and KV cache use"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Batch cap",
+              "text": "Set by ==GPU memory== (KV cache) and the **latency target**."
+            },
+            {
+              "type": "sidebox",
+              "title": "Interview Point",
+              "items": [
+                "**Why does batching help decode?** One weight read serves many requests.",
+                "**Static vs continuous?** Continuous swaps requests every token step.",
+                "**Why chunk prefill?** Protects other users' token latency."
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Quantization: INT8 and INT4",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Quantization: INT8 and INT4",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What It Buys",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store weights (optionally activations or KV cache) in ==fewer bits==",
+                "FP16 → ==INT8== is **2×** smaller; ==INT4== is **4×** smaller",
+                "Decode is memory-bound, so fewer bytes per weight gives ==faster tokens==",
+                "Smaller weights fit a **bigger model** on one GPU"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Which Scheme",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Scheme",
+                "Quantizes",
+                "Speeds up"
+              ],
+              "rows": [
+                [
+                  "{purple:INT4 weight-only} (GPTQ, AWQ)",
+                  "weights",
+                  "decode; **common serving choice**"
+                ],
+                [
+                  "{blue:INT8 W+A} (SmoothQuant)",
+                  "weights + activations",
+                  "decode and compute-bound ==prefill=="
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Quality and Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Lossy: INT8 is usually ==near-lossless==",
+                "INT4 shows ==small quality drops==",
+                "{red:Outliers} and **small models** suffer most"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Quantize",
+                    "sub": "INT8 / INT4",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Task accuracy",
+                    "sub": "vs FP16",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Perplexity",
+                    "sub": "vs FP16",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Ship",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never skip evaluation",
+              "text": "Always compare ==task accuracy== and ==perplexity== against the **FP16 baseline** after quantizing."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Speculative Decoding and Latency vs Throughput",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Speculative Decoding and Latency vs Throughput",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Speculative Decoding",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Draft model",
+                    "note": "small, proposes k tokens",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Target model",
+                    "note": "verifies all k in one pass",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Keep prefix",
+                    "note": "accepted tokens stay",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Resample",
+                    "note": "first rejected, from target",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Lossless}: the output distribution equals the target model's",
+                "Rejected tokens are ==resampled from the target==, so quality is unchanged",
+                "Speedup depends on the ==acceptance rate=="
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. When It Pays Off",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Situation",
+                "Gain"
+              ],
+              "rows": [
+                [
+                  "Good draft, low temperature",
+                  "{green:Large}"
+                ],
+                [
+                  "Poor draft model",
+                  "{red:Little or negative}"
+                ],
+                [
+                  "High-temperature sampling",
+                  "{red:Little or negative}"
+                ],
+                [
+                  "Low batch, latency-sensitive",
+                  "{green:Best fit}"
+                ],
+                [
+                  "Large batch, GPU already busy",
+                  "Shrinks"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Latency vs Throughput",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Bigger batch: ==more tokens/s overall==",
+                "But each user waits longer: higher **TTFT** and **TPOT**",
+                "Pick the batch size from the ==SLO== (TTFT and TPOT targets)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Speculative decoding cuts **latency** at low batch. Batching raises **throughput** at the cost of latency."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "LLM Inference Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "LLM Inference Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Prefill vs Decode",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Prefill",
+                "Decode"
+              ],
+              "rows": [
+                [
+                  "Work",
+                  "whole prompt, parallel",
+                  "one token per pass"
+                ],
+                [
+                  "Bound by",
+                  "{orange:compute}",
+                  "{blue:memory bandwidth}"
+                ],
+                [
+                  "Sets",
+                  "==TTFT==",
+                  "==TPOT=="
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Latency = ==TTFT + (N − 1) × TPOT==",
+                "KV bytes per token = ==2 × layers × KV heads × head dim × bytes=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Serving Levers",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Lever",
+                "Rule"
+              ],
+              "rows": [
+                [
+                  "Batching",
+                  "==continuous > static==; add chunked prefill to protect TPOT; cap batch by KV memory"
+                ],
+                [
+                  "Precision",
+                  "FP16 → INT8 is **2×** smaller, INT4 is **4×**; always re-evaluate quality"
+                ],
+                [
+                  "Speculative",
+                  "{green:lossless}; best at low batch with high acceptance"
+                ]
+              ]
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Draft",
+                    "sub": "small model, k tokens",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Verify",
+                    "sub": "one parallel pass",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Keep",
+                    "sub": "accepted prefix",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Interview Point",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Lower TTFT?** Shorter prompts, prefix caching, chunked prefill",
+                "**Raise throughput?** Bigger batches, quantization"
+              ],
+              "style": "check",
+              "ink": "green"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Common mistake",
+              "text": "Sizing GPU memory for weights only. The ==KV cache== often caps batch size and context length."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "TTFT is 200 ms and TPOT is 30 ms. A reply has 101 output tokens. What is the total latency?",
+              "a_bullets": [
+                "200 + (101 − 1) × 30 = ==3200 ms==",
+                "The first token comes out of prefill, so only 100 decode steps remain"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A 7B FP16 model (14 GB weights, 0.5 MB KV per token) runs on a 24 GB GPU. The plan is batch 32 at 4k context. What breaks?",
+              "a_bullets": [
+                "Each sequence needs about 2 GB of KV cache, so 32 need about 64 GB",
+                "Only about 10 GB is free, so roughly 5 sequences fit",
+                "The bug is sizing for weights only"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Speculative decoding gave a big speedup at batch 1 but almost none at batch 256. Why?",
+              "a_bullets": [
+                "At large batch the GPU is already busy, so the spare capacity it uses is gone",
+                "Output quality stays lossless either way"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

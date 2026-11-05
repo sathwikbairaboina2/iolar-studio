@@ -1,0 +1,222 @@
+{
+  "title": "Design a Payment System (Online Store)",
+  "summary": "An end-to-end system design case study of an online store's payment system: scope, requirements with scale estimates, architecture, then the payment service, PSP integration, idempotency, double-entry ledger, state machine, reconciliation, webhooks, refunds and PCI scope, closing with scaling, failure handling and interview questions.",
+  "chapters": [
+    {
+      "title": "Payment System Design: What the Handbook Covers",
+      "points": [
+        "Scope and requirements",
+        "Architecture",
+        "Payment service",
+        "PSP integration",
+        "Idempotency and retries",
+        "Double-entry ledger",
+        "State machine",
+        "Webhooks",
+        "Reconciliation",
+        "Refunds",
+        "PCI scope",
+        "Scaling and interview Qs"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "points": [
+        "Scope (Online Store): pay-in for checkout, refunds, and ledger; payouts to sellers and fraud ML are out of scope",
+        "Functional: authorize, capture, void, refund, query status, receive PSP webhooks, daily reconciliation",
+        "Scale estimate: 10M orders/day = ~115 TPS average, ~1,000 TPS peak (sale events, ~10x average)",
+        "Latency targets: p99 payment create < 500 ms excluding PSP; PSP call timeout 5 s; webhook ack < 2 s",
+        "Non-functional: no double charge (exactly-once effect), 99.99% availability, zero lost money, 7-year audit retention",
+        "Storage estimate: ~2 KB per payment x 10M/day = ~20 GB/day, ~7 TB/year plus ledger entries (~4 per payment)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "points": [
+        "Components: Checkout/Order service, Payment service, PSP gateway adapter, Ledger service, Webhook receiver, Reconciliation job, Refund service",
+        "Payment flow: order -> create payment (idempotency key) -> PSP authorize -> webhook confirms -> ledger posts -> order marked paid",
+        "Hosted fields/redirect: card data goes browser -> PSP directly; the store only receives a token",
+        "Data stores: Postgres (ACID) for payments and ledger, Redis for idempotency cache, Kafka for events and webhook queue",
+        "Sync vs async: user-facing call returns PENDING quickly; the final result arrives by webhook or polling"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Payment Service Subsystem",
+      "points": [
+        "Responsibilities: own payment lifecycle, enforce idempotency, orchestrate PSP calls, emit events; never touches raw card numbers",
+        "Design: stateless API pods + Postgres sharded by merchant/order_id hash; outbox table publishes events to Kafka atomically with DB writes",
+        "Flow: POST /payments -> insert row INITIATED -> call PSP with same idempotency key -> store psp_ref -> AUTHORIZED -> capture -> CAPTURED",
+        "Data model: payments(id, order_id, amount_minor BIGINT, currency, status, psp_ref, idempotency_key UNIQUE, version, created_at); money as integer minor units",
+        "API: POST /v1/payments, POST /v1/payments/{id}/capture, POST /v1/payments/{id}/refunds, GET /v1/payments/{id}",
+        "Failure: crash after PSP call before DB write -> recovery job queries PSP by idempotency key to resolve the state",
+        "Metrics: payment success rate >= 97%, p99 latency, stuck-in-PENDING count > 15 min, PSP error rate by code"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Payment State Machine",
+      "points": [
+        "States: INITIATED -> PENDING -> AUTHORIZED -> CAPTURED -> (PARTIALLY_)REFUNDED; terminal: FAILED, VOIDED, EXPIRED",
+        "Transition table whitelists legal moves; CAPTURED -> AUTHORIZED is rejected, so the state never goes backwards",
+        "Optimistic locking: UPDATE ... SET status=?, version=version+1 WHERE id=? AND version=? and status=? blocks racing writers",
+        "Append-only payment_events(payment_id, from_status, to_status, cause, at) gives a full audit trail and replay",
+        "Failure: late or out-of-order webhook (CAPTURED arrives before AUTHORIZED) is applied idempotently, never downgrading state",
+        "Metrics: transition counts, illegal-transition rejections, time spent per state, auth expiry rate (auth holds last ~7 days)"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "PSP Integration and Retries",
+      "points": [
+        "Adapter pattern: one internal PSP interface, per-provider adapters (Stripe, Adyen) so you can route or fail over",
+        "Timeouts: connect 1 s, read 5 s; a timeout means UNKNOWN outcome, never assume failure",
+        "Retry only safe errors (network, 5xx, 429) with exponential backoff + jitter: max 3 attempts, so waits of 1 s then 2 s; never retry 4xx declines",
+        "Always send the same idempotency key on retry, so the PSP dedupes and one charge results",
+        "Circuit breaker: open at >50% errors over 30 s, route to a secondary PSP, half-open probe after 30 s",
+        "Metrics: PSP p99 latency, retry rate, breaker-open time, auth rate per PSP"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Idempotency Design",
+      "points": [
+        "Definition: the same request repeated yields one effect and the same response, a client-generated key per payment intent (UUID)",
+        "Storage: idempotency_keys(key PK, request_hash, response, status, expires_at) with a UNIQUE constraint; TTL 24-48 h",
+        "Flow: insert key IN_PROGRESS -> process -> store response -> replay the stored response on duplicates; a concurrent duplicate gets 409",
+        "Same key with a different request body returns 422, detected via request_hash",
+        "Mistake: checking Redis then writing separately (race); use an atomic DB unique insert or SET NX",
+        "Mistake: generating the key per HTTP attempt instead of per intent, which defeats dedupe and double-charges"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Double-Entry Ledger",
+      "points": [
+        "Rule: every transaction posts balanced entries, sum(debits) = sum(credits); money is moved, never created",
+        "Capture of 100.00: debit Customer Receivable/PSP Clearing 100.00, credit Merchant Revenue 97.10 and Fees Payable 2.90",
+        "Data model: ledger_entries(id, txn_id, account_id, direction, amount_minor, currency, created_at), append-only; balances derived or cached",
+        "Corrections are reversing entries, never UPDATE or DELETE; this gives immutability and auditability",
+        "Posting is one DB transaction per txn_id with a UNIQUE(txn_id, account_id, direction) guard so retries do not double-post",
+        "Metrics: ledger imbalance = 0 (alert on any nonzero), posting latency p99 < 50 ms, ~4 entries per payment"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Webhooks and Reconciliation",
+      "points": [
+        "Webhook receiver: verify HMAC signature and timestamp (replay window 5 min), persist the raw event, return 200 within 2 s, process async via Kafka",
+        "Dedupe by event_id; the PSP retries with backoff for up to ~3 days, so handlers must be idempotent and tolerate out-of-order events",
+        "Polling fallback: for payments PENDING > 15 min, query the PSP status API, because webhooks can be lost",
+        "Reconciliation: daily compare PSP settlement file vs payments vs ledger (3-way match) by psp_ref and amount",
+        "Mismatch types: missing in ours, missing at PSP, amount differs, status differs; each opens a ticket with auto-fix for known patterns",
+        "Metrics: unmatched rate < 0.01%, webhook lag p99 < 5 s, DLQ depth, reconciliation completion by T+1"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Refunds and PCI Scope",
+      "points": [
+        "Refund API: POST /payments/{id}/refunds with its own idempotency key; the sum of refunds <= captured amount, enforced in a DB transaction",
+        "States: REQUESTED -> PENDING -> SUCCEEDED/FAILED; partial refunds allowed; settlement takes 5-10 business days",
+        "Refund ledger entries reverse the original: debit Merchant Revenue, credit PSP Clearing; PSP fees are usually not returned",
+        "PCI DSS scope: never store the PAN, CVV or full track data; store only a PSP token plus last4 and brand",
+        "Use hosted fields/iframe or redirect to reach SAQ A (smallest scope); raw card handling in your servers means SAQ D with ~300+ controls",
+        "Mistake: logging request bodies that contain card data or tokens; TLS 1.2+ in transit and encryption at rest with KMS-managed keys"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "state or sequence flow",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "points": [
+        "Scaling: shard payments by order_id hash; ~1,000 TPS peak fits a Postgres cluster with 8 shards at ~150 TPS each; read replicas for status queries",
+        "Failure handling: the outbox pattern, saga with compensation (void auth if the order fails), DLQ for poison events, multi-AZ plus multi-PSP failover",
+        "Trade-off: sync PSP call (simple, blocks the user) vs async with webhook (resilient, more states); strong consistency for the ledger vs eventual for analytics",
+        "Interview Q: how do you avoid a double charge on a timeout? Same idempotency key + query the PSP before retrying",
+        "Interview Q: how do you handle a lost webhook? Poll the PSP, plus daily reconciliation as the safety net",
+        "Interview Q: why a ledger and not just a payments table? Immutable audit trail, balanced entries, and the ability to prove where every cent went"
+      ],
+      "shape": [
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Payment System Cheatsheet (Online Store)",
+      "points": [
+        "Flow: create (idempotency key) -> authorize -> capture -> ledger post -> webhook confirm -> reconcile T+1",
+        "Money: integer minor units, never float; debits = credits on every txn",
+        "Retries: backoff + jitter, same key, only on 5xx, 429 and timeouts, never on declines",
+        "States only move forward; use optimistic locking plus an append-only event log",
+        "PCI: tokens only, hosted fields give SAQ A; never log PAN or CVV",
+        "Targets: ~1,000 TPS peak, 99.99% availability, p99 < 500 ms, unmatched < 0.01%"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

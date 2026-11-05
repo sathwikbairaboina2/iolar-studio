@@ -1,0 +1,120 @@
+{
+  "title": "Config & Feature Flags Quick Revision",
+  "summary": "Quick revision notes on externalizing config (12-factor, env vars, config servers), Kubernetes ConfigMaps and Secrets, and feature flags for release vs ops, dark launches and flag debt.",
+  "chapters": [
+    {
+      "title": "Externalized Config and the 12-Factor Model",
+      "points": [
+        "Config = anything that varies between deploys (DB URL, credentials, hostnames, API keys); code does not vary, so keep the two separate",
+        "12-factor rule III: store config in the environment, never in the codebase; one build artifact is promoted unchanged through dev, staging and prod",
+        "Litmus test: could you open-source the repo right now without leaking a credential? If not, config is leaking into code",
+        "Avoid per-environment config files like application-prod.yml checked into the repo as the main mechanism: they multiply with every new environment, whereas env vars are orthogonal and never grouped by 'environment name'",
+        "Interview Point: What counts as config under 12-factor? Why one build for every environment? How do you prove config is separated from code?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Env Vars, Config Servers and Precedence",
+      "points": [
+        "Env vars: simple, language-agnostic, supported everywhere; but flat strings only, no history or audit, visible via /proc and process dumps, and changes need a restart",
+        "Config server (Spring Cloud Config, Consul KV, etcd, AWS AppConfig/SSM Parameter Store): central, versioned in Git or a store, supports dynamic refresh and per-app/profile lookup",
+        "Typical precedence, highest wins: CLI flags > env vars > config server/remote > config file > built-in defaults; know your framework's order",
+        "Example: Spring Boot binds SPRING_DATASOURCE_URL to spring.datasource.url (relaxed binding); fail fast at startup if a required key is missing and validate types",
+        "Mistake: logging the full config or env on startup, or printing it in crash dumps, leaks secrets",
+        "Mistake: config server becomes a hard startup dependency; cache the last-known-good config locally and set sane defaults so a server outage does not block boot",
+        "Interview Point: Env vars vs config server trade-offs? How do you update config without redeploy? What is your precedence order and why?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Kubernetes ConfigMaps and Secrets",
+      "points": [
+        "ConfigMap holds non-sensitive key/value data or whole files; Secret holds sensitive data, same shape but values are base64-encoded in the data field (encoding is not encryption)",
+        "Consume three ways: env (env.valueFrom.configMapKeyRef / secretKeyRef), envFrom to import all keys, or volume mount where each key becomes a file",
+        "Create: kubectl create configmap app-cfg --from-literal=LOG_LEVEL=info --from-file=app.properties; kubectl create secret generic db --from-literal=password=s3cret",
+        "Updates: volume-mounted ConfigMaps/Secrets refresh eventually (kubelet sync delay, not for subPath mounts); env vars are fixed at container start, so a rollout restart is needed (kubectl rollout restart deploy/app)",
+        "Secrets are only base64 by default and readable by anyone with RBAC get access: enable etcd encryption at rest, restrict RBAC, and prefer an external store (External Secrets, Vault, CSI Secrets Store)",
+        "Mark ConfigMap/Secret immutable: true to prevent accidental edits and cut API server watch load; roll out a new name instead and hash the name in Helm/Kustomize to trigger a restart",
+        "Interview Point: Is a Secret encrypted? How do pods pick up a changed ConfigMap? Env var vs volume mount trade-offs?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Feature Flags: Release vs Ops",
+      "points": [
+        "Feature flag = runtime conditional that decouples deploy from release: code ships dark, a toggle turns it on without redeploying",
+        "Four types by lifetime: release flag (short, hides unfinished work, trunk-based dev), experiment flag (A/B, short), ops flag (kill switch / circuit breaker, long-lived), permission flag (entitlements, very long-lived)",
+        "Release vs ops: release flags are removed once rollout hits 100%; ops flags stay permanently so on-call can shed load or disable a failing dependency in seconds",
+        "Targeting and rollout: evaluate by user ID, segment or percentage; use consistent hashing on a stable key (user ID + flag key) so a user keeps the same variant across requests",
+        "Pseudocode: if (flags.isEnabled('new-checkout', user)) { newCheckout() } else { oldCheckout() }; always define a safe default for when the flag service is unreachable",
+        "Evaluation: server-side SDKs cache rules locally and stream updates, so a flag check is an in-memory call, not a network hop; client-side flags expose the rule set, so never put secrets or sensitive targeting there",
+        "Interview Point: Deploy vs release? Release flag vs kill switch lifetime? How do you keep a user's variant sticky?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Dark Launches, Progressive Rollout and Flag Debt",
+      "points": [
+        "Dark launch: ship and run the new code path in production with real traffic but no user-visible effect (e.g. shadow traffic or mirrored reads, compare responses, discard the result); never mirror writes with side effects",
+        "Progressive rollout order: internal staff, 1%, 5%, 25%, 50%, 100%, watching error rate and latency at each step; roll back by flipping the flag, not by redeploying",
+        "Dark launch vs canary vs blue/green: dark launch hides behavior from users, canary exposes a small slice of real users to a new version, blue/green swaps whole environments; flags work at feature level while the others work at deploy level",
+        "Flag debt: stale flags leave dead branches, 2^N untested combinations and surprise behavior; give every flag an owner, a type and an expiry date, and open a removal ticket when the flag is created",
+        "Cleanup: once a flag is at 100% for a settled period, delete the flag and the losing code path in one change; add a lint or CI check that fails on flags past expiry; keep a flag inventory",
+        "Interview Point: What is a dark launch and what is its risk? How do you prevent flag debt? Canary vs dark launch vs blue/green?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Config and Flags Cheat Sheet",
+      "points": [
+        "Config rules: config in env or a config store, never in code; one artifact, many deploys; fail fast on missing keys; never log secrets",
+        "Precedence (high to low): CLI flags > env vars > config server > file > defaults",
+        "K8s: ConfigMap = plain data, Secret = base64 (not encrypted); env vars need a restart, volumes refresh without subPath; use immutable: true and etcd encryption",
+        "Flag types and lifetime: release (short, delete at 100%), experiment (short), ops (long, kill switch), permission (very long)",
+        "Debt checklist: owner, expiry, removal ticket, safe default, sticky hashing, CI check for stale flags",
+        "Interview Point: Summarise how you would roll out a risky feature with config and flags safely, and how you would roll it back."
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": []
+    }
+  ]
+}

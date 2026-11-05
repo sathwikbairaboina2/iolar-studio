@@ -1,0 +1,240 @@
+{
+  "title": "Distributed Key-Value Store (DynamoDB / Cassandra Style)",
+  "summary": "A system design case study of a Dynamo-style distributed key-value store: partitioning with consistent hashing, replication, quorum-tunable consistency, conflict resolution, hinted handoff, Merkle-tree anti-entropy and gossip-based failure detection.",
+  "chapters": [
+    {
+      "title": "Distributed Key-Value Store Cover",
+      "points": [
+        "Problem and scope",
+        "Requirements and scale",
+        "High-level architecture",
+        "Partitioning and consistent hashing",
+        "Replication and quorums",
+        "Conflict resolution",
+        "Hinted handoff and anti-entropy",
+        "Gossip and failure detection",
+        "Scaling and interview questions"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem, Scope and Requirements",
+      "points": [
+        "Scope: put(key, value) and get(key) on values up to 400 KB; no joins, no multi-key transactions, no secondary indexes in v1",
+        "Functional: put, get, delete (tombstone), per-request consistency level (ONE, QUORUM, ALL)",
+        "Scale estimate: 10 TB hot data, 1M reads/s plus 200K writes/s, 100 nodes, ~100 GB per node",
+        "Latency targets: p99 read under 10 ms, p99 write under 15 ms; availability 99.99%",
+        "Non-functional: always-writable (AP by default), horizontal scale, no single point of failure, incremental scalability",
+        "CAP stance: during a partition choose availability and reconcile later (eventual consistency)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Distributed KV Store)",
+      "points": [
+        "Peer-to-peer ring: every node is identical, no master, any node can act as coordinator",
+        "Request path: client → any node (coordinator) → N replicas → ack when quorum met → respond",
+        "Per-node stack: coordinator layer, membership/gossip layer, storage engine (commit log + memtable + SSTables)",
+        "Client-side vs server-side routing: smart clients cache the ring and skip one hop; otherwise a proxy forwards",
+        "Replication factor N=3 across 3 availability zones is the default deployment"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Partitioning with Consistent Hashing",
+      "points": [
+        "Responsibility: map each key to an owner node with minimal data movement when nodes join or leave",
+        "Design: hash(key) with MD5 or Murmur3 onto a 2^128 ring; owner is the first node clockwise from the key's position",
+        "Naive hash(key) mod N moves ~(N-1)/N of keys on resize; consistent hashing moves only ~1/N",
+        "Virtual nodes: each physical node owns 128-256 tokens, which evens load and lets stronger machines take more tokens",
+        "Flow: adding node D takes tokens from neighbors and streams only those ranges to D",
+        "Data model: token map (token → node), per-node range list, partition key plus optional sort key",
+        "API: getPreferenceList(key) returns N distinct physical nodes; skip vnodes of the same host or rack",
+        "Failure: hot partition from a skewed key (one celebrity key) is not fixed by hashing; salt the key or cache",
+        "Metrics: keys per node (skew under 10%), streaming bytes during rebalance, hottest-partition QPS"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Replication and Preference List",
+      "points": [
+        "Responsibility: store each key on N=3 nodes so data survives node and zone loss",
+        "Design: coordinator plus the next N-1 distinct nodes clockwise form the preference list",
+        "Rack and AZ awareness: replicas placed in different zones so one zone outage loses at most 1 of 3 copies",
+        "Flow: coordinator sends write to all N in parallel, waits for W acks (not sequential chain)",
+        "Data model: key, value, version metadata (vector clock or timestamp), tombstone flag, TTL",
+        "Failure: a replica down for hours is covered by sloppy quorum and repaired later; permanent loss re-replicates from peers",
+        "Metrics: replica lag, under-replicated ranges, cross-AZ bandwidth"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Tunable Consistency with Quorums",
+      "points": [
+        "Rule: R + W > N guarantees a read overlaps the latest successful write; N=3, R=2, W=2 is the standard",
+        "Settings: W=1 fast-write, R=1 fast-read; R=1,W=N read-optimized; R=N,W=1 write-optimized",
+        "Read flow: send read to N, return after R responses, pick the newest version, read-repair stale replicas in background",
+        "Write flow: coordinator timestamps or versions the write, sends to N, returns after W acks; latency is the Wth-fastest replica",
+        "API: per-request consistency level (ONE, LOCAL_QUORUM, QUORUM, ALL); LOCAL_QUORUM avoids cross-region latency",
+        "Failure: R + W > N does not give linearizability; concurrent writes and sloppy quorums can still return stale data",
+        "Metrics: stale-read rate, quorum failure rate, p99 latency per consistency level"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Conflict Resolution: Vector Clocks vs LWW",
+      "points": [
+        "Vector clock = list of (node, counter) pairs; version A descends B if every counter in A ≥ B's",
+        "Concurrent versions (neither descends) are kept as siblings and returned to the client for merge",
+        "Example: D1[(A,1)] then write via A gives D2[(A,2)]; concurrent writes via B and C give D3[(A,2),(B,1)] and D4[(A,2),(C,1)], which conflict",
+        "Last-write-wins stores a timestamp; highest timestamp wins, no siblings, simple and used by Cassandra",
+        "LWW drawback: clock skew of even 100 ms silently drops a legitimate write",
+        "Vector clock drawback: clocks grow with writers, so truncate at ~10 entries, and the app must merge (for example shopping cart union)",
+        "Choose LWW for idempotent overwrites; choose vector clocks or CRDTs when losing a write is unacceptable"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Failure Handling: Hinted Handoff",
+      "points": [
+        "Responsibility: keep writes available when a preference-list replica is temporarily down",
+        "Sloppy quorum: write goes to the first N healthy nodes on the ring, not strictly the first N",
+        "Flow: stand-in node stores the write plus a hint naming the intended owner, then replays it when the owner returns",
+        "Data model: hint table (target node, key, value, version, created_at) with a TTL of ~3 hours",
+        "Failure: if the stand-in dies or the hint expires, the write is lost on that replica and only anti-entropy repairs it",
+        "Metrics: hints stored, hints replayed per second, hint backlog age"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Anti-Entropy with Merkle Trees",
+      "points": [
+        "Responsibility: find and fix replica divergence that read repair and hints missed, without scanning all data",
+        "Merkle tree: leaves hash key ranges, each parent hashes its children, so the root summarizes the whole range",
+        "Flow: two replicas compare roots; if equal they are in sync, else descend only into mismatching children and sync those leaf ranges",
+        "Cost: sync cost is O(differences · log n) instead of O(n) data transfer",
+        "Data model: one tree per token range per node, rebuilt periodically; ~64K leaves per tree is typical",
+        "Failure: tree rebuild is I/O heavy and range membership changes on rebalance invalidate trees",
+        "Metrics: repair duration, bytes streamed per repair, ranges not repaired in over 10 days (must stay under tombstone GC grace period)"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Gossip and Failure Detection",
+      "points": [
+        "Responsibility: decentralized membership and liveness with no central coordinator",
+        "Gossip: every 1 second each node exchanges state with 1-3 random peers; information spreads to all nodes in O(log N) rounds",
+        "Data model: per node a heartbeat counter, generation, status (UP, DOWN, JOINING, LEAVING) and token list",
+        "Detection: a node is suspected when its heartbeat has not increased within a timeout; phi-accrual detector outputs a suspicion level, with phi above 8 marking DOWN",
+        "Seed nodes bootstrap new members and prevent split gossip clusters",
+        "Failure: network partition makes both sides mark the other DOWN; a false positive triggers needless hinted handoff",
+        "Metrics: gossip convergence time, flapping nodes per hour, detection time under 10 s"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Storage Engine and Write Path",
+      "points": [
+        "Responsibility: make local writes fast and durable on each replica",
+        "Write flow: append to commit log (sequential disk) → insert into in-memory memtable → ack",
+        "Flush: memtable at ~128 MB flushes to an immutable sorted SSTable on disk",
+        "Read flow: check memtable, then SSTables newest-first, with a Bloom filter (~1% false positives) skipping files lacking the key",
+        "Compaction merges SSTables and drops overwritten values and expired tombstones",
+        "Failure: crash recovery replays the commit log; deletes need tombstones kept past gc_grace (10 days) or deleted data resurrects"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Trade-offs and Interview Questions",
+      "points": [
+        "Scale out: add a node, it takes tokens from neighbors, bootstrap streams ~1/N of data, no downtime",
+        "Trade-offs: N=3,R=2,W=2 balances latency and consistency; AP gives availability but exposes stale reads and siblings",
+        "Comparison: Dynamo is leaderless with vector clocks; Cassandra is leaderless with LWW; Spanner-style stores use Paxos leaders for strong consistency",
+        "Common mistakes: LWW with unsynced clocks, too few vnodes causing skew, never running repair so tombstones resurrect",
+        "Interview Q: what happens if 2 of 3 replicas are down at QUORUM? (write fails, unless sloppy quorum or ONE)",
+        "Interview Q: how do you add a node without a reshuffle? (consistent hashing plus vnodes)",
+        "Cheatsheet: N=3, R=2, W=2; ring via Murmur3; gossip 1 s; hints 3 h; Merkle repair weekly"
+      ],
+      "shape": [
+        "summary",
+        "comparison",
+        "mistakes",
+        "cheatsheet"
+      ]
+    }
+  ]
+}

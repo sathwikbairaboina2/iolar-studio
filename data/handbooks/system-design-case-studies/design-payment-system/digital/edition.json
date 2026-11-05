@@ -1,0 +1,2104 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-payment-system",
+  "category": "system-design",
+  "inputsHash": "5cb223983dc4d727d0ea7eb810e7b5c7b22211bcf3fe0a2615f45ce72a7548bb",
+  "generatedAt": "2026-10-24T11:20:47.360Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope (Online Store)",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Pay-in== for checkout: the customer pays the store",
+                "==Refunds== back to the customer's original payment method",
+                "==Ledger==: the record of where every cent sits"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Out}: **payouts to sellers**",
+                "{red:Out}: **fraud ML** scoring"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Requirements (Online Store)",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Authorize",
+                    "sub": "hold funds",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Capture",
+                    "sub": "take funds",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Refund",
+                    "sub": "give back",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Webhook",
+                    "sub": "PSP event in",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Reconcile",
+                    "sub": "daily",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Functional: ==authorize==, ==capture==, ==void==, ==refund==",
+                "==Query status== of any payment",
+                "==Receive PSP webhooks== (async results)",
+                "==Daily reconciliation== against the PSP settlement file"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Target",
+                "Value",
+                "Note"
+              ],
+              "rows": [
+                [
+                  "Create latency",
+                  "**p99 < 500 ms**",
+                  "excluding the PSP call"
+                ],
+                [
+                  "PSP call",
+                  "**timeout 5 s**",
+                  "timeout = unknown outcome"
+                ],
+                [
+                  "Webhook ack",
+                  "**< 2 s**",
+                  "return 200, process async"
+                ],
+                [
+                  "Double charge",
+                  "**none**",
+                  "exactly-once effect"
+                ],
+                [
+                  "Availability",
+                  "**99.99%**",
+                  "~52 min downtime/year"
+                ],
+                [
+                  "Lost money",
+                  "**zero**",
+                  "every cent traceable"
+                ],
+                [
+                  "Audit retention",
+                  "**7 years**",
+                  "payments and ledger"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Scale and Storage Estimates (Online Store)",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Orders to TPS",
+                "steps": [
+                  {
+                    "text": "10M orders/day",
+                    "note": "one payment each",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "÷ 86,400 s",
+                    "note": "seconds per day",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "~115 TPS average",
+                    "note": "steady load",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "x10 sale events",
+                    "note": "peak multiplier",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "~1,000 TPS peak",
+                    "note": "size for this",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Item",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Payment rows",
+                  "~2 KB x 10M/day",
+                  "~20 GB/day"
+                ],
+                [
+                  "Payment rows, yearly",
+                  "20 GB x 365",
+                  "~7 TB/year"
+                ],
+                [
+                  "Ledger entries",
+                  "~4 per payment x 10M",
+                  "~40M rows/day"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Size for the peak",
+              "text": "Capacity is planned for ==~1,000 TPS==, not the ~115 TPS average. The goal is an exactly-once **effect** (one charge), not exactly-once delivery."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Online Store payment system: ~115 TPS average, ~1,000 TPS peak, seven components, three data stores."
+            },
+            {
+              "type": "heading",
+              "text": "1. Components",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Component",
+                "Job"
+              ],
+              "rows": [
+                [
+                  "**Checkout/Order service**",
+                  "Owns the order; asks for a payment; marks it ==paid=="
+                ],
+                [
+                  "**Payment service**",
+                  "Owns the payment lifecycle and idempotency"
+                ],
+                [
+                  "**PSP gateway adapter**",
+                  "One internal interface, per-provider code (Stripe, Adyen)"
+                ],
+                [
+                  "**Ledger service**",
+                  "Posts balanced, append-only entries"
+                ],
+                [
+                  "**Webhook receiver**",
+                  "Verifies and queues PSP events"
+                ],
+                [
+                  "**Reconciliation job**",
+                  "Daily match of PSP file vs payments vs ledger"
+                ],
+                [
+                  "**Refund service**",
+                  "Reverses captured money, with its own idempotency key"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Payment Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Happy path",
+                "steps": [
+                  {
+                    "text": "Order",
+                    "note": "checkout creates it",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Create payment",
+                    "note": "idempotency key",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "PSP authorize",
+                    "note": "adapter call",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Webhook confirms",
+                    "note": "event queued",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "Ledger posts",
+                    "note": "balanced entries",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Order paid",
+                    "note": "status updated",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "The user-facing call returns ==PENDING== quickly: p99 < 500 ms excluding the PSP",
+                "The final result arrives by ==webhook==, or by ==polling== the PSP if the webhook is lost",
+                "Sync PSP call: simple but blocks the user. Async: resilient, more states"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Card Data and Data Stores",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Browser",
+                    "sub": "hosted fields / redirect",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PSP",
+                    "sub": "receives the card",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Token",
+                    "sub": "returned to browser",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Our servers",
+                    "sub": "token only",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Card data goes ==browser -> PSP== directly, never through our servers",
+                "The store only receives a ==token=="
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Store",
+                "Holds",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "==Postgres==",
+                  "Payments, ledger",
+                  "ACID transactions"
+                ],
+                [
+                  "==Redis==",
+                  "Idempotency cache",
+                  "Fast duplicate check"
+                ],
+                [
+                  "==Kafka==",
+                  "Events, webhook queue",
+                  "Durable, replayable, async"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Create returns **PENDING**; the ==webhook== (or polling) decides the outcome. The card never touches our servers, only a token."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Payment Service Subsystem",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Payment Service Subsystem",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The **Payment service** of the Online Store owns every payment from INITIATED to CAPTURED; peak is ~1,000 TPS."
+            },
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Owns the ==payment lifecycle== (INITIATED to CAPTURED)",
+                "Enforces ==idempotency== on every create",
+                "Orchestrates ==PSP calls== through the adapter",
+                "Emits ==events== (payment.authorized, payment.captured)",
+                "{red:Never touches raw card numbers}: only a PSP token"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "API pods",
+                    "sub": "stateless",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Postgres shards",
+                    "sub": "hash of order_id",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Outbox table",
+                    "sub": "same DB transaction",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "events",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Pods hold no state, so scale them ==horizontally==",
+                "Shard key: ==merchant/order_id hash==",
+                "Outbox row is written in the ==same transaction== as the payment row",
+                "A relay publishes outbox rows to Kafka, so no event is lost"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Payment Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "POST /v1/payments",
+                "steps": [
+                  {
+                    "text": "Insert row",
+                    "note": "status INITIATED",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Call PSP",
+                    "note": "same idempotency key",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Store psp_ref",
+                    "note": "AUTHORIZED",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Capture",
+                    "note": "CAPTURED",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE payments (",
+                "  id UUID PRIMARY KEY, order_id TEXT NOT NULL,",
+                "  amount_minor BIGINT NOT NULL, currency CHAR(3),",
+                "  status TEXT NOT NULL, psp_ref TEXT,",
+                "  idempotency_key TEXT NOT NULL UNIQUE,",
+                "  version INT NOT NULL DEFAULT 0,",
+                "  created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
+              ],
+              "note": "money is integer minor units: 100.00 = 10000"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Endpoint",
+                "Purpose"
+              ],
+              "rows": [
+                [
+                  "`POST /v1/payments`",
+                  "create and authorize"
+                ],
+                [
+                  "`POST /v1/payments/{id}/capture`",
+                  "capture an authorized payment"
+                ],
+                [
+                  "`POST /v1/payments/{id}/refunds`",
+                  "refund, full or partial"
+                ],
+                [
+                  "`GET /v1/payments/{id}`",
+                  "query current status"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Crash} after the PSP call, before the DB write: row is stuck in INITIATED",
+                "A ==recovery job== queries the PSP by ==idempotency key==",
+                "It resolves the state: found means store psp_ref and advance, none means FAILED",
+                "Never assume failure, never charge again"
+              ],
+              "style": "number",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target / alert"
+              ],
+              "rows": [
+                [
+                  "Payment success rate",
+                  "{green:>= 97%}"
+                ],
+                [
+                  "Create latency p99",
+                  "< 500 ms excluding PSP"
+                ],
+                [
+                  "Stuck in PENDING",
+                  "{red:alert if > 15 min}"
+                ],
+                [
+                  "PSP error rate",
+                  "by error code"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Never use floats for money: store ==amount_minor BIGINT==. The ==UNIQUE idempotency_key== plus the outbox keep the charge and the event exactly-once in effect."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Payment State Machine",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Payment State Machine",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. States and Legal Moves (Online Store)",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "INITIATED",
+                    "sub": "row created",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PENDING",
+                    "sub": "PSP called",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "AUTHORIZED",
+                    "sub": "funds held",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "CAPTURED",
+                    "sub": "money taken",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "(PARTIALLY_) REFUNDED",
+                    "sub": "money returned",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Terminal}: ==FAILED==, ==VOIDED==, ==EXPIRED== (no moves out)",
+                "A transition ==whitelist== is the only way to change `status`",
+                "`CAPTURED -> AUTHORIZED` is **rejected**: state never goes backwards"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "From",
+                "Legal next states"
+              ],
+              "rows": [
+                [
+                  "INITIATED",
+                  "PENDING, FAILED"
+                ],
+                [
+                  "PENDING",
+                  "AUTHORIZED, FAILED, EXPIRED"
+                ],
+                [
+                  "AUTHORIZED",
+                  "CAPTURED, VOIDED, EXPIRED"
+                ],
+                [
+                  "CAPTURED",
+                  "PARTIALLY_REFUNDED, REFUNDED"
+                ],
+                [
+                  "PARTIALLY_REFUNDED",
+                  "PARTIALLY_REFUNDED, REFUNDED"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "2. Guarding a Transition",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Optimistic locking==: check `version` and the expected `status` in the same UPDATE",
+                "0 rows updated = lost the race or illegal move, so **reject**; no blocking lock held"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE payments",
+                "SET status = 'CAPTURED',",
+                "    version = version + 1",
+                "WHERE id = ?",
+                "  AND version = ?",
+                "  AND status = 'AUTHORIZED';"
+              ],
+              "note": "racing writers: only one gets rowcount = 1"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Append-only== `payment_events` in the same DB transaction: full audit trail and replay",
+                "Never UPDATE or DELETE events; `cause` says why (webhook, API, job)"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "INSERT INTO payment_events",
+                "  (payment_id, from_status, to_status, cause, at)",
+                "VALUES (?, 'AUTHORIZED', 'CAPTURED',",
+                "        'capture_api', now());"
+              ],
+              "note": "from_status / to_status avoid Postgres reserved words"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:CAPTURED webhook before AUTHORIZED}: fast-forward and write **both** events",
+                "Late AUTHORIZED after CAPTURED: ==no-op==, log the event, never downgrade",
+                "Replaying the same webhook changes nothing: handlers are ==idempotent=="
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "State only moves ==forward==. Lock with `version` + `status`, and log every move in `payment_events`."
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Signals"
+              ],
+              "rows": [
+                [
+                  "Transition counts",
+                  "traffic mix per state pair"
+                ],
+                [
+                  "Illegal-transition rejections",
+                  "bugs or racing writers"
+                ],
+                [
+                  "Time spent per state",
+                  "stuck PENDING payments"
+                ],
+                [
+                  "Auth expiry rate",
+                  "uncaptured holds (~7 days)"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "PSP Integration and Retries",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "PSP Integration and Retries",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Calling the PSP from the Online Store: a call can end with an ==unknown== outcome, so every retry must be safe to repeat."
+            },
+            {
+              "type": "heading",
+              "text": "1. Adapter and Timeouts",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Payment service",
+                    "sub": "talks to one interface",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PSP interface",
+                    "sub": "authorize, capture, refund, status",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Stripe adapter",
+                    "sub": "maps to Stripe API",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Adyen adapter",
+                    "sub": "maps to Adyen API",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One ==internal PSP interface==; one **adapter** per provider (Stripe, Adyen)",
+                "Payment service never sees provider formats, so you can ==route== or ==fail over==",
+                "Timeouts: {blue:connect 1 s}, {blue:read 5 s}",
+                "A timeout means ==UNKNOWN outcome==: the charge may have succeeded",
+                "Never mark a timed-out call FAILED; resolve it by querying the PSP"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Retries and Idempotency",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Error",
+                "Retry?",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Network error / timeout",
+                  "{green:Yes}",
+                  "Outcome unknown, same key makes it safe"
+                ],
+                [
+                  "5xx",
+                  "{green:Yes}",
+                  "PSP-side fault, likely transient"
+                ],
+                [
+                  "429",
+                  "{green:Yes}",
+                  "Rate limited, back off first"
+                ],
+                [
+                  "4xx decline (card, funds)",
+                  "{red:No}",
+                  "Same request gets the same answer"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Wait = `2^attempt` s + small jitter, so ==1 s then 2 s==",
+                "Max ==3 attempts==, so only two waits",
+                "Jitter spreads retries so a recovering PSP is not hit in a burst",
+                "Send the ==same idempotency key== on every retry: PSP dedupes, one charge results"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /v1/payment_intents",
+                "Idempotency-Key: 7f3c9a52-1b4e-4d0a-9c1e-5a2b8e6d1f04"
+              ],
+              "note": "key is fixed per payment intent, reused on every attempt"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Retry rule",
+              "text": "Retry only ==network, 5xx, 429==, always with the ==same key==. Never retry a 4xx decline."
+            },
+            {
+              "type": "heading",
+              "text": "3. Circuit Breaker and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Breaker states",
+                "rows": [
+                  [
+                    "closed",
+                    "open"
+                  ],
+                  [
+                    "half"
+                  ]
+                ],
+                "nodes": {
+                  "closed": {
+                    "text": "Closed",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "open": {
+                    "text": "Open: use secondary PSP",
+                    "shape": "box",
+                    "ink": "red"
+                  },
+                  "half": {
+                    "text": "Half-open",
+                    "shape": "pill",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "closed",
+                    "to": "open",
+                    "label": ">50% errors over 30 s"
+                  },
+                  {
+                    "from": "open",
+                    "to": "half",
+                    "label": "after 30 s"
+                  },
+                  {
+                    "from": "half",
+                    "to": "closed",
+                    "label": "probe succeeds"
+                  },
+                  {
+                    "from": "half",
+                    "to": "open",
+                    "label": "probe fails"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Watch per PSP",
+              "items": [
+                "p99 latency",
+                "Retry rate",
+                "Breaker-open time",
+                "Auth rate"
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Idempotency Design",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Idempotency Design",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What Idempotent Means",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Same request repeated → ==one effect== and the ==same response==",
+                "The client generates one **UUID key** per payment intent",
+                "Sent as an `Idempotency-Key` header on every attempt",
+                "Retries after a timeout reuse the key, so one charge results"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Storage and Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE idempotency_keys (",
+                "  key          TEXT PRIMARY KEY,",
+                "  request_hash TEXT NOT NULL,",
+                "  response     JSONB,",
+                "  status       TEXT NOT NULL,",
+                "  expires_at   TIMESTAMPTZ NOT NULL",
+                ");"
+              ],
+              "note": "the PRIMARY KEY is the UNIQUE guard"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`status` is IN_PROGRESS or COMPLETED",
+                "`expires_at` gives a ==TTL of 24-48 h==, then a cleanup job deletes the row",
+                "`request_hash` = hash of the request body, used to spot a changed request"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "First request with a new key",
+                "steps": [
+                  {
+                    "text": "Insert key",
+                    "note": "status IN_PROGRESS",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Process",
+                    "note": "create payment, call PSP",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Store response",
+                    "note": "status COMPLETED",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Duplicate arrives",
+                    "note": "replay stored response",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Duplicate seen",
+                "Code",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Same key, same body, COMPLETED",
+                  "{green:200}",
+                  "replay the **stored response**"
+                ],
+                [
+                  "Same key, same body, IN_PROGRESS",
+                  "{orange:409}",
+                  "concurrent duplicate, retry later"
+                ],
+                [
+                  "Same key, different body",
+                  "{red:422}",
+                  "`request_hash` mismatch"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Example: The Insert Decides",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "INSERT INTO idempotency_keys",
+                "  (key, request_hash, status, expires_at)",
+                "VALUES ($1, $2, 'IN_PROGRESS',",
+                "  now() + interval '24 hours')",
+                "ON CONFLICT (key) DO NOTHING;",
+                "-- 1 row: we own the key, process it",
+                "-- 0 rows: duplicate, read the row"
+              ],
+              "note": "one atomic statement, no check-then-write gap"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redis equivalent: `SET key val NX EX 86400` is atomic too",
+                "On 0 rows, compare `request_hash`, then replay, 409 or 422"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Check Redis, then write separately: two requests both pass the check, a ==race==",
+                "Fix: atomic DB unique insert or `SET NX`",
+                "New key per HTTP attempt instead of per **intent**: dedupe never matches",
+                "That mistake turns every retry into a ==double charge=="
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "One key per ==payment intent==, created once by the client and reused on every retry. The unique insert, not a prior read, decides who processes."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Double-Entry Ledger",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Double-Entry Ledger",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Rule",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Every transaction posts ==balanced entries==: sum(debits) = sum(credits)",
+                "Money is **moved** between accounts, ==never created== or destroyed",
+                "All entries of one payment event share one `txn_id`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Capture of 100.00",
+                "Debit",
+                "Credit"
+              ],
+              "rows": [
+                [
+                  "Customer Receivable / PSP Clearing",
+                  "100.00",
+                  ""
+                ],
+                [
+                  "Merchant Revenue",
+                  "",
+                  "97.10"
+                ],
+                [
+                  "Fees Payable",
+                  "",
+                  "2.90"
+                ],
+                [
+                  "**Total**",
+                  "**100.00**",
+                  "**100.00**"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "heading",
+              "text": "2. Data Model and Corrections",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE ledger_entries (",
+                "  id BIGSERIAL PRIMARY KEY,",
+                "  txn_id UUID NOT NULL,",
+                "  account_id BIGINT NOT NULL,",
+                "  direction CHAR(1) NOT NULL,",
+                "  amount_minor BIGINT NOT NULL,",
+                "  currency CHAR(3) NOT NULL,",
+                "  created_at TIMESTAMPTZ NOT NULL DEFAULT now());"
+              ],
+              "note": "direction is D or C; 100.00 is stored as 10000 minor units"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Table is ==append-only==: rows are only ever inserted",
+                "Balances are {blue:derived} (SUM over entries) or {blue:cached} per account",
+                "A mistake is fixed by a ==reversing entry==, never `UPDATE` or `DELETE`",
+                "Gives **immutability** and a full **audit trail**"
+              ],
+              "style": "check",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Posting Safely",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "BEGIN",
+                    "sub": "one DB txn per txn_id",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Insert legs",
+                    "sub": "all entries",
+                    "ink": "purple"
+                  },
+                  {
+                    "type": "x",
+                    "text": "Check balance",
+                    "sub": "debits = credits",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "COMMIT",
+                    "sub": "or roll back all",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "ALTER TABLE ledger_entries",
+                "  ADD CONSTRAINT one_leg_per_txn",
+                "  UNIQUE (txn_id, account_id, direction);"
+              ],
+              "note": "a retried post hits the constraint, rolls back, nothing double-posts"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never edit history",
+              "text": "A posted entry is **never** changed or deleted. Post a ==reversing entry== instead, so the books always show what happened."
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Ledger imbalance",
+                  "==0==, alert on any nonzero"
+                ],
+                [
+                  "Posting latency p99",
+                  "< 50 ms"
+                ],
+                [
+                  "Entries per payment",
+                  "~4"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Webhooks and Reconciliation",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Webhooks and Reconciliation",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Webhook Receiver",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Verify",
+                    "sub": "HMAC + timestamp",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Persist",
+                    "sub": "raw event",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Return 200",
+                    "sub": "within 2 s",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "async processing",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Check the ==HMAC signature== on the raw body with the shared secret",
+                "Reject a timestamp older than the ==5 min== replay window",
+                "Store the **raw event** before any parsing or business logic",
+                "Ack ==200 in under 2 s==; the ledger and order work happens after the ack"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Duplicates, Order and Lost Events",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "The PSP retries with backoff for up to ==~3 days==, so duplicates are normal",
+                "Dedupe by ==event_id==; the handler must be **idempotent**",
+                "Events arrive out of order: apply by state machine, ==never downgrade== state",
+                "{red:Lost webhook}: poll the PSP status API for payments ==PENDING > 15 min=="
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "INSERT INTO webhook_events (event_id, raw_body, received_at)",
+                "VALUES ($1, $2, now())",
+                "ON CONFLICT (event_id) DO NOTHING;"
+              ],
+              "note": "0 rows inserted means a duplicate: ack 200 and skip"
+            },
+            {
+              "type": "heading",
+              "text": "3. Daily Reconciliation",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "3-way match by psp_ref and amount",
+                "steps": [
+                  {
+                    "text": "PSP settlement file",
+                    "note": "source of truth for money moved",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "payments table",
+                    "note": "our status and amount_minor",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "ledger entries",
+                    "note": "balanced postings per txn",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Mismatch",
+                "Meaning",
+                "Typical auto-fix"
+              ],
+              "rows": [
+                [
+                  "Missing in ours",
+                  "PSP has it, we do not",
+                  "Create from PSP data, then post ledger"
+                ],
+                [
+                  "Missing at PSP",
+                  "We have it, PSP does not",
+                  "Query PSP by idempotency key, then void or fail"
+                ],
+                [
+                  "Amount differs",
+                  "Same psp_ref, different amount",
+                  "Ticket for review, no auto-fix"
+                ],
+                [
+                  "Status differs",
+                  "Our state is behind or wrong",
+                  "Re-apply via state machine"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "sidebox",
+              "title": "Every mismatch",
+              "items": [
+                "Opens a ==ticket==",
+                "Known patterns are auto-fixed",
+                "The rest go to a human"
+              ],
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Unmatched rate",
+                  "< 0.01%"
+                ],
+                [
+                  "Webhook lag p99",
+                  "< 5 s"
+                ],
+                [
+                  "DLQ depth",
+                  "alert when above 0 and growing"
+                ],
+                [
+                  "Reconciliation completion",
+                  "by T+1"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Webhooks are not guaranteed",
+              "text": "Webhooks can be lost, so ==polling== catches it within minutes and ==daily reconciliation== is the final safety net for **zero lost money**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Refunds and PCI Scope",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Refunds and PCI Scope",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Refund API and States",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`POST /v1/payments/{id}/refunds` with its ==own idempotency key==",
+                "Rule: ==sum(refunds) <= captured amount==",
+                "Enforce it inside ==one DB transaction==, not in app code",
+                "Partial refunds are allowed (several refunds per payment)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "BEGIN;",
+                "SELECT amount_minor FROM payments WHERE id = $1 FOR UPDATE;",
+                "SELECT COALESCE(SUM(amount_minor), 0) FROM refunds",
+                "  WHERE payment_id = $1 AND status <> 'FAILED';",
+                "-- reject if refunded + new amount > captured",
+                "INSERT INTO refunds (payment_id, amount_minor, idempotency_key)",
+                "  VALUES ($1, $2, $3);",
+                "COMMIT;"
+              ],
+              "note": "the row lock on payments serializes racing refunds"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "REQUESTED",
+                    "sub": "row inserted",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PENDING",
+                    "sub": "sent to PSP",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "SUCCEEDED",
+                    "sub": "PSP confirms",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "FAILED",
+                    "sub": "PSP rejects",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Money reaches the customer after ==5-10 business days== (settlement)",
+                "SUCCEEDED means the PSP accepted it, not that the card is already credited"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Refund Ledger Entries",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Entry",
+                "Account",
+                "Direction"
+              ],
+              "rows": [
+                [
+                  "Original capture",
+                  "PSP Clearing",
+                  "debit"
+                ],
+                [
+                  "Original capture",
+                  "Merchant Revenue",
+                  "credit"
+                ],
+                [
+                  "Refund",
+                  "Merchant Revenue",
+                  "{red:debit}"
+                ],
+                [
+                  "Refund",
+                  "PSP Clearing",
+                  "{green:credit}"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A refund ==reverses== the original entries; it is a new append-only txn",
+                "==PSP fees are usually not returned==, so Fees Payable stays as posted"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. PCI DSS Scope",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Never store} the ==PAN==, the ==CVV== or full track data",
+                "Store only the ==PSP token== + `last4` + card `brand`",
+                "Hosted fields/iframe or redirect: card data goes browser -> PSP, never through your servers"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "SAQ A",
+                "SAQ D"
+              ],
+              "rows": [
+                [
+                  "Card data touches your servers",
+                  "{green:No}",
+                  "{red:Yes}"
+                ],
+                [
+                  "Integration",
+                  "hosted fields / iframe / redirect",
+                  "raw card handling"
+                ],
+                [
+                  "Controls",
+                  "fewest (smallest scope)",
+                  "~300+"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes and Protection",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Logging card data",
+              "text": "Logging ==request bodies== that contain card data or **tokens** pulls your logs into PCI scope. Log ids and `last4` only."
+            },
+            {
+              "type": "sidebox",
+              "title": "Protect what you keep",
+              "items": [
+                "TLS ==1.2+== in transit, everywhere",
+                "Encryption at rest with ==KMS-managed keys==",
+                "Rotate keys; never keep them next to the data"
+              ],
+              "ink": "red"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scaling the Payments Store (Online Store)",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Shard payments by ==order_id hash==: `shard = hash(order_id) % 8`",
+                "Peak ~1,000 TPS / 8 shards = 125 avg, ==~150 TPS per shard== with skew headroom",
+                "One Postgres primary per shard, so every payment and its ledger rows stay in one ACID store",
+                "{blue:Read replicas} serve status queries (`GET /v1/payments/{id}`), so writers keep the budget for writes"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "order_id",
+                    "sub": "hash % 8",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Shard 1..8",
+                    "sub": "~150 TPS each",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Primary",
+                    "sub": "writes, ledger",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Replicas",
+                    "sub": "status reads",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Failure Handling",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Outbox: no event lost, no event without a write",
+                "steps": [
+                  {
+                    "text": "One DB txn",
+                    "note": "payment row + outbox row",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Relay",
+                    "note": "reads outbox",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Kafka",
+                    "note": "at-least-once",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Consumer",
+                    "note": "idempotent",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "DLQ",
+                    "note": "poison event after retries",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Outbox==: the DB write and the event commit together, so a crash never leaves one without the other",
+                "{red:Saga with compensation}: order fails after authorize, so ==void the auth==",
+                "{orange:DLQ}: a poison event is parked after max retries, alerted on depth, replayed after a fix",
+                "{blue:Multi-AZ} for DB, Kafka and pods; ==multi-PSP failover== through the circuit breaker"
+              ],
+              "style": "check",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Sync PSP call",
+                "Async with webhook"
+              ],
+              "rows": [
+                [
+                  "Complexity",
+                  "**Simple**, few states",
+                  "More states: PENDING, UNKNOWN"
+                ],
+                [
+                  "User",
+                  "{red:Blocked} up to the 5 s timeout",
+                  "Returns PENDING fast"
+                ],
+                [
+                  "Resilience",
+                  "PSP slowness hits checkout",
+                  "{green:Resilient}, result by webhook or poll"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Ledger",
+                "Analytics"
+              ],
+              "rows": [
+                [
+                  "Consistency",
+                  "{green:Strong}, ACID, balanced",
+                  "{blue:Eventual}, from Kafka"
+                ],
+                [
+                  "Staleness",
+                  "None allowed",
+                  "Seconds to minutes is fine"
+                ],
+                [
+                  "Wrong value",
+                  "Lost money",
+                  "A stale dashboard"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Questions",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Double charge on a timeout?** A timeout is UNKNOWN: retry with the ==same idempotency key==, and query the PSP first",
+                "**Lost webhook?** ==Poll the PSP== for payments PENDING > 15 min, plus daily reconciliation as the safety net",
+                "**Why a ledger, not just a payments table?** Immutable audit trail, balanced entries, ==proof of where every cent went=="
+              ],
+              "style": "star",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Shard by ==order_id==, publish through the ==outbox==, void on failure, and never assume a timeout failed: ask the PSP."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Payment System Cheatsheet (Online Store)",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Payment System Cheatsheet (Online Store)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Flow and Money",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Create",
+                    "sub": "idempotency key",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Authorize",
+                    "sub": "PSP call",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Capture",
+                    "sub": "take the money",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Ledger post",
+                    "sub": "balanced entries",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Webhook confirm",
+                    "sub": "PSP event",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "Reconcile",
+                    "sub": "T+1",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Amounts are ==integer minor units== (`amount_minor BIGINT`), {red:never float}",
+                "100.00 = `10000` minor units; no rounding drift",
+                "==Debits = credits== on every txn: 100.00 = 97.10 revenue + 2.90 fees",
+                "Corrections are ==reversing entries==, never UPDATE or DELETE"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Retries and States",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Retry?",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Network error / timeout",
+                  "{green:Yes}",
+                  "Outcome is UNKNOWN, same key"
+                ],
+                [
+                  "5xx",
+                  "{green:Yes}",
+                  "PSP-side fault"
+                ],
+                [
+                  "429",
+                  "{green:Yes}",
+                  "Rate limited, back off"
+                ],
+                [
+                  "4xx decline",
+                  "{red:Never}",
+                  "Card refused; retry cannot help"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Exponential ==backoff + jitter==: max 3 attempts, waits of 1 s then 2 s + jitter",
+                "Send the ==same idempotency key== on every retry: PSP dedupes, one charge",
+                "States only move ==forward==; CAPTURED -> AUTHORIZED is rejected",
+                "==Optimistic locking== on `version` + `status`, plus an append-only event log"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE payments SET status='CAPTURED', version=version+1",
+                "WHERE id=? AND version=? AND status='AUTHORIZED';",
+                "INSERT INTO payment_events",
+                "  (payment_id, from_status, to_status, cause, at)",
+                "VALUES (?, 'AUTHORIZED', 'CAPTURED', 'psp_capture', now());"
+              ],
+              "note": "0 rows updated = a racing writer won; do not write the event"
+            },
+            {
+              "type": "heading",
+              "text": "3. PCI and Targets",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Tokens only==: store PSP token + last4 + brand",
+                "==Hosted fields== or redirect give ==SAQ A== (smallest scope)",
+                "{red:Never log} PAN or CVV, including request bodies"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Target",
+                "Value"
+              ],
+              "rows": [
+                [
+                  "Peak load",
+                  "~1,000 TPS"
+                ],
+                [
+                  "Availability",
+                  "99.99%"
+                ],
+                [
+                  "Payment create latency",
+                  "p99 < 500 ms"
+                ],
+                [
+                  "Unmatched in reconciliation",
+                  "< 0.01%"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Same key on retry, ==never retry a decline==, never move state backwards, and ledger debits must equal credits."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "The PSP call times out after 5 s. The retry code below runs on each attempt. Spot the bug.",
+              "a_bullets": [
+                "The key is generated per attempt, so the PSP sees two different charges.",
+                "If the first call actually succeeded, the customer is charged twice.",
+                "Generate the key once per payment intent and send the same key on every retry.",
+                "A timeout means the outcome is UNKNOWN, so the retry must reuse the key (or query the PSP first)."
+              ],
+              "example_code": [
+                "for attempt in range(3):",
+                "    key = str(uuid.uuid4())",
+                "    resp = psp.authorize(amount, token, idempotency_key=key)"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A payment is already CAPTURED when a delayed AUTHORIZED webhook arrives. What is the status afterwards?",
+              "a_bullets": [
+                "The status stays CAPTURED, because state never moves backwards.",
+                "The late event is applied idempotently as a no-op.",
+                "It is logged in payment_events for the audit trail.",
+                "It is not counted as an illegal-transition rejection, because that metric signals bugs or racing writers."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A capture of 100.00 posts: debit PSP Clearing 100.00, credit Merchant Revenue 100.00, credit Fees Payable 2.90. What is wrong, and how is it caught?",
+              "a_bullets": [
+                "Debits total 100.00 but credits total 102.90, so the entries are unbalanced.",
+                "Revenue should be 97.10, so that credits 97.10 + 2.90 = 100.00.",
+                "Posting runs as one DB transaction that rejects any txn where sum(debits) != sum(credits).",
+                "The imbalance alert fires on any nonzero value, since the target is always 0."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A 100.00 payment is CAPTURED. A 60.00 refund has succeeded, and now a 50.00 refund request arrives. What happens?",
+              "a_bullets": [
+                "It is rejected: 60 + 50 = 110, which is more than the 100.00 captured.",
+                "The check sum(refunds) <= captured runs inside a DB transaction, so two racing requests cannot both pass.",
+                "A refund of 40.00 or less would still be allowed, since partial refunds are fine.",
+                "Each refund carries its own idempotency key, so a retried 60.00 request is not refunded twice."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Key K was used for a 100.00 payment. The same key K now arrives with an amount of 120.00. What is returned?",
+              "a_bullets": [
+                "422, because the stored request_hash differs from the new request's hash.",
+                "The stored response is not replayed, since this is a different request, not a duplicate.",
+                "A concurrent duplicate with the identical body would get 409 while the first is still IN_PROGRESS.",
+                "An identical body after completion gets the stored response replayed."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

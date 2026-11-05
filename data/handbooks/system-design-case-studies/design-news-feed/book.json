@@ -1,0 +1,232 @@
+{
+  "title": "Design a News Feed Like Instagram",
+  "summary": "An end-to-end system design of an Instagram-style news feed: posting, follow graph, fan-out strategies, the celebrity problem, feed cache, ranking, media storage with CDN, pagination, and like/comment counters, closing with scaling, failure handling and interview questions.",
+  "chapters": [
+    {
+      "title": "Cover: Instagram News Feed System Design",
+      "points": [
+        "Scope and scale estimates",
+        "Post and follow graph",
+        "Fan-out on write vs read",
+        "Celebrity problem and hybrid",
+        "Feed cache and ranking",
+        "Media, CDN and pagination",
+        "Like and comment counters",
+        "Scaling and interview questions"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Requirements and Scale",
+      "points": [
+        "Scope (Instagram Feed): post photo/video, follow/unfollow, view home feed, like, comment; out of scope: stories, DMs, search",
+        "Functional: feed shows posts from followed accounts, newest-relevant first, infinite scroll",
+        "Scale: 500M DAU, 100M new posts/day (~1,150 posts/s avg, ~3,500/s peak)",
+        "Feed reads: 500M DAU x 10 opens/day = 5B/day (~58K QPS avg, ~170K QPS peak); read:write ~50:1",
+        "Storage: 100M posts/day x 2 MB media = 200 TB/day, ~73 PB/year; metadata ~1 KB/post = 100 GB/day",
+        "Non-functional: feed load p99 under 300 ms, 99.99% availability, eventual consistency (a new post visible within ~5 s) acceptable"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "points": [
+        "Components: API gateway, Post Service, Graph Service, Fan-out Service, Feed Service, Ranking Service, Media Service, Counter Service",
+        "Write path: client -> Post Service -> DB + Kafka event -> Fan-out workers -> feed cache",
+        "Read path: client -> Feed Service -> Redis feed cache -> hydrate posts -> rank -> response",
+        "Stores: sharded MySQL/Cassandra for posts, graph store for follows, Redis for feeds, S3 for media",
+        "Async via Kafka keeps post latency low; reads never block on fan-out"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Post Service: Publishing a Post",
+      "points": [
+        "Responsibility: validate, store post metadata, emit PostCreated event; media uploaded separately",
+        "Flow: client gets pre-signed URL, uploads to S3, calls POST /v1/posts with media_id, post becomes PUBLISHED after transcode",
+        "Post states: UPLOADING -> PROCESSING -> PUBLISHED (or FAILED)",
+        "Data model: posts(post_id snowflake 64-bit, author_id, caption, media_ids, created_at), sharded by author_id",
+        "API: POST /v1/posts, GET /v1/posts/{id}, DELETE /v1/posts/{id}; idempotency key avoids duplicates on retry",
+        "Failure: upload done but event lost -> transactional outbox guarantees PostCreated is published; metric: publish p99 under 500 ms, error rate under 0.1%"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Follow Graph Service",
+      "points": [
+        "Responsibility: store who follows whom; answer followers(user) and following(user) fast",
+        "Data model: two tables, following(user_id, followee_id) and followers(user_id, follower_id), both sharded by user_id so each lookup hits one shard",
+        "Follow flow: write both edges, update follower/following counts, trigger backfill of the followee's recent posts into the follower's feed",
+        "APIs: POST /v1/users/{id}/follow, DELETE same path, GET /v1/users/{id}/followers?cursor=",
+        "Failure: partial write of two edges -> repair job reconciles; unfollow must purge the followee's posts from the cached feed lazily at read time",
+        "Metrics: follow QPS, graph read p99 under 10 ms, edge-count skew (max followers ~600M)"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Fan-out on Write vs Fan-out on Read",
+      "points": [
+        "Fan-out on write (push): at post time, insert post_id into every follower's feed list; reads are O(1) cache lookups",
+        "Fan-out on read (pull): at read time, fetch posts of all N followed accounts and merge; writes are O(1)",
+        "Push cost: 200 followers x 100M posts/day = 20B feed inserts/day (~230K inserts/s); pull cost: merging ~200 timelines per open at 170K QPS peak",
+        "Comparison: push = fast reads, heavy writes, wasted work for inactive users; pull = cheap writes, slow reads, fresh data",
+        "Mistake: pushing to inactive users (not opened in 30 days) wastes storage; skip them and rebuild on login"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "The Celebrity Problem and Hybrid Fan-out",
+      "points": [
+        "Problem: an account with 100M followers causes 100M feed writes per post, taking minutes and creating hot shards",
+        "Hybrid: push for normal users, pull for celebrities above a threshold (e.g. 1M followers)",
+        "Read merge: feed = precomputed feed list + recent posts from followed celebrities fetched at read time",
+        "Example: user follows 5 celebrities; at read time fetch their last 20 posts each (cached per celebrity) and merge by time/score",
+        "Mistake: threshold set too low pushes load to reads; set from measured write cost and re-evaluate periodically"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Feed Cache and Feed Generation",
+      "points": [
+        "Responsibility: serve the home feed from Redis, storing post_ids only (not full posts)",
+        "Data model: Redis sorted set feed:{user_id}, score = timestamp/snowflake id, capped at 800 entries (~6.4 KB per user)",
+        "Memory: 500M users x 6.4 KB = ~3.2 TB across a sharded Redis cluster, TTL 7 days for inactive users",
+        "Read flow: ZREVRANGE ids -> multi-get post metadata and counters -> merge celebrity posts -> rank -> return",
+        "API: GET /v1/feed?cursor=&limit=20; cold cache miss rebuilds from the graph (pull) and writes back",
+        "Failure: Redis shard loss -> rebuild lazily via pull; metrics: cache hit rate over 95%, feed p99 under 300 ms"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Feed Ranking",
+      "points": [
+        "Responsibility: order candidates by predicted engagement instead of pure time",
+        "Pipeline: candidate generation (~500 posts) -> light scoring -> heavy ML model on top ~100 -> re-rank for diversity",
+        "Features: author affinity, post age, past likes/comments, media type, post engagement velocity",
+        "Score ~ P(like) x w1 + P(comment) x w2 + P(share) x w3, decayed by age; model served with budget under 50 ms",
+        "Failure: ranker timeout -> fall back to reverse-chronological order",
+        "Metrics: time spent, like-through rate, ranking latency p99, A/B experiment lift"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Media Storage, Processing and CDN",
+      "points": [
+        "Upload: client requests pre-signed URL, PUTs directly to object store (S3), bypassing app servers; large videos use multipart upload",
+        "Processing: async workers transcode to multiple renditions (e.g. 240p, 480p, 720p, 1080p) and generate thumbnails",
+        "Data model: media(media_id, owner_id, object_key, type, renditions, status); blobs in object store with 3x replication or erasure coding",
+        "CDN: serve via edge cache with immutable URLs (content-hash in key); target hit ratio over 95%, edge latency under 50 ms",
+        "Failure: transcode failure -> retry with backoff then mark FAILED; origin overload mitigated by CDN origin shield",
+        "Metrics: CDN hit ratio, upload success rate, time to first byte, egress cost per GB"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Pagination, Likes and Comments Counters",
+      "points": [
+        "Offset pagination breaks on feeds: new posts shift items and cause duplicates; use cursor pagination",
+        "Cursor = opaque token encoding last (score, post_id); query ZREVRANGEBYSCORE below cursor, limit 20",
+        "Likes: store likes(post_id, user_id) with unique key for idempotency; count kept separately because COUNT(*) is too slow",
+        "Counters: increment Redis counters (INCR), flush batched to DB every ~1 s via Kafka; ~100K like events/s peak",
+        "Hot post counter: shard the counter into N sub-counters (e.g. 16) and sum on read; comments stored by (post_id, created_at) with cursor pagination",
+        "Mistake: exact synchronous counts under contention; accept approximate counts, reconcile from the likes table nightly"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "points": [
+        "Scaling: shard posts by author_id, feeds by user_id, add read replicas, multi-region with local feed caches",
+        "Failure handling: Kafka retries with dead-letter queue, idempotent fan-out, graceful degradation to chronological or cached stale feed",
+        "Trade-offs: push vs pull, consistency vs availability (eventual feed is fine), storage cost vs read latency",
+        "Interview Q: how would you handle a celebrity posting? Answer: hybrid fan-out with read-time merge",
+        "Interview Q: how do you avoid duplicates in pagination? Answer: cursor on (score, post_id) with dedupe of seen ids"
+      ],
+      "shape": [
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "News Feed Cheatsheet",
+      "points": [
+        "Numbers: 500M DAU, ~58K read QPS avg (170K peak), ~1,150 writes/s, 200 TB/day media",
+        "Fan-out: push for normal users, pull for accounts above ~1M followers, skip inactive users",
+        "Feed cache: Redis ZSET of post_ids, 800 cap, ~3.2 TB total, hit rate over 95%",
+        "Ranking: ~500 candidates -> ML top 100 -> diversity re-rank, under 50 ms, fallback chronological",
+        "Pagination and counters: cursor on (score, post_id); Redis INCR with batched flush and sharded hot counters"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

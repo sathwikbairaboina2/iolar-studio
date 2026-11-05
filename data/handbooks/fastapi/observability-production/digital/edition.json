@@ -1,0 +1,836 @@
+{
+  "schema": 1,
+  "subject": "fastapi",
+  "chapter": "observability-production",
+  "category": "handbook",
+  "inputsHash": "b3b2c21daf0574f8b18abcfed5874d2a69f60e91652aca92960de9a024944eae",
+  "generatedAt": "2026-10-27T11:22:40.346Z",
+  "sections": [
+    {
+      "title": "Production Observability Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Production Observability Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Three signals, one ID",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Signal",
+                "Answers",
+                "Shape"
+              ],
+              "rows": [
+                [
+                  "{blue:Logs}",
+                  "What happened?",
+                  "discrete events"
+                ],
+                [
+                  "{green:Metrics}",
+                  "How much, how often?",
+                  "aggregated numbers over time"
+                ],
+                [
+                  "{purple:Traces}",
+                  "Where did the time go?",
+                  "one request across services"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Request ID== is the glue",
+                "One ID on every log line and span",
+                "Follow one request across all signals"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import logging, uuid",
+                "from fastapi import FastAPI",
+                "app = FastAPI(); log = logging.getLogger(\"app\")",
+                "@app.middleware(\"http\")",
+                "async def stamp(request, call_next):",
+                "    rid = request.headers.get(\"x-request-id\") or str(uuid.uuid4())",
+                "    log.info(\"request_id=%s\", rid)",
+                "    return await call_next(request)"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Probes and lifecycle",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Probe",
+                "Asks",
+                "On failure"
+              ],
+              "rows": [
+                [
+                  "`/healthz` liveness",
+                  "Process alive?",
+                  "{red:Restart}"
+                ],
+                [
+                  "`/readyz` readiness",
+                  "Can it take traffic now?",
+                  "{orange:Removed from load balancer}"
+                ]
+              ]
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Startup",
+                    "sub": "lifespan start",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Ready",
+                    "sub": "/readyz 200",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Serving",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Terminating",
+                    "sub": "preStop sleep",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "SIGTERM",
+                    "sub": "/readyz 503",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Drain",
+                    "sub": "in-flight requests",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Exit",
+                    "sub": "lifespan shutdown",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Where it lives",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Middleware== wraps every request",
+                "==Lifespan== hooks run at startup and shutdown",
+                "Applies to every route, handlers untouched"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "==Timeouts== bound every step of the pipeline."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Uvicorn Logging and Request IDs",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Uvicorn Logging and Request IDs",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Loggers and Config",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Logger",
+                "Carries"
+              ],
+              "rows": [
+                [
+                  "`uvicorn`",
+                  "the server"
+                ],
+                [
+                  "`uvicorn.error`",
+                  "==lifecycle and errors== (despite the name)"
+                ],
+                [
+                  "`uvicorn.access`",
+                  "one line per request"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`--log-config logging.yaml` or `dictConfig`",
+                "`disable_existing_loggers: False`, or {red:app loggers go silent}",
+                "`--log-level` debug | info | warning | error",
+                "`--no-access-log` cuts noise; access log is ==on by default==",
+                "Format as ==JSON== (`python-json-logger`, `structlog`) for aggregators"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Request ID",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Header or uuid4",
+                    "sub": "X-Request-ID",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "ContextVar",
+                    "sub": "set per request",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Filter",
+                    "sub": "adds request_id",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Response header",
+                    "sub": "echoed back",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import uuid, contextvars",
+                "rid = contextvars.ContextVar(\"rid\", default=\"-\")",
+                "@app.middleware(\"http\")",
+                "async def add_id(request, call_next):",
+                "    rid.set(request.headers.get(\"X-Request-ID\") or str(uuid.uuid4()))",
+                "    response = await call_next(request)",
+                "    response.headers[\"X-Request-ID\"] = rid.get()",
+                "    return response"
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import logging",
+                "class RequestIdFilter(logging.Filter):",
+                "    def filter(self, record):",
+                "        record.request_id = rid.get()",
+                "        return True"
+              ],
+              "note": "attach under filters: in logging.yaml"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "ContextVar, not a global",
+              "text": "A plain global leaks IDs between ==concurrent requests==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Health, Readiness and Prometheus Metrics",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Health, Readiness and Prometheus Metrics",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Liveness vs Readiness",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Probe",
+                "Path",
+                "Checks",
+                "On failure"
+              ],
+              "rows": [
+                [
+                  "{green:Liveness}",
+                  "`GET /healthz`",
+                  "none, always ==200==",
+                  "restart pod"
+                ],
+                [
+                  "{blue:Readiness}",
+                  "`GET /readyz`",
+                  "DB, cache",
+                  "==503==, leaves load balancer"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "DB check in liveness: a DB outage restarts every healthy pod in a loop"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Readiness at Shutdown",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Pod Terminating",
+                    "sub": "endpoint removal starts",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "preStop sleep",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "SIGTERM",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "/readyz 503",
+                    "sub": "Uvicorn stops accepting",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Drain",
+                    "sub": "in-flight requests",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Lifespan shutdown",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Prometheus Metrics",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Type",
+                "Behaviour",
+                "Query"
+              ],
+              "rows": [
+                [
+                  "Counter",
+                  "only goes up",
+                  "`rate()`"
+                ],
+                [
+                  "Gauge",
+                  "up and down",
+                  "read directly"
+                ],
+                [
+                  "Histogram",
+                  "buckets",
+                  "`histogram_quantile` for p95/p99"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "from prometheus_fastapi_instrumentator import Instrumentator",
+                "",
+                "Instrumentator().instrument(app).expose(app)  # GET /metrics"
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Cardinality",
+              "text": "Label by route template `/users/{id}`, never raw path or user ID: series explode."
+            },
+            {
+              "type": "sidebox",
+              "title": "Interview Point",
+              "items": [
+                "**Why no DB in liveness?** An outage restarts healthy pods.",
+                "**Why 503 at shutdown?** The load balancer stops new requests before draining.",
+                "**p95 from a Histogram?** `histogram_quantile`."
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "OpenTelemetry Tracing, Timeouts and Graceful Shutdown",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "OpenTelemetry Tracing, Timeouts and Graceful Shutdown",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Traces and Logs",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Trace== = tree of spans sharing one `trace_id`",
+                "W3C `traceparent` header carries it between services",
+                "Auto spans: add httpx and SQLAlchemy instrumentors",
+                "Log `trace_id` next to `request_id`: log line → trace",
+                "Custom span: `tracer.start_as_current_span('name')`"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "from opentelemetry import trace",
+                "from opentelemetry.sdk.trace import TracerProvider",
+                "from opentelemetry.sdk.trace.export import BatchSpanProcessor",
+                "from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter",
+                "from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor",
+                "provider = TracerProvider(); provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))",
+                "trace.set_tracer_provider(provider)",
+                "FastAPIInstrumentor.instrument_app(app)"
+              ],
+              "note": "provider + batch processor + OTLP exporter, then instrument"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import logging",
+                "from opentelemetry import trace",
+                "tracer = trace.get_tracer(__name__)",
+                "class TraceFilter(logging.Filter):",
+                "    def filter(self, record):",
+                "        ctx = trace.get_current_span().get_span_context()",
+                "        record.trace_id = format(ctx.trace_id, '032x')",
+                "        return True"
+              ],
+              "note": "add it to your handler like the request_id filter"
+            },
+            {
+              "type": "heading",
+              "text": "2. Timeouts",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Layer",
+                "Setting"
+              ],
+              "rows": [
+                [
+                  "Idle connection",
+                  "`--timeout-keep-alive` (default 5s)"
+                ],
+                [
+                  "Outbound call",
+                  "`httpx.Timeout(5.0)`"
+                ],
+                [
+                  "Slow await",
+                  "`asyncio.timeout(2)` or `wait_for`"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Graceful Shutdown",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Terminating",
+                    "sub": "endpoint removal starts",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "preStop sleep",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "SIGTERM",
+                    "sub": "stop accepting, /readyz 503",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Drain",
+                    "sub": "in-flight requests",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Lifespan shutdown",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Rules",
+              "items": [
+                "`terminationGracePeriodSeconds` > `--timeout-graceful-shutdown` cap",
+                "preStop runs before SIGTERM"
+              ],
+              "ink": "green"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Always a timeout",
+              "text": "No timeout on an outbound call = hung requests pile up."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Common Mistakes in Production Observability",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Common Mistakes in Production Observability",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Logging and Request IDs",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`print()` or `basicConfig` after Uvicorn starts: handlers ==duplicated or ignored==",
+                "Use `dictConfig`, set `disable_existing_loggers` False, set `propagate` on purpose",
+                "Request ID in a plain global: IDs ==leak between concurrent requests=="
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import contextvars",
+                "request_id = contextvars.ContextVar(\"request_id\", default=\"-\")",
+                "request_id.set(rid)  # in middleware"
+              ],
+              "note": "a ContextVar is isolated per request"
+            },
+            {
+              "type": "heading",
+              "text": "2. Probes and Shutdown",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Liveness checks the DB: outage causes a ==restart storm==",
+                "Readiness never fails at shutdown: ==dropped requests=="
+              ],
+              "style": "cross",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Terminating",
+                    "sub": "endpoint removal starts",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "preStop sleep",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "SIGTERM",
+                    "sub": "stop accepting, /readyz 503",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Drain",
+                    "sub": "in-flight requests",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Lifespan shutdown",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Cardinality and Timeouts",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Mistake",
+                "Fix"
+              ],
+              "rows": [
+                [
+                  "Labels: user ID, raw URL",
+                  "**Route template** only"
+                ],
+                [
+                  "Unbounded span attributes",
+                  "Bounded, short values"
+                ],
+                [
+                  "No outbound timeout",
+                  "`httpx.Timeout`, `asyncio.timeout()`"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Grace period",
+              "text": "Keep ==grace period > drain cap > request timeout==. Otherwise SIGKILL cuts in-flight responses mid-way."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Production Observability Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Production Observability Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Run and probes",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "uvicorn app:app --log-config logging.yaml \\",
+                "  --timeout-keep-alive 5 \\",
+                "  --timeout-graceful-shutdown 25"
+              ],
+              "note": "log config, idle cap, drain cap"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Probe",
+                "Means",
+                "Fails when"
+              ],
+              "rows": [
+                [
+                  "`/healthz`",
+                  "{green:alive}, no deps",
+                  "process dead"
+                ],
+                [
+                  "`/readyz`",
+                  "can take traffic",
+                  "{red:503} on dependency failure or shutdown"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Metrics and tracing",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Type",
+                "Query"
+              ],
+              "rows": [
+                [
+                  "Counter",
+                  "`rate()`"
+                ],
+                [
+                  "Histogram",
+                  "`histogram_quantile(0.95, ...)`"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Metric labels = ==route template== only (`/users/{id}`)",
+                "`traceparent` header ==propagates== the trace across services",
+                "Log ==trace_id== and ==request_id== together"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "from fastapi import FastAPI",
+                "from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor",
+                "",
+                "app = FastAPI()",
+                "FastAPIInstrumentor.instrument_app(app)"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Kubernetes shutdown order",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Pod Terminating",
+                    "note": "endpoint removal starts",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "preStop sleep",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "SIGTERM",
+                    "note": "stop accepting, /readyz 503",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Drain",
+                    "note": "in-flight requests",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Lifespan shutdown",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Timeout order",
+              "text": "==grace period > drain cap > request timeout=="
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Your `/healthz` liveness probe runs `SELECT 1` on the DB. The DB goes down for 2 minutes. What happens to the pods?",
+              "a_bullets": [
+                "Probes fail on every pod, so Kubernetes restarts all of them.",
+                "Restarts don't fix the DB. Use `/readyz` for dependency checks."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A middleware stores the request ID in a module-level variable. Requests A and B overlap. What can A's later log lines show?",
+              "a_bullets": [
+                "B's ID. B overwrote the shared global while A was awaiting.",
+                "Fix: use a `ContextVar`, which is isolated per request."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A Prometheus counter is labeled with the raw path `/users/8841`. What goes wrong, and what is the fix?",
+              "a_bullets": [
+                "Each user ID creates a new time series, so memory and cost blow up.",
+                "Label by the route template `/users/{id}`."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

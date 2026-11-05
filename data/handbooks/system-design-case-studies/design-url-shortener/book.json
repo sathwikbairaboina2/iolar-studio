@@ -1,0 +1,220 @@
+{
+  "title": "Design a URL Shortener (bit.ly) — System Design Case Study",
+  "summary": "End-to-end design of a bit.ly-style URL shortener: requirements and scale estimates, short code generation (base62, counters, hashing, collisions), redirect semantics (301 vs 302), custom aliases and expiry, analytics, read-heavy caching, and scaling and failure handling.",
+  "chapters": [
+    {
+      "title": "URL Shortener Case Study Cover",
+      "points": [
+        "Scope and requirements",
+        "High-level architecture",
+        "Short code generation",
+        "Redirect service 301 vs 302",
+        "Custom aliases and expiry",
+        "Click analytics pipeline",
+        "Read-heavy caching",
+        "Scaling, failures, interview Qs"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements (URL Shortener)",
+      "points": [
+        "Scope: create short link, redirect, custom alias, expiry, click analytics; out of scope: user auth UI, link previews, spam ML",
+        "Functional: POST long URL returns short URL; GET short code redirects; alias optional; TTL optional (default 5 years)",
+        "Non-functional: redirect p99 under 50 ms, 99.99% availability on reads, created links never change target",
+        "Writes: 100M new URLs per month is about 40 writes/s average, about 400/s at 10x peak",
+        "Reads: 100:1 read-to-write ratio gives 10B redirects per month, about 4,000 QPS average, about 40,000 QPS peak",
+        "Storage: 500 bytes per record x 100M/month x 12 x 5 years = 3 TB; cache 20% of daily 350M redirects: 70M x 500 B = about 35 GB in RAM"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (URL Shortener)",
+      "points": [
+        "Components: load balancer, stateless API servers, ID generator, cache (Redis), primary DB, async analytics queue",
+        "Write path: client to API to ID generator to base62 encode to DB insert to return short URL",
+        "Read path: client to LB to cache lookup; on miss read DB, fill cache, return redirect",
+        "Separate read service from write service: reads scale at 100x writes and need different autoscaling",
+        "Stateless servers behind LB: any node serves any code, so horizontal scaling needs no sticky sessions"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "Short Code Generation: Base62 and Length (URL Shortener)",
+      "points": [
+        "Base62 alphabet: 0-9, a-z, A-Z gives 62 symbols per character; avoid +/ of base64 because they are URL-unsafe",
+        "Length math: 62^6 = 56.8B codes, 62^7 = 3.52T codes; 7 chars covers 100M/month for 5 years (6B URLs) with large headroom",
+        "Encode: repeatedly divide integer ID by 62, map remainders to alphabet, reverse; ID 125 becomes '21' (2x62+1)",
+        "Codes must be unique, short, and non-guessable if links are private; sequential base62 leaks creation order and volume",
+        "Metric: code length distribution and keyspace used percentage; alert at 50% of 62^7 used"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Code Strategies: Counter vs Hash vs Random (URL Shortener)",
+      "points": [
+        "Hash approach: MD5/SHA-256 of long URL, take first 7 base62 chars; stateless but collisions grow past ~1M links (birthday bound)",
+        "Collision handling for hash: check DB on insert, on conflict append a salt or counter and rehash; costs an extra read per write",
+        "Counter approach: global auto-increment to base62; zero collisions, but needs a distributed counter and is guessable",
+        "Pre-generated key service (KGS): offline-generated unique 7-char keys in used/unused tables; API fetches a batch of 1,000 keys into memory",
+        "Counter ranges: ZooKeeper or DB hands each app server a block of 1M IDs; a crashed server wastes at most its unused block",
+        "Comparison: hash = dedup-friendly but collision retries; counter = collision-free but predictable; KGS = unique and random-looking but extra service to run",
+        "Mistake: using random 7 chars without a unique constraint; the DB unique index on short_code is the final collision guard"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Redirect Service: 301 vs 302 (URL Shortener)",
+      "points": [
+        "GET /{code}: look up long URL, respond with 3xx and Location header; unknown code returns 404, expired returns 410 Gone",
+        "301 Moved Permanently: browsers and CDNs cache it, so repeat clicks skip your server; cuts load but analytics lose those clicks",
+        "302 Found (temporary): every click hits your server; full analytics and ability to change or expire the target; higher load",
+        "Choice: products with analytics and expiry use 302 (or 307), or a 301 with a short private max-age as Bitly does; pure-SEO permanent links use 301",
+        "Cache-Control max-age on a 301 is hard to undo; a wrongly-cached permanent redirect stays in browsers for months",
+        "Metrics: redirect p50/p99 latency, 4xx rate, cache hit ratio above 95%, redirect QPS"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Custom Aliases and Link Expiry (URL Shortener)",
+      "points": [
+        "POST /v1/urls body {long_url, custom_alias?, expires_at?}; returns 201 with short_url, 409 if alias taken",
+        "Alias rules: 4-30 chars, [A-Za-z0-9_-], reserved words blocked (api, admin, login); case-sensitive",
+        "Alias uniqueness: same unique index on short_code; insert-or-fail is atomic, no check-then-insert race",
+        "Table urls: short_code PK, long_url, user_id, created_at, expires_at; 500 bytes per row",
+        "Lazy expiry: check expires_at on read and return 410; plus a daily batch job deletes expired rows and recycles keys",
+        "Failure: two users claim the same alias concurrently; unique constraint lets one win and the other gets 409"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Click Analytics Pipeline (URL Shortener)",
+      "points": [
+        "Never write analytics on the redirect path: publish a click event {code, ts, ip, user_agent, referrer} to Kafka asynchronously",
+        "Consumers aggregate into a column store (ClickHouse) with counts per code per minute, country, device",
+        "Volume: 40,000 clicks/s peak x ~200 bytes = 8 MB/s, and 10B clicks/month x 200 B = about 2 TB per month raw; keep raw 30 days, rollups forever",
+        "GET /v1/urls/{code}/stats?range=7d returns total clicks, clicks by day, top countries, top referrers",
+        "Failure: Kafka down must not break redirects; fire-and-forget with bounded buffer, accept losing some clicks",
+        "Metrics: event lag under 10 s, drop rate, consumer throughput, bot traffic filtered by user-agent"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Read-Heavy Caching Layer (URL Shortener)",
+      "points": [
+        "Cache-aside: read Redis key code to long_url; on miss read DB and set with TTL; writes also populate cache",
+        "Sizing: 20% of daily 350M redirects hot, 70M x 500 B = 35 GB, fits one Redis cluster of 3 shards",
+        "Eviction: LRU with maxmemory-policy allkeys-lru; per-key TTL capped at link expiry",
+        "Failure: cache stampede on a viral link; use request coalescing or a lock so one request refills the key",
+        "Failure: negative caching of 404s for 60 s stops attackers scanning random codes from hammering the DB",
+        "Add CDN or edge cache for 301 or hot 302 targets; target hit ratio above 95%, miss path under 10 ms DB read"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Database Design and Sharding (URL Shortener)",
+      "points": [
+        "Access pattern is pure key-value lookup by short_code, so NoSQL (DynamoDB, Cassandra) or sharded SQL both fit",
+        "Shard by hash(short_code) with consistent hashing; avoids range hot spots from sequential IDs",
+        "3 TB over 5 years at 1 TB per node: 3 shards would be 100% full, so plan about 6 shards at ~50% fill, each with 2 replicas (18 nodes)",
+        "Replication: async read replicas serve redirects; primary only takes writes at about 400/s",
+        "Failure: shard loss handled by replica promotion; replication lag can make a fresh link 404, so read primary after create",
+        "Metrics: replication lag under 1 s, shard size skew, disk usage, p99 query latency"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failures, Trade-offs and Interview Questions (URL Shortener)",
+      "points": [
+        "Scale path: stateless API autoscaling, Redis cluster, DB read replicas, CDN, then shard; 40,000 QPS peak needs about 10 API nodes at 4,000 QPS each",
+        "Multi-region: active-active reads with regional caches; writes to a home region with key ranges per region to avoid ID clashes",
+        "Abuse: rate limit creation at 100 URLs/hour per user, scan targets against malware lists, block redirect loops",
+        "Trade-off table: 301 vs 302, hash vs counter vs KGS, SQL vs NoSQL, strong vs eventual consistency on new links",
+        "Interview Qs: how to avoid collisions at 100M/month; how to count clicks without slowing redirects; what if the cache dies; how to make codes unguessable",
+        "Interview Q: how do you delete or expire a link already cached in a CDN or browser (answer: use 302 or short max-age)"
+      ],
+      "shape": [
+        "summary",
+        "mistakes",
+        "comparison"
+      ]
+    },
+    {
+      "title": "URL Shortener Cheatsheet",
+      "points": [
+        "Estimates: 40 writes/s, 4,000 reads/s avg, 40,000 peak, 3 TB in 5 years, 7-char base62 = 3.52T codes",
+        "Redirect: 302 for analytics and expiry, 301 for permanent cached; 404 unknown, 410 expired, 409 alias taken",
+        "Code gen: KGS or counter ranges for uniqueness; hash needs collision retry; unique index is the last guard",
+        "Cache-aside Redis LRU, hit ratio above 95%, negative cache 404s, coalesce stampedes",
+        "Analytics async via Kafka to ClickHouse; never block the redirect path"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

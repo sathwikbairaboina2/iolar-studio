@@ -1,0 +1,2167 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-chat-app",
+  "category": "system-design",
+  "inputsHash": "b798779bb2ef0ad6858a37560a058c4fb8f368fa589e3b911b435864c27755b0",
+  "generatedAt": "2026-10-24T10:21:23.275Z",
+  "sections": [
+    {
+      "title": "Problem, Scope and Requirements",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem, Scope and Requirements",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope (WhatsApp Chat App)",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Features"
+              ],
+              "rows": [
+                [
+                  "{green:In}",
+                  "1:1 chat, groups up to **1,024** members, media, receipts, presence, push, ==E2EE=="
+                ],
+                [
+                  "{red:Out}",
+                  "Calls, status, payments"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Scale and Storage",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Estimate",
+                "Math"
+              ],
+              "rows": [
+                [
+                  "Users",
+                  "**2B** total, **500M** DAU",
+                  "given"
+                ],
+                [
+                  "Messages",
+                  "**100B**/day",
+                  "given"
+                ],
+                [
+                  "Text storage",
+                  "==10 TB/day==",
+                  "100B × ~100 B"
+                ],
+                [
+                  "Media storage",
+                  "==~1 PB/day==",
+                  "5% of msgs × ~200 KB"
+                ],
+                [
+                  "Sockets",
+                  "**500M** concurrent",
+                  "one per online user"
+                ],
+                [
+                  "Gateways",
+                  "==2,500+== servers",
+                  "500M ÷ ~200K each"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "100B msgs/day",
+                    "sub": "daily volume",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "÷ 86,400 s",
+                    "sub": "seconds per day",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "≈ 1.2M msg/s",
+                    "sub": "average",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "~3M msg/s",
+                    "sub": "peak",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Media is only ~5% of messages but ==~100x the bytes== of text",
+                "Media is {orange:stored briefly}, so it does not pile up forever",
+                "Text is kept as the long-term record: ~10 TB/day"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Latency and Guarantees",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Online delivery: ==p99 < 200 ms==",
+                "Availability: **99.99%** (about 52 min downtime/year)",
+                "{red:No message loss}: at-least-once delivery",
+                "Client dedupes, so the user sees ==exactly-once== display"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "sidebox",
+              "title": "At-least-once + dedupe",
+              "items": [
+                "Retries can duplicate a message",
+                "Dedupe by `client_msg_id` makes display exactly-once",
+                "Never trade loss for speed"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "==500M sockets, 1.2M msg/s average (~3M peak), 10 TB/day text, ~200K sockets per gateway.== Size for peak, not average."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Sockets and the Gateway",
+              "ink": "blue"
+            },
+            {
+              "type": "paragraph",
+              "text": "WhatsApp-style Chat App: ==stateful== sockets at the edge, **stateless** services in the middle, Kafka behind them."
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "app, 1 WebSocket",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "L4 LB",
+                    "sub": "TCP, no parsing",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Gateway",
+                    "sub": "~200K sockets each",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Chat service",
+                    "sub": "stateless logic",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "by conversation_id",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each client holds ==one persistent WebSocket== for all chats",
+                "{blue:L4 load balancer} spreads TCP connections; sockets then stay pinned to a gateway",
+                "Gateway only holds sockets, auth and heartbeat; ==no chat logic== so any node is replaceable",
+                "500M concurrent sockets at ~200K each ≈ **2,500+ gateways**, scaled horizontally"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Routing a Message",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Session service== maps `user_id → gateway node`, stored in **Redis**",
+                "Gateway writes the entry on connect, TTL ~60 s, refreshed by the ~30 s heartbeat",
+                "Chat service looks up the recipient: {green:hit} → send to that gateway, {red:miss} → offline path"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "SET session:42 gw-17 EX 60",
+                "GET session:42",
+                "EXPIRE session:42 60"
+              ],
+              "note": "register on connect, route on send, refresh on heartbeat"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Chat service, per message",
+                "steps": [
+                  {
+                    "text": "Validate",
+                    "note": "auth, size, membership",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Assign ID",
+                    "note": "sortable 64-bit",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Persist",
+                    "note": "then ACK sender",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Route or queue",
+                    "note": "gateway, or inbox + push",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Backbone and Media Path",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Chat service publishes to ==Kafka==, **partitioned by conversation_id**",
+                "Same conversation → same partition → ==order preserved==",
+                "Each consumer group scales on its own and a slow one never blocks sends"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Consumer",
+                "Reads",
+                "Does"
+              ],
+              "rows": [
+                [
+                  "Fan-out",
+                  "new messages",
+                  "finds recipients, sends to gateway"
+                ],
+                [
+                  "Push",
+                  "offline deliveries",
+                  "calls APNs / FCM"
+                ],
+                [
+                  "Storage writer",
+                  "new messages",
+                  "writes messages and inbox"
+                ]
+              ]
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Media: separate HTTP path, never the socket",
+                "steps": [
+                  {
+                    "text": "Get URL",
+                    "note": "pre-signed, over HTTP",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Upload blob",
+                    "note": "straight to object store",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Send message",
+                    "note": "carries URL, over WebSocket",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Download",
+                    "note": "via CDN",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Keep sockets {blue:stateful} and logic {green:stateless}. Session lookup picks the gateway, Kafka by `conversation_id` keeps order, media bytes ==never touch the chat path==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "WebSocket Connection Gateway",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "WebSocket Connection Gateway",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Gateway tier (WhatsApp Chat App): 500M concurrent sockets ÷ ~200K per server ≈ **2,500+** gateways."
+            },
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Capacity",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Hold ==long-lived WebSockets==, one per online device",
+                "{blue:Authenticate} the socket once, at connect",
+                "{green:Heartbeat} every ==~30 s== to detect dead peers",
+                "{purple:Forward frames} to the chat service; gateway logic stays stateless"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Knob",
+                "Value",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Idle sockets per node",
+                  "==200K–1M==",
+                  "Mostly idle, so I/O is cheap"
+                ],
+                [
+                  "Memory per socket",
+                  "~10 KB",
+                  "200K ≈ 2 GB, 1M ≈ 10 GB"
+                ],
+                [
+                  "File descriptors",
+                  "`ulimit -n` above 1M",
+                  "One fd per socket"
+                ],
+                [
+                  "Heartbeat load",
+                  "200K ÷ 30 s ≈ 6.7K pings/s",
+                  "Tiny frames, cheap"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Connect Flow",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "TLS handshake",
+                    "note": "L4 LB passes it to a gateway",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Auth token",
+                    "note": "reject bad token, close socket",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Register session",
+                    "note": "user_id → gateway in Redis",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Heartbeat",
+                    "note": "every ~30 s refreshes the TTL",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "SET session:{user_id} gw-417 EX 60",
+                "EXPIRE session:{user_id} 60"
+              ],
+              "note": "register on connect; EXPIRE on every heartbeat"
+            },
+            {
+              "type": "heading",
+              "text": "3. APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Frame",
+                "Direction",
+                "Purpose"
+              ],
+              "rows": [
+                [
+                  "`send`",
+                  "client → server",
+                  "New message with client_msg_id"
+                ],
+                [
+                  "`ack`",
+                  "both ways",
+                  "Server stored it, or device received it"
+                ],
+                [
+                  "`receipt`",
+                  "both ways",
+                  "Delivered / read update"
+                ],
+                [
+                  "`typing`",
+                  "both ways",
+                  "Ephemeral, never stored"
+                ],
+                [
+                  "`presence`",
+                  "server → client",
+                  "Contact online / offline"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==REST long-poll== fallback for bad networks or proxies that block WebSockets",
+                "Same frame schema, so the chat service sees no difference"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Gateway crash drops all its sockets (~200K) at once",
+                "Clients reconnect with ==exponential backoff== (1 s, 2 s, 4 s, capped near 60 s)",
+                "Add random ==jitter== to each wait, or the herd hits together",
+                "Dead node's Redis keys expire within ~60 s; lookups then miss and messages queue offline"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Gateway metrics",
+              "items": [
+                "Connections per node",
+                "Connect rate",
+                "Reconnect rate (spike = crash or network flap)",
+                "Heartbeat misses"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "TTL vs heartbeat",
+              "text": "TTL ==~60 s== is twice the ==~30 s== heartbeat, so one missed ping does not drop a live user."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "One-to-One Message Flow and Ordering",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "One-to-One Message Flow and Ordering",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Send Flow (WhatsApp)",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Sender",
+                    "sub": "client_msg_id",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Gateway A",
+                    "sub": "WebSocket frame",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Chat service",
+                    "sub": "validate, persist",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Session lookup",
+                    "sub": "user_id → gateway",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Gateway B",
+                    "sub": "push frame",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Receiver",
+                    "sub": "device",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Server ACK== goes back to the sender only **after persist**",
+                "ACK means stored (one tick), not delivered",
+                "Session miss in Redis → inbox queue + push job",
+                "Target: online delivery ==p99 < 200 ms=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Idempotency and IDs",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Client generates ==client_msg_id== (UUID) before the first send",
+                "Server dedupes on it, so a retry is **idempotent**",
+                "Server assigns a Snowflake-style 64-bit `message_id`",
+                "Sortable by time and unique ==without coordination=="
+              ],
+              "style": "dot",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Snowflake field",
+                "Bits",
+                "Meaning"
+              ],
+              "rows": [
+                [
+                  "Sign",
+                  "1",
+                  "always 0"
+                ],
+                [
+                  "Timestamp",
+                  "41",
+                  "ms since custom epoch, sorts by time"
+                ],
+                [
+                  "Shard",
+                  "10",
+                  "which chat-service shard minted it"
+                ],
+                [
+                  "Sequence",
+                  "12",
+                  "4,096 IDs per ms per shard"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Ordering",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Order is ==per conversation only==, no global order",
+                "Server assigns a **monotonic seq** per `conversation_id`",
+                "Receiver renders by seq, not by arrival time",
+                "Sender clock is never trusted for order"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "ID",
+                "Made by",
+                "Job"
+              ],
+              "rows": [
+                [
+                  "`client_msg_id`",
+                  "client",
+                  "dedupe retries"
+                ],
+                [
+                  "`message_id`",
+                  "server (Snowflake)",
+                  "unique, sortable key"
+                ],
+                [
+                  "conversation seq",
+                  "server, per conversation",
+                  "display order"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Lost ACK",
+                "steps": [
+                  {
+                    "text": "Message persisted",
+                    "note": "ACK dropped on the way back",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Client times out",
+                    "note": "retries with same client_msg_id",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Server finds duplicate",
+                    "note": "returns stored result, no second row",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Metric: send-to-deliver latency ==p50 / p99==",
+                "Metric: ==duplicate rate== (retries caught by dedupe)"
+              ],
+              "style": "checkbox",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "At-least-once delivery plus ==client_msg_id dedupe== shows each message **exactly once**. Never chase a global order."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Message Storage",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Message Storage",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Access Pattern and Store",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "**Chat App (WhatsApp)**: 100B msgs/day × ~100 B ≈ ==10 TB/day== of text, ~1.2M writes/s average."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Write-heavy}: every message is one insert",
+                "{blue:Append-only}: messages are never updated in place",
+                "{purple:Read recent}: newest messages of one conversation",
+                "So use a ==wide-column store== (Cassandra / HBase), not SQL"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Need",
+                "Wide-column",
+                "SQL"
+              ],
+              "rows": [
+                [
+                  "Write rate",
+                  "{green:LSM append, scales out}",
+                  "{red:B-tree, shard by hand}"
+                ],
+                [
+                  "Read recent",
+                  "{green:one partition, sorted}",
+                  "joins and index scans"
+                ],
+                [
+                  "Growth",
+                  "add nodes",
+                  "manual resharding"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Data Model",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE messages (",
+                "  conversation_id uuid, message_id bigint,",
+                "  sender_id uuid, body blob, type text,",
+                "  created_at timestamp,",
+                "  PRIMARY KEY (conversation_id, message_id)",
+                ") WITH CLUSTERING ORDER BY (message_id DESC);"
+              ],
+              "note": "partition key = conversation_id, clustering key = message_id DESC"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Partition key keeps one chat on one replica set",
+                "Clustering `message_id DESC` puts the newest rows first",
+                "Large chats: partition by ==(conversation_id, month)== bucket",
+                "Bucketing avoids {red:hot, unbounded} partitions"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Persist",
+                    "sub": "messages + inbox row",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Deliver",
+                    "sub": "to online device",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Delivery ACK",
+                    "sub": "from device",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Delete inbox row",
+                    "sub": "message stays in messages",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Inbox = transit buffer",
+              "text": "The per-user **inbox** table holds only ==undelivered== messages and is deleted after the delivery ACK. The server is a buffer, not the long-term home."
+            },
+            {
+              "type": "heading",
+              "text": "3. API, Failures, Metrics",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /conversations/{id}/messages?before=message_id&limit=50"
+              ],
+              "note": "keyset paging: next page uses the oldest message_id returned"
+            },
+            {
+              "type": "sidebox",
+              "title": "Failure: node loss",
+              "items": [
+                "Replication factor ==3==",
+                "Quorum writes: 2 of 3 replicas must ACK",
+                "One node down: reads and writes still succeed"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Watch for"
+              ],
+              "rows": [
+                [
+                  "Write p99",
+                  "slow commit log or compaction"
+                ],
+                [
+                  "Partition size",
+                  "unbounded chats, bucket too wide"
+                ],
+                [
+                  "Disk usage",
+                  "~10 TB/day × replication factor 3"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Delivery and Read Receipts",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Delivery and Read Receipts",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Three Receipt States",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "State",
+                "Trigger",
+                "Ticks"
+              ],
+              "rows": [
+                [
+                  "{blue:sent}",
+                  "Server **persisted** the message",
+                  "one grey tick"
+                ],
+                [
+                  "{purple:delivered}",
+                  "Recipient **device** received it",
+                  "two grey ticks"
+                ],
+                [
+                  "{green:read}",
+                  "Recipient **opened** the chat",
+                  "two ==blue== ticks"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "States only move **forward**: sent → delivered → read",
+                "Sent is the server ACK, sent right after the write to storage"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Receipt Flow",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Receiver device",
+                    "sub": "got / opened msg",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Gateway B",
+                    "sub": "receipt frame",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Chat service",
+                    "sub": "update pointer",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Gateway A",
+                    "sub": "session lookup",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Sender device",
+                    "sub": "ticks change",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A receipt is a **small message** routed back over the ==same path== as chat",
+                "Read receipts are ==batched== per conversation, up to a `last_read_message_id`",
+                "One frame marks every older message read: no frame per message",
+                "Offline sender: receipts wait in its **inbox**, drained on reconnect"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"type\":\"receipt\",\"conv\":\"c42\",",
+                "\"kind\":\"read\",",
+                "\"up_to\":\"7391822011\"}"
+              ],
+              "note": "one frame covers every message up to up_to"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "user_id",
+                "conversation_id",
+                "last_delivered_id",
+                "last_read_id"
+              ],
+              "rows": [
+                [
+                  "u7",
+                  "c42",
+                  "7391822015",
+                  "7391822011"
+                ],
+                [
+                  "u9",
+                  "c42",
+                  "7391822015",
+                  "7391821990"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Two pointers== per user per conversation",
+                "Message m is read by u if `m.id <= last_read_id`",
+                "{red:Not} one receipt row per message: 100B msgs/day would add 100B+ rows",
+                "Pointer writes only move up, so replays and retries are harmless"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "4. Groups, Failures, Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Group: aggregate **per member** pointers, up to 1,024 members",
+                "Tick shows delivered/read only when ==all members== reached it",
+                "Per-member detail lives in the **message-info** view",
+                "Sender offline: receipts queue in its inbox, nothing is lost"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics",
+              "items": [
+                "Receipt latency {orange:p99}",
+                "Receipt share of traffic ≈ ==30%==",
+                "Inbox backlog for offline senders"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Receipts are ==pointers==, not rows. Track `last_delivered_id` and `last_read_id` per user per conversation, and send ==batched== reads."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Group Messaging and Fan-out",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Group Messaging and Fan-out",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Running example: the **WhatsApp-style chat app**. One group message becomes up to ==1,024 deliveries== at ~3M msg/s peak."
+            },
+            {
+              "type": "heading",
+              "text": "1. Why Fan Out on the Server",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Client sends N copies",
+                "Server-side fan-out"
+              ],
+              "rows": [
+                [
+                  "Uplink per message",
+                  "up to 1,024 uploads",
+                  "{green:1 upload}"
+                ],
+                [
+                  "Mobile bandwidth",
+                  "drained on cellular",
+                  "saved"
+                ],
+                [
+                  "Order",
+                  "each copy races, no single order",
+                  "{green:one canonical order}"
+                ],
+                [
+                  "Retries",
+                  "sender retries N times",
+                  "server retries per member"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "2. Fan-out on Write",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Sender",
+                    "sub": "1 message",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Chat service",
+                    "sub": "store 1 copy + seq",
+                    "ink": "green"
+                  },
+                  {
+                    "type": "x",
+                    "text": "Kafka",
+                    "sub": "1 task per member",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Delivery workers",
+                    "sub": "session lookup",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Gateway or inbox + push",
+                    "sub": "online / offline",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store ==one copy== of the message, never one per member",
+                "Publish a ==delivery task per member== to Kafka, partitioned by group_id",
+                "A 1,024-member group yields ==1,024 deliveries== per message",
+                "Member list comes from the ==Redis cache==, not the database"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Group Data and Order",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Group table holds ==group_id==, ==members== (max 1,024) and ==admins==",
+                "One ==sequence per group== gives every member an identical order",
+                "A member added later gets history ==only from the join point==",
+                "The join event stores `join_seq`; history reads start at `seq >= join_seq`"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "groups(",
+                "  group_id BIGINT PRIMARY KEY,",
+                "  members  LIST<user_id>,  -- max 1,024",
+                "  admins   SET<user_id>",
+                ")",
+                "-- Redis cache of the member list:",
+                "SMEMBERS group:{group_id}:members"
+              ],
+              "note": "group table plus its cached membership"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Partial fan-out: some members got the message, the rest did not",
+                "Failed tasks are ==retried per member== from Kafka",
+                "Retries are idempotent by ==(message_id, member)==, so no duplicates"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics to watch",
+              "items": [
+                "{orange:Fan-out lag}: Kafka consumer lag on delivery tasks",
+                "{blue:Deliveries per message}: avg and p99, capped near 1,024"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Retry per member, not per message",
+              "text": "Re-running the whole fan-out after a partial failure redelivers to members who already got it. Key every task by ==(message_id, member)==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Offline Delivery and Push Notifications",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Offline Delivery and Push Notifications",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Offline Path and Push",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Session lookup in Redis ==misses== → recipient is offline",
+                "Message stays in the recipient's ==inbox queue==",
+                "A **push job** is created for the recipient's devices",
+                "Message is already persisted, so push is only a wake-up"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Session lookup",
+                    "sub": "miss",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Inbox queue",
+                    "sub": "keep message",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Push job",
+                    "sub": "Kafka",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "APNs / FCM",
+                    "sub": "wake device",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "App fetches",
+                    "sub": "drain inbox",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "APNs",
+                "FCM"
+              ],
+              "rows": [
+                [
+                  "Platform",
+                  "iOS",
+                  "Android"
+                ],
+                [
+                  "Payload",
+                  "small, ==no plaintext== under E2EE",
+                  "small, ==no plaintext== under E2EE"
+                ],
+                [
+                  "Carries",
+                  "wake signal + collapse key",
+                  "wake signal + collapse key"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Payload is just a **wake-up**, never message text",
+                "App wakes and ==fetches== the real ciphertext from the server"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Reconnect and Drain",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Client reconnects and sends `last_seen_message_id`",
+                "Server drains the inbox ==in order== from that point",
+                "Each message is **deleted after ACK**, not after send",
+                "Unacked messages stay queued, so a crash mid-drain loses nothing"
+              ],
+              "style": "number",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"type\":\"sync\",",
+                "  \"last_seen_message_id\":\"7291834650112\"}"
+              ],
+              "note": "first frame after reconnect"
+            },
+            {
+              "type": "sidebox",
+              "title": "Retention and merging",
+              "items": [
+                "Inbox retention ~{orange:30 days}, then dropped",
+                "==Collapse key== merges many pushes into one notification",
+                "10 offline messages → 1 notification, not 10"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Response"
+              ],
+              "rows": [
+                [
+                  "Invalid or expired push token",
+                  "**Prune** the token on APNs/FCM error"
+                ],
+                [
+                  "APNs/FCM outage",
+                  "Degrade to ==fetch-on-open==; inbox still holds messages"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Push success rate}: accepted pushes ÷ pushes sent",
+                "{blue:Offline-to-delivered latency}: message stored → device ACK"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Push is not delivery",
+              "text": "The inbox is the source of truth. A lost or dropped push only delays the message until the app is **opened** and drains the inbox."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Presence and Typing Indicators",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Presence and Typing Indicators",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Presence = Heartbeat + TTL",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Online} = heartbeat seen within ==~60 s==",
+                "Gateway heartbeat every ~30 s refreshes a Redis key with **TTL 60 s**",
+                "Key `presence:{user_id}` expires on its own: no cleanup job",
+                "`last_seen` is written to the store only on ==disconnect==",
+                "Heartbeats are ~500M sockets ÷ 30 s ≈ ==17M refreshes/s== at peak"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "r.set(f\"presence:{uid}\", gateway_id, ex=60)  # heartbeat",
+                "r.exists(f\"presence:{uid}\")  # online?",
+                "# on disconnect",
+                "db.set_last_seen(uid, now())"
+              ],
+              "note": "TTL key for online, durable write for last_seen"
+            },
+            {
+              "type": "heading",
+              "text": "2. Who Gets Presence and Typing",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Push presence only to contacts with ==the chat open==",
+                "Not all contacts: 500 contacts × status flaps = **fan-out storm**",
+                "Contact opens a chat → subscribes; closes it → unsubscribes",
+                "On subscribe, client reads current status once from Redis"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Heartbeat",
+                    "sub": "gateway",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Redis TTL key",
+                    "sub": "60 s",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Change event",
+                    "sub": "online / offline",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Subscribers only",
+                    "sub": "chat open",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Presence",
+                "Typing indicator"
+              ],
+              "rows": [
+                [
+                  "Stored in",
+                  "Redis key + TTL",
+                  "**nowhere**"
+                ],
+                [
+                  "Persisted",
+                  "`last_seen` on disconnect",
+                  "{red:never}"
+                ],
+                [
+                  "Recipient offline",
+                  "Shows last seen",
+                  "==dropped=="
+                ],
+                [
+                  "Path",
+                  "Gateway → subscribers",
+                  "Gateway → recipient gateway"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Typing = tiny `typing` WS frame, no ACK, no retry",
+                "Sender throttles it to one frame per ~3 s while typing"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Flapping and Failure",
+              "ink": "orange"
+            },
+            {
+              "type": "sidebox",
+              "title": "Debounce offline",
+              "items": [
+                "Delay the **offline** broadcast by ==5–10 s==",
+                "Reconnect inside the window: cancel it, send nothing",
+                "Online is shown at once; only offline is delayed",
+                "Cuts events from tunnels, lifts and Wi-Fi/4G handoffs"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Redis loss is acceptable",
+              "text": "If Redis dies, users briefly show **stale** presence until heartbeats repopulate keys within ~60 s. No messages are lost. Track: presence update QPS, Redis memory, staleness."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Media Sharing and End-to-End Encryption",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Media Sharing and End-to-End Encryption",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Media Flow (WhatsApp Chat App)",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Sending a photo",
+                "steps": [
+                  {
+                    "text": "Encrypt",
+                    "note": "random key on the client",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Upload",
+                    "note": "ciphertext via pre-signed URL",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Object store",
+                    "note": "blob lands in S3",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Send message",
+                    "note": "URL + key + hash, E2EE",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{ \"type\": \"image\",",
+                "  \"url\": \"https://cdn.../blob/9f3a\",",
+                "  \"key\": \"<random 256-bit key>\",",
+                "  \"sha256\": \"<hash of ciphertext>\",",
+                "  \"thumb\": \"<tiny blurred preview>\" }"
+              ],
+              "note": "travels inside the E2EE message, never in the clear"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Server stores ==ciphertext only==; it never holds the key",
+                "Thumbnails are made on the **client** and sent inline",
+                "{blue:CDN} caches ciphertext; the key stays in the chat message",
+                "Blobs {red:expire after ~30 days}; media is ~5% of messages, ~1 PB/day",
+                "Receiver checks the ==hash== after download, then decrypts"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Signal Protocol and Keys",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Key",
+                "Lifetime",
+                "Role"
+              ],
+              "rows": [
+                [
+                  "==Identity key==",
+                  "long-term",
+                  "Proves who the device is"
+                ],
+                [
+                  "==Signed prekey==",
+                  "rotated periodically",
+                  "Medium-term key, signed by the identity key"
+                ],
+                [
+                  "==One-time prekeys==",
+                  "used once, then deleted",
+                  "Batch uploaded; one consumed per new session"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Upload keys",
+                    "sub": "at install",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Fetch bundle",
+                    "sub": "for recipient",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "X3DH",
+                    "sub": "shared secret",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Double Ratchet",
+                    "sub": "key per message",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:X3DH} sets up a session even if the recipient is offline",
+                "==Double Ratchet== derives a **new key per message**",
+                "Old keys are deleted, so a stolen key cannot decrypt past messages: ==forward secrecy=="
+              ],
+              "style": "check"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Groups use ==sender keys==: encrypt once per message, not once per member",
+                "Server fans out the same ciphertext to up to 1,024 members"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs and Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "sidebox",
+              "title": "What E2EE costs",
+              "items": [
+                "Server {red:cannot search} message content",
+                "Server {red:cannot moderate} content; only user reports",
+                "Multi-device needs ==per-device keys==, so one send is encrypted once per device",
+                "Lost device keys mean lost history unless the user backs up"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Upload success rate (target above 99%)",
+                "Key-fetch latency p99 (a new session blocks the first send)",
+                "One-time prekey stock per device: refill when low"
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never store plaintext media",
+              "text": "The key rides inside the E2EE message, not in the URL or on the server. If the server can read the blob, it is not end-to-end encrypted."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale Out and Multi-Region",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: **WhatsApp-style chat app**, 500M concurrent sockets, ~3M msg/s peak, 99.99% availability."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Shard chat service and storage by ==conversation_id==: a chat lives on one partition, so order stays local",
+                "Shard sessions (Redis) by ==user_id== with **consistent hashing**: adding a node moves only ~1/N of keys",
+                "Add gateways horizontally: ~200K sockets each, 2,500+ nodes for 500M connections",
+                "Home each user to the ==nearest region==; Kafka replicates messages across regions",
+                "Region failover: ==DNS== health checks repoint users; clients reconnect with backoff + jitter"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "User",
+                    "sub": "homed to nearest region",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Region A",
+                    "sub": "gateway + chat + store",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "cross-region replication",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Region B",
+                    "sub": "takes over via DNS failover",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Trade-offs",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Decision",
+                "Chosen",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Delivery",
+                  "At-least-once + dedupe",
+                  "`client_msg_id` makes retries safe; exactly-once is costly"
+                ],
+                [
+                  "Fan-out",
+                  "Write for groups ≤1,024",
+                  "One copy stored, 1,024 deliveries via Kafka"
+                ],
+                [
+                  "Fan-out",
+                  "Read for 1M channels",
+                  "Pull by sequence; no 1M writes per post"
+                ],
+                [
+                  "Transport",
+                  "WebSocket",
+                  "p99 < 200 ms push; long poll only on bad networks"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Interview Questions",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Order in a group?** One ==sequence number per group== from the shard owning conversation_id",
+                "Kafka partition by conversation_id keeps that order; clients sort by sequence",
+                "There is **no global order**, only per conversation"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Gateway dies mid-delivery",
+                "steps": [
+                  {
+                    "text": "Sockets drop",
+                    "note": "Redis session TTL ~60 s expires",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Message safe",
+                    "note": "already persisted in inbox, no ACK yet",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Client reconnects",
+                    "note": "backoff + jitter to another gateway",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Inbox drained",
+                    "note": "from last_seen_message_id, deduped by message_id",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**1M-member channel?** Fan-out on write means 1M deliveries per post: slow and hot",
+                "Switch to ==fan-out on read==: store one copy, members pull from their last seen sequence",
+                "Push only a small notification with a collapse key; cache recent messages in CDN or Redis",
+                "Hybrid: write path up to 1,024 members, pull model above"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Common mistakes",
+              "text": "Promising ==global ordering== or **exactly-once delivery**. Use per-conversation sequence plus at-least-once with dedupe."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "WhatsApp Design Cheatsheet",
+      "role": "outline",
+      "outlineIndex": 12,
+      "pages": [
+        {
+          "title": "WhatsApp Design Cheatsheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Numbers (WhatsApp Chat App)",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Estimate",
+                "Derived from"
+              ],
+              "rows": [
+                [
+                  "Concurrent sockets",
+                  "==500M==",
+                  "500M DAU online"
+                ],
+                [
+                  "Sockets per gateway",
+                  "==200K==",
+                  "500M / 200K = 2,500+ servers"
+                ],
+                [
+                  "Message rate",
+                  "==1.2M msg/s== avg, ~3M peak",
+                  "100B msgs/day"
+                ],
+                [
+                  "Text storage",
+                  "==10 TB/day==",
+                  "100B x ~100 B"
+                ],
+                [
+                  "Latency / uptime",
+                  "p99 < 200 ms, 99.99%",
+                  "online delivery target"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Path and Keys",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "WebSocket",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Gateway",
+                    "sub": "holds socket",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Chat service",
+                    "sub": "validate, ID, persist",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "by conversation_id",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Inbox / store",
+                    "sub": "Cassandra",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Gateway or push",
+                    "sub": "online or APNs/FCM",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Key",
+                "Solves",
+                "How"
+              ],
+              "rows": [
+                [
+                  "`client_msg_id`",
+                  "idempotency",
+                  "UUID from client; retry returns stored result"
+                ],
+                [
+                  "per-conversation sequence",
+                  "order",
+                  "monotonic per `conversation_id`, no global order"
+                ],
+                [
+                  "`last_read_id`",
+                  "receipts",
+                  "one pointer per user per conversation"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Stores",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "cards",
+              "spec": {
+                "cards": [
+                  {
+                    "title": "Cassandra",
+                    "lines": [
+                      "messages",
+                      "key: conversation_id"
+                    ],
+                    "ink": "blue"
+                  },
+                  {
+                    "title": "Redis",
+                    "lines": [
+                      "sessions user_id to gateway",
+                      "presence with TTL"
+                    ],
+                    "ink": "red"
+                  },
+                  {
+                    "title": "S3 + CDN",
+                    "lines": [
+                      "encrypted media blobs",
+                      "~30 day expiry"
+                    ],
+                    "ink": "green"
+                  },
+                  {
+                    "title": "Kafka",
+                    "lines": [
+                      "fan-out, push, writers",
+                      "queues"
+                    ],
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Pitfalls",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Global ordering==: order per conversation only",
+                "==Per-message receipt rows==: store last_read_id instead",
+                "==Plaintext media==: encrypt on client, server holds ciphertext",
+                "==Presence to all contacts==: push only to the open chat"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "At-least-once delivery + `client_msg_id` dedupe = ==exactly-once display==. Order comes from the per-conversation sequence."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "The ACK for a sent message is lost after the server persisted it. The client retries, but its code builds a fresh UUID for every attempt. What does the receiver see, and what is the fix?",
+              "a_bullets": [
+                "The server cannot tell the retry from a new message, so it stores a second copy",
+                "The receiver sees the same text twice",
+                "Fix: create `client_msg_id` once per message and reuse it on every retry",
+                "The server then finds the ID, skips the write and returns the stored result"
+              ],
+              "example_code": [
+                "# bug: new id on every attempt",
+                "for attempt in range(3):",
+                "    send(body, client_msg_id=uuid4())"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A channel has 1M members and fan-out on write is used as for 1,024-member groups. What happens for one post, and what do you change?",
+              "a_bullets": [
+                "The message is stored once, but 1M delivery tasks are queued for that single post",
+                "Kafka lag and gateway load spike, and most members are offline anyway",
+                "Switch to fan-out on read: members pull new posts using their last seen ID",
+                "Keep fan-out on write for small groups, where one canonical order is cheap"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A teammate proposes one global counter so every message in the system gets a single total order. Why is this a bad design?",
+              "a_bullets": [
+                "It is a single coordination point for about 1.2M msg/s average and ~3M peak",
+                "Users only need order inside a conversation, so a global order buys nothing",
+                "Fix: a monotonic sequence per `conversation_id`, owned by that conversation's shard",
+                "Snowflake-style IDs stay unique and sortable without any coordination"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The receiver's phone is off when a message arrives. The session lookup misses. What happens next, and why is the push payload tiny?",
+              "a_bullets": [
+                "The message stays in the recipient's inbox queue and a push job is created",
+                "The push goes through APNs or FCM with a small payload and no plaintext, since the content is E2EE",
+                "The woken app reconnects and sends `last_seen_message_id`",
+                "The server drains the inbox in order and deletes each entry after the client ACKs it"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A user opens a chat with 200 unread messages. One design writes a read-receipt row per message. Why is it wrong, and what should be sent instead?",
+              "a_bullets": [
+                "It creates 200 writes and 200 messages back to the sender, and receipts are already ~30% of traffic",
+                "Instead, send one receipt carrying `last_read_message_id` for the conversation",
+                "Store only `last_delivered_id` and `last_read_id` per user per conversation",
+                "In a group, show read only when every member's `last_read_id` has reached the message"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

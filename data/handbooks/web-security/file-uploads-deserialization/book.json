@@ -1,0 +1,113 @@
+{
+  "title": "Secure File Uploads & Safe Deserialization: Quick Revision",
+  "summary": "Night-before revision notes on locking down file uploads (type/size validation, storage outside the web root, content sniffing, path traversal) and avoiding insecure deserialization (pickle, Java) by using safe data formats.",
+  "chapters": [
+    {
+      "title": "Upload Threat Model and Mental Model",
+      "points": [
+        "Core rule: an upload is untrusted input in four places — filename, content, declared Content-Type, and size; validate all four server-side, never trust the client",
+        "Attack goals: run code (webshell .php/.jsp in a web-served dir), stored XSS (HTML/SVG/JS served from your origin), DoS (huge or decompression-bomb files), overwrite or read arbitrary files (path traversal)",
+        "Defense in depth pipeline: size cap → extension allowlist → magic-byte check → rename to random ID → store outside web root → serve with safe headers",
+        "Allowlist beats blocklist: permit .jpg/.png/.pdf only; blocklists miss .phtml, .php5, .jspx, double extensions like shell.php.jpg, and case tricks (.PhP)",
+        "Client-side checks (accept attribute, JS size check) are UX only; an attacker sends the raw HTTP request directly"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Validating Type and Size",
+      "points": [
+        "Three type signals ranked by trust: filename extension (weakest, attacker-chosen), Content-Type header (attacker-set), magic bytes in the file content (strongest) — e.g. PNG starts 89 50 4E 47, JPEG FF D8 FF, PDF %PDF-, ZIP 50 4B 03 04",
+        "Validate by allowlist of extension AND magic bytes AND that they agree; reject on mismatch rather than fixing up",
+        "Enforce size at multiple layers: reverse proxy (nginx client_max_body_size 5m), framework limit (Express multer limits.fileSize, Django DATA_UPLOAD_MAX_MEMORY_SIZE, Spring spring.servlet.multipart.max-file-size), and stream-count bytes so you abort mid-upload",
+        "Python example: kind = filetype.guess(data); if kind is None or kind.mime not in {'image/png','image/jpeg'}: reject; also cap len(data) before reading everything into memory",
+        "Images: re-encode through a library (Pillow open→save, strip EXIF) to destroy polyglots and embedded payloads; also cap pixel dimensions to stop decompression bombs (Pillow MAX_IMAGE_PIXELS)",
+        "Mistakes: trusting request.files['f'].content_type, checking only the extension, validating size after buffering the whole body, allowing SVG (it is XML that can carry <script>) or archives without limits on entry count/expanded size (zip bomb, zip slip)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Safe Storage and Serving",
+      "points": [
+        "Store uploads outside the web root (e.g. /var/app-data/uploads, not /var/www/html/uploads) so the web server can never execute or directly serve them; or use object storage (S3) with Block Public Access",
+        "Never use the user filename on disk: generate a random name (uuid4().hex) plus an extension you chose from the validated type; keep the original name only as database metadata",
+        "Serve through an authenticated handler that streams the file, or via short-lived pre-signed URLs, instead of exposing the directory; set Content-Disposition: attachment for anything that is not meant to render inline",
+        "Content sniffing: browsers guess a type when Content-Type is missing/wrong and may run an upload as HTML/JS; defend with a correct Content-Type from your allowlist plus X-Content-Type-Options: nosniff",
+        "Isolate user content on a separate domain (e.g. usercontent.example.com) so any XSS cannot read your app's cookies; mistakes: serving uploads from the main origin, chmod 777 or execute bits on upload dirs, and leaving script handlers (PHP/CGI) enabled in the upload directory"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Path Traversal",
+      "points": [
+        "Definition: attacker-controlled path pieces like ../../etc/passwd, absolute paths, or encoded forms (%2e%2e%2f, ..\\ on Windows, double-encoding, null byte) escape the intended directory — hits upload filenames, download endpoints (?file=), and archive extraction (zip slip)",
+        "Vulnerable pattern: open(os.path.join(UPLOAD_DIR, user_name)) — os.path.join discards the base entirely if user_name is absolute (join('/up','/etc/passwd') → '/etc/passwd')",
+        "Correct check: resolve first, then compare — p = (base / name).resolve(); require p.is_relative_to(base.resolve()) (Python), or path.resolve + startsWith(base + path.sep) in Node, or getCanonicalPath() in Java; check after canonicalization, never on the raw string",
+        "Best fix is to avoid user paths: map an opaque ID to a file through a database lookup, so the client never supplies a path; fall back to basename sanitization (os.path.basename, werkzeug secure_filename) only as secondary defense",
+        "Zip slip: validate every archive entry's resolved destination before extracting; mistakes are stripping '../' once with replace (so '....//' becomes '../'), checking before URL-decoding, and ignoring symlinks inside archives that point outside the base"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Insecure Deserialization and Safe Formats",
+      "points": [
+        "Definition: deserializing untrusted bytes with a format that can rebuild arbitrary objects lets the attacker pick the classes instantiated, leading to remote code execution; the check is not possible after loading, so the format itself must be safe",
+        "Python pickle: __reduce__ can return (os.system, ('cmd',)) and pickle.loads runs it on load; same risk for yaml.load without SafeLoader, marshal, and shelve; use yaml.safe_load; never unpickle data from users, cookies, caches an attacker can write, or unsigned network input",
+        "Java: ObjectInputStream.readObject on untrusted bytes triggers gadget chains (Commons Collections, etc.) through readObject/readResolve; mitigate with an ObjectInputFilter allowlist (JEP 290, setObjectInputFilter), avoid Java serialization altogether, and watch Jackson default typing (enableDefaultTyping) and XStream the same way",
+        "Safe formats: JSON, Protocol Buffers, MessagePack, or CBOR carry only data (strings, numbers, lists, maps), then validate the result against a schema (JSON Schema, pydantic, protobuf) and map to your own typed objects",
+        "If you must keep a native format: sign payloads with an HMAC and verify BEFORE deserializing (integrity, not secrecy), restrict classes via allowlist (pickle Unpickler.find_class override), and run in a sandboxed low-privilege process; mistakes: encrypting without authenticating, trusting 'internal' queues/Redis/caches, and relying on blocklists of known gadget classes"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Cheat Sheet: Secure Uploads and Deserialization",
+      "points": [
+        "Upload checklist: size cap at proxy and app → extension allowlist → magic-byte match → re-encode images → random filename → store outside web root → serve with correct Content-Type, nosniff, Content-Disposition: attachment",
+        "Header set for served uploads: X-Content-Type-Options: nosniff, Content-Disposition: attachment, Content-Security-Policy: sandbox (or default-src 'none'), plus a separate cookieless domain",
+        "Path traversal rule: never concatenate user input into a path; resolve/canonicalize then verify it is inside the base directory, or use an opaque ID lookup",
+        "Deserialization rule: untrusted input gets JSON/protobuf plus schema validation; never pickle.loads, yaml.load, or ObjectInputStream.readObject on it; Java needs an ObjectInputFilter allowlist; HMAC-verify before parsing if you must",
+        "Limits to remember: file/body size, image pixel count, archive entry count and expanded size, request rate per user — each defends against a different DoS or bomb"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": []
+    }
+  ]
+}

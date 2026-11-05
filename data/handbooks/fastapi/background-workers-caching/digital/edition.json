@@ -1,0 +1,774 @@
+{
+  "schema": 1,
+  "subject": "fastapi",
+  "chapter": "background-workers-caching",
+  "category": "handbook",
+  "inputsHash": "fe9c5f212f4d9958d280b7f82acfd1dca57cadbff510dc33795a7d95686f8179",
+  "generatedAt": "2026-11-05T09:36:35.470Z",
+  "sections": [
+    {
+      "title": "Background Work and Caching: The Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Background Work and Caching: The Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The request path rule",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Keep the response ==fast==",
+                "Push slow or non-essential work off the request: emails, reports, webhooks",
+                "==Cache== repeated reads instead of recomputing them"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Three tools, one guard",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tool",
+                "Runs in",
+                "Durable?",
+                "Job"
+              ],
+              "rows": [
+                [
+                  "**BackgroundTasks**",
+                  "web process",
+                  "{red:no}",
+                  "fire-and-forget"
+                ],
+                [
+                  "**Task queue**",
+                  "separate worker",
+                  "{green:yes}, retryable",
+                  "heavy, critical jobs"
+                ],
+                [
+                  "**Cache**",
+                  "Redis",
+                  "until TTL",
+                  "computed responses"
+                ],
+                [
+                  "**Rate limiter**",
+                  "Redis counters",
+                  "per window",
+                  "reject the excess"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Rate limiting counts requests per ==key== (IP, user, API key) in a time window",
+                "The excess gets HTTP ==429=="
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Redis is the shared backbone",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "cards",
+              "spec": {
+                "cards": [
+                  {
+                    "title": "Celery",
+                    "lines": [
+                      "broker",
+                      "result store"
+                    ],
+                    "ink": "green"
+                  },
+                  {
+                    "title": "ARQ",
+                    "lines": [
+                      "job queue"
+                    ],
+                    "ink": "blue"
+                  },
+                  {
+                    "title": "Cache",
+                    "lines": [
+                      "computed responses"
+                    ],
+                    "ink": "orange"
+                  },
+                  {
+                    "title": "Rate limits",
+                    "lines": [
+                      "counter store"
+                    ],
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Point",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**BackgroundTasks vs queue?** BackgroundTasks for quick, loss-tolerant work; a queue for durable, retryable, heavy jobs",
+                "**What is 429?** Too Many Requests; the `Retry-After` header tells the client when to retry",
+                "**Why Redis, not memory?** Memory is per process and lost on restart; Redis is shared by every worker"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "BackgroundTasks and Its Limits",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "BackgroundTasks and Its Limits",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Usage",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Add a ==BackgroundTasks== param to the route",
+                "`add_task(fn, arg, kw=val)` queues the call",
+                "Runs ==after the response== is sent, in the **same process**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@app.post('/signup')",
+                "async def signup(background_tasks: BackgroundTasks):",
+                "    background_tasks.add_task(send_email, to, subject='Hi')",
+                "    return {'ok': True}"
+              ],
+              "note": "the client gets the response first"
+            },
+            {
+              "type": "heading",
+              "text": "2. Where it runs",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Task",
+                "Runs on",
+                "Risk"
+              ],
+              "rows": [
+                [
+                  "`def`",
+                  "threadpool",
+                  "uses a pool thread"
+                ],
+                [
+                  "`async def`",
+                  "event loop",
+                  "{red:blocking call freezes the whole server}"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "3. Limits",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:No durability}: crash, deploy or restart loses pending tasks",
+                "No retries, no result retrieval, no status tracking",
+                "Exceptions after the response are only **logged**, never seen by the client",
+                "Shares the web worker's ==CPU and memory=="
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Outgrown it?",
+              "text": "Move to a ==queue== when you need retries, durability or status, or when jobs are long, critical or CPU-heavy."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Task Queues: Celery vs ARQ",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Task Queues: Celery vs ARQ",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Flow",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "API",
+                    "sub": "enqueues message",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Broker",
+                    "sub": "Redis / RabbitMQ",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Worker",
+                    "sub": "pops and runs",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Result",
+                    "sub": "backend or Redis key",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Celery vs ARQ",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Celery",
+                "ARQ"
+              ],
+              "rows": [
+                [
+                  "Model",
+                  "sync-first, ==beat==, heavy config",
+                  "async-native, ==Redis-only==, minimal"
+                ],
+                [
+                  "Enqueue",
+                  "`fn.delay(x)`, `apply_async(countdown=, retry=)`",
+                  "`await redis.enqueue_job('fn', x)`"
+                ],
+                [
+                  "Define",
+                  "`@app.task`",
+                  "`async def fn(ctx, x)`"
+                ],
+                [
+                  "Run",
+                  "`celery -A proj worker -l info`",
+                  "`arq module.WorkerSettings`"
+                ],
+                [
+                  "Safety",
+                  "`acks_late`, `max_retries`",
+                  "`max_tries`, `job_timeout`"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@app.task(acks_late=True,",
+                "  autoretry_for=(IOError,),",
+                "  retry_backoff=True, max_retries=5)",
+                "def send(user_id): ..."
+              ],
+              "note": "Celery reliability settings"
+            },
+            {
+              "type": "heading",
+              "text": "3. Pitfalls",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Delivery is ==at-least-once==: make tasks **idempotent**",
+                "Pass ==IDs==, not objects: args must serialize",
+                "Never block the API on `.get()`",
+                "Set time limits, concurrency, visibility timeout > longest task"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Point",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Choose?** Async FastAPI on Redis: ARQ; schedules, RabbitMQ, features: Celery",
+                "**At-least-once?** A task may run twice, so it must be idempotent",
+                "**Status?** Return a job ID; client polls a status endpoint"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Redis Response Caching and Invalidation",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Redis Response Caching and Invalidation",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Cache-Aside and Keys",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Build key",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "GET",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Hit: return",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Miss: compute",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "SET EX ttl",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Key holds ==every input== that changes the output, including user",
+                "Store **JSON** strings",
+                "Never cache personalized data under a shared key"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def cached(page, uid):",
+                "    key = f\"v1:products:list:page={page}:user={uid}\"",
+                "    raw = await r.get(key)",
+                "    if raw: return json.loads(raw)",
+                "    data = await load(page, uid)",
+                "    await r.set(key, json.dumps(data), ex=60)",
+                "    return data"
+              ],
+              "note": "fragment: r is a redis.asyncio client"
+            },
+            {
+              "type": "heading",
+              "text": "2. Invalidation",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Strategy",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "TTL expiry",
+                  "simplest"
+                ],
+                [
+                  "`DEL` on write",
+                  "after DB commit, not before"
+                ],
+                [
+                  "Version / prefix bump",
+                  "`v1` → `v2`"
+                ],
+                [
+                  "`SCAN MATCH prefix*`",
+                  "groups; never `KEYS`"
+                ],
+                [
+                  "Write-through",
+                  "write cache and DB together"
+                ],
+                [
+                  "Write-around",
+                  "write DB only; fill on read"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Stampede and HTTP",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Jitter== on TTLs stops mass expiry (avalanche)",
+                "Hot key expires: lock with `SET NX EX`; others wait or serve stale",
+                "`ETag` lets the client revalidate and get 304",
+                "`Cache-Control` for client caching; cache only GET and 2xx"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Order",
+              "text": "Commit the DB first, then `DEL`; the reverse re-caches stale data."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Rate Limiting with slowapi and Redis Counters",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Rate Limiting with slowapi and Redis Counters",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. slowapi Setup",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "limiter = Limiter(key_func=get_remote_address, storage_uri=\"redis://...\")",
+                "app.state.limiter = limiter",
+                "app.add_exception_handler(RateLimitExceeded, handler)",
+                "@limiter.limit(\"5/minute\")",
+                "async def ping(request: Request): ..."
+              ],
+              "note": "request param is required"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "No `storage_uri`: counts live in ==memory per process==",
+                "Several workers: limits break; {green:Redis} shares counts"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Counter Algorithms",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Type",
+                "Edge",
+                "Note"
+              ],
+              "rows": [
+                [
+                  "Fixed window",
+                  "double burst",
+                  "`INCR` + `EXPIRE`"
+                ],
+                [
+                  "Sliding window",
+                  "smooth",
+                  "sorted set"
+                ],
+                [
+                  "Token bucket",
+                  "smooth",
+                  "allows bursts"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Make it ==atomic==: Lua script, or `SET NX EX` + `INCR`",
+                "Separate `INCR` and `EXPIRE` can leave a key with **no TTL**",
+                "Limit hit: {red:429}; `Retry-After` needs `headers_enabled=True`"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Pitfalls",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Behind a proxy, `get_remote_address` sees the ==proxy IP==",
+                "Read `X-Forwarded-For` only from a **trusted proxy**",
+                "Prefer a user or API-key key",
+                "Redis down: decide ==fail-open== or ==fail-closed=="
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Point",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Fixed vs sliding vs bucket?** Fixed is simple but bursts at the edge; others smooth",
+                "**Why fail with workers?** Each process counts alone",
+                "**Limit hit?** 429 plus `Retry-After`"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cheat Sheet: Background Tasks, Caching, Rate Limiting",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Cheat Sheet: Background Tasks, Caching, Rate Limiting",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Pick the tool",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Need",
+                "Tool"
+              ],
+              "rows": [
+                [
+                  "Quick, loss-tolerant",
+                  "==BackgroundTasks=="
+                ],
+                [
+                  "Durable, retryable, heavy",
+                  "==Celery== or ==ARQ=="
+                ],
+                [
+                  "Repeat reads",
+                  "Redis cache"
+                ],
+                [
+                  "Abuse protection",
+                  "Limiter"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Commands",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "background_tasks.add_task(fn, x)",
+                "fn.delay(x)",
+                "celery -A proj worker -l info",
+                "arq mod.WorkerSettings",
+                "await redis.enqueue_job('fn', x)"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Cache and rate limit",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Step",
+                "Do"
+              ],
+              "rows": [
+                [
+                  "Read",
+                  "`GET key`, miss: compute + `SET key val EX ttl`"
+                ],
+                [
+                  "Write",
+                  "`DEL key` after commit"
+                ],
+                [
+                  "Keys",
+                  "versioned, ttl jitter"
+                ],
+                [
+                  "Groups",
+                  "`SCAN`, never `KEYS`"
+                ],
+                [
+                  "Limit",
+                  "`@limiter.limit('10/minute')` + Redis `storage_uri`"
+                ],
+                [
+                  "Count",
+                  "`INCR` + `EXPIRE` atomically"
+                ],
+                [
+                  "Reject",
+                  "{red:429} + `Retry-After`"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Checklist and request life",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Idempotent== tasks",
+                "==IDs==, not objects",
+                "Task ==time limits==",
+                "==User== in the cache key",
+                "Trusted ==proxy IP== only",
+                "Redis ==failure policy==: fail-open or closed"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Limiter",
+                    "sub": "INCR, 429?",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Enqueue",
+                    "sub": "job to Redis",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Cache",
+                    "sub": "GET list",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Respond",
+                    "sub": "worker runs later",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Redis down",
+              "text": "Queue, cache and limiter all fail. BackgroundTasks still run, in-process."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "An `async def` background task calls `time.sleep(5)`. What happens to other requests?",
+              "a_bullets": [
+                "The event loop is blocked, so ==every request stalls== for 5s.",
+                "Fix: make it a plain `def` (threadpool) or `await asyncio.sleep`."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "slowapi `5/minute` has no storage_uri and runs on 4 workers. How many requests per minute can one IP make?",
+              "a_bullets": [
+                "Up to ==20==: each process keeps its own in-memory count.",
+                "Fix: point `storage_uri` at Redis to share counts."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A write handler runs `DEL key`, then commits the DB. Why can stale data still be cached?",
+              "a_bullets": [
+                "A reader can miss between the `DEL` and the commit, read the ==old row== and re-cache it.",
+                "Delete the key ==after== the commit."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

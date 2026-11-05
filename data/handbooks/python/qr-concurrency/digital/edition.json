@@ -1,0 +1,745 @@
+{
+  "schema": 1,
+  "subject": "python",
+  "chapter": "qr-concurrency",
+  "category": "handbook",
+  "inputsHash": "eb91bb7ed406cae78d86262f4b6fee50c18f9e76a1c7b0cc5c070577265077b1",
+  "generatedAt": "2026-11-05T08:56:59.745Z",
+  "sections": [
+    {
+      "title": "The GIL and Concurrency Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "The GIL and Concurrency Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What the GIL Is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==GIL== = a mutex in CPython",
+                "Only **one thread** runs Python bytecode at a time",
+                "True even on a ==multi-core== machine",
+                "It guards interpreter internals, e.g. {blue:reference counts}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Not atomic",
+              "text": "The GIL does not make compound operations safe. `count += 1` is read, add, write, so it still needs a ==Lock==."
+            },
+            {
+              "type": "heading",
+              "text": "2. When Threads Overlap",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "GIL is ==released== during blocking I/O: sockets, files, `sleep`",
+                "Also released in many C extensions: ==NumPy==, `hashlib`",
+                "Pure Python number crunching holds the GIL: {red:no overlap}"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Concurrency",
+                "Parallelism"
+              ],
+              "rows": [
+                [
+                  "Meaning",
+                  "Tasks **interleave**",
+                  "Code runs at the **same instant**"
+                ],
+                [
+                  "Tools",
+                  "threads, `asyncio`",
+                  "==processes==; threads only in GIL-releasing C or free-threaded builds"
+                ],
+                [
+                  "Python code on many cores",
+                  "No",
+                  "Yes"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Decision Rule",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "q"
+                  ],
+                  [
+                    "io",
+                    "cpu"
+                  ]
+                ],
+                "nodes": {
+                  "q": {
+                    "text": "What is the work waiting on?",
+                    "shape": "diamond"
+                  },
+                  "io": {
+                    "text": "Network / disk (I/O-bound): threads or asyncio",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "cpu": {
+                    "text": "Number crunching (CPU-bound): processes",
+                    "shape": "box",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q",
+                    "to": "io",
+                    "label": "waiting"
+                  },
+                  {
+                    "from": "q",
+                    "to": "cpu",
+                    "label": "computing"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Remember",
+              "items": [
+                "Threads help ==waiting==, not computing",
+                "Processes each have their own GIL",
+                "Shared counter in threads: use a Lock"
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Threading for I/O-Bound Work",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Threading for I/O-Bound Work",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Threads and Locks",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`Thread(target=fn, args=(x,))`, then `t.start()`",
+                "`t.join()` ==blocks== until the thread finishes",
+                "Threads **share memory**: guard shared state with `with lock:`",
+                "No lock means a ==race condition==, e.g. on `n += 1`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import threading",
+                "n, lock = 0, threading.Lock()",
+                "def bump():",
+                "    global n",
+                "    with lock: n += 1",
+                "t = threading.Thread(target=bump); t.start(); t.join()",
+                "print(n)"
+              ],
+              "note": "Lock guards the shared counter"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "1"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Daemon, Queue, CPU",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "`daemon`",
+                "When main exits"
+              ],
+              "rows": [
+                [
+                  "`True`",
+                  "{red:killed abruptly}"
+                ],
+                [
+                  "`False` (default)",
+                  "{green:keeps program alive}"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`queue.Queue` is the thread-safe producer to consumer handoff",
+                "`put()` adds, `get()` blocks, `task_done()` marks the job done"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import queue, threading",
+                "q = queue.Queue()",
+                "def worker():  # consumer thread",
+                "    print(q.get()); q.task_done()",
+                "threading.Thread(target=worker, daemon=True).start()",
+                "q.put(\"job\")  # producer: main thread",
+                "q.join()"
+              ],
+              "note": "join() waits until every task_done()"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "job"
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "CPU-bound code",
+              "text": "Threads give ==no speedup== under the GIL, and lock contention plus switching can make them **slower**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Multiprocessing for CPU-Bound Work",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Multiprocessing for CPU-Bound Work",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Separate Processes",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each `Process` has its ==own interpreter== and ==own GIL==",
+                "CPU-bound work runs in {green:true parallel} across cores",
+                "No shared memory, and ==startup cost== is higher than threads"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Guard and Pool",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Guard the entry point with ==`if __name__ == '__main__':`==",
+                "Spawn (Windows, macOS): child **re-imports** the module, reaches the start call and dies with `RuntimeError`",
+                "`Pool(n).map(fn, items)` splits work across n workers",
+                "`with Pool() as p:` cleans up; ==chunksize== batches many small tasks"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "from multiprocessing import Pool",
+                "",
+                "if __name__ == '__main__':",
+                "    with Pool(4) as p:",
+                "        out = p.map(fn, items, chunksize=100)"
+              ],
+              "note": "fn must be a top-level function"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Between Processes",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Pickle args",
+                    "sub": "parent",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Unpickle",
+                    "sub": "worker",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Run fn",
+                    "sub": "own GIL",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Pickle result",
+                    "sub": "back to parent",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Lambdas, open files, sockets cannot be pickled",
+                "Large objects are costly to copy both ways"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tool",
+                "Use for"
+              ],
+              "rows": [
+                [
+                  "`Queue`",
+                  "many producers and consumers"
+                ],
+                [
+                  "`Pipe`",
+                  "two endpoints"
+                ],
+                [
+                  "`shared_memory`",
+                  "big buffers, no copy"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Missing guard",
+              "text": "Without the ==`__main__` guard==, spawn re-runs top-level code in every child, which stops with `RuntimeError`, so **no work** gets done."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "concurrent.futures Executors",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "concurrent.futures Executors",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. One Interface, Two Pools",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Both pools share ==one interface==: `submit`, `map`, `shutdown`",
+                "Switching is a ==one-word change==: swap the class name"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Pool",
+                "Workload"
+              ],
+              "rows": [
+                [
+                  "`ThreadPoolExecutor`",
+                  "{green:I/O-bound}"
+                ],
+                [
+                  "`ProcessPoolExecutor`",
+                  "{orange:CPU-bound}"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Getting Results",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Call",
+                "Gives",
+                "Order",
+                "Error raised"
+              ],
+              "rows": [
+                [
+                  "`submit(fn, *args)`",
+                  "`Future`",
+                  "you choose",
+                  "at `result()`"
+                ],
+                [
+                  "`map(fn, items)`",
+                  "results",
+                  "input order",
+                  "first one, while iterating"
+                ],
+                [
+                  "`as_completed(fs)`",
+                  "futures",
+                  "finish order",
+                  "at `result()`"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`future.result(timeout=)` blocks and ==re-raises== worker errors",
+                "`as_completed`: progress, handle fast results first",
+                "`wait()` blocks until ==all== or ==first== complete"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "with ThreadPoolExecutor() as ex:",
+                "    futs = [ex.submit(fn, u) for u in urls]",
+                "    for f in as_completed(futs):",
+                "        data = f.result(timeout=5)",
+                "    ordered = list(ex.map(fn, urls))"
+              ],
+              "note": "swap in ProcessPoolExecutor for CPU work"
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Never calling `.result()`: the exception is ==silently swallowed==",
+                "Skipping `with` and `shutdown()`: workers linger until exit"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Always use with",
+              "text": "Leaving the `with` block shuts the pool down and ==joins== the workers."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "asyncio Basics and Free-Threaded Python 3.13+",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "asyncio Basics and Free-Threaded Python 3.13+",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Coroutines and Awaiting",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Calling `async def` only makes a ==coroutine object==; it runs when awaited or scheduled",
+                "Entry point: `asyncio.run(main())`",
+                "`await` {blue:yields to the event loop}; one thread runs many tasks ==cooperatively==",
+                "One blocking call (`time.sleep`, `requests.get`) {red:freezes every task}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Running Tasks Together",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tool",
+                "Behaviour"
+              ],
+              "rows": [
+                [
+                  "`create_task(coro())`",
+                  "schedules it to run concurrently"
+                ],
+                [
+                  "`await gather(a(), b())`",
+                  "runs together, results in ==call order=="
+                ],
+                [
+                  "`asyncio.TaskGroup` (3.11+)",
+                  "structured errors via `ExceptionGroup`"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import asyncio",
+                "async def job(n):",
+                "    await asyncio.sleep(0.1)",
+                "    return n * 2",
+                "async def main():",
+                "    print(await asyncio.gather(job(1), job(2)))",
+                "    print(await asyncio.to_thread(len, 'abc'))",
+                "asyncio.run(main())"
+              ],
+              "note": "gather and to_thread"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "[2, 4]",
+                "3"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Blocking Calls and Free-Threading",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Use `await asyncio.sleep()`, never `time.sleep()`",
+                "Unavoidable blocking call: `await asyncio.to_thread(fn)`",
+                "==Free-threaded== build (PEP 703, `python3.13t`) removes the GIL; threads run Python in parallel",
+                "{orange:Experimental} in 3.13: some single-thread slowdown, extensions must be compatible"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "No GIL is not no locks",
+              "text": "Shared mutable state still needs a `Lock`."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cheat Sheet: Choosing and Using Concurrency Tools",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Cheat Sheet: Choosing and Using Concurrency Tools",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Picker",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Workload",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "Network or disk waiting, modest scale",
+                  "`ThreadPoolExecutor`"
+                ],
+                [
+                  "Thousands of connections, async libraries",
+                  "`asyncio`"
+                ],
+                [
+                  "CPU-heavy",
+                  "`ProcessPoolExecutor` or `Pool`"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "2. Core calls",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tool",
+                "Call"
+              ],
+              "rows": [
+                [
+                  "Thread",
+                  "`Thread(target=fn, args=(x,)).start()`, `join()`"
+                ],
+                [
+                  "Pool",
+                  "`Pool(n).map(fn, items)`"
+                ],
+                [
+                  "Executor",
+                  "`executor.submit(fn, x)`, `executor.map(fn, items)`"
+                ],
+                [
+                  "Finish order",
+                  "`as_completed(futures)`"
+                ],
+                [
+                  "asyncio",
+                  "`asyncio.run(main())`"
+                ],
+                [
+                  "Run together",
+                  "`await asyncio.gather(a(), b())`"
+                ],
+                [
+                  "Blocking call",
+                  "`await asyncio.to_thread(fn)`"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Common errors",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Missing ==`__main__` guard== in multiprocessing",
+                "==Unpicklable== arguments: lambdas, files, sockets",
+                "Blocking call inside `async def`",
+                "==Un-awaited== coroutine never runs",
+                "Shared counter without a `Lock`"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "4. Free-threaded check and rule",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "python -c \"import sys; print(sys._is_gil_enabled())\"  # 3.13+",
+                "python3.13t app.py  # free-threaded build",
+                "PYTHON_GIL=0 python3.13t app.py  # force GIL off"
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Rule of thumb",
+              "text": "==Measure first.== Threads for I/O, processes for CPU, asyncio for thousands of connections. Free-threaded only after library support is confirmed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Four threads each run a pure-Python CPU loop on standard 3.12. Versus running them one after another, is it faster?",
+              "a_bullets": [
+                "No: about the same, often slower.",
+                "The ==GIL== lets one thread run bytecode at a time, and switching adds overhead.",
+                "Use `ProcessPoolExecutor` for CPU-bound work."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Two coroutines each call `time.sleep(1)`, run with `asyncio.gather`. How long does it take?",
+              "a_bullets": [
+                "About ==2 seconds==. `time.sleep` blocks the one thread, so the loop cannot switch tasks.",
+                "With `await asyncio.sleep(1)` it takes about 1 second."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "You `submit()` a worker that raises `ValueError` and never touch the future. What do you see?",
+              "a_bullets": [
+                "Nothing: the exception is stored in the `Future`.",
+                "`future.result()` re-raises it; so does iterating `executor.map`."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

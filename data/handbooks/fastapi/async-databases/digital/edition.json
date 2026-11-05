@@ -1,0 +1,697 @@
+{
+  "schema": 1,
+  "subject": "fastapi",
+  "chapter": "async-databases",
+  "category": "handbook",
+  "inputsHash": "c8cd17abb4cbdfe082ff8ab399b4b24b7467758c5e03de9082b9d3ce1430b98f",
+  "generatedAt": "2026-10-27T11:13:22.661Z",
+  "sections": [
+    {
+      "title": "async def vs def Endpoints",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "async def vs def Endpoints",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Where each runs",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==async def== runs directly on the **event loop**",
+                "==def== is sent to a **threadpool** (anyio, 40 threads default)",
+                "Rule: async def only if every await is {green:async-native}",
+                "Blocking libs (`requests`, `psycopg2`, `time.sleep`) → plain {red:def}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "async def",
+                "def"
+              ],
+              "rows": [
+                [
+                  "Concurrency",
+                  "Cheap",
+                  "Limited by thread count"
+                ],
+                [
+                  "Blocking call",
+                  "{red:Stalls ALL requests}",
+                  "Isolated per request"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Example",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`/a` and `/b` stay responsive; `/c` ==freezes the server=="
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@app.get('/a')",
+                "async def a(): await asyncio.sleep(1)",
+                "@app.get('/b')",
+                "def b(): time.sleep(1)",
+                "@app.get('/c')",
+                "async def c(): time.sleep(1)  # bad"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Blocking code inside async def: `requests.get`, sync DB driver, CPU loops"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Fix",
+              "text": "Use plain `def`, or `await run_in_threadpool(fn)` / `await asyncio.to_thread(fn)`."
+            },
+            {
+              "type": "sidebox",
+              "title": "Interview Point",
+              "items": [
+                "**Why doesn't def block the loop?** It runs in a threadpool.",
+                "**async def calls requests.get?** Every request stalls; use def or to_thread."
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "SQLAlchemy 2.0 Async Engine and Session",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "SQLAlchemy 2.0 Async Engine and Session",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Engine and Factory",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`create_async_engine('postgresql+asyncpg://...')` needs an ==async driver==",
+                "Drivers: `asyncpg`, `aiosqlite`; a **sync** driver URL fails",
+                "`async_sessionmaker(engine, expire_on_commit=False)` is the session factory",
+                "`expire_on_commit=False`: attributes are ==not expired== after commit",
+                "Why: an expired attribute reloads lazily, which is illegal IO in async"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Queries and Writes",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "2.0 style: `await session.execute(select(...))`, then a result method",
+                "Write: `add`, `await commit()`, then `await refresh(obj)` for server-generated fields"
+              ],
+              "style": "dot",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def demo(session):",
+                "    r = await session.execute(select(User).where(User.id == 1))",
+                "    user = r.scalar_one_or_none()",
+                "    obj = User(name=\"Ada\")",
+                "    session.add(obj)",
+                "    await session.commit()",
+                "    await session.refresh(obj)"
+              ],
+              "note": "fragment: needs a live AsyncSession"
+            },
+            {
+              "type": "heading",
+              "text": "3. MissingGreenlet",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Fix",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "Main",
+                  "`selectinload()` / `joinedload()` in the query"
+                ],
+                [
+                  "Fallback",
+                  "`await session.run_sync(fn)` or `awaitable_attrs`"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Mistake",
+              "text": "Lazy-loading a relationship in async raises ==MissingGreenlet=="
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Point",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Why expire_on_commit=False?** Expired attributes reload lazily, illegal IO in async.",
+                "**Why MissingGreenlet?** Attribute access hit the DB outside an await; eager-load instead."
+              ],
+              "style": "dot",
+              "ink": "purple"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Session per Request via Dependencies",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Session per Request via Dependencies",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Pattern",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==One AsyncSession per request==, created in a dependency",
+                "`get_db` is an **async generator**; code after `yield` is cleanup",
+                "Inject: `db: Annotated[AsyncSession, Depends(get_db)]`",
+                "Sub-dependencies in one request share the ==same session== (dependency cache)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Open session",
+                    "sub": "async with",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Endpoint runs",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Exception?",
+                    "sub": "rollback",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Close",
+                    "sub": "always",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def get_db():",
+                "    async with SessionLocal() as session:",
+                "        try:",
+                "            yield session",
+                "        except Exception:",
+                "            await session.rollback()",
+                "            raise"
+              ],
+              "note": "rollback only if an exception propagates"
+            },
+            {
+              "type": "heading",
+              "text": "2. Transactions",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Commit is ==explicit==: `await session.commit()` in endpoint or service",
+                "Rollback runs only when an ==exception propagates==",
+                "After commit, loaded attributes expire; touching them is lazy IO and fails ({red:MissingGreenlet})",
+                "Fix: `expire_on_commit=False` or `await session.refresh(obj)`"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Global session shared across requests: not concurrency safe",
+                "One session shared between `asyncio.gather` tasks"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "One task, one session",
+              "text": "A session is never shared across requests or concurrent tasks. Give each its own."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Background Tasks",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Background Tasks",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What It Does",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`background_tasks.add_task(send_email, to, body)`",
+                "Runs ==after the response is sent==",
+                "{blue:def} task → threadpool; {green:async def} task → event loop",
+                "Args after the function are passed to `add_task`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Endpoint",
+                    "sub": "add_task",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Response sent",
+                    "sub": "client done",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Task runs",
+                    "sub": "after",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Task Runner or Queue",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "BackgroundTasks",
+                "Celery / ARQ / RQ"
+              ],
+              "rows": [
+                [
+                  "Use for",
+                  "Short fire-and-forget: emails, logs",
+                  "Heavy or durable jobs"
+                ],
+                [
+                  "Process dies",
+                  "{red:Task lost}",
+                  "{green:Job survives}"
+                ],
+                [
+                  "Retries",
+                  "{red:None}",
+                  "{green:Built in}"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Example and Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Endpoint adds the task, returns ==immediately==",
+                "Task opens its ==own session=="
+              ],
+              "style": "number"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def signup(u: UserIn, background_tasks: BackgroundTasks):",
+                "    background_tasks.add_task(send_welcome, u.email)",
+                "    return {\"status\": \"queued\"}",
+                "async def send_welcome(to: str):",
+                "    async with SessionLocal() as s:",
+                "        await s.execute(insert(EmailLog).values(to=to))",
+                "        await s.commit()"
+              ],
+              "note": "call site plus task body"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Mistake: reusing the request's DB session in the task",
+                "The dependency session is already **closed**"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Fix",
+              "text": "Open a new session inside the task with `SessionLocal()`."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Lifespan Events",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Lifespan Events",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What lifespan is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==lifespan== is an `@asynccontextmanager` passed as `FastAPI(lifespan=lifespan)`",
+                "Code {green:before `yield`} runs at ==startup==",
+                "Code {red:after `yield`} runs at ==shutdown=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Startup and shutdown work",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@asynccontextmanager",
+                "async def lifespan(app: FastAPI):",
+                "    engine = create_async_engine(DB_URL)",
+                "    app.state.engine = engine",
+                "    app.state.SessionLocal = async_sessionmaker(",
+                "        engine, expire_on_commit=False)",
+                "    yield",
+                "    await engine.dispose()"
+              ],
+              "note": "engine built once, disposed once"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Phase",
+                "Typical work"
+              ],
+              "rows": [
+                [
+                  "Startup",
+                  "async engine + sessionmaker, load ML models, Redis or HTTP client pools"
+                ],
+                [
+                  "Store on",
+                  "`app.state`"
+                ],
+                [
+                  "Shutdown",
+                  "`await engine.dispose()`, close clients, flush resources"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "3. Old way and mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "lifespan replaces deprecated `@app.on_event('startup')` and `'shutdown'`",
+                "Do not mix both styles in one app"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Engine created per request instead of once in lifespan",
+                "Forgot `engine.dispose()`: connections leak on shutdown"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "One engine per app: ==create before yield==, ==dispose after yield==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "FastAPI Async Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "FastAPI Async Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Blocking code",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "async def",
+                "def"
+              ],
+              "rows": [
+                [
+                  "Runs on",
+                  "event loop",
+                  "threadpool"
+                ],
+                [
+                  "Blocking call",
+                  "{red:stalls ALL requests}",
+                  "{green:safe}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Blocking lib? Use ==def==",
+                "Or `asyncio.to_thread` / `run_in_threadpool` inside `async def`"
+              ],
+              "style": "check",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Engine and lifespan",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@asynccontextmanager",
+                "async def lifespan(app):",
+                "    engine = create_async_engine(URL)",
+                "    app.state.SessionLocal = async_sessionmaker(",
+                "        engine, expire_on_commit=False)",
+                "    yield",
+                "    await engine.dispose()"
+              ],
+              "note": "FastAPI(lifespan=lifespan)"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Engine ==once==, never per request",
+                "`selectinload` avoids {red:MissingGreenlet}"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Session and background",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "async def get_db():",
+                "    async with SessionLocal() as s:",
+                "        yield s",
+                "Db = Annotated[AsyncSession, Depends(get_db)]"
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`add_task(fn, args)`: open its ==own session==",
+                "Heavy jobs: queue (Celery, ARQ)"
+              ],
+              "style": "dot",
+              "ink": "green"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never",
+              "text": "Share one session across requests or reuse the request session in a task."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Two clients call this at once. How long until the second one gets a reply?",
+              "a_bullets": [
+                "About 2s, not 1s.",
+                "`time.sleep` blocks the event loop, so every request waits.",
+                "Fix: plain `def` (threadpool) or `await asyncio.sleep(1)`."
+              ],
+              "example_code": [
+                "@app.get('/slow')",
+                "async def slow():",
+                "    time.sleep(1)",
+                "    return 'ok'"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "What goes wrong on the last line?",
+              "a_bullets": [
+                "After commit, loaded attributes are expired.",
+                "Touching one on an AsyncSession triggers lazy IO and raises `MissingGreenlet`.",
+                "Fix: `expire_on_commit=False` or `await session.refresh(user)`."
+              ],
+              "example_code": [
+                "await session.commit()",
+                "print(user.name)"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Why does the background task fail?",
+              "a_bullets": [
+                "The task runs after the response, when `get_db` has already closed `db`.",
+                "Open a new session inside the task."
+              ],
+              "example_code": [
+                "async def post(bg: BackgroundTasks, db: Annotated[AsyncSession, Depends(get_db)]):",
+                "    bg.add_task(audit, db)"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

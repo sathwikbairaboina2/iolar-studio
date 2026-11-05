@@ -1,0 +1,2166 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-ticket-booking",
+  "category": "system-design",
+  "inputsHash": "a42deb5fd5d62fad01d7ac59941a0f077e2fb336d26af98823437bd1987ab7bb",
+  "generatedAt": "2026-10-24T11:16:50.695Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Scope and Requirements (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope and Functional Requirements",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "{green:In scope}",
+                "{red:Out of scope}"
+              ],
+              "rows": [
+                [
+                  "Browse cities, theatres, shows",
+                  "Ads"
+                ],
+                [
+                  "Pick seats",
+                  "Reviews"
+                ],
+                [
+                  "Pay",
+                  "Food ordering"
+                ],
+                [
+                  "Get e-ticket",
+                  "Theatre onboarding UI"
+                ],
+                [
+                  "Cancel with refund",
+                  "-"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Search== shows by city, movie and date",
+                "View the ==live seat map== of a show",
+                "==Hold== chosen seats for **8 minutes**",
+                "==Pay==, then **confirm** the booking",
+                "==Cancel==, then **refund** per policy"
+              ],
+              "style": "check",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Scale Estimates",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "5M bookings/day",
+                    "sub": "50M MAU",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "~60/s average",
+                    "sub": "5M / 86,400 s",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "600/s peak",
+                    "sub": "10x in evening hours",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "~3,300 req/s",
+                    "sub": "one blockbuster",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Blockbuster opening: ==1M users== hit one release in **5 minutes**",
+                "1M / 300 s = ==~3,300 req/s== on that one movie's seat maps",
+                "That is ~**100x** the normal per-show load",
+                "Average load is easy; the ==hot show== is the real design problem"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Non-Functional Targets and Storage",
+              "ink": "purple"
+            },
+            {
+              "type": "sidebox",
+              "title": "Non-functional targets",
+              "items": [
+                "{red:Zero double-booked seats}: strong consistency on seats",
+                "Seat map read ==p99 under 200 ms==",
+                "Browse availability ==99.99%==",
+                "Booking availability ==99.9%=="
+              ],
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Estimate",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Booking data",
+                  "5M x 1 KB",
+                  "**5 GB/day**"
+                ],
+                [
+                  "Booking data per year",
+                  "5 GB x 365",
+                  "**~1.8 TB/year**"
+                ],
+                [
+                  "Seat rows",
+                  "10,000 screens x 5 shows x 200 seats",
+                  "**10M rows/day**"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Consistency over availability for seats",
+              "text": "Browse may be stale; a seat sold twice is never acceptable. That is why browse gets ==99.99%== and booking only ==99.9%==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Seven Services",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Service",
+                "Owns",
+                "Store"
+              ],
+              "rows": [
+                [
+                  "**Catalog**",
+                  "cities, theatres, movies, shows, seat layout",
+                  "Postgres + CDN"
+                ],
+                [
+                  "**Show and Seat Inventory**",
+                  "seat status, holds, seat-level bookings",
+                  "sharded Postgres + Redis"
+                ],
+                [
+                  "**Booking**",
+                  "booking record and its states",
+                  "Postgres"
+                ],
+                [
+                  "**Payment**",
+                  "gateway calls, payment status",
+                  "own DB"
+                ],
+                [
+                  "**Queue / Waiting Room**",
+                  "admits a flash crowd in batches",
+                  "Redis sorted set"
+                ],
+                [
+                  "**Notification**",
+                  "email, SMS, push, QR ticket",
+                  "Kafka consumers"
+                ],
+                [
+                  "**Refund**",
+                  "money back after a cancel",
+                  "own DB + gateway"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "2. Read Path vs Write Path",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "browse, search",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "CDN",
+                    "sub": "layout, posters",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Redis cache",
+                    "sub": "seat-map status",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Read replica",
+                    "sub": "cache miss only",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "hold, book",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Inventory",
+                    "sub": "hold API",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Postgres shard",
+                    "sub": "store of record",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Read path}: cached, CDN-fronted, may be a few seconds stale",
+                "{red:Write path}: skips caches, goes to the ==seat store of record==",
+                "Seat store of record = the one DB whose rows decide who owns a seat",
+                "Relational DB (Postgres/MySQL), ==sharded by show_id==",
+                "A booking touches only one show, so it stays on one shard",
+                "Redis: hot seat-map cache (200 seats = 25 bytes per show)",
+                "Redis: hold TTL keys that expire after 480 s (8 min) and signal release",
+                "Kafka: booking events fan out to notifications, analytics, refunds"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "3. Sync vs Async",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Step",
+                "Mode",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Seat hold",
+                  "{red:sync}",
+                  "user needs yes/no now; p99 under 100 ms"
+                ],
+                [
+                  "Payment init",
+                  "{red:sync}",
+                  "user needs the gateway link now"
+                ],
+                [
+                  "Ticket email / SMS",
+                  "{green:async, Kafka}",
+                  "can lag a few seconds"
+                ],
+                [
+                  "Invoice",
+                  "{green:async, Kafka}",
+                  "not on the user's critical path"
+                ],
+                [
+                  "Analytics",
+                  "{green:async, Kafka}",
+                  "best-effort, replayable"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Monolith or Microservices",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Start as a modular monolith; split only where needs differ",
+                "==Inventory== needs strong consistency; scales with 3,300 req/s on one blockbuster",
+                "==Payment== needs gateway isolation and its own failure budget",
+                "Catalog, Booking, Notification, Refund can stay together at first"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Split first",
+              "text": "Split {red:Inventory} and {red:Payment} first: they have different **consistency** and **scaling** needs. Seat truth lives only in the shard, never in Redis."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Catalog, Shows and Seat Maps (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Catalog, Shows and Seat Maps (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Serve ==cities==, **theatres**, **movies** and **shows** (browse is cached and CDN-fronted)",
+                "Render a ==seat map== with per-seat status",
+                "Seat status is one of {green:AVAILABLE}, {orange:HELD}, {red:BOOKED}",
+                "Read target: seat map ==p99 under 200 ms==, up to ~3,300 req/s on one blockbuster"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Design and Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Static layout}: rows, columns, categories; rarely changes, cached at the ==CDN==",
+                "{purple:Dynamic status}: ==Redis bitmap== per show, 1 bit per seat",
+                "200 seats = 200 bits = ==25 bytes== per show, so cheap to poll",
+                "Client merges layout + status, so layout is fetched once, only status repeats"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Open show",
+                    "sub": "user taps a show",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Layout",
+                    "sub": "CDN, fetched once",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Status",
+                    "sub": "Redis bitmap, every 5 s",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Merge",
+                    "sub": "draw seat map",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Tables and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Table",
+                "Columns"
+              ],
+              "rows": [
+                [
+                  "`movie`",
+                  "id, title, lang"
+                ],
+                [
+                  "`theatre`",
+                  "id, city_id"
+                ],
+                [
+                  "`screen`",
+                  "id, theatre_id, layout_json"
+                ],
+                [
+                  "`show`",
+                  "id, screen_id, movie_id, start_time, price_tier"
+                ],
+                [
+                  "`show_seat`",
+                  "show_id, seat_id, status, version"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /cities/{id}/shows?movie=&date=",
+                "GET /shows/{id}/seats"
+              ],
+              "note": "seats returns layout version + status bitmap; client refetches layout only if the version changed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stale map shows a seat free that is already ==held==",
+                "The ==hold API is the source of truth==, not the map",
+                "Client treats the map as a **hint**; a rejected hold refreshes the map"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Seat-map latency",
+                  "p99 under ==200 ms=="
+                ],
+                [
+                  "CDN + Redis cache hit ratio",
+                  "above ==95%=="
+                ],
+                [
+                  "Stale-map click rejection rate",
+                  "tracked; a spike means the poll is too slow"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Map is a hint",
+              "text": "Never decide on the seat map. Layout is ==static and cached==, status is ==dynamic and slightly stale==, and only the **hold API** says yes."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Seat Hold with Expiry (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Seat Hold with Expiry (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Reserve up to =={6 seats}== for ==8 minutes== while the user pays",
+                "Then ==auto-release== the seats if no payment arrives",
+                "{green:DB row}: hold with status `HELD`, `hold_id`, `expires_at`; the source of truth",
+                "{orange:Redis key}: `hold:{show}:{seat}` with ==TTL 480 s==, only a fast release signal"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Hold is a ==status==, never a DB lock held for 8 minutes",
+                "Max 6 seats per hold, all-or-nothing"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Seat States and Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Event",
+                "Seat state",
+                "Redis key"
+              ],
+              "rows": [
+                [
+                  "Hold placed",
+                  "AVAILABLE → **HELD**",
+                  "set, TTL 480 s"
+                ],
+                [
+                  "Payment success",
+                  "HELD → **BOOKED**",
+                  "deleted"
+                ],
+                [
+                  "Expiry or cancel",
+                  "HELD → **AVAILABLE**",
+                  "expires or deleted"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "POST /holds",
+                    "sub": "seat_ids, max 6",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Atomic hold",
+                    "sub": "all or nothing",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Response",
+                    "sub": "hold_id + expires_at",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Countdown",
+                    "sub": "client shows 8:00",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Tables and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "schema",
+              "spec": {
+                "tables": [
+                  {
+                    "name": "hold",
+                    "columns": [
+                      "hold_id",
+                      "user_id",
+                      "show_id",
+                      "expires_at",
+                      "status"
+                    ]
+                  },
+                  {
+                    "name": "hold_seat",
+                    "columns": [
+                      "hold_id",
+                      "show_id",
+                      "seat_id"
+                    ]
+                  }
+                ],
+                "links": [
+                  {
+                    "from": "hold_seat",
+                    "to": "hold"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "API",
+                "Does"
+              ],
+              "rows": [
+                [
+                  "`POST /holds`",
+                  "hold seats, returns `hold_id`, `expires_at`"
+                ],
+                [
+                  "`DELETE /holds/{id}`",
+                  "cancel, seats back to AVAILABLE"
+                ],
+                [
+                  "`POST /holds/{id}/extend`",
+                  "==+2 min==, allowed **once**, during payment"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redis restart loses the TTL keys, so no expiry signal fires",
+                "Relying on the Redis TTL alone leaves seats stuck as HELD",
+                "Fix: ==sweeper job== every ==10 s== releases rows with `expires_at < now()`"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE show_seat SET status='AVAILABLE' WHERE status='HELD'",
+                "  AND (show_id, seat_id) IN (SELECT hs.show_id, hs.seat_id",
+                "    FROM hold_seat hs JOIN hold h USING (hold_id)",
+                "    WHERE h.status='HELD' AND h.expires_at < now());",
+                "UPDATE hold SET status='EXPIRED'",
+                "  WHERE status='HELD' AND expires_at < now();"
+              ],
+              "note": "sweeper, runs every 10 s"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Hold-to-purchase conversion: about ==60%==",
+                "Expired-hold ratio: alert when it climbs",
+                "Sweeper lag: under ==15 s==",
+                "Hold API p99: under ==100 ms=="
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "DB is the truth",
+              "text": "Redis only **signals** release. The `expires_at` column in the DB decides, so a lost TTL never strands a seat."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Preventing Double Booking (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Preventing Double Booking (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Invariant and the Last Guard",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One ==(show_id, seat_id)== can be **BOOKED** by at most ==one booking==",
+                "Enforce it in the {green:database}, never only in app code",
+                "App checks can be bypassed by a bug, a retry or a second service"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Last safety net: unique constraint on `booking_seat(show_id, seat_id)`",
+                "A buggy path then fails with a duplicate-key error instead of double booking",
+                "On cancel, ==delete the booking_seat rows== so the seat can be sold again",
+                "One plain unique key, no status copy, no partial index"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Claiming Seats: Which Guard",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Guard",
+                "Wins when",
+                "Catch"
+              ],
+              "rows": [
+                [
+                  "**Optimistic** conditional UPDATE",
+                  "Low contention, most seats uncontested",
+                  "Losers must retry or pick other seats"
+                ],
+                [
+                  "**Pessimistic** `FOR UPDATE`",
+                  "Many users fight for the same seats",
+                  "Waiters queue on the lock for a few ms"
+                ],
+                [
+                  "**Redis SETNX**",
+                  "Cheap front filter to shed losers early",
+                  "{red:Not durable}: never the source of truth"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Optimistic: ==one conditional UPDATE== claims the seats, no lock taken",
+                "{red:Rows affected = 0} (or fewer than requested) means you lost the race",
+                "Hold is all-or-nothing: on a short count, ROLLBACK"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE show_seat",
+                "SET status='HELD', version=version+1",
+                "WHERE show_id=? AND seat_id IN (?,?,?)",
+                "  AND status='AVAILABLE';"
+              ],
+              "note": "rows affected must equal seats requested"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Pessimistic: lock the seat rows ==ordered by seat_id== so two users never deadlock",
+                "Read `status` under the lock and abort if any seat is not AVAILABLE",
+                "Lock lives only for the transaction, a ==few ms==, then COMMIT"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "BEGIN;",
+                "SELECT seat_id, status FROM show_seat",
+                "WHERE show_id=? AND seat_id IN (?,?,?)",
+                "ORDER BY seat_id FOR UPDATE;",
+                "-- app: ROLLBACK if any status <> 'AVAILABLE'",
+                "UPDATE show_seat SET status='HELD', version=version+1",
+                "WHERE show_id=? AND seat_id IN (?,?,?);",
+                "COMMIT;"
+              ],
+              "note": "the status check is what stops a waiter overwriting the winner"
+            },
+            {
+              "type": "heading",
+              "text": "3. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Check-then-update}: read AVAILABLE, then write in a second statement",
+                "Two users both read AVAILABLE, both write: the race window is between the statements",
+                "Fix: one conditional `UPDATE ... WHERE status='AVAILABLE'`",
+                "{red:Open DB transaction} while the user pays for 8 minutes",
+                "It pins locks and connections; the hold must be a status instead"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Claim seats",
+                    "sub": "lock or UPDATE, ms",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Set HELD",
+                    "sub": "COMMIT, lock gone",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "User pays",
+                    "sub": "8 min, no lock",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "HELD to BOOKED",
+                    "sub": "unique key guards",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "The hold is a status, not a lock",
+              "text": "Claim in ==one statement==, commit at once, then wait on the **HELD** row. The DB constraint is the final judge, Redis only a hint."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Payments and Booking Confirmation (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Payments and Booking Confirmation (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Charge} the user for a ==hold== (hold_id, 8 min window)",
+                "Confirm the booking ==exactly once==",
+                "Issue the ticket with a **QR code**",
+                "Payment service wraps ==UPI, card, wallet== behind one interface",
+                "The **gateway webhook** confirms success, not the browser redirect"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Confirmation Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Intent",
+                    "sub": "payment for hold_id",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Redirect",
+                    "sub": "user pays at gateway",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Webhook",
+                    "sub": "HMAC verified",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "One DB txn",
+                    "sub": "seats BOOKED, booking CONFIRMED",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Event",
+                    "sub": "emit BookingConfirmed",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Tables and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "schema",
+              "spec": {
+                "tables": [
+                  {
+                    "name": "payment",
+                    "columns": [
+                      "id",
+                      "hold_id",
+                      "amount",
+                      "gateway_ref",
+                      "status",
+                      "idempotency_key"
+                    ]
+                  },
+                  {
+                    "name": "booking",
+                    "columns": [
+                      "id",
+                      "user_id",
+                      "show_id",
+                      "status",
+                      "total"
+                    ]
+                  },
+                  {
+                    "name": "booking_seat",
+                    "columns": [
+                      "booking_id",
+                      "show_id",
+                      "seat_id"
+                    ]
+                  }
+                ],
+                "links": [
+                  {
+                    "from": "booking_seat",
+                    "to": "booking"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Endpoint",
+                "Rule"
+              ],
+              "rows": [
+                [
+                  "`POST /payments`",
+                  "`Idempotency-Key` header, a retry returns the same intent"
+                ],
+                [
+                  "`POST /webhooks/gateway`",
+                  "verify the ==HMAC== over the raw body before parsing or acting on it"
+                ],
+                [
+                  "`GET /bookings/{id}`",
+                  "booking status plus ticket QR"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Payment succeeds after the hold expired",
+                "rows": [
+                  [
+                    "s"
+                  ],
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "s": {
+                    "text": "Webhook: payment SUCCESS",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "q1": {
+                    "text": "Seats still free?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Re-take seats, confirm",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "b": {
+                    "text": "Auto-refund in same handler",
+                    "shape": "box",
+                    "ink": "red"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "s",
+                    "to": "q1"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Duplicate webhook**: the conditional ==UPDATE== is the dedupe",
+                "0 rows affected = duplicate, return `200`",
+                "Unique index on `gateway_ref` is only a backstop: one payment row per ref",
+                "**Gateway timeout**: poll the gateway status API after ==30 s=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE payment SET status='SUCCESS'",
+                "WHERE gateway_ref=:ref AND status='PENDING';",
+                "-- 0 rows affected = duplicate, return 200",
+                "CREATE UNIQUE INDEX ux_payment_gateway_ref",
+                "  ON payment(gateway_ref);"
+              ],
+              "note": "dedupe by state change, index as safety net"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Payment success rate",
+                  "above ==92%=="
+                ],
+                [
+                  "Webhook-to-confirm latency",
+                  "under ==2 s=="
+                ],
+                [
+                  "Ticket delivery p99",
+                  "under ==10 s=="
+                ],
+                [
+                  "Auto-refund count",
+                  "tracked, alert on a spike"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Common mistake",
+              "text": "Never confirm from the **browser redirect**. The user can close the tab or forge the URL. Only the ==signed webhook== books seats."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Virtual Queue for High-Demand Releases (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Virtual Queue for High-Demand Releases (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Role and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Shield== Inventory and Payment from a flash crowd of {red:1M users}",
+                "==Admit fairly==: first come, first served, in controlled batches",
+                "Queue sits in front of the booking flow, not inside it"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Enabled **per movie** by ops, or auto-on when requests pass ==2,000/s==",
+                "Waiting page and status reads: served from the {blue:CDN edge}",
+                "Queue order: {purple:Redis sorted set}",
+                "Normal movies skip the queue entirely"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Join, Wait, Admit",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Join",
+                    "sub": "get a position",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Poll",
+                    "sub": "every 5 s",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Admitter",
+                    "sub": "N per tick",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Token",
+                    "sub": "valid 10 min",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==N per tick== matches measured booking throughput, e.g. {green:500/s}",
+                "Drain time for 1M users at 500/s: ==2,000 s== (about 33 min)",
+                "1M clients polling every 5 s = 200k status reads/s, so serve them from CDN or cache, not the DB"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "ZADD queue:{movie} NX <arrival_ms> <user_id>",
+                "ZRANK queue:{movie} <user_id>",
+                "ZPOPMIN queue:{movie} 500"
+              ],
+              "note": "join (NX keeps the first place), position, admit one tick"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Item",
+                "Detail"
+              ],
+              "rows": [
+                [
+                  "`queue:{movie}`",
+                  "ZSET, score = arrival timestamp, member = `user_id`"
+                ],
+                [
+                  "Admission token",
+                  "signed ==JWT== with `movie_id` and expiry (10 min)"
+                ],
+                [
+                  "`POST /queue/join`",
+                  "returns position; safe to repeat"
+                ],
+                [
+                  "`GET /queue/status`",
+                  "returns position and ==ETA== (or the token when admitted)"
+                ],
+                [
+                  "Booking APIs",
+                  "{red:reject} any request without a valid token"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Refresh loses place: key position by ==user_id== and make join idempotent",
+                "Bots: require ==login==, ==CAPTCHA== and one queue slot per account",
+                "Token reuse after expiry: booking APIs check the JWT signature and `exp`"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target / meaning"
+              ],
+              "rows": [
+                [
+                  "Queue length",
+                  "drains toward 0"
+                ],
+                [
+                  "Admit rate vs booking success rate",
+                  "admit must not outrun success"
+                ],
+                [
+                  "Time in queue",
+                  "==p95== tracked"
+                ],
+                [
+                  "Abandon rate",
+                  "users leaving the queue"
+                ],
+                [
+                  "5xx on Inventory",
+                  "stay under ==0.1%=="
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Tune the admitter",
+              "text": "If Inventory 5xx rises above ==0.1%==, lower N per tick. The admit rate must follow **measured booking throughput**, not a fixed guess."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cancellations and Refunds (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Cancellations and Refunds (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Policy",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Let users ==cancel== before a cutoff",
+                "==Release the seats== back to inventory",
+                "==Return money== per policy, to the original payment method",
+                "{blue:Theatre-cancelled show}: refund 100% **automatically**, no user action"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "When",
+                "Refund"
+              ],
+              "rows": [
+                [
+                  "Until 4 h before showtime",
+                  "{green:100%} of ticket price"
+                ],
+                [
+                  "Until 2 h before showtime",
+                  "{orange:50%}"
+                ],
+                [
+                  "Under 2 h",
+                  "{red:none}"
+                ],
+                [
+                  "Convenience fee",
+                  "**never** refunded"
+                ],
+                [
+                  "Theatre cancels show",
+                  "{green:100%}, automatic"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "2. Cancel Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "POST cancel to REFUNDED",
+                "steps": [
+                  {
+                    "text": "POST cancel",
+                    "note": "CONFIRMED → CANCELLING",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Seats released",
+                    "note": "BOOKED → AVAILABLE",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Refund request",
+                    "note": "row created",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Gateway refund",
+                    "note": "called with idempotency key",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "CANCELLED",
+                    "note": "CANCELLING → CANCELLED",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "REFUNDED",
+                    "note": "CANCELLED → REFUNDED",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Every state change writes a `booking_audit` row",
+                "Seats go back to ==AVAILABLE== before any money moves"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Tables and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE refund (id, booking_id, amount,",
+                "  status, gateway_ref,",
+                "  idempotency_key UNIQUE);",
+                "CREATE TABLE booking_audit (booking_id,",
+                "  from_state, to_state, at);"
+              ],
+              "note": "one refund per idempotency_key"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "API",
+                "Does"
+              ],
+              "rows": [
+                [
+                  "`POST /bookings/{id}/cancel`",
+                  "starts the cancel flow"
+                ],
+                [
+                  "`GET /refunds/{id}`",
+                  "refund status"
+                ],
+                [
+                  "Refund destination",
+                  "original payment method"
+                ],
+                [
+                  "Refund time",
+                  "==3 to 7 days== to reach the user"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Gateway refund call fails: **retry with exponential backoff**, e.g. 1 s, 2 s, 4 s",
+                "Every retry reuses the ==same idempotency key==, so no double refund",
+                "Theatre cancels a show: batch of up to ==50,000 refunds==",
+                "Batch is **throttled** to gateway limits, e.g. 100/s means about 8 min"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics",
+              "items": [
+                "Refund success rate",
+                "Time to refund initiation under ==1 minute==",
+                "Refunds stuck over ==24 h==: alert",
+                "Cancellation rate about ==8%=="
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never double refund",
+              "text": "A retry that makes a **new** idempotency key is a new refund. Create the key once with the `refund` row and reuse it on every attempt."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Notifications and Ticket Delivery (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Notifications and Ticket Delivery (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Send ==booking confirmation== and the **QR ticket** after payment",
+                "Send ==show reminders== and **cancellation / refund** updates",
+                "Channels: {blue:push}, {green:SMS}, {purple:email}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Kafka topics",
+                    "sub": "BookingConfirmed, BookingCancelled, RefundProcessed",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Consumers",
+                    "sub": "one group per topic",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Channel workers",
+                    "sub": "push, SMS, email",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Provider",
+                    "sub": "primary, then fallback",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Notification is ==async==: booking confirm never waits on SMS",
+                "Each channel has its own worker, so a slow SMS cannot block push",
+                "Each worker has a ==primary and a fallback provider=="
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Delivery Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Event consumed",
+                    "note": "from Kafka",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Template rendered",
+                    "note": "by channel + locale",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "QR generated",
+                    "note": "from signed booking_id",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Sent",
+                    "note": "to provider",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Status recorded",
+                    "note": "notification row",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{orange:Reminder} is scheduled ==2 hours before showtime== when the booking is confirmed",
+                "QR carries a ==signed booking_id==, so a forged ticket fails verification at the gate"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Tables and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "schema",
+              "spec": {
+                "tables": [
+                  {
+                    "name": "notification",
+                    "columns": [
+                      "id",
+                      "booking_id",
+                      "channel",
+                      "status",
+                      "attempts",
+                      "sent_at"
+                    ]
+                  },
+                  {
+                    "name": "template",
+                    "columns": [
+                      "id",
+                      "channel",
+                      "locale",
+                      "body"
+                    ]
+                  }
+                ],
+                "links": []
+              }
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /notify",
+                "  {booking_id, type, channel}",
+                "GET /bookings/{id}/ticket"
+              ],
+              "note": "POST /notify is internal only"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Response"
+              ],
+              "rows": [
+                [
+                  "SMS provider down",
+                  "Fail over to a ==second provider== after **3 attempts**"
+                ],
+                [
+                  "Duplicate event",
+                  "Dedupe on ==(booking_id, type)==, so no double send"
+                ],
+                [
+                  "Consumer crash",
+                  "Kafka redelivers; the dedupe makes the retry safe"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Confirmation delivered",
+                  "within ==10 s== for 99%"
+                ],
+                [
+                  "Delivery failure rate",
+                  "under ==1%=="
+                ],
+                [
+                  "Consumer lag",
+                  "under ==5 s=="
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Ticket never depends on SMS",
+              "text": "`GET /bookings/{id}/ticket` ==always works from the app== even if SMS and email fail. Notifications are a convenience copy."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale and the Hot Show",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Shard the seat store by ==show_id==: one show is one shard, so **no cross-shard transactions**",
+                "{blue:Read replicas} and {red:Redis} serve seat maps; writes go only to the shard primary",
+                "5M bookings/day = ~60/s avg, 600/s peak: fits a ==few Postgres shards==",
+                "Per-show seat rows: 10M seat rows/day across all shows"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Router",
+                    "sub": "hash(show_id)",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Shard primary",
+                    "sub": "holds, bookings",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Replicas + Redis",
+                    "sub": "seat-map reads",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A blockbuster show is ==one shard== and cannot be split: ~3,300 req/s on its seat maps",
+                "Bound contention with the {orange:queue admission rate} (about 500 users/s)",
+                "Add **per-show row locking**: `SELECT ... FOR UPDATE` ordered by seat_id, held a few ms"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Failure Handling",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Payment or hold timeout ==releases the seats==: sweeper every 10 s, the DB is the truth",
+                "**Outbox pattern**: event row written in the same DB transaction, relay publishes after commit",
+                "Multi-AZ DB with automatic ==failover under 30 s=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Outbox: no lost events",
+                "steps": [
+                  {
+                    "text": "One transaction",
+                    "note": "seats BOOKED + outbox row",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Commit",
+                    "note": "both or neither",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Relay",
+                    "note": "polls outbox",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Kafka",
+                    "note": "BookingConfirmed",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Decision",
+                "We choose",
+                "Why",
+                "Price paid"
+              ],
+              "rows": [
+                [
+                  "Seats: consistency vs availability",
+                  "**Consistency**",
+                  "An oversold seat is worse",
+                  "A booking may briefly fail"
+                ],
+                [
+                  "Hold TTL length",
+                  "**8 minutes**",
+                  "Covers slow UPI payments",
+                  "Seats stay locked a bit longer"
+                ],
+                [
+                  "Shorter TTL",
+                  "Not chosen",
+                  "Frees seats faster",
+                  "Loses slow payers"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Qs and Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Double booking?** One conditional `UPDATE ... WHERE status='AVAILABLE'` plus unique (show_id, seat_id)",
+                "**Pay after hold expiry?** Webhook re-takes seats if still free, else auto-refund in the same handler",
+                "**1M users on release day?** Virtual queue (ZSET), admit about 500/s, signed 10-minute token",
+                "**10,000-seat stadium map?** Layout cached at CDN by section; status as a bitmap (10,000 seats = 1.25 KB)"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Caching seat status as truth: the hold API decides, the map is only a hint",
+                "Relying on Redis TTL alone for release: keep the sweeper, the DB is truth",
+                "Confirming from the browser redirect: only the signed gateway webhook confirms"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Pick consistency",
+              "text": "A ==briefly failed booking== can be retried; an **oversold seat** cannot be fixed at the door."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cheatsheet: Movie Ticket Booking Design (BookMyShow)",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Cheatsheet: Movie Ticket Booking Design (BookMyShow)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. States and Numbers",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "AVAILABLE",
+                    "sub": "free",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "HELD",
+                    "sub": "8 min TTL",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "BOOKED",
+                    "sub": "paid",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "CONFIRMED",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "CANCELLING",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "CANCELLED",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "REFUNDED",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Number",
+                "Value"
+              ],
+              "rows": [
+                [
+                  "Bookings, average",
+                  "==60/s=="
+                ],
+                [
+                  "Bookings, evening peak (10x)",
+                  "==600/s=="
+                ],
+                [
+                  "Blockbuster seat-map load",
+                  "==3,300 req/s== on one movie"
+                ],
+                [
+                  "Seat map read",
+                  "p99 under ==200 ms=="
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Double Booking and Confirmation",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One ==conditional UPDATE==, never read-then-write",
+                "0 rows affected = {red:lost the race}",
+                "Last safety net: ==unique (show_id, seat_id)== on `booking_seat`"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE show_seat",
+                "SET status='HELD', version=version+1",
+                "WHERE show_id=? AND seat_id=?",
+                "  AND status='AVAILABLE';"
+              ],
+              "note": "rows affected = 0 means the seat is taken"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Payment intent",
+                    "sub": "Idempotency-Key",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Gateway",
+                    "sub": "user pays",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Webhook",
+                    "sub": "HMAC verified",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "One DB txn",
+                    "sub": "BOOKED + CONFIRMED",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Confirmation rules",
+              "items": [
+                "Confirm from the ==gateway webhook==, never the browser redirect",
+                "`Idempotency-Key` on every payment call",
+                "==Unique `gateway_ref`== backs up the PENDING to SUCCESS dedupe"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "3. Queue and Refunds",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redis ==ZSET== `queue:{movie}`, score = arrival time",
+                "Admit at ==measured booking throughput== per tick",
+                "Token: ==signed JWT==, valid ==10 minutes==",
+                "Booking APIs reject requests without a valid token"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Time before showtime",
+                "Refund"
+              ],
+              "rows": [
+                [
+                  "4 h or more before",
+                  "{green:100%}"
+                ],
+                [
+                  "2 h to 4 h before",
+                  "{orange:50%}"
+                ],
+                [
+                  "Under 2 h",
+                  "{red:0%}"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Refund retries reuse the ==same idempotency key==",
+                "No double refund on gateway failure",
+                "Cancel deletes the `booking_seat` rows, so the plain unique key frees the seat"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never trust the shortcut",
+              "text": "The seat map is a ==hint==, Redis TTL is not the release, and the browser redirect is not payment. The DB and the webhook are the truth."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Spot the bug: two users click seat 12 of show 7 at the same instant. Both calls run the code below. What can happen, and what is the fix?",
+              "example_code": [
+                "SELECT status FROM show_seat WHERE show_id=7 AND seat_id=12;",
+                "-- app code: if status == 'AVAILABLE' ...",
+                "UPDATE show_seat SET status='HELD' WHERE show_id=7 AND seat_id=12;"
+              ],
+              "a_bullets": [
+                "Both SELECTs can return `AVAILABLE` before either UPDATE runs, so both users get a hold: a check-then-update race.",
+                "The UPDATE has no condition on status, so the second one silently overwrites the first.",
+                "Fix: one conditional statement, `UPDATE ... SET status='HELD' WHERE show_id=7 AND seat_id=12 AND status='AVAILABLE'`.",
+                "Rows affected = 1 means you won the seat. Rows affected = 0 means you lost the race, so reject that user.",
+                "The unique (show_id, seat_id) on `booking_seat` stays as a last safety net, not as the main guard."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The gateway delivers the same success webhook twice at the same moment, and the handler runs the statement below on both. Predict the rows affected for each. What does the unique index on gateway_ref add?",
+              "example_code": [
+                "UPDATE payment SET status='SUCCESS'",
+                "WHERE gateway_ref=? AND status='PENDING';"
+              ],
+              "a_bullets": [
+                "Both UPDATEs target the same row, so the row lock serializes them: one runs first, the other waits.",
+                "The first matches `PENDING` and affects 1 row, so it marks the seats BOOKED and confirms the booking.",
+                "The second then sees `SUCCESS`, matches nothing and affects 0 rows. It returns 200 and does no work: a duplicate.",
+                "The conditional UPDATE is what dedupes the two deliveries. The row lock makes it safe under a race.",
+                "The unique index on `gateway_ref` only stops a second payment row being inserted for the same gateway_ref, for example from a buggy insert path. It does not decide between racing webhooks."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A user pays through UPI and the webhook arrives at minute 9. The hold expired at minute 8 and the sweeper has released the seats. What should the webhook handler do?",
+              "a_bullets": [
+                "Money was taken, so the handler cannot just drop the event.",
+                "In one transaction, try to re-take the seats with a conditional UPDATE `WHERE status='AVAILABLE'`.",
+                "If every seat was still free, mark them BOOKED, set the booking CONFIRMED and emit `BookingConfirmed`.",
+                "If another user grabbed even one seat, the booking cannot complete. Auto-refund in the same handler.",
+                "Confirm from the webhook, never from the browser redirect: the user may close the tab after paying."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Redis restarts and every hold:{show}:{seat} TTL key disappears while 500 seats are HELD. What happens to those seats, and why does the design survive it?",
+              "a_bullets": [
+                "The DB rows still say `HELD` with an `expires_at`, and the DB is the source of truth.",
+                "The sweeper runs every 10 s and releases rows where `expires_at < now()`, so the seats free up on time.",
+                "Worst case, the release lags by about one sweeper interval, and the target is under 15 s.",
+                "If release depended only on the Redis TTL, those 500 seats would stay HELD forever and nobody could buy them.",
+                "Redis is a fast release signal and a cache, not the record of who holds what."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "During a blockbuster queue, a user in position 40,000 refreshes the page. Why does their place survive, and what would go wrong otherwise?",
+              "a_bullets": [
+                "The ZSET `queue:{movie}` uses member = user_id and score = arrival timestamp.",
+                "Join is idempotent: adding an existing user_id keeps the original score, so the position does not change.",
+                "If join created a new entry with the current time, a refresh would send the user to the back.",
+                "Users would then spam refresh or open several tabs, which adds load right when Inventory is protected by the queue.",
+                "One slot per account (login plus CAPTCHA) stops bots from holding many places."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

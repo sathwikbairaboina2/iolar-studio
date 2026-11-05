@@ -1,0 +1,115 @@
+{
+  "title": "Networking for Backend Engineers: Quick Revision",
+  "summary": "Night-before revision notes on how a request travels: DNS, TCP/UDP, HTTP versions, TLS cost, proxies, CDNs and real-time transports (long polling, WebSockets, SSE).",
+  "chapters": [
+    {
+      "title": "DNS Resolution and Caching",
+      "points": [
+        "Resolution chain: browser cache → OS cache → recursive resolver → root → TLD (.com) → authoritative server; the resolver caches the answer and returns it",
+        "Record types: A (IPv4), AAAA (IPv6), CNAME (alias to another name, not allowed at the zone apex), MX (mail), TXT (verification/SPF), NS (delegation)",
+        "TTL on each record sets how long every cache may keep it; lowering TTL before a migration makes cutover fast, raising it afterwards cuts lookups",
+        "Negative caching: NXDOMAIN answers are cached too (governed by the SOA minimum), so a just-created record may keep 'not existing' for a while",
+        "Debug: dig example.com +trace shows each hop; dig @8.8.8.8 example.com A bypasses your local resolver; a changed record still looks old until the TTL expires"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "TCP vs UDP",
+      "points": [
+        "TCP: connection-oriented, ordered, reliable via ACKs and retransmits; 3-way handshake SYN → SYN-ACK → ACK costs 1 RTT before any data",
+        "UDP: connectionless datagrams, no ordering, no retransmit, no handshake; low overhead, suited to DNS, video/voice, games, QUIC",
+        "TCP adds flow control (receiver window) and congestion control (slow start, congestion window); a new connection starts slow and ramps up",
+        "TCP head-of-line blocking: one lost packet stalls all later bytes on that connection until retransmitted",
+        "Pick TCP when every byte must arrive in order (HTTP, databases, SSH); pick UDP when fresh data beats complete data or the app handles loss itself"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "HTTP/1.1 vs HTTP/2 vs HTTP/3 and TLS Cost",
+      "points": [
+        "HTTP/1.1: text protocol, keep-alive reuses a connection, but one request at a time per connection, so browsers open about 6 parallel connections per host",
+        "HTTP/2: binary framing, many multiplexed streams on one TCP connection, HPACK header compression; still suffers TCP head-of-line blocking on packet loss",
+        "HTTP/3: HTTP over QUIC on UDP; streams are independent so a lost packet stalls only its own stream; connection migration survives network changes",
+        "TLS 1.2 handshake costs 2 RTT on top of the TCP handshake; TLS 1.3 needs 1 RTT, and 0-RTT resumption can send data immediately but is replayable, so use it only for idempotent requests",
+        "QUIC merges transport and TLS 1.3 handshakes into 1 RTT total; reuse connections and enable session resumption to avoid repeating the cost; HTTP/2 domain sharding is now an anti-pattern"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Forward vs Reverse Proxies",
+      "points": [
+        "Forward proxy sits in front of clients and acts for them: egress filtering, anonymity, corporate caching; the server sees the proxy's IP",
+        "Reverse proxy sits in front of servers and acts for them: TLS termination, load balancing, caching, compression, rate limiting (nginx, HAProxy, Envoy)",
+        "Key difference: a forward proxy hides the client from the server; a reverse proxy hides the servers from the client",
+        "Behind a reverse proxy the app sees the proxy's IP, so read the real client from X-Forwarded-For / X-Forwarded-Proto and trust those headers only from your own proxy",
+        "Minimal nginx: location /api/ { proxy_pass http://backend; proxy_set_header Host $host; proxy_set_header X-Forwarded-For $remote_addr; } — forgetting Host sends the upstream name as Host, so the backend serves the wrong vhost or a 404; an unreachable upstream gives 502 and too-short proxy timeouts give 504"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "CDNs: Push vs Pull, Cache Keys, TTLs, Purging",
+      "points": [
+        "Pull CDN: edge fetches from origin on first miss, then caches (low effort, first request is slow); push CDN: you upload content to the CDN ahead of time (good for large, rarely changing files, but you manage storage and sync)",
+        "Cache key = URL path + query string (+ headers named in Vary); unneeded query params or Vary: Cookie/User-Agent fragment the cache and wreck the hit ratio",
+        "TTL is controlled by Cache-Control: max-age (browser) and s-maxage (shared/CDN caches); public vs private decides whether the CDN may store the response; check the X-Cache: HIT/MISS header",
+        "Purging: invalidate by URL, tag/surrogate-key or wildcard; it is slow and sometimes costs money, so prefer versioned filenames (app.3f9a.js) with a long TTL and a short TTL on index.html",
+        "Mistakes: caching responses with Set-Cookie or personalized data, forgetting to purge after a deploy, no origin shield so a miss storm hits the origin; stale-while-revalidate keeps serving while it refreshes"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Long Polling vs WebSockets vs SSE, and Cheat Sheet",
+      "points": [
+        "Long polling: client sends a request, server holds it until data or timeout, client immediately re-requests; works everywhere over plain HTTP but costs a request per event and adds latency",
+        "WebSocket: HTTP Upgrade (101 Switching Protocols) to a persistent full-duplex channel; best for chat, games, collaboration; needs heartbeat pings, reconnect logic, and sticky routing or a pub/sub backplane to scale",
+        "SSE: one-way server→client over a normal HTTP response (Content-Type: text/event-stream) with built-in auto-reconnect and Last-Event-ID; best for feeds and notifications; limited to about 6 connections per host on HTTP/1.1",
+        "Choose: SSE for one-way push, WebSocket for two-way low-latency, long polling as the fallback; proxies and load balancers need long idle timeouts and buffering off for streams",
+        "CHEAT SHEET: DNS = TTL-cached name→IP | TCP = reliable + 1 RTT handshake, UDP = fast + lossy | H2 multiplexes over TCP, H3 over QUIC/UDP | TLS 1.3 = 1 RTT | reverse proxy = server side, forward = client side | CDN: version filenames, set s-maxage, avoid Vary: Cookie | realtime: SSE → WebSocket → long polling"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": []
+    }
+  ]
+}

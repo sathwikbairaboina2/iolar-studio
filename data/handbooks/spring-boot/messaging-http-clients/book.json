@@ -1,0 +1,110 @@
+{
+  "title": "Spring Service Calls and Kafka Messaging: Quick Revision",
+  "summary": "Quick revision notes on calling other services with RestClient, WebClient and declarative HTTP interfaces, with timeouts and error handling, then Spring Kafka producers, @KafkaListener consumers, retries and dead-letter topics.",
+  "chapters": [
+    {
+      "title": "HTTP Clients: The Mental Model",
+      "points": [
+        "RestClient (Spring 6.1+) is the synchronous, fluent client that replaces RestTemplate for new code; build it with RestClient.builder().baseUrl(...).build() or inject the auto-configured RestClient.Builder",
+        "WebClient is the reactive, non-blocking client from spring-webflux: it returns Mono/Flux and nothing is sent until you subscribe, with .block() as the escape hatch to wait for the result",
+        "Comparison: RestClient blocks a thread and suits MVC and virtual threads; WebClient suits streaming and high fan-out calls; RestTemplate is in maintenance mode, so avoid it in new code",
+        "Always build clients from the injected Builder, not a bare new, so Boot's message converters, observability and customizers apply",
+        "Mistake: calling block() inside a reactive pipeline, or building a new client per request, which throws away the connection pool"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Making Calls and Declarative HTTP Interfaces",
+      "points": [
+        "RestClient call chain: client.get().uri(\"/users/{id}\", id).retrieve().body(User.class), and use body(new ParameterizedTypeReference<List<User>>(){}) for generics",
+        "POST with a body: client.post().uri(\"/users\").contentType(APPLICATION_JSON).body(dto).retrieve().toBodilessEntity(), and use toEntity(User.class) when you need status or headers",
+        "WebClient equivalent: webClient.get().uri(\"/users/{id}\", id).retrieve().bodyToMono(User.class), and bodyToFlux(User.class) for streams",
+        "Declarative interface: annotate an interface with @HttpExchange(\"/users\") and methods with @GetExchange(\"/{id}\") or @PostExchange, taking @PathVariable, @RequestParam and @RequestBody",
+        "Create the proxy with HttpServiceProxyFactory.builderFor(RestClientAdapter.create(restClient)).build().createClient(UserApi.class), exposed as a @Bean; the adapter can instead wrap a WebClient. Mistake: forgetting that a missing adapter or registration yields no bean, and that the interface is only a proxy"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Timeouts and Error Handling for Outbound Calls",
+      "points": [
+        "Defaults are effectively unbounded, so always set a connect timeout and a read timeout; a missing timeout lets one slow dependency exhaust your thread pool",
+        "RestClient timeouts: set them on the request factory, for example JdkClientHttpRequestFactory with HttpClient.newBuilder().connectTimeout(...) plus setReadTimeout(...), or use Boot's spring.http.client.connect-timeout and read-timeout properties",
+        "WebClient timeouts: Reactor Netty HttpClient.create().option(CONNECT_TIMEOUT_MILLIS, 2000).responseTimeout(Duration.ofSeconds(3)), wrapped in ReactorClientHttpConnector; a per-call .timeout(Duration) on the Mono also works",
+        "retrieve() throws on 4xx and 5xx: RestClient raises HttpClientErrorException and HttpServerErrorException (both RestClientResponseException), WebClient raises WebClientResponseException; customize with .onStatus(HttpStatusCode::is4xxClientError, (req, res) -> { throw new MyException(res.getStatusCode()); })",
+        "Mistake: retrying non-idempotent POSTs blindly, or catching the generic Exception and hiding the status; with WebClient use retryWhen(Retry.backoff(3, Duration.ofMillis(200))) only for idempotent calls and transient errors"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Kafka Producers and @KafkaListener Consumers",
+      "points": [
+        "Producer: inject KafkaTemplate<String,Order> and call send(topic, key, value), which returns a CompletableFuture<SendResult> (not blocking); attach whenComplete to log failures",
+        "The record key decides the partition, so the same key always lands on the same partition and keeps per-key ordering; a null key spreads records across partitions with no ordering guarantee",
+        "Reliability settings: acks=all plus enable.idempotence=true avoid loss and duplicates on producer retry; configure spring.kafka.producer.key-serializer and value-serializer (JsonSerializer for objects)",
+        "Consumer: @KafkaListener(topics=\"orders\", groupId=\"billing\") on a method; consumers in one group split the partitions between them, different groups each get every record, and concurrency cannot usefully exceed the partition count",
+        "Offset handling: the default AckMode.BATCH commits after the poll batch is processed; use MANUAL with Acknowledgment.acknowledge() for control, and set auto.offset.reset=earliest for a new group. Mistake: a slow listener exceeds max.poll.interval.ms and triggers a rebalance, and the value deserializer trusts packages only if spring.json.trusted.packages is set"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Retries and Dead-Letter Topics",
+      "points": [
+        "By default a listener exception triggers DefaultErrorHandler, which retries in place 10 times with no delay and then logs and skips the record; override with a DefaultErrorHandler bean using new FixedBackOff(1000L, 3) or ExponentialBackOff",
+        "Dead-letter topic: new DefaultErrorHandler(new DeadLetterPublishingRecoverer(kafkaTemplate), backOff) publishes the failed record to <topic>.DLT on the same partition, with the exception details in headers",
+        "Non-retryable exceptions such as deserialization or validation errors should skip retries via addNotRetryableExceptions(...); wrap the deserializer in ErrorHandlingDeserializer so a poison message goes to the DLT rather than looping forever",
+        "Non-blocking retries: @RetryableTopic(attempts=\"4\", backoff=@Backoff(delay=1000, multiplier=2)) creates retry topics (orders-retry-0, orders-retry-1 ...) plus orders-dlt, and a @DltHandler method consumes the dead letters; unlike blocking retries it does not stall the partition, but it breaks ordering",
+        "Mistakes: retrying forever on a permanent failure, making listeners non-idempotent (delivery is at-least-once so duplicates happen), and never monitoring or replaying the DLT"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheat Sheet: Clients and Kafka",
+      "points": [
+        "Clients: RestClient (sync) for MVC, WebClient (reactive) for streaming, @HttpExchange interface plus HttpServiceProxyFactory for typed proxies; always build from the injected Builder",
+        "Call shape: .get().uri(...).retrieve().body(T.class) for RestClient and .bodyToMono(T.class) for WebClient; retrieve() throws on 4xx and 5xx, handle with onStatus",
+        "Timeouts: set connect and read timeouts on every client, since the default is unbounded; retry only idempotent calls with backoff",
+        "Kafka send: kafkaTemplate.send(topic, key, value) returns a future; the key picks the partition and so decides ordering; use acks=all with idempotence enabled",
+        "Consume: @KafkaListener(topics, groupId); same group shares partitions, different groups each get all records; concurrency is capped by partition count",
+        "Errors: DefaultErrorHandler with a BackOff and DeadLetterPublishingRecoverer sends to <topic>.DLT; use ErrorHandlingDeserializer for bad payloads and @RetryableTopic for non-blocking retries; keep consumers idempotent"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,209 @@
+{
+  "title": "Design a Ride-Hailing App Like Uber (System Design Case Study)",
+  "summary": "End-to-end design of an Uber-style ride-hailing backend: requirements and scale, architecture, location tracking, geospatial indexing (geohash, quadtree, H3), driver matching, the trip state machine, ETA, surge pricing, payments, disconnect handling, and scaling and interview trade-offs.",
+  "chapters": [
+    {
+      "title": "Cover: What This Handbook Covers (Ride-Hailing App)",
+      "points": [
+        "Scale and requirements",
+        "Location tracking",
+        "Geohash, quadtree, H3",
+        "Driver matching",
+        "Trip state machine, ETA, surge, payments"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem, Scope and Requirements (Ride-Hailing App)",
+      "points": [
+        "Scope: request ride, match nearby driver, live tracking, trip lifecycle, fare and payment; out of scope: pooling, scheduled rides, driver onboarding",
+        "Functional: rider requests ride with fare estimate, nearest driver gets offer, accept/decline, live trip tracking, pay and rate",
+        "Scale estimate: 20M riders, 5M drivers, 1.5M concurrent online drivers, 20M trips/day (about 230 trips/s average, 700/s peak)",
+        "Location writes: 1.5M drivers × 1 update per 4s ≈ 375K writes/s; each update ~100 bytes ≈ 37 MB/s ingest",
+        "NFRs: match latency p99 < 2s from request, location freshness < 5s, 99.99% availability for trip flow, no double charge or double assignment (strong consistency for trip and payment, eventual for location)"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Ride-Hailing App)",
+      "points": [
+        "Edge: API gateway plus WebSocket gateway for driver/rider live channels (about 1.5M persistent connections, ~50K per gateway node ≈ 30+ nodes)",
+        "Core services: Location, Matching/Dispatch, Trip, Pricing, ETA/Maps, Payment, Notification; each owns its own datastore",
+        "Hot location state in Redis (in-memory geo index); durable trip and payment data in sharded SQL; location history on Kafka then object storage",
+        "Kafka event backbone: location.updates, trip.events, payment.events; consumers for analytics, surge calculation and fraud",
+        "Request flow: rider app → gateway → Trip service creates trip → Matching queries Location index → offer pushed to driver over WebSocket or push"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "Location Updates and Tracking Service (Ride-Hailing App)",
+      "points": [
+        "Responsibility: ingest driver GPS pings every 4s (every 1s during a trip), keep latest position per driver, fan out to the rider during a trip",
+        "Design: driver app → WebSocket → Location service → write latest position to Redis (TTL 30s) and append to Kafka; batch and adaptive frequency save battery",
+        "Data model: Redis key driver:{id} → {lat, lng, heading, speed, ts, status}; Kafka history partitioned by driver_id; 90-day trip trace in S3 (about 3 TB/day raw)",
+        "API: WS message loc.update {lat,lng,ts,heading}; GET /trips/{id}/driver-location for polling fallback; reject updates with stale ts or impossible speed (> 200 km/h)",
+        "Failure and metrics: Redis shard loss rebuilt from the next ping within 4s; track ingest p99 latency < 100ms, location staleness p99, dropped-update rate, active connection count"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Geospatial Indexing: Geohash, Quadtree, H3 (Ride-Hailing App)",
+      "points": [
+        "Geohash: interleaves lat/lng bits into a base32 string; shared prefix = nearby; precision 6 ≈ 1.2 km × 0.6 km cell, 7 ≈ 150 m; stored as Redis sorted set or prefix index",
+        "Geohash gotcha: neighbors across a cell edge can have totally different prefixes, so always query the cell plus its 8 neighbors; cell shapes distort near the poles",
+        "Quadtree: recursively splits a region into 4 when a cell exceeds ~100 drivers; adapts to density (dense city = deep, desert = shallow) but is a pointer structure, harder to shard and update at 375K writes/s",
+        "H3 (Uber): hexagonal grid, 16 resolutions; res 8 ≈ 0.74 km² per cell, res 9 ≈ 0.1 km²; all 6 neighbors are equidistant, so k-ring lookups are uniform and surge cells are consistent",
+        "Choice: geohash/H3 in Redis for the live driver index (O(1) cell lookup, easy to shard by cell id), quadtree for in-memory static or low-churn data; Redis GEOSEARCH is O(N+log M) for a radius query"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Driver Matching and Dispatch (Ride-Hailing App)",
+      "points": [
+        "Responsibility: pick the best available driver for a ride request within the match SLA of 2s p99, 5–15s end to end including driver accept",
+        "Design: query H3 res-8 cell plus k-ring(1–2) for drivers with status=AVAILABLE, rank by ETA to pickup (not straight-line distance), then rating and acceptance rate",
+        "Flow: offer to top driver with a 10–15s timeout via push/WebSocket → on decline or timeout offer to the next → after 3 attempts expand the radius; batched global matching (every 2s window) beats greedy per request",
+        "Atomic claim: set driver status AVAILABLE→OFFERED with Redis SET NX or Lua compare-and-set and a TTL, so one driver never receives two offers and one ride never gets two drivers",
+        "Data and metrics: dispatch:{trip_id} offer log with attempt count; API POST /rides, POST /offers/{id}/accept; track match rate, time-to-match p50/p99, offer acceptance rate (~60–70%), cancel-after-match rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Trip State Machine (Ride-Hailing App)",
+      "points": [
+        "States: REQUESTED → MATCHING → DRIVER_ASSIGNED → DRIVER_ARRIVED → IN_PROGRESS → COMPLETED → PAID; side exits CANCELLED (rider or driver) and NO_DRIVER_FOUND",
+        "Transitions are guarded and idempotent: UPDATE trips SET state=:new, version=version+1 WHERE id=:id AND state=:expected, so a duplicate or racing event is rejected",
+        "Data model: trips(id, rider_id, driver_id, state, version, pickup, dropoff, fare_estimate, requested_at, started_at, ended_at) sharded by trip_id; append-only trip_events table for audit and replay",
+        "APIs: POST /trips, POST /trips/{id}/start, /end, /cancel with an Idempotency-Key header; every transition publishes trip.events to Kafka for pricing, payment and notifications",
+        "Failure and metrics: stuck-state sweeper moves trips idle > 10 min in DRIVER_ASSIGNED to CANCELLED; track state dwell times, cancellation rate (~10–15%), illegal-transition rejections, stuck-trip count"
+      ],
+      "shape": [
+        "responsibilities",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "ETA and Routing Service (Ride-Hailing App)",
+      "points": [
+        "Responsibility: pickup ETA for ranking drivers, trip ETA shown to rider, and distance for fare; target p99 < 100ms per estimate, ~100K estimates/s at peak",
+        "Road graph: nodes are intersections and edges are road segments with live speed; shortest path by Dijkstra is too slow, so use contraction hierarchies or A* with precomputed partitions",
+        "Two-stage matching: cheap haversine filter picks 20 candidates, then batch ETA call ranks them (calling routing for all 200 nearby drivers would blow the latency budget)",
+        "Live traffic: edge speeds updated from driver GPS traces (map-matched, aggregated per 1-minute window per segment) plus historical speed by hour-of-week; ML model corrects the graph ETA (error target < 10%)",
+        "Failure and metrics: if routing is down fall back to haversine distance ÷ 25 km/h city average; API POST /eta/batch {origin, destinations[]}; track ETA error (predicted vs actual), cache hit rate on cell-to-cell pairs, p99 latency"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "example",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Surge Pricing (Ride-Hailing App)",
+      "points": [
+        "Responsibility: balance supply and demand per H3 cell; multiplier = f(open ride requests ÷ available drivers) recomputed every 1–2 minutes",
+        "Pipeline: Kafka trip requests and driver availability → stream job (Flink) aggregates counts per H3 res-8 cell in a sliding 5-minute window → writes multiplier to Redis surge:{cell}",
+        "Example: 40 requests vs 10 available drivers in a cell → ratio 4 → multiplier capped at 2.5× for the cell; smooth with exponential moving average and neighbor-cell averaging to avoid edge cliffs",
+        "Price lock: fare estimate shows the multiplier and is valid for ~2 minutes via a signed quote id, so the rider is charged what they saw; API GET /fare-estimate returns {base, multiplier, quote_id, expires_at}",
+        "Failure and metrics: stale or missing multiplier defaults to 1.0× (never block rides); hard cap per region and emergency override; track multiplier distribution, supply-per-cell, conversion at surge, and stream lag < 10s"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "example",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Payments and Fare Settlement (Ride-Hailing App)",
+      "points": [
+        "Responsibility: authorize on request, charge on trip end, pay out drivers, handle refunds and tips; ~230 charges/s average, never charge twice",
+        "Flow: pre-authorize card at ride request (hold estimated fare + 20%) → on COMPLETED compute final fare (base + per-km + per-min × surge) → capture → ledger entry → driver payout weekly",
+        "Idempotency: payment keyed by trip_id and a unique idempotency key sent to the PSP (Stripe-style), so a retry after timeout returns the same charge instead of creating a second",
+        "Data model: payments(id, trip_id UNIQUE, amount, currency, status AUTHORIZED/CAPTURED/FAILED/REFUNDED, psp_ref); double-entry ledger rows (rider debit, driver credit, platform fee) written in one DB transaction",
+        "Failure and metrics: card declined after trip → retry with backoff then mark debt and block next ride; PSP webhooks reconcile unknown states nightly; track auth success rate > 98%, capture latency, reconciliation mismatches (target 0), refund rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Handling Driver and Rider Disconnects (Ride-Hailing App)",
+      "points": [
+        "Detection: WebSocket heartbeat every 5s; no heartbeat for 15s marks the connection suspect; no location for 30s expires driver:{id} (TTL 30s), and a sweeper or keyspace-expiry listener ZREMs the driver from the GEO set, since sorted-set members have no TTL",
+        "Driver drops while AVAILABLE: the expiry sweeper removes them from the geo index and matching skips drivers with a missing or stale driver:{id}; while OFFERED: the offer times out and moves to the next driver; while IN_PROGRESS: keep the trip alive, never auto-cancel",
+        "Reconnect: client sends last_seen_seq and trip_id, server replays missed events and current state from the trip store, so the app resumes in the right screen after a tunnel or app kill",
+        "Rider drops mid-trip: trip continues, fare is computed from server-side GPS trace; driver app buffers locations offline (up to ~10 min) and uploads on reconnect, fare uses the buffered trace",
+        "Failure and metrics: gateway node crash → clients reconnect with jittered backoff (avoid a 50K-connection thundering herd); track reconnect rate, ghost-driver rate (shown online but dead), gap in trace per trip, offers lost due to disconnect"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "state or sequence flow",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (Ride-Hailing App)",
+      "points": [
+        "Scaling: shard the Redis geo index by city or H3 parent cell (hot cities get dedicated shards); trips sharded by trip_id; Kafka partitioned by driver_id or cell; each region runs an independent stack",
+        "Failure handling: multi-AZ per region, regional failover with driver state rebuilt from the next ping in 4s, circuit breakers and fallbacks (ETA → haversine, surge → 1.0×), idempotent retries on every write",
+        "Key trade-offs: strong consistency for trips and payments vs eventual for location; greedy vs batched matching (latency vs global optimum); polling vs WebSocket vs push; geohash simplicity vs H3 uniformity",
+        "Interview Qs: how do you avoid assigning one driver to two riders (atomic claim); why not store drivers in SQL (375K writes/s); how do you find nearby drivers at an edge (query 8 neighbors or k-ring)",
+        "Cheatsheet: 4s ping, 375K loc writes/s, H3 res 8, 2s match SLA, 10–15s offer timeout, 2.5× surge cap, idempotency key per payment, version-guarded state transitions"
+      ],
+      "shape": [
+        "summary",
+        "comparison",
+        "cheatsheet"
+      ]
+    }
+  ]
+}

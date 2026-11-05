@@ -1,0 +1,108 @@
+{
+  "title": "Proxies and Load Balancing Quick Revision",
+  "summary": "Quick revision notes on forward and reverse proxies, L4 vs L7 load balancing, balancing algorithms, health checks, sticky sessions, CDN edge caching and anycast, from mental model to a final cheat sheet.",
+  "chapters": [
+    {
+      "title": "Proxies and Load Balancers: The Mental Model",
+      "points": [
+        "Forward proxy sits in front of clients and speaks for them to the internet: used for egress control, filtering, caching and hiding client IPs; the server sees the proxy's IP",
+        "Reverse proxy sits in front of servers and speaks for them: the client sees one public address and never learns the backend IPs; used for TLS termination, routing, caching and compression",
+        "Load balancer is a reverse proxy whose main job is spreading requests across a pool of backends so no single server is the bottleneck or single point of failure",
+        "Comparison row: forward proxy is configured by the client and protects or controls clients; reverse proxy is configured by the server owner and protects or scales servers",
+        "Mistake: calling any proxy a load balancer, or assuming a single load balancer is highly available: run it as an active-passive or active-active pair with a floating or virtual IP"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "L4 vs L7 Load Balancing",
+      "points": [
+        "L4 balances on TCP/UDP connection data (src/dst IP and port) without reading the payload: very fast, protocol-agnostic, one client connection maps to one backend connection",
+        "L7 parses HTTP and can route on host, path, header, cookie or method, terminate TLS, rewrite headers, retry, and compress, at higher CPU cost",
+        "Comparison row: L4 cannot see URLs or cookies so no path routing or cookie stickiness; L7 can send /api to one pool and /static to another",
+        "Example: AWS NLB is L4 (static IP, millions of connections per second); ALB is L7 (host/path rules); nginx stream block is L4, nginx http block is L7",
+        "Mistake: putting an L7 balancer in front of long-lived non-HTTP traffic such as a database or raw TCP, or using L4 and expecting path-based routing; also an L7 balancer replaces the client IP, so read X-Forwarded-For (or use PROXY protocol) to get the real client IP"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Balancing Algorithms, Health Checks and Sticky Sessions",
+      "points": [
+        "Round robin cycles through backends in order and weighted round robin gives bigger servers more turns: best when requests cost about the same",
+        "Least connections sends to the backend with the fewest active connections: better for variable or long-lived requests; IP hash or consistent hash maps a client or key to a fixed backend and only remaps a small share when the pool changes",
+        "Active health checks probe each backend on an interval (for example GET /healthz expecting 200) and use thresholds such as 3 failures to mark unhealthy and 2 passes to restore; passive checks eject a backend after real request errors",
+        "Sticky sessions pin a client to one backend through a cookie (L7) or source-IP hash (L4): they break even balancing and lose the session if that backend dies, so prefer stateless servers with sessions in Redis or a JWT",
+        "Mistake: a health check that only tests the port or returns 200 while the database is down, or a deep check that hits the database from every balancer and takes the whole pool down; also forgetting connection draining (deregistration delay) on deploys so in-flight requests are cut"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "CDN Edge Caching and Anycast",
+      "points": [
+        "A CDN is a set of edge servers near users that cache responses from your origin: a cache hit is served from the edge, a miss goes to the origin and is stored for later requests",
+        "Cache behavior is controlled by Cache-Control: max-age for browsers, s-maxage for shared caches such as CDNs, public vs private, no-store to forbid caching, and stale-while-revalidate to serve stale content while refreshing in the background",
+        "The cache key is normally host + path + query string; add Vary headers or cookies to the key only when needed, because every extra key part lowers the hit ratio; versioned file names (app.9f3a.js) allow a year-long max-age with immutable",
+        "Anycast announces the same IP prefix from many locations through BGP, so routers deliver each packet to the topologically nearest site: it gives low latency, automatic failover when a site withdraws its route, and absorbs DDoS traffic across sites, while geo-DNS instead returns different IPs based on the resolver's location",
+        "Mistakes: caching personalized or Set-Cookie responses publicly, forgetting to purge or invalidate after a deploy (use versioned URLs instead), and assuming anycast suits long TCP connections without care since a route change can move a flow to another site mid-connection"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Everyday Commands and Config",
+      "points": [
+        "nginx reverse proxy plus pool: upstream app { least_conn; server 10.0.0.1:8080 weight=3; server 10.0.0.2:8080 max_fails=3 fail_timeout=30s; } then location / { proxy_pass http://app; }",
+        "Forward the real client details with proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme;",
+        "HAProxy backend: balance leastconn, option httpchk GET /healthz, server s1 10.0.0.1:8080 check inter 2s fall 3 rise 2, and cookie SRV insert indirect nocache with cookie s1 on the server line for stickiness",
+        "Inspect a CDN or proxy with curl -I https://site/asset: read Cache-Control, Age, X-Cache (HIT or MISS), Via and the CDN's cf-cache-status, and test an origin directly with curl --resolve site:443:ORIGIN_IP https://site/",
+        "Mistake: trusting a client-supplied X-Forwarded-For for access control or rate limiting; only trust the value appended by your own trusted proxy, and set the trusted proxy list explicitly"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Proxy and Load Balancing Cheat Sheet",
+      "points": [
+        "Forward proxy represents clients, reverse proxy represents servers, load balancer is a reverse proxy that spreads load across a pool",
+        "L4 means fast, connection-level and blind to HTTP; L7 means content-aware routing, TLS termination and header rewriting",
+        "Algorithm picks: round robin for uniform requests, least connections for uneven or long requests, consistent hash for cache or affinity needs",
+        "Health checks: probe a real /healthz, set fall/rise thresholds, and drain connections on deploy; keep sessions out of the server so stickiness is not needed",
+        "CDN: s-maxage plus versioned URLs plus a minimal cache key; anycast: one IP announced from many sites, nearest route wins, failover by route withdrawal"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

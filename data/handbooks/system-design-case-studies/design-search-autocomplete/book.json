@@ -1,0 +1,224 @@
+{
+  "title": "Search Autocomplete (Typeahead) Service: System Design Case Study",
+  "summary": "End-to-end design of a search typeahead service at 10B searches/day scale: requirements, trie with top-k, data pipeline, ranking, serving, caching, sharding, and offensive-term filtering, closing with scaling, failure handling and interview questions.",
+  "chapters": [
+    {
+      "title": "Cover: What This Handbook Covers",
+      "points": [
+        "Scope and scale estimates",
+        "Trie with top-k",
+        "Data collection pipeline",
+        "Ranking: frequency and recency",
+        "Edge caching and sharding",
+        "Offensive-term filtering"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "points": [
+        "Problem: return top 5 ranked completions per prefix as the user types (Search Autocomplete)",
+        "Functional: prefix match, top 5 suggestions, English only, no personalization in v1, offensive terms filtered",
+        "Non-functional: p99 under 100 ms end to end, 99.99% availability, eventual consistency (new trends visible within 15 min)",
+        "Scale: 10B searches/day = ~115K QPS avg; ~4 prefix requests per search with debounce = ~460K QPS avg, ~1M QPS peak",
+        "Storage: 100M unique queries x 50 B = ~5 GB raw; trie with top-5 per node ~50 GB in memory"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "points": [
+        "Two paths: read path (query service, cache, trie) and write path (log, aggregate, build trie)",
+        "Read path: client, CDN/edge cache, API gateway, suggestion service, in-memory trie replicas",
+        "Write path: search logs, Kafka, aggregator, trie builder, snapshot in object storage, hot-swap into servers",
+        "Offline rebuild every 15 min vs online trie update per query: offline wins, since writes would contend with 1M read QPS",
+        "Latency budget: edge 5 ms, gateway 10 ms, trie lookup under 1 ms, network ~30 ms, total p99 under 100 ms"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Trie with Top-K Suggestions",
+      "points": [
+        "Responsibility: map a prefix to its 5 best completions in O(L), L = prefix length",
+        "Naive: walk to the prefix node then DFS all descendants, O(L + N) and too slow at 1M QPS",
+        "Fix: store the top-k list on every node, so lookup is O(L) and k is constant; costs ~k x memory per node",
+        "Node: children map, top-k array of (query id, score); store ids and not strings to cut memory",
+        "Compress with a radix (compressed) trie to merge single-child chains and cut node count by ~5x",
+        "API: GET /v1/suggest?q=<prefix>&limit=5 returns [{text, score}] with Cache-Control max-age=300",
+        "Failure: stale or corrupt trie snapshot, so keep the previous version and roll back on checksum failure",
+        "Metrics: lookup p99 under 1 ms, trie memory per shard, empty-result rate, snapshot age"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Data Collection Pipeline",
+      "points": [
+        "Responsibility: turn raw search events into aggregated query counts for the trie builder",
+        "Flow: client log, Kafka (partition by query hash), stream aggregator with 1-min windows, hourly/weekly tables, trie builder",
+        "Log record: {query, ts, region, lang, session_id}; ~10B events/day x 100 B = ~1 TB/day",
+        "Sample 1 in 100 queries for the trie: popular queries stay accurate, and volume drops to ~10 GB/day",
+        "Failure: consumer lag or duplicates, so use idempotent aggregation keyed by (query, window) and replay from Kafka offsets",
+        "Metrics: consumer lag under 1 min, events dropped, build duration under 10 min, pipeline freshness"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Ranking: Frequency and Recency",
+      "points": [
+        "Score = frequency over a decay window; raw all-time count buries new trends",
+        "Exponential decay: score = sum(count_i x 0.5^(age_i / half-life)), with a half-life of 7 days",
+        "Blend: score = 0.7 x decayed_weekly + 0.3 x last_hour_count, so a breaking-news query rises within 15 min",
+        "Example: 'world cup' with 1M weekly searches but 0 in the last hour (score 700K) vs a new 'earthquake today' with 200K in the last hour (score 60K, rises when hourly traffic stays)",
+        "Mistake: ranking by all-time count so old queries never drop; also ties, so break them by a stable query id",
+        "Min-count threshold of 100 searches/day keeps typos and one-off queries out of the trie"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Suggestion Query Service",
+      "points": [
+        "Responsibility: stateless service that normalizes the prefix (lowercase, trim, collapse spaces) and queries the right trie shard",
+        "Flow: request, normalize, check local LRU cache, route to shard by first 2 characters, return top 5",
+        "Response: {prefix, suggestions:[{text, score}], version}; the client debounces 150 ms and cancels in-flight requests",
+        "Failure: shard down, so fail over to a replica, then fall back to a shorter prefix's result, then return an empty list; never block typing",
+        "Metrics: QPS per instance (~20K), p50/p99 latency, cache hit rate, error rate under 0.01%"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Caching at the Edge",
+      "points": [
+        "Responsibility: serve the hottest prefixes from CDN and browser, so most requests never reach the origin",
+        "Layers: browser cache (max-age 300, capped because a CDN purge cannot clear browsers), CDN edge (TTL 5 min), service local LRU, then trie",
+        "Skewed traffic: the top 1% of prefixes cover ~60-80% of requests; the hit rate target is above 85% at the edge",
+        "Cache key: normalized prefix + language + region; keep it short, 1 to 3 chars are the hottest",
+        "Failure: stale suggestions after a trie rebuild, so accept a 5 min TTL staleness and purge on a block-list update; thundering herd handled by request coalescing",
+        "Metrics: edge hit ratio above 85%, origin QPS ~150K, bytes per response under 1 KB"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Sharding the Trie",
+      "points": [
+        "Responsibility: split the ~50 GB trie across machines when one node's RAM or QPS cannot hold it",
+        "Range shard by first letters (a-c, d-f...) is simple but hot: 's' and 'c' hold far more queries than 'x'",
+        "Fix: a shard map built from measured prefix frequency, splitting heavy prefixes like 's' into 'sa-sm' and 'sn-sz'",
+        "Hash-sharding the full prefix still answers one prefix from one shard (its top-k is precomputed there), but it loses locality: neighbouring prefixes and trie walks spread across shards, and hot prefixes are harder to split; prefer prefix-range with a versioned shard map",
+        "Replication: 3 replicas per shard; 10 shards x 3 = 30 servers, each holding ~5 GB in memory",
+        "Failure: a hot shard, so add replicas to it and rebalance the shard map from the next build; a ZooKeeper/etcd-held shard map is versioned",
+        "Metrics: QPS per shard, memory per shard, skew ratio (max/avg under 2x), replica lag"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Filtering Offensive Terms",
+      "points": [
+        "Responsibility: never suggest slurs, adult, or harmful terms, and remove them within minutes of being flagged",
+        "Layers: build-time filter (blocklist plus ML classifier) before queries enter the trie, then a serve-time filter on the output",
+        "Blocklist in a hash set with normalization (leetspeak, spacing, unicode) to catch 'f@ck' style evasion",
+        "Serve-time filter handles urgent removals: a version-stamped blocklist pushed to all nodes in under 5 min, plus a CDN purge",
+        "Data model: blocked_terms(term, category, added_at, source); user reports and a human review queue feed it",
+        "Failure: false positives hide legit queries (e.g. 'scunthorpe'), so use whole-token matching and a review/allowlist path",
+        "Metrics: filtered rate, time-to-block under 5 min, user report count, false-positive appeals"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "points": [
+        "Scaling: add replicas for read QPS, add shards for memory, add regions with a local trie copy for latency",
+        "Degradation: the edge cache serves stale results if the origin dies, and the client hides the dropdown on timeout",
+        "Trade-offs: freshness vs build cost (15 min vs 1 h), top-k memory vs lookup speed, sampling vs accuracy of the long tail",
+        "Personalization: merge the global top-k with a small per-user history list at the query service, not inside the trie",
+        "Interview Q: how do you support typo tolerance? Add an edit-distance fallback only when the prefix returns fewer than 5 results",
+        "Interview Q: how do you update the trie without downtime? Build offline, load as a new version, atomically swap the pointer, keep the old one for rollback"
+      ],
+      "shape": [
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheatsheet: Typeahead Numbers and Rules",
+      "points": [
+        "Scale: ~1M peak QPS, p99 under 100 ms, 50 GB trie, 10 shards x 3 replicas",
+        "Trie: top-5 stored per node, lookup O(L), radix compression",
+        "Ranking: 0.7 x weekly decayed (7-day half-life) + 0.3 x last hour",
+        "Pipeline: Kafka, 1-min aggregation, 15-min trie rebuild, 1% sampling",
+        "Edge: TTL 5 min, hit ratio above 85%, key = prefix + lang + region",
+        "Safety: a blocklist with a serve-time filter, removal under 5 min"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

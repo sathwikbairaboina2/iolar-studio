@@ -1,0 +1,249 @@
+{
+  "title": "FastAPI Async & Database Quick Revision",
+  "summary": "Quick revision notes on how FastAPI runs async def vs def endpoints, SQLAlchemy 2.0 async sessions, session-per-request dependencies, background tasks and lifespan events.",
+  "chapters": [
+    {
+      "title": "async def vs def Endpoints",
+      "points": [
+        "async def endpoints run directly on the event loop; def endpoints are sent to a threadpool (anyio, 40 threads by default) so they do not block the loop",
+        "Rule of thumb: use async def only if everything you await is async-native; use plain def when calling blocking libraries (requests, psycopg2, time.sleep)",
+        "Comparison: async def = cheap concurrency, but one blocking call stalls ALL requests; def = isolated per request, limited by thread count",
+        "Example: async def with await asyncio.sleep(1) vs def with time.sleep(1) both stay responsive, but time.sleep inside async def freezes the server",
+        "Mistake: calling blocking code (requests.get, sync DB driver, CPU loops) inside async def; fix with def, run_in_threadpool or asyncio.to_thread"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "async def vs def"
+        },
+        {
+          "type": "diagram",
+          "note": "request to event loop vs threadpool"
+        },
+        {
+          "type": "table",
+          "note": "async def vs def comparison"
+        },
+        {
+          "type": "code",
+          "note": "both endpoint styles"
+        },
+        {
+          "type": "callout",
+          "note": "blocking call in async def freezes everything"
+        },
+        {
+          "type": "qa",
+          "note": "Interview Point: Why does a blocking call in async def hurt more than in def? What is the default threadpool size? When would you pick def over async def?"
+        }
+      ]
+    },
+    {
+      "title": "SQLAlchemy 2.0 Async Engine and Session",
+      "points": [
+        "create_async_engine('postgresql+asyncpg://...') needs an async driver (asyncpg, aiosqlite); a sync driver URL fails",
+        "async_sessionmaker(engine, expire_on_commit=False) is the session factory; expire_on_commit=False stops attribute reloads after commit that would trigger illegal lazy IO",
+        "Queries use 2.0 style: result = await session.execute(select(User).where(User.id == 1)); user = result.scalar_one_or_none()",
+        "Writes: session.add(obj); await session.commit(); await session.refresh(obj) to reload server-generated fields",
+        "Mistake: lazy-loading a relationship in async raises MissingGreenlet; fix with selectinload()/joinedload() in the query or await session.run_sync / awaitable_attrs"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Async SQLAlchemy 2.0"
+        },
+        {
+          "type": "code",
+          "note": "engine, sessionmaker, select query"
+        },
+        {
+          "type": "table",
+          "note": "sync vs async session calls"
+        },
+        {
+          "type": "bullets",
+          "note": "commit, refresh, scalars"
+        },
+        {
+          "type": "callout",
+          "note": "MissingGreenlet cause and fix"
+        },
+        {
+          "type": "qa",
+          "note": "Interview Point: Why expire_on_commit=False? What causes MissingGreenlet? How do you eager load relationships in async?"
+        }
+      ]
+    },
+    {
+      "title": "Session per Request via Dependencies",
+      "points": [
+        "Pattern: one AsyncSession per request, created in a dependency and closed when the request ends",
+        "get_db is an async generator: async with SessionLocal() as session: yield session; the code after yield runs as cleanup",
+        "Inject with db: Annotated[AsyncSession, Depends(get_db)]; the same session is reused for all sub-dependencies in one request (dependency cache)",
+        "Transactions: commit explicitly in the endpoint or service, or rollback in an except block of the dependency so failures do not leave dirty state",
+        "Mistake: a global shared session across requests (not concurrency safe) or sharing one session between asyncio.gather tasks"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Session per request"
+        },
+        {
+          "type": "code",
+          "note": "get_db generator dependency"
+        },
+        {
+          "type": "diagram",
+          "note": "request lifecycle: open, yield, handler, close"
+        },
+        {
+          "type": "bullets",
+          "note": "commit and rollback placement"
+        },
+        {
+          "type": "callout",
+          "note": "never share a session across requests or tasks"
+        },
+        {
+          "type": "qa",
+          "note": "Interview Point: Why is the session created per request? How does yield cleanup work in dependencies? Is an AsyncSession safe across concurrent tasks?"
+        }
+      ]
+    },
+    {
+      "title": "Background Tasks",
+      "points": [
+        "BackgroundTasks runs a function after the response is sent: background_tasks.add_task(send_email, to, body)",
+        "The task function can be def (runs in the threadpool) or async def (runs on the event loop); args are passed to add_task",
+        "Use for short fire-and-forget work (emails, logs); use Celery/ARQ/RQ for heavy, retried or durable jobs since BackgroundTasks die with the process and have no retries",
+        "Example: endpoint takes background_tasks: BackgroundTasks, adds a task, returns {'status':'queued'} immediately",
+        "Mistake: reusing the request's DB session inside the task; the dependency session is already closed, so open a new session inside the task"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Background tasks"
+        },
+        {
+          "type": "code",
+          "note": "add_task endpoint"
+        },
+        {
+          "type": "table",
+          "note": "BackgroundTasks vs Celery/ARQ"
+        },
+        {
+          "type": "callout",
+          "note": "open a fresh session in the task"
+        },
+        {
+          "type": "qa",
+          "note": "Interview Point: When does a background task run? When is BackgroundTasks not enough? Why not reuse the request session?"
+        }
+      ]
+    },
+    {
+      "title": "Lifespan Events",
+      "points": [
+        "lifespan is an @asynccontextmanager passed as FastAPI(lifespan=lifespan); code before yield runs at startup, after yield at shutdown",
+        "Typical startup work: create the async engine and sessionmaker, load ML models, open Redis or HTTP client pools; store on app.state",
+        "Shutdown work: await engine.dispose(), close clients and flush resources",
+        "Lifespan replaces the deprecated @app.on_event('startup') and 'shutdown' handlers; do not mix both styles",
+        "Mistake: creating the engine per request instead of once in lifespan, or forgetting engine.dispose() so connections leak on shutdown"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Lifespan events"
+        },
+        {
+          "type": "code",
+          "note": "asynccontextmanager lifespan with engine"
+        },
+        {
+          "type": "table",
+          "note": "lifespan vs on_event"
+        },
+        {
+          "type": "callout",
+          "note": "one engine per app, disposed on shutdown"
+        },
+        {
+          "type": "qa",
+          "note": "Interview Point: Where does startup code go in modern FastAPI? Why is one engine shared per process? What replaced on_event?"
+        }
+      ]
+    },
+    {
+      "title": "FastAPI Async Cheat Sheet",
+      "points": [
+        "Blocking code: use def, or asyncio.to_thread / run_in_threadpool inside async def",
+        "Engine: create_async_engine(url) once in lifespan; sessionmaker: async_sessionmaker(engine, expire_on_commit=False)",
+        "Dependency: async with SessionLocal() as s: yield s; inject via Annotated[AsyncSession, Depends(get_db)]",
+        "Fire-and-forget: BackgroundTasks.add_task(fn, args) with its own session; heavy jobs go to a queue",
+        "Startup/shutdown: lifespan asynccontextmanager, engine.dispose() after yield; eager-load with selectinload to avoid MissingGreenlet"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": [
+        {
+          "type": "heading",
+          "note": "Cheat sheet"
+        },
+        {
+          "type": "table",
+          "note": "topic to one-line rule"
+        },
+        {
+          "type": "code",
+          "note": "minimal app skeleton"
+        },
+        {
+          "type": "qa",
+          "note": "Interview Point: Which rule prevents the most production bugs? How would you debug a stalled event loop? How do you size the threadpool?"
+        }
+      ]
+    }
+  ]
+}

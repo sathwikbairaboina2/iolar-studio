@@ -1,0 +1,709 @@
+{
+  "schema": 1,
+  "subject": "nodejs",
+  "chapter": "qr-databases",
+  "category": "handbook",
+  "inputsHash": "f15ae25681b083e079989783a491e17fd4c206c6f7e74aa92ac1189170d15e29",
+  "generatedAt": "2026-10-28T12:58:53.760Z",
+  "sections": [
+    {
+      "title": "Connection Pools: The Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Connection Pools: The Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What a Pool Is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A ==pool== keeps a **fixed set** of open DB connections and lends them out",
+                "New TCP + auth connection per query is {red:slow}",
+                "The server ==caps connections==, so unbounded opens fail"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Lifecycle and Options",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Acquire",
+                    "sub": "client from pool",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Query",
+                    "sub": "run statements",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Release",
+                    "sub": "back to pool",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "All clients busy: requests ==queue== until one frees",
+                "Or the acquire timeout fires and the request {red:errors}"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "pg option",
+                "Default",
+                "Meaning"
+              ],
+              "rows": [
+                [
+                  "`max`",
+                  "==10==",
+                  "Most clients in the pool"
+                ],
+                [
+                  "`idleTimeoutMillis`",
+                  "==10000==",
+                  "Idle client closed after this"
+                ],
+                [
+                  "`connectionTimeoutMillis`",
+                  "==0==",
+                  "Acquire wait; 0 = **wait forever**"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Sizing and Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==instances × max== must stay **below** server `max_connections`",
+                "Postgres default `max_connections` = ==100==",
+                "Set `connectionTimeoutMillis` so a full pool fails fast"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "javascript",
+              "lines": [
+                "// db.js: created once at startup",
+                "import pg from 'pg';",
+                "export const pool = new pg.Pool({",
+                "  max: 10,",
+                "  connectionTimeoutMillis: 2000,",
+                "});"
+              ],
+              "note": "every module imports this one pool"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "One Pool per process",
+              "text": "A new `Pool` per request or per module import **leaks connections**. Create one at startup and share it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Parameterised Queries with pg",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Parameterised Queries with pg",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Placeholders",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`pool.query(text, values)` with ==$1, $2== placeholders",
+                "Values travel **separately** from the SQL text",
+                "Input is never parsed as SQL: ==no injection==",
+                "Rows in `result.rows`, count in `result.rowCount`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "javascript",
+              "lines": [
+                "const result = await pool.query(",
+                "  'SELECT * FROM users WHERE email = $1 AND active = $2',",
+                "  [email, true]",
+                ");",
+                "console.log(result.rows, result.rowCount);"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Values, Not Identifiers",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Position",
+                "Can be $1?"
+              ],
+              "rows": [
+                [
+                  "Value in WHERE / INSERT",
+                  "{green:yes}"
+                ],
+                [
+                  "Table or column name",
+                  "{red:no}"
+                ],
+                [
+                  "ORDER BY direction",
+                  "{red:no}"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Whitelist== identifiers in code",
+                "Or build them with `format` and ==%I==",
+                "Pass only the checked name into the SQL text"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`WHERE id = ${id}` is ==SQL injection==, even if the value 'looks' safe",
+                "`pool.query` per statement in a transaction: each call may use a **different connection**"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "javascript",
+              "lines": [
+                "const client = await pool.connect();",
+                "try {",
+                "  await client.query('BEGIN');",
+                "  // queries on client, not pool",
+                "  await client.query('COMMIT');",
+                "} catch (e) { await client.query('ROLLBACK'); throw e;",
+                "} finally { client.release(); }"
+              ],
+              "note": "dedicated client for a transaction"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Release the client",
+              "text": "Always `client.release()` in ==finally==, or the pool leaks connections."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Transactions",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Transactions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What a transaction is",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A ==transaction== groups statements: all **commit** or all **roll back** (ACID)",
+                "Every statement must run on the ==same connection==",
+                "`pool.query` may pick a different connection each call, so it cannot hold a transaction"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. pg pattern",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "javascript",
+              "lines": [
+                "const client = await pool.connect();",
+                "try {",
+                "  await client.query('BEGIN');",
+                "  // all statements use client",
+                "  await client.query('COMMIT');",
+                "} catch (e) {",
+                "  await client.query('ROLLBACK'); throw e;",
+                "} finally { client.release(); }"
+              ],
+              "note": "release() in finally, even after ROLLBACK"
+            },
+            {
+              "type": "heading",
+              "text": "3. Prisma and Drizzle",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Prisma",
+                "Drizzle"
+              ],
+              "rows": [
+                [
+                  "Batch",
+                  "`$transaction([op1, op2])`",
+                  "n/a"
+                ],
+                [
+                  "Interactive",
+                  "`$transaction(async (tx) => {...})`",
+                  "`db.transaction(async (tx) => {...})`"
+                ],
+                [
+                  "Timeout",
+                  "default ==5s==",
+                  "n/a"
+                ],
+                [
+                  "Rollback",
+                  "throw inside",
+                  "throw, or `tx.rollback()`"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Calling `db` / `prisma` instead of `tx` runs that query ==outside== the transaction",
+                "Holding a transaction open across slow network calls **pins** a pooled connection"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Inside the callback",
+              "text": "Use only ==tx== (or the dedicated `client`). Keep transactions short."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "ORMs vs Query Builders: Prisma and Drizzle",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "ORMs vs Query Builders: Prisma and Drizzle",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Builder vs ORM",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Query builder} (Knex, Kysely): chained methods build SQL, stays close to SQL",
+                "{green:ORM}: maps tables to models, with relations and a schema layer"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Prisma vs Drizzle",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Prisma",
+                "Drizzle"
+              ],
+              "rows": [
+                [
+                  "Schema",
+                  "==schema.prisma== is the source of truth",
+                  "Defined in TypeScript"
+                ],
+                [
+                  "Client",
+                  "`prisma generate` makes a typed client",
+                  "No codegen step"
+                ],
+                [
+                  "Migrations",
+                  "`prisma migrate dev`",
+                  "`drizzle-kit` generates them"
+                ],
+                [
+                  "Style",
+                  "Models, `include`",
+                  "SQL-like API"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "ts",
+              "lines": [
+                "prisma.user.findMany({ where: { active: true },",
+                "  include: { posts: true } })",
+                "db.select().from(users).where(eq(users.active, true))"
+              ],
+              "note": "Prisma, then Drizzle"
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs and N+1",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Prisma==: best DX and relation loading, heavier client, less SQL control",
+                "==Drizzle/builders==: lighter, more explicit, more manual joins",
+                "Complex query: `prisma.$queryRaw` tagged template, or the `sql` tag in Drizzle"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "N+1 queries",
+              "text": "Looping and fetching relations per row fires **1+N** queries. Use ==include/with== or a join instead."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "MongoDB Driver Basics and Clean Shutdown",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "MongoDB Driver Basics and Clean Shutdown",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Client and Collection",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One `MongoClient` per process; the pool is built in (`maxPoolSize` ==100==)",
+                "`await client.connect()` once, then reuse; ==never one per request==",
+                "No schema; BSON docs get an auto `_id` (**ObjectId**)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "js",
+              "lines": [
+                "const col = client.db('app').collection('users');",
+                "await col.insertOne({ name: 'Ann', active: true });"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. CRUD Calls",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Op",
+                "Call"
+              ],
+              "rows": [
+                [
+                  "Create",
+                  "`insertOne` / `insertMany`"
+                ],
+                [
+                  "Read",
+                  "`find(f).toArray()`, `findOne(f)`"
+                ],
+                [
+                  "Update",
+                  "`updateOne(f, { $set: {...} })`"
+                ],
+                [
+                  "Delete",
+                  "`deleteOne(f)`"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistakes and Shutdown",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`find` returns a ==cursor==: call `toArray()` or iterate it",
+                "Raw input in a filter allows `{ password: { $ne: null } }`",
+                "Check values are plain strings; be careful with `$where`"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Stop intake",
+                    "sub": "SIGTERM / SIGINT",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Release clients",
+                    "sub": "finish in-flight",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Close pools",
+                    "sub": "pool.end, $disconnect, close",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Exit",
+                    "sub": "process.exit",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Hangs",
+              "text": "`pool.end()` waits for checked-out clients: ==release== them or the process hangs."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Database Access Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Database Access Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Pool and pg",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==One Pool== per process, created at startup",
+                "{red:max × instances < server max_connections}",
+                "Options: `max`, `idleTimeoutMillis`, `connectionTimeoutMillis`",
+                "`pool.query(sql, [vals])` with `$1`, `$2`",
+                "**Never** interpolate values into the SQL string"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Transactions",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "javascript",
+              "lines": [
+                "const client = await pool.connect();",
+                "try {",
+                "  await client.query('BEGIN');",
+                "  // queries on client",
+                "  await client.query('COMMIT');",
+                "} catch (e) { await client.query('ROLLBACK'); throw e;",
+                "} finally { client.release(); }"
+              ],
+              "note": "dedicated client, release in finally"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Prisma: `$transaction([a, b])` batch, or interactive `$transaction(async tx => ...)`",
+                "Drizzle: `db.transaction(async tx => ...)`",
+                "{red:Always use tx} inside, never db/prisma"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Pick a Tool",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tool",
+                "Choose for"
+              ],
+              "rows": [
+                [
+                  "Prisma",
+                  "Most DX, generated types"
+                ],
+                [
+                  "Drizzle / Kysely",
+                  "SQL-like, lightweight"
+                ],
+                [
+                  "Raw `pg`",
+                  "Full control"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Shutdown Order",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Stop server",
+                    "sub": "no new requests",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Close DB",
+                    "sub": "pool.end() / prisma.$disconnect() / mongoClient.close()",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "process.exit",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Hang",
+              "text": "`pool.end()` waits for checked-out clients. Release them or the process hangs."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "You run `pool.query('BEGIN')`, then two `pool.query` updates, then `pool.query('COMMIT')`. The second update fails. What gets rolled back?",
+              "a_bullets": [
+                "Possibly nothing: each `pool.query` can use a **different connection**.",
+                "`BEGIN` may sit on one connection and the updates on others, so there is no real transaction.",
+                "Fix: `pool.connect()`, run every statement on that `client`, `client.release()` in `finally`."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Inside `prisma.$transaction(async (tx) => {...})` you write `await prisma.order.create(...)`, then throw. Is the order rolled back?",
+              "a_bullets": [
+                "No. `prisma` is not `tx`, so that query runs **outside** the transaction.",
+                "It commits on its own. Only queries made through `tx` roll back."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "On SIGTERM a handler calls `await pool.end()`, but the process never exits. A route did `pool.connect()` and threw before `release()`. Why the hang?",
+              "a_bullets": [
+                "`pool.end()` waits for every checked-out client to be returned.",
+                "That client was never released, so shutdown waits forever.",
+                "Fix: always `client.release()` in a `finally` block."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

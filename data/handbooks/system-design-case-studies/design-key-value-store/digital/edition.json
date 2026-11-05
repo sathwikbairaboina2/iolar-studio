@@ -1,0 +1,2028 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-key-value-store",
+  "category": "system-design",
+  "inputsHash": "f78c38418627fa169338237da1e7c8e99d5bafb581b40bff7246fe5c0d8b59b5",
+  "generatedAt": "2026-10-24T11:04:52.704Z",
+  "sections": [
+    {
+      "title": "Problem, Scope and Requirements",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem, Scope and Requirements",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope and API",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: a **Distributed KV Store**, a Dynamo-style store of opaque values behind `put` and `get`."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:In v1}: `put(key, value)` and `get(key)`",
+                "Values up to ==400 KB==",
+                "`delete` writes a ==tombstone==, it does not erase at once",
+                "Each request picks a consistency level: ==ONE==, ==QUORUM== or ==ALL=="
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "No joins",
+                "No multi-key transactions",
+                "No secondary indexes in v1"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "put(key, value, consistency=QUORUM)",
+                "get(key, consistency=ONE)",
+                "delete(key, consistency=QUORUM)  # tombstone"
+              ],
+              "note": "Consistency is chosen per request"
+            },
+            {
+              "type": "heading",
+              "text": "2. Scale and Latency Targets",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Estimate",
+                "Total",
+                "Per node (100 nodes)"
+              ],
+              "rows": [
+                [
+                  "Hot data",
+                  "==10 TB==",
+                  "~100 GB"
+                ],
+                [
+                  "Reads",
+                  "==1M/s==",
+                  "~10K/s"
+                ],
+                [
+                  "Writes",
+                  "==200K/s==",
+                  "~2K/s (6K/s replica writes at N=3)"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "p99 read under ==10 ms==",
+                "p99 write under ==15 ms==",
+                "Availability ==99.99%==, about 52 min of downtime per year"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Non-Functional and CAP Stance",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Always writable==: AP by default",
+                "==Horizontal scale==: add nodes, not bigger nodes",
+                "==No single point of failure==: no master",
+                "==Incremental scalability==: grow one node at a time"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "During a partition",
+                "Choose",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Consistency",
+                  "Reject some requests",
+                  "Writes fail on the minority side"
+                ],
+                [
+                  "==Availability==",
+                  "Serve both sides",
+                  "Replicas diverge, ==reconcile later=="
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "AP under a partition",
+                "steps": [
+                  {
+                    "text": "Partition",
+                    "note": "nodes split",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Keep serving",
+                    "note": "reads and writes",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Heal",
+                    "note": "links return",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Reconcile",
+                    "note": "eventual consistency",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Stance",
+              "text": "During a partition we pick ==availability== over consistency; stale reads are the price, and replicas converge ==eventually==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Distributed KV Store)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (Distributed KV Store)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Peer-to-Peer Ring",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Every node runs the ==same software== and has the same role",
+                "{red:No master}: no leader election, no single point of failure",
+                "==Any node== can act as **coordinator** for any key",
+                "Coordinator is per request, not per key: the node the client hit",
+                "Scale: 100 nodes, ~100 GB each, serving 1M reads/s + 200K writes/s"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Request Path",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "put / get",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Coordinator",
+                    "sub": "any node",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "N=3 replicas",
+                    "sub": "sent in parallel",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Quorum acks",
+                    "sub": "W or R met",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Respond",
+                    "sub": "to client",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Coordinator hashes the key and finds its ==N replicas==",
+                "Sends to all N at once; does not wait for the slow ones",
+                "Replies as soon as ==W== (write) or ==R== (read) replicas answer",
+                "Example: N=3, W=2 means the 3rd ack arrives later and is not awaited"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "heading",
+              "text": "3. Per-Node Stack",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "cards",
+              "spec": {
+                "cards": [
+                  {
+                    "title": "Coordinator layer",
+                    "lines": [
+                      "routes request",
+                      "fans out to replicas",
+                      "collects quorum"
+                    ],
+                    "ink": "green"
+                  },
+                  {
+                    "title": "Membership / gossip",
+                    "lines": [
+                      "ring view",
+                      "liveness of peers"
+                    ],
+                    "ink": "blue"
+                  },
+                  {
+                    "title": "Storage engine",
+                    "lines": [
+                      "commit log",
+                      "memtable",
+                      "SSTables"
+                    ],
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Routing and Deployment",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Smart client",
+                "Proxy (server-side)"
+              ],
+              "rows": [
+                [
+                  "Ring knowledge",
+                  "**client caches** the ring",
+                  "node or proxy holds it"
+                ],
+                [
+                  "Hops",
+                  "==direct== to a replica",
+                  "+1 forwarding hop"
+                ],
+                [
+                  "Client logic",
+                  "heavier library",
+                  "thin, any client"
+                ],
+                [
+                  "Stale ring",
+                  "wrong node forwards it",
+                  "proxy always current"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "sidebox",
+              "title": "Default deployment",
+              "items": [
+                "Replication factor ==N=3==",
+                "Replicas spread over **3 availability zones**",
+                "One replica per AZ for each key",
+                "100 nodes ≈ 33 per AZ"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "No master. ==Any node coordinates==; N=3 replicas in 3 AZs; reply after a **quorum**, not after all."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Partitioning with Consistent Hashing",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Partitioning with Consistent Hashing",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Running example: a **100-node** Dynamo-style KV store holding 10 TB, ~100 GB per node."
+            },
+            {
+              "type": "heading",
+              "text": "1. Ring and Owner",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Job: map each key to an ==owner node== with ==minimal data movement== on join or leave",
+                "Hash the key with `MD5` or `Murmur3` onto a ==2^128 ring==",
+                "Owner = the ==first node clockwise== from the key's position"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "key",
+                    "note": "user:42",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "hash(key)",
+                    "note": "Murmur3 / MD5",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "ring position",
+                    "note": "0 to 2^128",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "walk clockwise",
+                    "note": "first token",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "owner node",
+                    "note": "stores the key",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "hash(key) mod N",
+                "Consistent hashing"
+              ],
+              "rows": [
+                [
+                  "Keys moved on resize",
+                  "~(N-1)/N",
+                  "only ~1/N"
+                ],
+                [
+                  "100 to 101 nodes",
+                  "~99% of keys",
+                  "~1% of keys"
+                ],
+                [
+                  "Rebalance",
+                  "{red:near full reshuffle}",
+                  "{green:neighbor ranges only}"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "2. Virtual Nodes and Adding a Node",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each physical node owns ==128-256 tokens== (vnodes) on the ring",
+                "Many small ranges ==even out load==",
+                "Stronger machine gets ==more tokens==, so it takes more data"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Add node D",
+                    "sub": "picks its tokens",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Take tokens",
+                    "sub": "from neighbors",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Stream ranges",
+                    "sub": "only those to D",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "D serves",
+                    "sub": "~1/N of data",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Token map**: `token → node`, sorted, copied on every node",
+                "**Per-node range list**: the token ranges it owns",
+                "**Key** = partition key (hashed) plus optional sort key (orders rows inside a partition)",
+                "`getPreferenceList(key)` returns ==N distinct physical nodes==",
+                "Skip further vnodes of the ==same host or rack== while walking the ring"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Hot Keys and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One ==celebrity key== makes a hot partition; hashing cannot spread a single key",
+                "Fix: ==salt the key== (`key#0..k`) or put a ==cache== in front"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target / watch"
+              ],
+              "rows": [
+                [
+                  "Keys per node",
+                  "skew ==under 10%=="
+                ],
+                [
+                  "Streaming bytes during rebalance",
+                  "~100 GB for one new node"
+                ],
+                [
+                  "Hottest-partition QPS",
+                  "alert well above the node average"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Consistent hashing fixes ==data movement==, not ==hot keys==. Use many vnodes per node, and pick replicas on distinct hosts."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Replication and Preference List",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Replication and Preference List",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Placement",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store each key on ==N=3== nodes so data survives node **and** zone loss",
+                "{blue:Preference list} = coordinator + next N-1 ==distinct== nodes clockwise",
+                "Skip vnodes of the same host, so 3 tokens never mean 3 copies on one box",
+                "{green:Zone-aware}: 3 replicas in 3 AZs, so one AZ outage loses at most ==1 of 3== copies"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Key k hashes onto the ring",
+                "steps": [
+                  {
+                    "text": "Node A (AZ-1)",
+                    "note": "coordinator, first clockwise",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Node B (AZ-2)",
+                    "note": "next distinct node, new zone",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Node C (AZ-3)",
+                    "note": "next distinct node, new zone",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Write Flow and Record",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client put",
+                    "sub": "any node",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Coordinator",
+                    "sub": "sends to all N=3 in parallel",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Wait for W acks",
+                    "sub": "W=2 of 3",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Respond OK",
+                    "sub": "3rd ack arrives later",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Sends are ==parallel==, not a sequential chain A → B → C",
+                "Latency = the **Wth-fastest** replica, so one slow node does not stall the write"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Field",
+                "Holds"
+              ],
+              "rows": [
+                [
+                  "`key`",
+                  "partition key (hashed to a token)"
+                ],
+                [
+                  "`value`",
+                  "blob, up to **400 KB**"
+                ],
+                [
+                  "`version`",
+                  "vector clock or timestamp"
+                ],
+                [
+                  "`tombstone`",
+                  "flag: marks a delete"
+                ],
+                [
+                  "`ttl`",
+                  "optional expiry"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Covered by"
+              ],
+              "rows": [
+                [
+                  "Replica down for ==hours==",
+                  "{orange:Sloppy quorum}: next healthy node takes the write, repaired later"
+                ],
+                [
+                  "Replica lost ==permanently==",
+                  "{green:Re-replicate} its ranges from the 2 surviving peers"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "sidebox",
+              "title": "Watch these",
+              "items": [
+                "{red:Replica lag}: how far behind a copy is",
+                "{red:Under-replicated ranges}: ranges with fewer than 3 live copies",
+                "{red:Cross-AZ bandwidth}: replication traffic between zones, which is billed and finite"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Preference list = N **distinct hosts in distinct zones**, not just the next 3 tokens. Writes go to all N in ==parallel== and return after W acks."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Tunable Consistency with Quorums",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Tunable Consistency with Quorums",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Quorum Rule and Settings",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==R + W > N== means every read set overlaps the latest successful write set",
+                "Standard: {green:N=3, R=2, W=2}, so any 2 replicas read must include 1 that acked the write",
+                "Tune R and W per workload to trade read latency against write latency"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Setting",
+                "R",
+                "W",
+                "Effect"
+              ],
+              "rows": [
+                [
+                  "Standard",
+                  "2",
+                  "2",
+                  "Balanced; R + W = 4 > 3"
+                ],
+                [
+                  "Fast write",
+                  "any",
+                  "1",
+                  "Lowest write latency; weak overlap"
+                ],
+                [
+                  "Fast read",
+                  "1",
+                  "any",
+                  "Lowest read latency; weak overlap"
+                ],
+                [
+                  "Read-optimized",
+                  "1",
+                  "N (3)",
+                  "Fast reads; writes need all replicas"
+                ],
+                [
+                  "Write-optimized",
+                  "N (3)",
+                  "1",
+                  "Fast writes; reads need all replicas"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Read and Write Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Write path",
+                "steps": [
+                  {
+                    "text": "Coordinator",
+                    "note": "timestamps or versions the write",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Send to N=3",
+                    "note": "all replicas in parallel",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Wait for W acks",
+                    "note": "latency = Wth-fastest replica",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Return OK",
+                    "note": "slow replicas finish later",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Read path",
+                "steps": [
+                  {
+                    "text": "Send read to N=3",
+                    "note": "all replicas",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Return after R responses",
+                    "note": "Rth-fastest sets latency",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Pick newest version",
+                    "note": "by version or timestamp",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Read-repair",
+                    "note": "stale replicas fixed in background",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Consistency Level API",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Level",
+                "Meaning",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "`ONE`",
+                  "1 replica answers",
+                  "Lowest latency, may be stale"
+                ],
+                [
+                  "`LOCAL_QUORUM`",
+                  "Majority in the local region",
+                  "Avoids ==cross-region latency=="
+                ],
+                [
+                  "`QUORUM`",
+                  "Majority of all N replicas",
+                  "Default for strong-ish reads"
+                ],
+                [
+                  "`ALL`",
+                  "Every replica answers",
+                  "Fails if any replica is down"
+                ]
+              ]
+            },
+            {
+              "type": "sidebox",
+              "title": "Per-request rules",
+              "items": [
+                "The client picks the level on each `get` and `put`",
+                "Mix levels: `QUORUM` writes, `ONE` reads for cheap lookups",
+                "Reads and writes must both use quorum levels for R + W > N"
+              ],
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "R + W > N does {red:not} give ==linearizability==",
+                "Concurrent writes can still conflict and need resolution",
+                "Sloppy quorums write to stand-in nodes, so a quorum read can miss the latest write",
+                "Quorum fails when fewer than R or W replicas respond"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Stale-read rate== per consistency level",
+                "==Quorum failure rate== (requests unable to reach R or W)",
+                "==p99 latency== per level: targets read under 10 ms, write under 15 ms"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Overlap gives the newest ==acked== write a chance to be seen, not a guarantee. N=3, R=2, W=2 is a tuning default, not strong consistency."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Conflict Resolution: Vector Clocks vs LWW",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Conflict Resolution: Vector Clocks vs LWW",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Vector Clocks (Distributed KV Store)",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A ==vector clock== is a list of **(node, counter)** pairs attached to each version",
+                "Version A ==descends== B if **every** counter in A is ≥ B's",
+                "If neither version descends the other, they are {orange:concurrent}",
+                "Concurrent versions are kept as ==siblings== and returned to the client to merge"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Example: One Key, Three Writers",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Version history of one key",
+                "steps": [
+                  {
+                    "text": "D1 [(A,1)]",
+                    "note": "first write via A",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "D2 [(A,2)]",
+                    "note": "write via A; descends D1",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "D3 [(A,2),(B,1)]",
+                    "note": "concurrent write via B",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "D4 [(A,2),(C,1)]",
+                    "note": "concurrent write via C",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "D3 lacks the C counter and D4 lacks the B counter, so neither descends",
+                "D3 and D4 {red:conflict}: a get returns **both** siblings",
+                "The client merges them and writes back with a clock that descends both"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "heading",
+              "text": "3. Vector Clock vs LWW",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Vector clock",
+                "Last-write-wins"
+              ],
+              "rows": [
+                [
+                  "Stores",
+                  "(node, counter) list",
+                  "one timestamp"
+                ],
+                [
+                  "Winner",
+                  "none if concurrent",
+                  "highest timestamp"
+                ],
+                [
+                  "Siblings",
+                  "{green:kept}, client merges",
+                  "{red:none}, losers dropped"
+                ],
+                [
+                  "Used by",
+                  "Dynamo",
+                  "Cassandra"
+                ],
+                [
+                  "Choose when",
+                  "losing a write is unacceptable",
+                  "idempotent overwrites"
+                ]
+              ],
+              "highlightRow": 4
+            },
+            {
+              "type": "heading",
+              "text": "4. Drawbacks and Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "LWW: clock skew of even ==100 ms== silently drops a legitimate write",
+                "Vector clock: size grows with writers, so truncate at ~==10 entries==",
+                "Vector clock: the app must merge, e.g. shopping cart = **union** of siblings",
+                "Do not use LWW where a lost write is unacceptable; use vector clocks or CRDTs"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Pick by cost of a lost write",
+              "text": "Idempotent overwrite (a profile photo URL): ==LWW==. A write you cannot lose (a cart): **vector clocks** or CRDTs."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Failure Handling: Hinted Handoff",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Failure Handling: Hinted Handoff",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Sloppy Quorum",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: Dynamo-style Distributed Key-Value Store, N=3, W=2, 200K writes/s over 100 nodes."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Hinted handoff== keeps writes **available** while a preference-list replica is temporarily down",
+                "Preference list for key k: {blue:A}, {blue:B}, {blue:C}; B is down",
+                "{green:Sloppy quorum}: write goes to the first N ==healthy== nodes on the ring",
+                "So node D (next clockwise) stands in for B and the W=2 acks still arrive"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Strict quorum",
+                "Sloppy quorum"
+              ],
+              "rows": [
+                [
+                  "Targets",
+                  "First N on the list",
+                  "First N **healthy** nodes"
+                ],
+                [
+                  "B down, W=2",
+                  "A and C ack: OK",
+                  "A and C ack: OK"
+                ],
+                [
+                  "A and B down, W=2",
+                  "{red:Write fails}",
+                  "{green:C and D ack: OK}"
+                ],
+                [
+                  "Cost",
+                  "Less available",
+                  "Reads may miss the new copy"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "2. Hint and Replay Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Coordinator",
+                    "sub": "B is down, skip it",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Stand-in D",
+                    "sub": "stores write + hint(B)",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "B returns",
+                    "sub": "gossip marks it UP",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Replay",
+                    "sub": "D sends hint to B, deletes it",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "The hint is stored apart from D's own data, so D does not serve it as its replica",
+                "D deletes the hint only after B **acks** the replay"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Hint Table",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One row per missed write: ==target node==, key, value, version, `created_at`",
+                "Rows expire after a ==TTL of ~3 hours==, which bounds disk use on the stand-in"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE hints (",
+                "  target_node TEXT,",
+                "  key         BLOB,",
+                "  value       BLOB,",
+                "  version     BLOB,",
+                "  created_at  TIMESTAMP",
+                "); -- rows deleted at created_at + 3h"
+              ],
+              "note": "replay scans by target_node when it comes back UP"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stand-in D dies before replay: the hint is lost, B stays stale",
+                "Owner down longer than ~3 h: the hint expires, B stays stale",
+                "Only ==anti-entropy== (Merkle trees) repairs that replica afterwards"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics to watch",
+              "items": [
+                "Hints stored (per node)",
+                "Hints replayed per second",
+                "Hint backlog age (oldest hint, alert near the 3 h TTL)"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Hinted handoff is a ==short-outage== patch for availability. It is not durability: a lost or expired hint needs **anti-entropy**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Anti-Entropy with Merkle Trees",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Anti-Entropy with Merkle Trees",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Job and Tree",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Background repair of replica divergence in the Distributed KV Store (100 nodes, ~100 GB each, N=3)."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Fixes divergence that ==read repair== and ==hinted handoff== missed (expired hint, dead stand-in, cold keys)",
+                "Must find differences ==without scanning all data==",
+                "{green:Leaf} = hash of one key range",
+                "{blue:Parent} = hash of its children's hashes",
+                "{purple:Root} = one hash that summarizes the whole token range"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Keys in range",
+                    "sub": "sorted by token",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Leaf hashes",
+                    "sub": "~64K per tree",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Parent hashes",
+                    "sub": "hash of children",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Root hash",
+                    "sub": "whole range",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Sync Flow and Cost",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Two replicas of one token range",
+                "rows": [
+                  [
+                    "s"
+                  ],
+                  [
+                    "q"
+                  ],
+                  [
+                    "done",
+                    "d"
+                  ],
+                  [
+                    "l"
+                  ],
+                  [
+                    "st"
+                  ]
+                ],
+                "nodes": {
+                  "s": {
+                    "text": "Exchange root hashes",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "q": {
+                    "text": "Roots equal?",
+                    "shape": "diamond"
+                  },
+                  "done": {
+                    "text": "In sync, stop",
+                    "shape": "pill",
+                    "ink": "green"
+                  },
+                  "d": {
+                    "text": "Compare children, keep mismatching ones",
+                    "shape": "box",
+                    "ink": "orange"
+                  },
+                  "l": {
+                    "text": "Leaf reached?",
+                    "shape": "diamond"
+                  },
+                  "st": {
+                    "text": "Stream only that leaf range",
+                    "shape": "box",
+                    "ink": "purple"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "s",
+                    "to": "q"
+                  },
+                  {
+                    "from": "q",
+                    "to": "done",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q",
+                    "to": "d",
+                    "label": "no"
+                  },
+                  {
+                    "from": "d",
+                    "to": "l"
+                  },
+                  {
+                    "from": "l",
+                    "to": "d",
+                    "label": "no, descend"
+                  },
+                  {
+                    "from": "l",
+                    "to": "st",
+                    "label": "yes"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Full compare",
+                "Merkle tree"
+              ],
+              "rows": [
+                [
+                  "Sync cost",
+                  "O(n) data transfer",
+                  "==O(differences · log n)=="
+                ],
+                [
+                  "One bad key, 100 GB range",
+                  "scan and ship ~100 GB",
+                  "~16 hash levels + ~1.5 MB leaf"
+                ],
+                [
+                  "In-sync range",
+                  "still scanned",
+                  "1 root compare, done"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==One tree per token range== per node (with N=3 and vnodes, a node holds many trees)",
+                "~==64K leaves== (65,536) per tree, so ~16 levels deep",
+                "Trees are ==rebuilt periodically==, not updated per write",
+                "Replicas must build trees over the same range with the same leaf boundaries",
+                "Schedule: Merkle repair ==weekly== per range"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Tree rebuild is ==I/O heavy==: it reads every key in the range; throttle and stagger",
+                "Rebalance (join/leave) changes range membership and ==invalidates trees==; rebuild",
+                "Leaf too coarse: one stale key streams the whole ~1.5 MB leaf"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics",
+              "items": [
+                "Repair duration per range",
+                "Bytes streamed per repair",
+                "Ranges not repaired in over {red:10 days}: alert",
+                "10 days = tombstone GC grace period, so stay under it"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Repair or resurrect",
+              "text": "If a range goes unrepaired past ==gc_grace (10 days)==, a replica that missed a delete can bring the **deleted data back**. Repair weekly."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Gossip and Failure Detection",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Gossip and Failure Detection",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Gossip",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Decentralized} membership and liveness: ==no central coordinator==",
+                "Every node learns who is alive from its peers, never from a master",
+                "Every **1 s** each node exchanges state with ==1-3 random peers==",
+                "Information reaches all N nodes in ==O(log N)== rounds",
+                "100 nodes: about 7 rounds, so roughly 7 s to converge"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Pick peers",
+                    "sub": "1-3 random, every 1 s",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Send digest",
+                    "sub": "my view of all nodes",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Merge",
+                    "sub": "keep higher heartbeat",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Spread",
+                    "sub": "peers repeat next round",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Gossip State per Node",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Field",
+                "Meaning"
+              ],
+              "rows": [
+                [
+                  "`heartbeat`",
+                  "counter, ==+1 each second== while the node lives"
+                ],
+                [
+                  "`generation`",
+                  "restart timestamp; a higher one resets the heartbeat"
+                ],
+                [
+                  "`status`",
+                  "UP, DOWN, JOINING, LEAVING"
+                ],
+                [
+                  "`tokens`",
+                  "list of vnode tokens the node owns"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Merge rule: higher (generation, heartbeat) wins",
+                "Status and token changes ride along in the same gossip"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Detecting and Bootstrapping",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Node is **suspected** when its heartbeat has not increased within a timeout",
+                "{purple:Phi-accrual} detector outputs a ==suspicion level== phi, not a yes/no",
+                "==phi above 8== marks the node DOWN",
+                "Adapts to network jitter using observed heartbeat intervals"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Heartbeat grows",
+                    "note": "UP",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Heartbeat stalls",
+                    "note": "phi rising",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "phi above 8",
+                    "note": "marked DOWN",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Seed nodes",
+              "items": [
+                "New member contacts a seed first to learn the ring",
+                "Everyone gossips with seeds, so ==no split gossip clusters==",
+                "Seeds are only a contact point, not a coordinator"
+              ],
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Network partition: ==both sides mark the other DOWN==",
+                "False positive DOWN triggers **needless hinted handoff**",
+                "Nodes marked DOWN then UP repeatedly are ==flapping=="
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Gossip convergence time",
+                  "about 7 s at 100 nodes"
+                ],
+                [
+                  "Flapping nodes per hour",
+                  "near 0"
+                ],
+                [
+                  "Failure detection time",
+                  "==under 10 s=="
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Gossip spreads state in **O(log N)** rounds; a node goes DOWN at ==phi above 8==, and a false positive only costs extra hints."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Storage Engine and Write Path",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Storage Engine and Write Path",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Write Path",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Per-replica storage in the Distributed KV Store: 200K writes/s x N=3 over 100 nodes is ~6K local writes/s per node, all durable."
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Commit log",
+                    "sub": "append, sequential disk",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Memtable",
+                    "sub": "in-memory, sorted",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Ack",
+                    "sub": "to coordinator",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Flush",
+                    "sub": "at ~128 MB",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Job: make local writes ==fast== and ==durable== on each replica",
+                "The commit log is ==append-only==, so the disk does sequential writes, no seeks",
+                "Ack after the log append and the memtable insert, never after a flush",
+                "Flush writes the memtable as an {purple:immutable sorted SSTable}; a new memtable takes over"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Commit log",
+                "Memtable",
+                "SSTable"
+              ],
+              "rows": [
+                [
+                  "Lives in",
+                  "disk",
+                  "RAM",
+                  "disk"
+                ],
+                [
+                  "Mutable?",
+                  "append only",
+                  "{green:yes}",
+                  "{red:never}"
+                ],
+                [
+                  "Purpose",
+                  "crash safety",
+                  "fast writes and reads",
+                  "long-term storage"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Read Path",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Memtable",
+                    "sub": "check first",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Bloom filter",
+                    "sub": "per SSTable",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "SSTables",
+                    "sub": "newest-first",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Newest value",
+                    "sub": "stop at first hit",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Bloom filter says ==definitely absent== or ==maybe present==",
+                "~1% false positives; it never gives a false negative",
+                "A skipped file costs no disk read, so most SSTables are never opened"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Compaction and Deletes",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Compaction ==merges SSTables== into fewer, larger sorted files",
+                "Drops {red:overwritten values} and {red:expired tombstones}",
+                "Fewer files means fewer files to check on each read",
+                "A delete writes a ==tombstone== marker, not an in-place removal"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Rules",
+              "items": [
+                "Crash recovery: ==replay the commit log== to rebuild the memtable",
+                "Keep tombstones for ==gc_grace = 10 days==",
+                "Run repair on every range within gc_grace"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Zombie data",
+              "text": "If a tombstone is purged before a down replica gets it, that replica still holds the old value and ==the deleted data resurrects==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale Out (Distributed KV Store)",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Add node D to a 100-node ring",
+                "steps": [
+                  {
+                    "text": "D joins",
+                    "note": "seed node hands it the ring",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Claims tokens",
+                    "note": "128-256 taken from neighbors",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Bootstrap",
+                    "note": "streams ~1/N of data (~100 GB)",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Serves traffic",
+                    "note": "no downtime, no reshuffle",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Add a node: it takes ==tokens from neighbors==, not from the whole ring",
+                "Bootstrap streams only ~**1/N** of the data; `hash mod N` would move ~(N-1)/N",
+                "Old owners keep serving until the stream ends, so ==no downtime=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Trade-offs and Comparison",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==N=3, R=2, W=2== balances latency and consistency (R + W > N)",
+                "{green:AP} gives always-writable, but exposes {red:stale reads} and {orange:siblings}",
+                "R+W>N is not linearizable: sloppy quorums can still return stale data"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Dynamo",
+                "Cassandra",
+                "Spanner-style"
+              ],
+              "rows": [
+                [
+                  "Leader",
+                  "leaderless",
+                  "leaderless",
+                  "Paxos leader per range"
+                ],
+                [
+                  "Conflicts",
+                  "vector clocks",
+                  "LWW timestamp",
+                  "none, serialized"
+                ],
+                [
+                  "CAP side",
+                  "AP",
+                  "AP (tunable)",
+                  "CP"
+                ],
+                [
+                  "Siblings",
+                  "yes, app merges",
+                  "no, silent drop",
+                  "no"
+                ],
+                [
+                  "Cost",
+                  "stale reads",
+                  "lost writes on skew",
+                  "higher write latency"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "3. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:LWW with unsynced clocks}: 100 ms skew silently drops a real write",
+                "{red:Too few vnodes}: key skew above 10% and hot nodes; use 128-256 tokens",
+                "{red:Never running repair}: tombstones are GC'd after 10 days, deleted data resurrects"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Repair deadline",
+              "text": "Run Merkle repair on every range at least once inside ==gc_grace (10 days)==, so weekly is safe."
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Q and Cheatsheet",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**2 of 3 replicas down at QUORUM?** Write {red:fails} (1 ack < W=2) unless sloppy quorum with hints, or ==ONE==",
+                "**Add a node without a reshuffle?** ==Consistent hashing + vnodes==: only ~1/N of keys move"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "sidebox",
+              "title": "Cheatsheet",
+              "items": [
+                "N=3, R=2, W=2",
+                "Ring via Murmur3, 2^128 space",
+                "Gossip every 1 s, phi above 8 = DOWN",
+                "Hints kept ~3 h",
+                "Merkle repair weekly"
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "N=3 and a QUORUM write needs W=2. Two of the three preference-list replicas are down. What happens, and what changes with a sloppy quorum?",
+              "a_bullets": [
+                "Strict quorum: only 1 ack is possible, so the write ==fails== (or times out).",
+                "Sloppy quorum: the write goes to the next healthy nodes on the ring, with hints naming the real owners, so it ==succeeds==.",
+                "The cost: those stand-ins are not in the preference list, so R + W > N no longer guarantees a read sees this write.",
+                "Consistency level ONE would also succeed, because one ack is enough."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A team sets N=3, R=1, W=2 and expects every read to return the latest acknowledged write. Is that right?",
+              "a_bullets": [
+                "No. R + W = 3, which is not greater than N = 3, so a read and a write quorum can miss each other.",
+                "The write may be acked by replicas 1 and 2 while replica 3 still holds the old value.",
+                "An R=1 read can hit replica 3 and return stale data.",
+                "Fix: raise to R=2 (R + W = 4 > 3) or to W=3.",
+                "Even with R + W > N, concurrent writes and sloppy quorums can still return stale data, so this is not linearizability."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Version D3 has clock [(A,2),(B,1)] and D4 has [(A,2),(C,1)]. Which one wins, and what does the client see?",
+              "a_bullets": [
+                "Neither wins. D4 has no B counter, so it does not descend D3. D3 has no C counter, so it does not descend D4.",
+                "They are ==concurrent==, so the store keeps both as siblings and returns both on a read.",
+                "The client merges them (for example a cart union) and writes back through A.",
+                "The new clock [(A,3),(B,1),(C,1)] is at least as large as both on every counter, so it descends both and replaces them.",
+                "Last-write-wins would instead keep the higher timestamp and silently drop the other write."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A cluster grows from 10 to 11 nodes. Roughly what fraction of keys moves under hash(key) mod N, and under consistent hashing?",
+              "a_bullets": [
+                "Mod N: about (N-1)/N, so roughly 10/11, or ~91% of keys, change owner. That is a near-total reshuffle.",
+                "Consistent hashing: about 1/N, so roughly 1/11, or ~9%. Only the ranges the new node takes over move.",
+                "With vnodes the new node takes many small token ranges from many neighbors.",
+                "That spreads the streaming load and keeps the load even, with no downtime."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A node is down for 12 days. The cluster uses gc_grace = 10 days and nobody ran repair. After the node returns, a key deleted on day 1 reappears. Why?",
+              "a_bullets": [
+                "The delete wrote a tombstone to the live replicas. Compaction dropped it after 10 days.",
+                "The returning node still holds the old live value, and no replica holds a tombstone to override it.",
+                "Anti-entropy now sees a difference and copies the old value to the other replicas, so the ==deleted data resurrects==.",
+                "Fix: run repair within gc_grace, and rebuild any node that was down longer than gc_grace instead of letting it rejoin as is.",
+                "Hints do not help here: they expire after ~3 hours, far shorter than 12 days."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

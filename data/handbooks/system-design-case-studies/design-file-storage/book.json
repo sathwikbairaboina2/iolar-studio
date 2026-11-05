@@ -1,0 +1,217 @@
+{
+  "title": "Design Cloud File Storage (Dropbox / Google Drive): System Design Case Study",
+  "summary": "End-to-end design of a Dropbox-style cloud file storage service with 50M users: requirements and scale estimates, architecture, chunking and dedup, block storage, metadata, upload/download, sync and conflict resolution, versioning, sharing, device notifications, and scaling and failure trade-offs.",
+  "chapters": [
+    {
+      "title": "Cloud File Storage (Dropbox-style): What This Handbook Covers",
+      "points": [
+        "Requirements and scale: 50M users, 100 PB stored",
+        "Architecture: clients, metadata, block store, notifier",
+        "Chunking, dedup and block storage",
+        "Upload, sync, conflicts, versions and sharing",
+        "Scaling, failures and interview questions"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements (Cloud File Storage)",
+      "points": [
+        "Scope in: upload, download, sync across devices, share, version history. Scope out: real-time co-editing, full-text search, media transcoding",
+        "Functional: files up to 50 GB, folders, resumable transfers, offline edits that sync later, share by link or by user with view/edit roles, restore versions from the last 30 days",
+        "Non-functional: durability 99.999999999% (11 nines), availability 99.95%, no acknowledged write is ever lost, sync latency under 5 s for small files",
+        "Scale estimate: 50M registered, 10M DAU, avg 2 GB stored per user, so 100 PB logical; 10M DAU x 2 uploads/day = 20M uploads/day, about 230 QPS avg and 700 QPS peak",
+        "Read-heavy metadata: 10M DAU x 100 sync checks/day = 1B/day, about 12K QPS avg and 40K QPS peak. Chunks at 4 MB give 100 PB / 4 MB = 25B chunks; dedup saving about 30% leaves about 70 PB raw before replication"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Cloud File Storage)",
+      "points": [
+        "Components: desktop/mobile client with local watcher and chunker, API gateway, metadata service, block service, notification service, object store, metadata DB",
+        "Control plane vs data plane: metadata and auth go through the API (small JSON, 12K QPS); file bytes go direct to the block store via presigned URLs, never through app servers",
+        "Client sync agent keeps a local SQLite DB of file path, hash list and version; it detects changes with OS file events (inotify, FSEvents, ReadDirectoryChangesW)",
+        "Sequence for a save: client chunks and hashes, asks metadata which blocks are missing, uploads only those, then commits the new file version atomically",
+        "Storage choices: sharded SQL (MySQL/Postgres) for metadata, S3-like object store for blocks, Kafka for change events, Redis for hot lookups and sessions"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Chunking and Deduplication Service (Cloud File Storage)",
+      "points": [
+        "Responsibilities: split files into blocks, fingerprint each with SHA-256, skip blocks the server already has. Fixed 4 MB chunks are simple; content-defined chunking (rolling hash, avg 4 MB, min 1 MB, max 8 MB) keeps boundaries stable after an insert in the middle",
+        "Design: file = ordered list of chunk hashes (the block list); a 1 GB file has about 256 chunks. Dedup is global across users by hash, saving about 30% of storage; cross-user dedup leaks existence, so confirm by uploading proof of possession for a sampled range",
+        "Flow: client hashes chunks, sends hash list, server replies with the missing hashes, client uploads only those. Edit 1 chunk of a 1 GB file and you send 4 MB, not 1 GB. Compress then encrypt per chunk",
+        "Data model: chunk(hash PK, size, storage_key, refcount, created_at); file_version(file_id, version, chunk_hashes[]). API: POST /chunks/missing {hashes[]} returns the missing subset",
+        "Failures and metrics: hash collision is negligible with SHA-256 (2^-128 scale); a refcount race can delete a live chunk, so gc only after a 7-day grace period. Track dedup ratio (target 30%), bytes saved/day, chunk lookup p99 under 10 ms"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Block Storage Service (Cloud File Storage)",
+      "points": [
+        "Responsibilities: durably store immutable 4 MB blocks keyed by hash, serve them fast. Immutability means no update, no cache invalidation and safe retries (put is idempotent)",
+        "Design: object store with 3x replication across 3 AZs, or erasure coding 10+4 (1.4x overhead vs 3x) for cold blocks; hot blocks cached on CDN/edge, blocks not read for 90 days move to a cheaper cold tier",
+        "Flow: client gets a presigned PUT URL valid 15 minutes, uploads the block directly, block service verifies the hash, then marks it present. Storage math: 70 PB raw x 1.4 = about 98 PB with erasure coding vs 210 PB with 3x replication",
+        "Data model and API: block(hash, storage_key, tier, size, refcount, last_access); PUT /blocks/{hash} (presigned) and GET /blocks/{hash}. Key = hash prefix so S3 sharding spreads load evenly",
+        "Failures and metrics: a corrupt block is caught by a hash check on read and repaired from another replica; a weekly scrubber re-verifies hashes; an orphan block (uploaded, never committed) is deleted once no live upload session references it (after the 7-day session expiry). Track durability audits, put/get p99 (under 200 ms per 4 MB), repair backlog"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Metadata Service and Database (Cloud File Storage)",
+      "points": [
+        "Responsibilities: own the namespace (folders, names, paths), file-to-block mapping, versions, ACLs and device cursors. It is the source of truth for what exists; it is small (about 1 KB per file) but hot",
+        "Design: shard by user/namespace_id so one user's tree lives on one shard (listing and move need no cross-shard join); assuming ~1,000 files per user, 50M x 1,000 files x 1 KB = about 50 TB, run 64+ shards (about 800 GB each) with 1 primary and 2 replicas each; Redis caches hot folder listings",
+        "Data model: file(file_id, namespace_id, parent_id, name, is_dir, latest_version, deleted); version(file_id, version, size, chunk_hashes[], device_id, ts); unique(parent_id, name). Rename and move are metadata-only, zero bytes copied",
+        "APIs: GET /folders/{id}/list, POST /files/commit {file_id, base_version, chunk_hashes[]}, GET /changes?cursor=N. Commit is a single DB transaction with optimistic locking on base_version",
+        "Failures and metrics: primary failover in under 30 s with sync replicas; a shard hot spot (a 1M-file team folder) is split by sub-tree; a stale cache read is bounded by TTL of 5 s. Track commit p99 under 100 ms, replication lag under 1 s, shard QPS skew"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Upload and Download Flow (Cloud File Storage)",
+      "points": [
+        "Upload sequence: 1) chunk and hash, 2) POST /uploads/init with the hash list, 3) server returns presigned URLs only for missing chunks, 4) client PUTs chunks in parallel (4-8 streams), 5) POST /files/commit makes the version visible atomically",
+        "Resumable: upload session (upload_id, bitmap of received chunks) lives 7 days, so a dropped connection after 600 of 1000 chunks resumes with the remaining 400. Per-chunk retry with exponential backoff, 3 tries",
+        "Download: GET /files/{id}/manifest returns the ordered hash list plus signed CDN URLs; client fetches chunks in parallel, verifies each SHA-256, reassembles. Range requests give streaming and partial reads",
+        "Data model: upload_session(upload_id, file_id, base_version, expected_hashes[], received_bitmap, expires_at). Commit rejects if any listed chunk is not present, so a version never points at a missing block",
+        "Failures and metrics: commit crash after upload leaves orphan chunks, gc'd only after their upload session expires (7 days), so a resumable session never loses its uploaded chunks; a client lying about hashes is caught by server-side verify; throttle 1 session per 100 Mbps. Track upload success rate over 99.9%, resume rate, time-to-first-byte under 300 ms, throughput per stream"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Sync Engine and Conflict Resolution (Cloud File Storage)",
+      "points": [
+        "Responsibilities: converge every device to the same tree. Each device stores a cursor (the last change-log sequence number); sync = pull GET /changes?cursor=N, apply locally, push local edits via commit",
+        "Design: server keeps a per-namespace append-only change log (file_id, version, op, seq); the client compares the local hash list vs remote and transfers only differing chunks. Offline edits queue and replay on reconnect",
+        "Conflict detection: commit carries base_version; if the server's latest_version != base_version, two devices edited the same base. Version vector or optimistic check, never silent overwrite",
+        "Resolution: first commit wins; the loser is saved as a conflicted copy named 'report (Alice's laptop's conflicted copy 2026-10-24).docx'. Deletes vs edits: the edit wins so data is never lost. Mergeable docs (Google Docs) use OT/CRDT instead; that is out of scope here",
+        "Failures and metrics: clock skew is avoided by using server-assigned versions, never wall-clock times; a client cursor older than log retention (90 days) triggers a full resync by tree diff. Track sync lag p95 under 5 s, conflict rate (about 0.1% of commits), full-resync count"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Versioning, Trash and Garbage Collection (Cloud File Storage)",
+      "points": [
+        "Responsibilities: keep history so any mistake can be undone. Each commit creates a new immutable version row pointing at a block list; unchanged chunks are shared, so version 2 of a 1 GB file with one edited chunk costs only 4 MB more",
+        "Policy: keep all versions for 30 days (the promised restore window), then thin to one per day until day 120; the 100-versions-per-file cap trims only versions older than 30 days. Delete moves a file to trash (soft delete flag), kept 30 days, then purged",
+        "Restore flow: POST /files/{id}/restore {version} creates a new head version with the old block list. No bytes copied, it takes one metadata write",
+        "Garbage collection: chunk refcount is incremented on version commit and decremented on version expiry; at zero, a mark-and-sweep job waits 7 days, then deletes the block. Weekly full reconciliation catches refcount drift",
+        "Failures and metrics: a gc bug that deletes a live block is the worst failure, so require two independent checks (refcount and a scan of live manifests) before deleting. Track storage by versions as % of total (target under 25%), gc deletes/day, restore success rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Sharing and Permissions (Cloud File Storage)",
+      "points": [
+        "Responsibilities: let owners grant access to files and folders to users, groups or anyone with a link. Roles: viewer, commenter, editor, owner; the check happens on every metadata call and every block URL issue",
+        "Design: ACL entries attach to a file or folder and inherit down the tree; the effective permission = nearest explicit entry walking up the parent chain, cached per (user, node) for 60 s. Shared folder appears in the recipient's namespace as a mount",
+        "Data model: acl(node_id, principal_type, principal_id, role, expires_at); share_link(token 128-bit random, node_id, role, password_hash, expires_at). Link tokens are unguessable, not sequential IDs",
+        "APIs: POST /shares {node_id, principal, role}, DELETE /shares/{id}, GET /s/{token}. Block downloads use short-lived signed URLs (5 min) so revoking access takes effect within minutes, never a permanent public URL",
+        "Failures and metrics: stale permission cache after revoke is bounded by the 60 s TTL; a leaked link is revoked by deleting the token; moving a file into a shared folder must show a warning. Track authz p99 under 20 ms, permission denials, public links active"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Notification Service for Device Sync (Cloud File Storage)",
+      "points": [
+        "Responsibilities: tell online devices something changed so they pull immediately instead of polling. The notification carries only a namespace_id and a new seq, no file data; the client then calls /changes",
+        "Design: each client holds a long-poll or WebSocket connection to a notification server; 10M DAU with about 3M concurrent connections at 50K per server means about 60 servers. Changes publish to Kafka topic partitioned by namespace_id, and subscribers fan out to connected devices",
+        "Flow: commit succeeds, then metadata writes the change log and publishes an event, then the notifier finds the namespace's connected devices through a Redis map (device_id to server), then pushes {namespace_id, seq}; the device pulls within about 1 s. Offline devices get mobile push (APNs/FCM) and catch up via cursor on next open",
+        "Data model and API: connection(device_id, server_id, last_seen) in Redis with a 60 s heartbeat TTL; GET /subscribe?cursor=N long-poll with a 60 s timeout, returning 200 with changes or 204 with none",
+        "Failures and metrics: a lost notification is harmless because the client polls every 5 min as a fallback and the cursor makes the pull idempotent; reconnect storm after a notifier crash uses jittered backoff. Track end-to-end notify latency p99 under 2 s, connected sockets, dropped events"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (Cloud File Storage)",
+      "points": [
+        "Scaling cheatsheet: metadata shards by namespace (64 to 1K shards), stateless API behind a load balancer, block store grows linearly (add nodes, no rebalance of immutable blocks), CDN absorbs hot downloads. Bottleneck order: metadata DB, then notifier connections, then block bandwidth (10M DAU x 4 MB avg / day is small)",
+        "Failure cheatsheet: AZ loss is survived by 3-AZ replicas and metadata sync replica failover (RPO 0, RTO under 30 s); region loss by async cross-region replication (RPO about 1 min); client crash is safe because upload sessions and the cursor are durable",
+        "Trade-offs: fixed vs content-defined chunking (simple vs edit-stable), global vs per-user dedup (30% saving vs privacy leak), 3x replication vs erasure coding (fast reads vs 1.4x cost), long-poll vs WebSocket, last-writer-wins vs conflicted copies (loses data vs user clutter)",
+        "Common mistakes: sending file bytes through app servers, trusting client-supplied hashes, using wall-clock time for versions, deleting a block before verifying refcount, polling every second instead of notifying",
+        "Interview questions: How do you sync a 50 GB file after a 1 MB edit? How do you stop two devices overwriting each other? How do you dedup without leaking other users' files? How do you delete data and honor a GDPR erase request when blocks are shared?"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

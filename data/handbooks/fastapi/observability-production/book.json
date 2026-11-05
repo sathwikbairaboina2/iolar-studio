@@ -1,0 +1,111 @@
+{
+  "title": "FastAPI Production Observability & Lifecycle: Quick Revision",
+  "summary": "Night-before revision notes on running a FastAPI service in production: Uvicorn logging, request IDs, health/readiness probes, Prometheus metrics, OpenTelemetry tracing, timeouts and graceful shutdown. Ends with a one-page cheat sheet.",
+  "chapters": [
+    {
+      "title": "Production Observability Mental Model",
+      "points": [
+        "Three signals: logs (discrete events), metrics (aggregated numbers over time), traces (one request's path across services) — each answers a different question",
+        "Request ID is the glue: one ID stamped on every log line and trace span lets you follow one request across all signals",
+        "Liveness asks 'is the process alive?' (restart if not); readiness asks 'can it take traffic now?' (remove from load balancer if not)",
+        "Lifecycle pipeline: startup → ready → serving → SIGTERM → drain in-flight requests → exit; timeouts bound every step",
+        "Observability lives in middleware and lifespan hooks, so it applies to every route without touching handlers"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Uvicorn Logging and Request IDs",
+      "points": [
+        "Uvicorn has three loggers: 'uvicorn' (server), 'uvicorn.error' (lifecycle and errors, despite the name) and 'uvicorn.access' (one line per request)",
+        "Configure with --log-config logging.yaml or dictConfig; set 'disable_existing_loggers': False or your app loggers go silent",
+        "Use --log-level (debug|info|warning|error) and --no-access-log to cut noise; --access-log is on by default",
+        "Request-ID middleware: read X-Request-ID header or generate uuid4, store in a contextvars.ContextVar, echo it back in the response header",
+        "A logging.Filter reads the ContextVar and injects request_id into every record; format as JSON (python-json-logger or structlog) for log aggregators"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Health, Readiness and Prometheus Metrics",
+      "points": [
+        "GET /healthz (liveness) returns 200 with no dependency checks; GET /readyz (readiness) checks DB, cache and returns 503 when a dependency is down",
+        "Never put DB checks in liveness: a DB outage would make Kubernetes restart every healthy pod in a loop",
+        "Readiness must flip to 503 at shutdown start so the load balancer stops sending new requests before draining",
+        "Prometheus metric types: Counter (only goes up, use rate()), Gauge (up/down), Histogram (buckets, use histogram_quantile for p95/p99)",
+        "Expose /metrics with prometheus-client or prometheus-fastapi-instrumentator; label by route template (/users/{id}), never raw path or user ID, to avoid cardinality blowup"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "OpenTelemetry Tracing, Timeouts and Graceful Shutdown",
+      "points": [
+        "Trace = tree of spans sharing a trace_id; propagation across services uses the W3C traceparent header",
+        "Setup: TracerProvider + BatchSpanProcessor + OTLP exporter, then FastAPIInstrumentor.instrument_app(app) (also httpx/SQLAlchemy instrumentors) for automatic spans",
+        "Put trace_id in log records next to request_id so a log line jumps straight to its trace; custom spans via tracer.start_as_current_span('name')",
+        "Timeouts: --timeout-keep-alive (idle connection, default 5s), httpx.Timeout for outbound calls, asyncio.timeout() or wait_for around slow awaits; never leave outbound calls with no timeout",
+        "Graceful shutdown: on SIGTERM Uvicorn stops accepting, waits for in-flight requests (cap with --timeout-graceful-shutdown), then runs lifespan shutdown; set Kubernetes terminationGracePeriodSeconds above that cap and add a preStop sleep"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Common Mistakes in Production Observability",
+      "points": [
+        "Logging with print() or basicConfig after Uvicorn starts: handlers get duplicated or ignored; use dictConfig and propagate carefully",
+        "Request ID stored in a plain global instead of a ContextVar: IDs leak between concurrent requests",
+        "Liveness probe depends on the DB, or readiness never fails during shutdown: restart storms and dropped requests",
+        "High-cardinality metric labels (user ID, raw URL) and unbounded span attributes: memory and cost explode",
+        "No timeouts plus a short Kubernetes grace period: hung calls pile up and SIGKILL cuts in-flight requests mid-response"
+      ],
+      "shape": [
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Production Observability Cheat Sheet",
+      "points": [
+        "Run: uvicorn app:app --log-config logging.yaml --timeout-keep-alive 5 --timeout-graceful-shutdown 25",
+        "Probes: /healthz = alive, no deps; /readyz = 503 on dependency failure or shutdown",
+        "Metrics: Counter → rate(), Histogram → histogram_quantile(0.95, ...), labels = route template only",
+        "Tracing: FastAPIInstrumentor.instrument_app(app); traceparent header propagates; log trace_id and request_id together",
+        "Shutdown order in Kubernetes: pod marked Terminating (endpoint removal starts) → preStop sleep → SIGTERM → stop accepting, readiness 503 → drain → lifespan shutdown; grace period > drain cap > request timeout"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": []
+    }
+  ]
+}

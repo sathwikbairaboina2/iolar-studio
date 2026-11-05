@@ -1,0 +1,110 @@
+{
+  "title": "FastAPI Background Work, Caching & Rate Limiting: Quick Revision",
+  "summary": "Quick revision notes on offloading work from FastAPI requests (BackgroundTasks, Celery, ARQ), caching responses in Redis with safe invalidation, and protecting endpoints with slowapi or Redis-counter rate limiting.",
+  "chapters": [
+    {
+      "title": "Background Work and Caching: The Mental Model",
+      "points": [
+        "Request path rule: keep the response fast, so push slow or non-essential work (emails, reports, webhooks) off the request and cache repeated reads",
+        "Three tools, three jobs: BackgroundTasks (in-process, fire-and-forget), task queue (separate worker, durable, retryable), cache (Redis store of computed responses)",
+        "Rate limiting is a separate guard: it counts requests per key (IP, user, API key) in a time window and rejects the excess with HTTP 429",
+        "Redis is the shared backbone: broker/result store for Celery, job queue for ARQ, cache store, and counter store for rate limits",
+        "Interview Point: When do you use BackgroundTasks vs a queue? What does 429 mean and which header tells the client when to retry? Why Redis rather than in-process memory for caches and counters?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "BackgroundTasks and Its Limits",
+      "points": [
+        "Usage: add a task param `background_tasks: BackgroundTasks`, then call `background_tasks.add_task(fn, arg, kw=val)`; it runs after the response is sent, in the same process",
+        "Sync def tasks run in the threadpool; async def tasks run on the event loop, so a blocking call inside an async task freezes the whole server",
+        "No durability: a crash, deploy or restart loses pending tasks, since there is no persistence",
+        "No retries, no result retrieval, no status tracking, and exceptions after the response are only logged, never seen by the client",
+        "Tasks share the web worker's CPU and memory, so heavy or long jobs slow the API; use a queue for anything long, critical or CPU-heavy",
+        "Interview Point: Why can an async background task hurt API latency? What happens to queued BackgroundTasks on a restart? Name three signs you have outgrown BackgroundTasks."
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Task Queues: Celery vs ARQ",
+      "points": [
+        "Flow: the API enqueues a message to a broker (Redis/RabbitMQ), a separate worker process pops and runs it, and the result goes to a result backend or Redis key",
+        "Celery: `@app.task` plus `fn.delay(args)` or `apply_async(countdown=, retry=)`; run with `celery -A proj worker -l info`; sync-first, has beat for schedules, many features, heavier config",
+        "ARQ: async-native and Redis-only; define `async def fn(ctx, arg)`, enqueue with `await redis.enqueue_job('fn', arg)`, run `arq module.WorkerSettings`; a good fit for async FastAPI, minimal features",
+        "Reliability settings: Celery `acks_late=True`, `autoretry_for=(Exc,)`, `retry_backoff=True`, `max_retries`; ARQ `max_tries` and job_timeout; make tasks idempotent because delivery is at-least-once",
+        "Pitfalls: pass IDs not objects (arguments must be serializable), never block the API waiting on `.get()`, and set time limits, concurrency and a visibility timeout longer than the longest task",
+        "Interview Point: Celery vs ARQ, how do you choose? What does at-least-once delivery mean for task design? How does a client check job status or result?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Redis Response Caching and Invalidation",
+      "points": [
+        "Cache-aside pattern: build the key, `GET`; on a hit return it; on a miss compute, then `SET key val EX ttl` and return; store JSON-serialized data",
+        "Key design: include everything that changes the output (path, query params, user or tenant, version, e.g. `v1:products:list:page=2:user=42`); never cache personalized data under a shared key",
+        "Invalidation strategies: TTL expiry (simplest), explicit `DEL` on write, key versioning or prefix bump, and `SCAN MATCH prefix*` for groups (never `KEYS` in production)",
+        "Add random jitter to TTLs to avoid mass expiry (avalanche), and use a short lock or request coalescing to stop a stampede when a hot key expires",
+        "Cache `HTTP` details: use `Cache-Control` and `ETag` for client caching, cache only GET and successful responses, and delete the key after the DB commit, not before",
+        "Interview Point: What are the cache-aside, write-through and write-around patterns? How do you handle stampede and stale data? Why is cache invalidation called one of the hard problems?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Rate Limiting with slowapi and Redis Counters",
+      "points": [
+        "slowapi setup: `limiter = Limiter(key_func=get_remote_address, storage_uri='redis://...')`, set `app.state.limiter`, register the `RateLimitExceeded` handler, and decorate routes with `@limiter.limit('5/minute')` (the `request: Request` param is required)",
+        "Without a storage_uri, slowapi counts in memory per process, so limits break with multiple workers; point it at Redis to share counts",
+        "Fixed window counter: `INCR key`, and on the first hit `EXPIRE key window`; simple but allows a double burst at the window edge. Sliding window (sorted set) or token bucket is smoother",
+        "Make the check atomic: use a Lua script or `SET NX EX` plus `INCR`, because a separate INCR and EXPIRE can leave a key with no TTL; return 429 with a `Retry-After` header",
+        "Pitfalls: behind a proxy `get_remote_address` sees the proxy IP, so read `X-Forwarded-For` only from a trusted proxy; prefer a user or API-key based key; decide fail-open or fail-closed when Redis is down",
+        "Interview Point: Fixed window vs sliding window vs token bucket? Why does an in-memory limiter fail with several workers? What do you return when a limit is hit?"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheat Sheet: Background Tasks, Caching, Rate Limiting",
+      "points": [
+        "Pick the tool: BackgroundTasks for quick, loss-tolerant work; Celery or ARQ for durable, retryable, heavy jobs; the cache for repeat reads; the limiter for abuse protection",
+        "Commands: `background_tasks.add_task(fn, x)`, `fn.delay(x)`, `celery -A proj worker -l info`, `arq mod.WorkerSettings`, `await redis.enqueue_job('fn', x)`",
+        "Cache: `GET key`, then compute and `SET key val EX ttl`; `DEL key` on write; versioned keys; ttl jitter; `SCAN` not `KEYS`",
+        "Rate limit: `@limiter.limit('10/minute')` with a Redis storage_uri; `INCR` plus `EXPIRE` atomically; reply 429 with `Retry-After`",
+        "Checklist: idempotent tasks, IDs not objects, task time limits, user in the cache key, delete after commit, trusted proxy IP, Redis failure policy",
+        "Interview Point: Walk through the life of a request that enqueues a job, reads a cached list, and is rate limited. Which part fails if Redis goes down?"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

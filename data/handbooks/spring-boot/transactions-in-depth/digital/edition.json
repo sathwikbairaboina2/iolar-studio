@@ -1,0 +1,701 @@
+{
+  "schema": 1,
+  "subject": "spring-boot",
+  "chapter": "transactions-in-depth",
+  "category": "handbook",
+  "inputsHash": "3f8ad308b01202f8bbd65fa86d30120263a77598e7586b0a008752a7b29a54b0",
+  "generatedAt": "2026-11-05T09:17:04.721Z",
+  "sections": [
+    {
+      "title": "Transactions and the Proxy Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Transactions and the Proxy Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Proxy Model",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Caller",
+                    "sub": "hits the proxy",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Proxy",
+                    "sub": "begins tx",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Your bean",
+                    "sub": "runs method",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Proxy",
+                    "sub": "commit or rollback",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Tx is bound to the ==current thread== (`ThreadLocal`) and one `Connection`",
+                "New threads and `@Async` calls do {red:NOT} join it"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Defaults and Reach",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Setting",
+                "Default"
+              ],
+              "rows": [
+                [
+                  "Propagation",
+                  "`REQUIRED`"
+                ],
+                [
+                  "Isolation",
+                  "`DEFAULT` (the DB's own level)"
+                ],
+                [
+                  "Rollback",
+                  "unchecked only; checked {red:commits}"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Interface proxies: ==public== methods only. Class proxies (Spring 6+): protected and package-private too",
+                "`private`, `final`, `static`: ==no transaction==, silently"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "3. Where to Put It",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Annotate the ==service layer==, not controllers or repositories"
+              ],
+              "style": "check",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "java",
+              "lines": [
+                "@Service",
+                "public class OrderService {",
+                "    @Transactional",
+                "    public void place(Order o) { ... }",
+                "}"
+              ],
+              "note": "one service method = one unit of work"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Callers must go through the **proxy**. No proxy, no transaction."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Propagation: REQUIRED, REQUIRES_NEW, NESTED",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Propagation: REQUIRED, REQUIRES_NEW, NESTED",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Three Core Modes",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Mode",
+                "Outer tx",
+                "Inner failure"
+              ],
+              "rows": [
+                [
+                  "==REQUIRED== (default)",
+                  "joined, or new if none",
+                  "whole tx **rollback-only**"
+                ],
+                [
+                  "==REQUIRES_NEW==",
+                  "suspended, new connection",
+                  "independent commit/rollback"
+                ],
+                [
+                  "==NESTED==",
+                  "savepoint in outer",
+                  "back to savepoint; outer rollback undoes all"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "REQUIRES_NEW is used for {green:audit logs}",
+                "NESTED needs **JDBC savepoints**; with JPA, only if the dialect exposes the JDBC connection, as Hibernate's does"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Example: Audit Log",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "java",
+              "lines": [
+                "@Transactional(propagation = Propagation.REQUIRES_NEW)",
+                "public void audit(String event) {",
+                "    auditRepo.save(new Audit(event));",
+                "}"
+              ],
+              "note": "audit row commits even if the caller rolls back"
+            },
+            {
+              "type": "heading",
+              "text": "3. Gotcha and the Others",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "REQUIRES_NEW holds two connections",
+              "items": [
+                "Outer keeps one, inner takes another",
+                "Can **exhaust the pool**",
+                "Deadlock if outer locks rows inner needs"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Mode",
+                "Behavior"
+              ],
+              "rows": [
+                [
+                  "SUPPORTS",
+                  "join if present, else none"
+                ],
+                [
+                  "MANDATORY",
+                  "throw if none"
+                ],
+                [
+                  "NOT_SUPPORTED",
+                  "suspend, run without"
+                ],
+                [
+                  "NEVER",
+                  "throw if one exists"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "REQUIRED **joins**, NESTED uses a ==savepoint==, REQUIRES_NEW **splits** into a second transaction."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Isolation Levels",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Isolation Levels",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Four Levels",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Level",
+                "Dirty",
+                "Non-repeatable",
+                "Phantom"
+              ],
+              "rows": [
+                [
+                  "`READ_UNCOMMITTED`",
+                  "{red:possible}",
+                  "{red:possible}",
+                  "{red:possible}"
+                ],
+                [
+                  "`READ_COMMITTED`",
+                  "{green:blocked}",
+                  "{red:possible}",
+                  "{red:possible}"
+                ],
+                [
+                  "`REPEATABLE_READ`",
+                  "{green:blocked}",
+                  "{green:blocked}",
+                  "{red:possible}"
+                ],
+                [
+                  "`SERIALIZABLE`",
+                  "{green:blocked}",
+                  "{green:blocked}",
+                  "{green:blocked}"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Dirty = uncommitted read; non-repeatable = row changed; phantom = new rows. Each level blocks ==one more==",
+                "Phantoms at `REPEATABLE_READ`: SQL standard allows; MySQL InnoDB largely prevents",
+                "`SERIALIZABLE`: {red:locking or retries}, lowest throughput"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Setting It",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Set per method; `DEFAULT` uses the ==database level==",
+                "PostgreSQL: `READ_COMMITTED`. MySQL: `REPEATABLE_READ`"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "java",
+              "lines": [
+                "@Transactional(isolation = Isolation.READ_COMMITTED)",
+                "public void pay(long orderId) { ... }"
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Only a NEW transaction",
+              "text": "Isolation applies when a ==new== transaction starts. A `REQUIRED` method joining one **ignores** its own setting."
+            },
+            {
+              "type": "heading",
+              "text": "3. Interview Point",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Joined method sets SERIALIZABLE?** Ignored; the outer transaction's level wins",
+                "**Cost of SERIALIZABLE?** Locking or retries, lowest throughput"
+              ],
+              "style": "dot",
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Rollback Rules and readOnly",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Rollback Rules and readOnly",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Default and Overrides",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Case",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "`RuntimeException`, `Error`",
+                  "{red:rollback}"
+                ],
+                [
+                  "Checked: `IOException`, custom `Exception`",
+                  "{green:COMMITS}"
+                ],
+                [
+                  "`rollbackFor = Exception.class`",
+                  "checked now rolls back"
+                ],
+                [
+                  "`noRollbackFor = SomeException.class`",
+                  "keeps the commit"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "2. Swallowed and Rollback-Only",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`catch` inside the method hides the error from the ==proxy==, so it **commits**",
+                "Rethrow the exception to roll back"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Inner REQUIRED throws",
+                    "sub": "marks rollback-only",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Outer catches",
+                    "sub": "carries on",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Outer commit",
+                    "sub": "fails",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "UnexpectedRollbackException",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. readOnly Is a Hint",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`readOnly = true`: Hibernate skips ==dirty checking== and flush",
+                "The driver may route the query to a ==replica==",
+                "It does **not** block writes on every database"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Checked exceptions **commit** and a caught exception **commits**. Inner failure in REQUIRED poisons the outer transaction."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Interview Point: Does an IOException roll back?** No, add `rollbackFor`",
+                "**Why UnexpectedRollbackException?** Inner failure already made it rollback-only",
+                "**Does readOnly forbid writes?** Not everywhere; it is a hint"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Self-Invocation and Transaction Boundaries",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Self-Invocation and Transaction Boundaries",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Self-Invocation Bypasses the Proxy",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`this.otherMethod()` skips the proxy, so {red:@Transactional on it is ignored}",
+                "Same for ==REQUIRES_NEW== on the inner method: no new transaction"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Fix",
+                "Note"
+              ],
+              "rows": [
+                [
+                  "Move method to another bean",
+                  "==preferred=="
+                ],
+                [
+                  "Inject self, or `AopContext.currentProxy()`",
+                  "workaround"
+                ],
+                [
+                  "`TransactionTemplate`",
+                  "programmatic, explicit"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Keep Boundaries Tight",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "No remote HTTP or slow I/O inside: ==connection and locks== stay held",
+                "{red:LazyInitializationException}: lazy entity touched after the transaction ends"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Fetch what you need ==inside the service==",
+                "Or return **DTOs** instead of entities"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Side Effects After Commit",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "java",
+              "lines": [
+                "@TransactionalEventListener(",
+                "    phase = TransactionPhase.AFTER_COMMIT)",
+                "void onOrderPlaced(OrderPlaced e) {",
+                "    mailer.send(e);",
+                "}"
+              ],
+              "note": "runs only if the transaction commits"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Email sent inside the transaction still fires when it later ==rolls back==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "@Transactional Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "@Transactional Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Propagation",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Mode",
+                "Does"
+              ],
+              "rows": [
+                [
+                  "==REQUIRED==",
+                  "Joins the existing transaction, or creates one"
+                ],
+                [
+                  "==REQUIRES_NEW==",
+                  "Suspends the outer one, starts an independent one"
+                ],
+                [
+                  "==NESTED==",
+                  "Savepoint inside the outer transaction"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Isolation Ladder",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "READ_UNCOMMITTED",
+                    "sub": "dirty reads",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "READ_COMMITTED",
+                    "sub": "no dirty",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "REPEATABLE_READ",
+                    "sub": "no non-repeatable",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "SERIALIZABLE",
+                    "sub": "no anomalies",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Rollback",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Unchecked} and ==Error== roll back",
+                "{red:Checked} exceptions still **commit**",
+                "Fix with `rollbackFor`"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "java",
+              "lines": [
+                "@Transactional(rollbackFor = Exception.class)"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Silent No-Ops",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Self-invocation via `this.method()`",
+                "`private` or `final` methods",
+                "Objects not managed by Spring",
+                "Catching the exception inside the method"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Checklist",
+              "text": "==Public service method==, short transaction, `readOnly` for queries, side effects **after commit**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "`register()` has no @Transactional and calls `this.audit()`, which is REQUIRES_NEW. Does audit get its own transaction?",
+              "a_bullets": [
+                "No: `this.` skips the proxy, so the annotation is ignored.",
+                "Fix: move `audit()` to another bean."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A @Transactional method saves a row, then throws a checked IOException. Is the row saved?",
+              "a_bullets": [
+                "Yes: checked exceptions commit by default.",
+                "Fix: `rollbackFor = Exception.class`."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "An outer REQUIRED method catches an exception from an inner REQUIRED method and carries on. What happens at commit?",
+              "a_bullets": [
+                "UnexpectedRollbackException: the shared transaction is already rollback-only.",
+                "To recover from the inner failure, use REQUIRES_NEW or NESTED."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

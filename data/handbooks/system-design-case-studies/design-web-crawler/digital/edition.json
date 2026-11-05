@@ -1,0 +1,2334 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-web-crawler",
+  "category": "system-design",
+  "inputsHash": "c5f1c228b03da75928845e0f13f0f561a1e877583ad4b78e016e0a6ab3f02db0",
+  "generatedAt": "2026-10-24T11:02:36.890Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Problem and Scope (Web Crawler)",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Crawl the public web== starting from **seed URLs**",
+                "==Store pages== so a search index can use them later",
+                "Example system: a Google-style **Web Crawler**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Ranking",
+                "Indexing",
+                "JS-heavy rendering",
+                "Login-walled pages"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Requirements",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Seed intake**: accept starting URLs",
+                "**Fetch** HTML pages",
+                "**Extract links** from each page",
+                "**Dedupe** URLs and content",
+                "**Respect** `robots.txt`",
+                "**Recrawl** by change rate"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Non-functional",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "{blue:Politeness}",
+                  "max ==1 request/sec== per host"
+                ],
+                [
+                  "Robustness",
+                  "survive bad HTML, timeouts, traps"
+                ],
+                [
+                  "Extensibility",
+                  "plug in new content types and parsers"
+                ],
+                [
+                  "Freshness",
+                  "changing pages recrawled sooner"
+                ],
+                [
+                  "Scalability",
+                  "~400 pages/sec avg, ~1,200 peak"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Scale and Storage Estimates",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "1B pages/month",
+                    "sub": "target volume",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "~400 pages/sec",
+                    "sub": "average",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "~1,200 pages/sec",
+                    "sub": "peak = 3x",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Quantity",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Raw HTML",
+                  "1B pages x 100 KB avg",
+                  "==100 TB/month=="
+                ],
+                [
+                  "Compressed",
+                  "gzip ~3x",
+                  "~==30 TB== /month"
+                ],
+                [
+                  "Metadata",
+                  "1B x 500 B",
+                  "==500 GB=="
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Size for peak",
+              "text": "Capacity is planned for the ==1,200/sec peak==, not the 400/sec average. Politeness caps **each host** at 1 request/sec."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture and Crawl Loop",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture and Crawl Loop",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Pipeline and Components (Web Crawler)",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Seeds",
+                    "sub": "start URLs",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "URL frontier",
+                    "sub": "what to crawl next",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "DNS resolver",
+                    "sub": "host → IP",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Fetcher",
+                    "sub": "HTTP GET",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Content store",
+                    "sub": "raw body",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Parser",
+                    "sub": "HTML → text",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "Link extractor",
+                    "sub": "a, link tags",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "Filter / dedup",
+                    "sub": "back to frontier",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Component",
+                "Job"
+              ],
+              "rows": [
+                [
+                  "==Frontier==",
+                  "holds and orders URLs to crawl"
+                ],
+                [
+                  "Fetcher workers",
+                  "download pages over async I/O"
+                ],
+                [
+                  "DNS cache",
+                  "avoids slow repeat lookups"
+                ],
+                [
+                  "Parser",
+                  "extracts text and links"
+                ],
+                [
+                  "Dedup services",
+                  "{blue:URL seen} and {purple:content seen}"
+                ],
+                [
+                  "Content store",
+                  "keeps raw pages"
+                ],
+                [
+                  "Scheduler",
+                  "decides when to (re)crawl"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. The Crawl Loop",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "One URL, start to finish",
+                "steps": [
+                  {
+                    "text": "Pop URL",
+                    "note": "from frontier",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Check robots cache",
+                    "note": "disallowed? skip",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Resolve DNS",
+                    "note": "cache first",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Fetch",
+                    "note": "with a timeout",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Store body",
+                    "note": "content store",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Parse + extract links",
+                    "note": "a, link, canonical",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "Filter, enqueue new",
+                    "note": "back to frontier",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "It is a loop",
+              "text": "Every extracted link that passes the ==filter and dedup== goes back into the **frontier**, so the crawl feeds itself until the frontier is empty."
+            },
+            {
+              "type": "heading",
+              "text": "3. Storage Choices",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Data",
+                "Store",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Page bodies",
+                  "==Blob store== (S3 / HDFS)",
+                  "large, write-once, cheap per TB"
+                ],
+                [
+                  "URL metadata",
+                  "==Key-value store==",
+                  "fast lookup by URL hash"
+                ],
+                [
+                  "Seen URLs",
+                  "==Bloom filter== + KV",
+                  "Bloom first, KV on a hit"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Bandwidth Estimate",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Average: ==400 pages/sec== x 100 KB = **40 MB/s**",
+                "40 MB/s x 8 = ==320 Mbps== average",
+                "Peak is 3x (1,200 pages/sec): about ==1 Gbps==",
+                "Size the network link for the **peak**, not the average"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "URL Frontier: Priority and Queues",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "URL Frontier: Priority and Queues",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The frontier of the **Web Crawler**: ~400 pages/sec average, ~1,200 peak, 10B known URLs waiting."
+            },
+            {
+              "type": "heading",
+              "text": "1. Responsibilities",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Hold== every URL still to crawl",
+                "==Order== by priority: important pages first",
+                "==Enforce politeness==: max 1 request/sec per host",
+                "==Survive restarts==: no lost or duplicated queue",
+                "Hand fetchers the next URL on demand"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Two-Tier Design",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Prioritizer",
+                    "sub": "score each URL",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "F front queues",
+                    "sub": "by priority",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Router",
+                    "sub": "hash(host)",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "B back queues",
+                    "sub": "one host each",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Host heap",
+                    "sub": "next-allowed-time",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Front queues (F)",
+                "Back queues (B)"
+              ],
+              "rows": [
+                [
+                  "Keyed by",
+                  "**priority**",
+                  "**host**"
+                ],
+                [
+                  "Job",
+                  "importance order",
+                  "politeness"
+                ],
+                [
+                  "Per queue",
+                  "many hosts",
+                  "{green:exactly one host}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Prioritizer and Router",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Score from ==PageRank==, ==update frequency== and **depth** (deeper = lower)",
+                "Map score to one of **F** priority queues, F-1 is highest",
+                "Router: `hash(host) % B` sends a URL to one back queue",
+                "Heap keyed by ==next-allowed-time== gives the next host to fetch"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import heapq",
+                "# heap holds (next_allowed_at, host)",
+                "t, host = heapq.heappop(heap)",
+                "# sleep until t, fetch one URL of host",
+                "heapq.heappush(heap, (now + delay, host))"
+              ],
+              "note": "min-heap: earliest allowed host pops first"
+            },
+            {
+              "type": "heading",
+              "text": "4. Size and Failure",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "10B known URLs x 100 B = ==~1 TB==, too big for RAM",
+                "So **disk-backed** queues with an in-memory head buffer",
+                "Only the head of each queue is kept hot in memory"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Frontier node crash",
+                "steps": [
+                  {
+                    "text": "Node dies",
+                    "note": "in-memory head lost",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Log persists",
+                    "note": "Kafka keeps every enqueue",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Replay",
+                    "note": "rebuild head from log",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Front queues decide ==what== is crawled first; back queues, one host each, decide ==when==. Persist enqueues to a **log** before trusting memory."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Politeness and robots.txt Handling",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Politeness and robots.txt Handling",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Web Crawler: stay at ==1 request/sec per host== while the fleet runs ~400 pages/sec average, ~1,200 peak."
+            },
+            {
+              "type": "heading",
+              "text": "1. The Politeness Rule",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==One connection per host== at a time, never parallel",
+                "Delay = **max(1s, 10x last fetch time)**, or the host's `Crawl-delay` if larger",
+                "Fetch took 3s → wait 30s; fetch took 200 ms → wait 1s",
+                "Host not yet allowed → park its back queue, serve another host"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Pop host",
+                    "sub": "earliest next_allowed_at",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Robots check",
+                    "sub": "cache, 24h",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Fetch",
+                    "sub": "1 connection",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Set next_allowed_at",
+                    "sub": "now + delay",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. robots.txt Rules",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Fetched from `/robots.txt` once per host, ==cached 24h==",
+                "Parse only the group for our `User-agent`, else the `*` group",
+                "`Disallow` and `Allow` use ==longest match==: the longer path pattern wins",
+                "Below: `/private/press/a.html` is {green:allowed}, `/private/x.html` is {red:blocked}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "User-agent: IolarBot",
+                "Disallow: /private/",
+                "Allow: /private/press/",
+                "Crawl-delay: 5"
+              ],
+              "note": "Allow is longer than Disallow, so it wins for /private/press/"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "host_policy(",
+                "  host            PRIMARY KEY,",
+                "  robots_body     TEXT,",
+                "  crawl_delay     INT,",
+                "  fetched_at      TIMESTAMP,   -- +24h = refetch",
+                "  next_allowed_at TIMESTAMP    -- heap key",
+                ")"
+              ],
+              "note": "one row per host, owned by a single worker"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures, Metrics, Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "robots.txt status",
+                "Meaning",
+                "Action"
+              ],
+              "rows": [
+                [
+                  "`404`",
+                  "no rules exist",
+                  "{green:allow all}"
+                ],
+                [
+                  "`5xx`",
+                  "server broken",
+                  "{red:disallow all}, retry later"
+                ],
+                [
+                  "`429` / `503`",
+                  "host overloaded",
+                  "**exponential backoff**"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Per-host request rate: stays ≤ ==1/sec==",
+                "Robots cache hit rate: target ==>99%==",
+                "429 rate: rising means we are too aggressive",
+                "Blocked-by-robots count: URLs dropped per host"
+              ],
+              "style": "check",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Worker per host",
+              "text": "Each host needs ==one worker thread== owning it. Random worker assignment lets two workers hit one host at once and **breaks politeness**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "DNS Resolution and Fetcher Design",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "DNS Resolution and Fetcher Design",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. DNS Is the Bottleneck",
+              "ink": "blue"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: the **Web Crawler** at ==1,200 fetches/sec== peak, where every new host needs a lookup."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Synchronous lookups take ==10-200 ms== and block a worker",
+                "Run a {blue:custom async resolver} inside the fetcher",
+                "Keep a {green:local cache} of ~==10M entries==",
+                "Honor each record's ==TTL==; expire entries when it runs out",
+                "A cache hit costs microseconds, not a network round trip"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Host",
+                    "sub": "from URL",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Local cache",
+                    "sub": "hit: return IP",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Async lookup",
+                    "sub": "miss: 10-200 ms",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Store",
+                    "sub": "keep for TTL",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Fetcher and HTTP Details",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Setting",
+                "Limit"
+              ],
+              "rows": [
+                [
+                  "Workers",
+                  "async I/O, many sockets per node"
+                ],
+                [
+                  "Connect timeout",
+                  "==5 s=="
+                ],
+                [
+                  "Read timeout",
+                  "==30 s=="
+                ],
+                [
+                  "Max body",
+                  "==10 MB== (truncate beyond)"
+                ],
+                [
+                  "Redirects",
+                  "follow at most ==5=="
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /page HTTP/1.1",
+                "Host: example.com",
+                "User-Agent: IolarBot/1.0 (+https://example.com/bot)",
+                "If-None-Match: \"abc123\"",
+                "If-Modified-Since: Sat, 24 Oct 2026 08:00:00 GMT",
+                "Accept-Encoding: gzip"
+              ],
+              "note": "conditional GET: server answers 304 with no body if unchanged"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`User-Agent` carries a ==contact URL== so site owners can reach us",
+                "`If-None-Match` sends the saved ETag; `If-Modified-Since` sends the saved date",
+                "`Accept-Encoding: gzip` cuts bytes on the wire"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Capacity and Failures",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Peak: ==1,200 fetches/sec== x ~500 ms each",
+                "= ~==600 concurrent connections==",
+                "600 / 60 per node = ~{orange:10 fetcher nodes}"
+              ],
+              "style": "number",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Failed fetch: timeout, DNS failure, TLS error, connection reset",
+                "rows": [
+                  [
+                    "f"
+                  ],
+                  [
+                    "r"
+                  ],
+                  [
+                    "b",
+                    "d"
+                  ]
+                ],
+                "nodes": {
+                  "f": {
+                    "text": "Fetch fails",
+                    "shape": "box",
+                    "ink": "red"
+                  },
+                  "r": {
+                    "text": "Tried fewer than 3 times?",
+                    "shape": "diamond"
+                  },
+                  "b": {
+                    "text": "Exponential backoff, retry",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "d": {
+                    "text": "Mark dead for 24h",
+                    "shape": "box",
+                    "ink": "black"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "f",
+                    "to": "r"
+                  },
+                  {
+                    "from": "r",
+                    "to": "b",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "r",
+                    "to": "d",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Cache DNS and **honor TTL**. Cap body at ==10 MB==, redirects at ==5==, and retry ==3 times== before marking a URL dead for 24h."
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Watch for"
+              ],
+              "rows": [
+                [
+                  "Fetch success rate",
+                  "target ==above 90%=="
+                ],
+                [
+                  "p99 fetch latency",
+                  "tail near the 30 s read timeout means slow hosts"
+                ],
+                [
+                  "DNS cache hit rate",
+                  "a drop means more 10-200 ms stalls"
+                ],
+                [
+                  "Bytes/sec",
+                  "~40 MB/s average; ~120 MB/s at 3x peak"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Parser and Link Extraction",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Parser and Link Extraction",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What the Parser Does",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Runs after the fetcher stores the body in the content store (Web Crawler)",
+                "Validate `Content-Type` is ==text/html==; skip images, PDFs, zips",
+                "Detect the ==encoding== before decoding the bytes",
+                "Extract **text** for the index",
+                "Extract **links** from `a href`, `link href`, and `link rel=canonical`"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Fetch",
+                    "sub": "body stored",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Parse queue",
+                    "sub": "decouples",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Parser pool",
+                    "sub": "type, charset, DOM",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Normalize",
+                    "sub": "canonical form",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Filter",
+                    "sub": "rules",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Dedup, frontier",
+                    "sub": "new URLs only",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Parse in a ==separate worker pool== from fetch, joined by a **queue**",
+                "A slow or malformed page then cannot stall fetching (~1,200 peak fetches/sec)"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. Normalize, Then Filter",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Step",
+                "Rule",
+                "Example"
+              ],
+              "rows": [
+                [
+                  "Scheme, host",
+                  "lowercase",
+                  "`HTTP://A.com` → `http://a.com`"
+                ],
+                [
+                  "Relative path",
+                  "resolve against base URL",
+                  "`../x` → `/x`"
+                ],
+                [
+                  "Fragment",
+                  "strip `#...`",
+                  "`/p#top` → `/p`"
+                ],
+                [
+                  "Default port",
+                  "drop `:80` / `:443`",
+                  "`a.com:80` → `a.com`"
+                ],
+                [
+                  "Query",
+                  "sort params",
+                  "`?b=2&a=1` → `?a=1&b=2`"
+                ],
+                [
+                  "Tracking",
+                  "remove `utm_*`, `fbclid`",
+                  "`?utm_source=x` → none"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "sidebox",
+              "title": "URL filters (drop if any fails)",
+              "items": [
+                "Scheme is ==http== or ==https== only",
+                "Length at most ==2,048== characters",
+                "Extension not in blocklist: `.jpg`, `.zip`",
+                "Depth within the per-domain depth cap"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Order matters",
+              "text": "==Normalize first==, then filter and dedup. Otherwise `http://A.com/` and `http://a.com` look different and the same page is crawled twice."
+            },
+            {
+              "type": "heading",
+              "text": "3. Failure Scenarios",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Problem",
+                "Defense"
+              ],
+              "rows": [
+                [
+                  "Malformed HTML",
+                  "**tolerant parser** (html5lib or lxml style); never reject a page for bad tags"
+                ],
+                [
+                  "Huge page",
+                  "truncate at ==10 MB==; parse what was kept"
+                ],
+                [
+                  "Wrong charset",
+                  "sniff `<meta charset>` or `http-equiv`; fall back to UTF-8 with replacement"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Strict parser that raises on bad HTML stalls the pool",
+                "Trusting the HTTP charset header alone garbles text and links",
+                "Parsing without a size cap lets one page exhaust worker memory"
+              ],
+              "style": "cross",
+              "ink": "red"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "URL Deduplication: Seen-URL Test",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "URL Deduplication: Seen-URL Test",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Why Check Every Link",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "In the Web Crawler, the seen-URL test sits between the link extractor and the frontier. It runs on **every** extracted link."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Goal: never re-enqueue any of the ==10B+== URLs already known",
+                "Load: ~50 links/page x 400 pages/sec = ==20,000 checks/sec==",
+                "Each check must be {green:fast} (in-memory or one KV read)",
+                "A wrong {red:\"seen\"} answer loses a page; a wrong {blue:\"new\"} answer only wastes a fetch"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Exact Store and Bloom Filter",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Exact store==: sharded KV keyed by the **64-bit URL hash**",
+                "10B URLs x 8 byte hash = ==80 GB==",
+                "{green:Precise}: no false positives, no false negatives",
+                "==Bloom filter==: bit array plus k hash functions, no URLs stored",
+                "10B entries at 1% false positives needs ~9.6 bits/entry = ==~12 GB=="
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Bloom has ==no false negatives==",
+                "A miss means the URL is **definitely new**: enqueue it",
+                "A hit means ==maybe seen==: confirm in the KV store"
+              ],
+              "style": "check",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Bloom first, KV on hit",
+                "rows": [
+                  [
+                    "norm"
+                  ],
+                  [
+                    "bloom"
+                  ],
+                  [
+                    "new",
+                    "kv"
+                  ],
+                  [
+                    "dup",
+                    "new2"
+                  ]
+                ],
+                "nodes": {
+                  "norm": {
+                    "text": "Normalize URL",
+                    "shape": "box",
+                    "ink": "purple"
+                  },
+                  "bloom": {
+                    "text": "In Bloom filter?",
+                    "shape": "diamond",
+                    "ink": "blue"
+                  },
+                  "new": {
+                    "text": "New: add + enqueue",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "kv": {
+                    "text": "In KV store?",
+                    "shape": "diamond",
+                    "ink": "orange"
+                  },
+                  "dup": {
+                    "text": "Seen: drop",
+                    "shape": "pill",
+                    "ink": "red"
+                  },
+                  "new2": {
+                    "text": "False positive: enqueue",
+                    "shape": "box",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "norm",
+                    "to": "bloom"
+                  },
+                  {
+                    "from": "bloom",
+                    "to": "new",
+                    "label": "miss"
+                  },
+                  {
+                    "from": "bloom",
+                    "to": "kv",
+                    "label": "hit"
+                  },
+                  {
+                    "from": "kv",
+                    "to": "dup",
+                    "label": "found"
+                  },
+                  {
+                    "from": "kv",
+                    "to": "new2",
+                    "label": "not found"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Comparison",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Bloom filter",
+                "Exact hash set",
+                "Bloom + KV"
+              ],
+              "rows": [
+                [
+                  "Memory",
+                  "**~12 GB**",
+                  "80 GB (**7x** larger)",
+                  "12 GB + KV on disk"
+                ],
+                [
+                  "Speed",
+                  "{green:fastest}",
+                  "KV read per check",
+                  "KV only on Bloom hit"
+                ],
+                [
+                  "Errors",
+                  "{red:1% false positives}",
+                  "none",
+                  "none"
+                ],
+                [
+                  "Cost of error",
+                  "new URL dropped",
+                  "none",
+                  "none"
+                ]
+              ],
+              "highlightRow": 3,
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Dedup before normalization",
+              "text": "`http://A.com/` and `http://a.com` hash differently, so the same page is ==crawled twice==. Always **normalize first**, then hash."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Content Deduplication with Fingerprints",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Content Deduplication with Fingerprints",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Why Dedup Content",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "~=30%== of web pages are **duplicates** or near-duplicates",
+                "Sources: {blue:mirrors}, {orange:tracking params}, {purple:printer views}",
+                "URL dedup cannot catch them: the URLs differ, the body is the same",
+                "Goal: skip parsing, indexing and storage for pages we already hold"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Exact and Near Duplicates",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Exact**: store ==SHA-256== of the body in a KV store",
+                "A hit means {green:skip parsing and indexing}",
+                "**Near**: ==SimHash== gives a **64-bit** fingerprint per page",
+                "Near-dupes if ==Hamming distance ≤ 3== (at most 3 differing bits)"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Content-seen check",
+                "rows": [
+                  [
+                    "body"
+                  ],
+                  [
+                    "sha"
+                  ],
+                  [
+                    "sim"
+                  ],
+                  [
+                    "keep",
+                    "skip"
+                  ]
+                ],
+                "nodes": {
+                  "body": {
+                    "text": "Fetched body",
+                    "shape": "pill"
+                  },
+                  "sha": {
+                    "text": "SHA-256 seen?",
+                    "shape": "diamond"
+                  },
+                  "sim": {
+                    "text": "SimHash within 3 bits?",
+                    "shape": "diamond"
+                  },
+                  "keep": {
+                    "text": "New: parse and index",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "skip": {
+                    "text": "Duplicate: skip",
+                    "shape": "box",
+                    "ink": "red"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "body",
+                    "to": "sha"
+                  },
+                  {
+                    "from": "sha",
+                    "to": "skip",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "sha",
+                    "to": "sim",
+                    "label": "no"
+                  },
+                  {
+                    "from": "sim",
+                    "to": "skip",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "sim",
+                    "to": "keep",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "SHA-256",
+                "SimHash",
+                "MinHash"
+              ],
+              "rows": [
+                [
+                  "Finds",
+                  "exact copies",
+                  "near-dupes",
+                  "near-dupes"
+                ],
+                [
+                  "Size",
+                  "256 bits",
+                  "**64 bits**",
+                  "many hashes per page"
+                ],
+                [
+                  "Measure",
+                  "equality",
+                  "Hamming ≤ 3",
+                  "estimates ==Jaccard== on shingles"
+                ],
+                [
+                  "Cost",
+                  "cheapest",
+                  "cheap",
+                  "{red:heavier}; best for set overlap"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "3. Lookup and Storage",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Scanning every fingerprint for distance ≤ 3 is too slow",
+                "Split the 64-bit SimHash into ==4 blocks of 16 bits==, index each block",
+                "Distance ≤ 3 flips at most 3 bits, so at least **1 block** is identical",
+                "Fetch candidates sharing a block, then verify the full Hamming distance"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "diagram",
+              "kind": "array",
+              "spec": {
+                "cells": [
+                  "16 bits",
+                  "16 bits",
+                  "16 bits",
+                  "16 bits"
+                ],
+                "indices": true,
+                "highlight": [
+                  2
+                ],
+                "caption": "3 flipped bits touch at most 3 blocks; the 4th still matches"
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Storage estimate",
+              "items": [
+                "1B fingerprints x 8 B = ==8 GB==",
+                "Fits in memory across a **few nodes**",
+                "Each block index adds a copy of the keys, still small"
+              ],
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "SHA-256 = exact only. SimHash = ==64-bit, Hamming ≤ 3==. Lookup by **4 x 16-bit blocks**, then verify the full distance."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Recrawl Scheduling and Freshness",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Recrawl Scheduling and Freshness",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Goal and the Tiers",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Goal: ==maximize fresh pages== under a fixed budget of ~**400 fetches/sec**",
+                "Pages do **not** change equally: spend fetches where change is likely",
+                "Wasted fetch = page re-downloaded that did not change"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tier",
+                "Pages",
+                "Recrawl"
+              ],
+              "rows": [
+                [
+                  "{red:Hot}",
+                  "News homepages",
+                  "==hourly=="
+                ],
+                [
+                  "{blue:Warm}",
+                  "Popular sites",
+                  "==daily=="
+                ],
+                [
+                  "{purple:Cold}",
+                  "Long tail",
+                  "==monthly=="
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Change Rate and Cheap Checks",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Track **change history** per URL (`change_count`, `content_hash`)",
+                "Changed on recrawl: ==halve== the interval",
+                "Unchanged on recrawl: ==double== the interval",
+                "Bound the interval: {green:min 1 hour}, {red:max 30 days}"
+              ],
+              "style": "number",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Recrawl outcome",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ],
+                  [
+                    "c"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Conditional GET: changed?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "304, no body: interval x 2",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "b": {
+                    "text": "200, new body: interval / 2",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "c": {
+                    "text": "Clamp to 1h..30d, set next_crawl",
+                    "shape": "pill",
+                    "ink": "purple"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "no"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "a",
+                    "to": "c"
+                  },
+                  {
+                    "from": "b",
+                    "to": "c"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Send `If-None-Match` (etag) or `If-Modified-Since`",
+                "Server replies ==304== with **no body**: saves bandwidth",
+                "Sitemap `lastmod` is only a ==hint==: verify with a fetch"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "url_meta field",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "`url_hash`",
+                  "key"
+                ],
+                [
+                  "`last_crawled`, `next_crawl`",
+                  "scheduler orders by next_crawl"
+                ],
+                [
+                  "`etag`",
+                  "conditional GET"
+                ],
+                [
+                  "`content_hash`",
+                  "detect real change"
+                ],
+                [
+                  "`change_count`",
+                  "change history"
+                ],
+                [
+                  "`interval`",
+                  "adaptive, 1h to 30d"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "sidebox",
+              "title": "Watch these",
+              "items": [
+                "{green:Freshness}: % pages younger than their change interval",
+                "{blue:Average age}: time since last crawl vs last change",
+                "{purple:304 ratio}: high means cheap checks work, or intervals are too short"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Freshness is bought with the ==400 fetches/sec== budget: **halve on change, double on 304**, clamp to 1 hour to 30 days."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Distributed Crawler and Crawler Traps",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Distributed Crawler and Crawler Traps",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Partition and Route (Web Crawler)",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Partition by ==hash(host)== on a **consistent hash ring**",
+                "Each node owns ==whole hosts==, never part of one",
+                "Politeness state and robots cache stay {green:local} to the owner",
+                "No cross-node lock needed for the 1 request/sec per host rule"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Parser on node A",
+                    "sub": "extracts link",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "hash(host)",
+                    "sub": "owner = node C",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Kafka topic",
+                    "sub": "partitioned by host hash",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Node C frontier",
+                    "sub": "back queue for host",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Links to ==own hosts== go straight to the local frontier",
+                "Links to **other hosts** go via the queue to the owner",
+                "The queue also buffers bursts and survives node restarts"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Adding a Node",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "New node takes ring slots: only ~==1/N== of hosts move",
+                "Example: 10 nodes to 11 moves about 9% of hosts",
+                "Other hosts keep their owner, caches and queues"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Ownership handover",
+                "steps": [
+                  {
+                    "text": "Ring updated",
+                    "note": "new node owns slots",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Old node stops pulling",
+                    "note": "for moved hosts",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Old queues drain",
+                    "note": "in-flight fetches finish",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "New node starts",
+                    "note": "politeness timer carried over",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Handover rule",
+              "text": "Never let two nodes fetch the same host at once. ==Drain first==, then switch the owner, or politeness breaks."
+            },
+            {
+              "type": "heading",
+              "text": "3. Crawler Traps",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Trap",
+                "Example",
+                "Why it loops"
+              ],
+              "rows": [
+                [
+                  "Infinite calendar",
+                  "`/cal?month=2031-04`, next-month link forever",
+                  "Every page links to a new date"
+                ],
+                [
+                  "Session ID in URL",
+                  "`/page?sid=a8f3...`",
+                  "New ID per visit, same content"
+                ],
+                [
+                  "Repeated segments",
+                  "`/a/b/a/b/a/b`",
+                  "Relative links stack on the path"
+                ],
+                [
+                  "Generated pages",
+                  "`/page/1`, `/page/2`, ... endless",
+                  "Server builds each page on demand"
+                ],
+                [
+                  "Spam site",
+                  "Millions of auto-made pages",
+                  "Built to soak up crawlers"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Defenses and Manual Handling",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Defense",
+                "Limit",
+                "Catches"
+              ],
+              "rows": [
+                [
+                  "Max URL length",
+                  "**2,048** chars",
+                  "Growing paths and query strings"
+                ],
+                [
+                  "Max depth",
+                  "~**15** hops from seed",
+                  "Endless link chains"
+                ],
+                [
+                  "Pages per host cap",
+                  "fixed budget per host",
+                  "Spam and generated pages"
+                ],
+                [
+                  "Repeated segments",
+                  "same segment 3+ times",
+                  "`/a/b/a/b` loops"
+                ],
+                [
+                  "Content-hash loop",
+                  "same body hash seen again",
+                  "Session IDs, calendars"
+                ]
+              ],
+              "highlightRow": 4
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Flag== hosts with abnormal page counts",
+                "==Flag== hosts with a low unique-content ratio (many pages, few distinct hashes)",
+                "Then **blocklist** the host or lower its page cap",
+                "Review flagged hosts in a dashboard, not by hand per URL"
+              ],
+              "style": "check",
+              "ink": "orange"
+            },
+            {
+              "type": "sidebox",
+              "title": "Trap checks run on every URL",
+              "items": [
+                "Before enqueue: length, depth, repeated segments",
+                "At the back queue: per-host page cap",
+                "After fetch: content-hash loop check"
+              ],
+              "ink": "red"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale-out (Web Crawler)",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Today",
+                "10x growth"
+              ],
+              "rows": [
+                [
+                  "Peak fetch rate",
+                  "1,200 pages/sec",
+                  "~12,000 pages/sec"
+                ],
+                [
+                  "Fetcher nodes",
+                  "~10 (60 connections each)",
+                  "~100"
+                ],
+                [
+                  "Bandwidth",
+                  "~1 Gbps",
+                  "~10 Gbps"
+                ],
+                [
+                  "Storage",
+                  "100 TB/month raw, ~30 TB gzip",
+                  "~1 PB/month"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "2. Failure Handling",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Checkpoint",
+                    "note": "frontier state",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "At-least-once",
+                    "note": "retry on crash",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Idempotent dedup",
+                    "note": "repeat is harmless",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Dead-letter queue",
+                    "note": "poison URLs",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Checkpoint== frontier state so a crash replays from the last snapshot, not from the seeds",
+                "**At-least-once** processing: a URL may be fetched twice after a crash, never lost",
+                "Dedup must be ==idempotent==: re-seeing a URL or content hash changes nothing",
+                "Poison URLs that keep failing go to a ==dead-letter queue== for review, not endless retries"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Choice",
+                "Gain",
+                "Cost"
+              ],
+              "rows": [
+                [
+                  "BFS crawl",
+                  "Broad coverage",
+                  "Low-value pages crawled early"
+                ],
+                [
+                  "Priority crawl",
+                  "Better quality sooner",
+                  "Long tail reached later"
+                ],
+                [
+                  "Exact URL set",
+                  "No false positives",
+                  "80 GB, 7x larger than Bloom"
+                ],
+                [
+                  "Bloom filter",
+                  "~12 GB at 1% FP",
+                  "Drops ~1% of new URLs"
+                ],
+                [
+                  "SimHash distance high",
+                  "Higher recall of near-dupes",
+                  "False merges of distinct pages"
+                ],
+                [
+                  "SimHash distance low",
+                  "Few false merges",
+                  "Misses near-dupes"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{orange:Freshness} and {blue:coverage} compete for the same ~400 fetches/sec budget",
+                "More recrawls means fewer new pages discovered, and the reverse"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Answers",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Stay polite at 1,000 fetches/sec?** Per-host ==back queues== with ==one worker per host==",
+                "A ==next-allowed-time heap== picks the next host that may be hit; random worker assignment breaks politeness"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Host back queue",
+                    "sub": "one host each",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Heap",
+                    "sub": "next-allowed-time",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "One worker",
+                    "sub": "per host",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Detect a crawler trap?** Cap ==depth== (~15) and ==URL length== (2,048)",
+                "Cap ==pages per host==; flag hosts with abnormal page counts",
+                "Check ==repeated path segments== (/a/b/a/b) and ==content-hash== loops"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Scale by adding **nodes**, survive with ==replay + idempotent dedup==, and pick trade-offs by what a wrong answer costs."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Web Crawler Cheatsheet",
+      "role": "outline",
+      "outlineIndex": 12,
+      "pages": [
+        {
+          "title": "Web Crawler Cheatsheet",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Night-before notes for the **Web Crawler** design: numbers, frontier, politeness, dedup, recrawl, scale and traps."
+            },
+            {
+              "type": "heading",
+              "text": "1. Numbers",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Quantity",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Volume",
+                  "==1B pages/month=="
+                ],
+                [
+                  "Average rate",
+                  "**400**/sec"
+                ],
+                [
+                  "Peak rate (3x)",
+                  "**1,200**/sec"
+                ],
+                [
+                  "Raw storage",
+                  "100 KB/page = ==100 TB/month=="
+                ],
+                [
+                  "Bandwidth",
+                  "400 x 100 KB = ==40 MB/s== (320 Mbps)"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Frontier and Politeness",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Prioritizer",
+                    "sub": "score to 1 of F queues",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "F front queues",
+                    "sub": "by priority",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Router",
+                    "sub": "hash(host) to B queue",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Heap",
+                    "sub": "next-allowed-time",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Back queue} = one host per queue, one worker per host",
+                "Politeness: ==1 request/sec== per host, or 10x last fetch time",
+                "Cache ==robots.txt for 24h==; Disallow/Allow use longest match",
+                "Back off exponentially on {red:429} and {red:503}",
+                "robots 404 = allow all; robots 5xx = disallow all, retry later"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Dedup and Recrawl",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Check",
+                "Method",
+                "Key number"
+              ],
+              "rows": [
+                [
+                  "Seen URL",
+                  "Bloom filter, then KV on hit",
+                  "==9.6 bits/URL== at 1% FP (~12 GB for 10B)"
+                ],
+                [
+                  "Exact content",
+                  "`SHA-256` of body",
+                  "hit = skip parse and index"
+                ],
+                [
+                  "Near-dupe",
+                  "`SimHash` 64-bit",
+                  "Hamming distance ==≤ 3=="
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Bloom: no false negatives, so a miss means definitely new",
+                "Normalize URLs before dedup, or `http://A.com/` and `http://a.com` differ",
+                "Recrawl interval: halve if changed, double if unchanged, bounded ==1 hour to 30 days==",
+                "Tiers by change rate: news hourly, popular sites daily, long tail monthly",
+                "A 304 reply carries no body, so it saves bandwidth"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /page HTTP/1.1",
+                "If-None-Match: \"abc123\"",
+                "If-Modified-Since: Sat, 24 Oct 2026 08:00:00 GMT",
+                "Accept-Encoding: gzip"
+              ],
+              "note": "conditional GET: server answers 304 if unchanged"
+            },
+            {
+              "type": "heading",
+              "text": "4. Distribute and Defend",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Distribute by ==host hash== (consistent hashing): each node owns whole hosts",
+                "Politeness and robots cache stay local; adding a node moves ~1/N of hosts",
+                "Trap defenses: URL length ≤ ==2,048==, depth ~==15==, per-host page cap",
+                "Also detect repeated path segments (`/a/b/a/b`) and content-hash loops"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Random worker assignment breaks politeness. Route every URL by ==host hash== so one worker owns each host."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A crawler runs 10 workers that all pop from one shared queue. Host X has 500 URLs queued next to each other. What goes wrong, and what is the fix?",
+              "a_bullets": [
+                "Several workers pop X's URLs at the same moment, so X gets parallel requests and the 1 request/sec rule is broken.",
+                "X may rate-limit with 429s or block the crawler.",
+                "Fix: route each URL to a back queue by `hash(host)`, so one host lives in one queue.",
+                "Give each back queue to a single worker, and use a heap keyed by next-allowed-time to pick the next host."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The seen-URL check uses a Bloom filter: 'seen' means skip, 'not seen' means enqueue. Which mistake can it make, and which can it never make?",
+              "a_bullets": [
+                "It can say 'seen' for a URL that is actually new (false positive), so that URL is silently never crawled.",
+                "It can never say 'not seen' for a URL it has stored (no false negatives), so a miss means definitely new.",
+                "At 1% false positives it needs about 9.6 bits per URL, so 10B URLs take about 12 GB.",
+                "An exact 64-bit hash set takes 80 GB, roughly 7x more. Use the Bloom filter first and go to the KV store only on a hit."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Spot the bug: the pipeline hashes each extracted link for the seen-URL check, then normalizes it. Page links include `http://A.com/page` and `http://a.com:80/page#top`. What happens?",
+              "a_bullets": [
+                "The raw strings differ in host case, port and fragment, so they hash differently.",
+                "Both count as new and both are enqueued, so the same page is fetched twice.",
+                "Fix: normalize first (lowercase host, drop the default port, strip the fragment, sort query params).",
+                "Both links then become `http://a.com/page`, and the second one is caught as already seen."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Peak load is 1,200 fetches/sec and each fetch takes about 500 ms. A node holds 60 connections. How many nodes do you need? What if average latency doubles to 1 s?",
+              "a_bullets": [
+                "Concurrent connections = rate x latency = 1,200 x 0.5 s = 600.",
+                "600 / 60 per node = 10 nodes.",
+                "At 1 s latency you need 1,200 connections, so 20 nodes. Latency matters as much as request rate.",
+                "Slow hosts are the usual cause, so per-fetch timeouts (connect 5 s, read 30 s) also protect capacity."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Two pages have 64-bit SimHash values that differ in exactly 3 bits. Are they near-duplicates? Why does indexing four 16-bit blocks still find them?",
+              "a_bullets": [
+                "Yes. The rule is Hamming distance ≤ 3, and 3 qualifies.",
+                "3 differing bits can touch at most 3 of the 4 blocks, by the pigeonhole principle.",
+                "So at least one 16-bit block is identical in both fingerprints.",
+                "A lookup on each block's index returns candidates, and a full 64-bit Hamming check then confirms or rejects each one."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

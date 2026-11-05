@@ -1,0 +1,752 @@
+{
+  "schema": 1,
+  "subject": "rest-api",
+  "chapter": "webhooks-observability",
+  "category": "handbook",
+  "inputsHash": "449d4e52d79e5030b92737c860dc969b16e0dcb15696bf14ca99c21b58b79d5a",
+  "generatedAt": "2026-11-05T09:16:08.715Z",
+  "sections": [
+    {
+      "title": "Webhooks and Delivery Retries",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Webhooks and Delivery Retries",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What a webhook promises",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Webhook== = provider sends an HTTP `POST` to your URL on an event",
+                "**Push**, not polling",
+                "Consumer must return ==2xx fast==",
+                "Delivery is ==at-least-once==, never exactly-once",
+                "{red:Duplicates} and {red:out-of-order} events are normal"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Retry policy",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Non-2xx or timeout",
+                    "sub": "delivery failed",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Backoff + jitter",
+                    "sub": "1m, 5m, 30m, 2h",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Retry",
+                    "sub": "until max attempts",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Give up",
+                    "sub": "dead-letter or disable",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Ack, then process",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Verify",
+                    "note": "signature",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Enqueue",
+                    "note": "store payload",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Return 200",
+                    "note": "immediately",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Worker",
+                    "note": "heavy work later",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Provider timeouts are often ==5-10s==",
+                "Slow inline work means a timeout, then a needless retry"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Pick the status code",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Situation",
+                "Return"
+              ],
+              "rows": [
+                [
+                  "Valid, queued",
+                  "`200`"
+                ],
+                [
+                  "Valid but ignored (unknown type)",
+                  "{green:2xx}"
+                ],
+                [
+                  "Truly invalid request",
+                  "{orange:4xx}, many providers still retry"
+                ],
+                [
+                  "Temporary failure (DB down)",
+                  "{red:5xx}, retried"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Mistake: 500 on a bad payload",
+              "text": "A `500` for a **permanently** bad payload wastes every retry until the provider gives up, and can get the endpoint ==disabled==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "HMAC Signatures and Timestamps",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "HMAC Signatures and Timestamps",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What Gets Signed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==HMAC-SHA256(secret, signed_payload)== travels in a header",
+                "Consumer recomputes and compares: proves **authenticity** and **integrity**",
+                "Signed payload = `timestamp + '.' + rawBody`",
+                "Timestamp inside the signature binds it to a ==point in time=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Raw body",
+                    "sub": "exact bytes",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "t.rawBody",
+                    "sub": "signed payload",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "HMAC-SHA256",
+                    "sub": "shared secret",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Compare",
+                    "sub": "constant time",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Verifying Safely",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Verify the ==raw bytes==, not re-serialized JSON",
+                "Reject if |now - t| > ==5 min== (blocks replay)",
+                "Compare with `hmac.compare_digest` / `crypto.timingSafeEqual`, never `==`",
+                "Rotation: accept ==multiple signatures== in the header"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import hmac, hashlib, time",
+                "def ok(secret, t, raw, sigs):",
+                "    if abs(time.time() - int(t)) > 300:",
+                "        return False",
+                "    msg = t.encode() + b'.' + raw",
+                "    mac = hmac.new(secret, msg, hashlib.sha256).hexdigest()",
+                "    return any(hmac.compare_digest(mac, s) for s in sigs)"
+              ],
+              "note": "tolerance check, recompute, constant-time compare"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Parser first = broken signature",
+              "text": "Reparsing changes whitespace and key order. Keep the **raw body** and verify before parsing."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Idempotent Consumers",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Idempotent Consumers",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What Idempotent Means",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Idempotent== = N deliveries have the **same effect** as one",
+                "Needed because delivery is ==at-least-once==",
+                "Dedupe on the provider's **event ID** (`evt_123`)",
+                "{red:Not} payload hash, {red:not} arrival time"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Dedupe in the Database",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Receive",
+                    "sub": "evt_123",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "INSERT id",
+                    "sub": "UNIQUE column",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Side effect",
+                    "sub": "same transaction",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Duplicate key",
+                    "sub": "skip, return 200",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "BEGIN;",
+                "INSERT INTO processed_events (event_id)",
+                "  VALUES ('evt_123');",
+                "UPDATE orders SET status = 'paid' WHERE id = 42;",
+                "COMMIT;"
+              ],
+              "note": "duplicate-key error: ROLLBACK, return 200"
+            },
+            {
+              "type": "heading",
+              "text": "3. Races and Ordering",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Approach",
+                "Concurrent retries"
+              ],
+              "rows": [
+                [
+                  "SELECT then INSERT",
+                  "{red:Races}: both pass the check"
+                ],
+                [
+                  "UNIQUE constraint",
+                  "{green:Safe}: one insert wins"
+                ],
+                [
+                  "Redis `SET NX` + TTL",
+                  "{green:Safe}: atomic claim"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Out-of-order events are normal",
+                "Compare ==version== or timestamp; drop stale events",
+                "Or **re-fetch** current state from the provider API"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Let the ==unique constraint== decide, never a prior SELECT. Duplicate means **skip and return 200**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Structured Logs and Correlation IDs",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Structured Logs and Correlation IDs",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Structured Logs",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==One JSON object per line== with fixed keys: queryable, not grep-only",
+                "Keys: `ts` `level` `msg` `service` `event_id` `request_id` `duration_ms`",
+                "Add `trace_id` so logs link to traces"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"ts\":\"2026-11-05T09:00:01Z\",\"level\":\"info\",\"msg\":\"webhook delivered\",\"service\":\"billing\",\"event_id\":\"evt_123\",\"request_id\":\"req_9f2\",\"trace_id\":\"4bf9\",\"status\":200,\"duration_ms\":84}"
+              ],
+              "note": "one delivery, one line"
+            },
+            {
+              "type": "heading",
+              "text": "2. Correlation ID",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Edge",
+                    "sub": "accept X-Request-ID or generate",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Context",
+                    "sub": "AsyncLocalStorage / contextvars",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Every log line",
+                    "sub": "request_id attached",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Outbound",
+                    "sub": "HTTP calls + queue messages",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Response",
+                    "sub": "X-Request-ID header",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Log ==event_id==, ==status== and ==duration_ms== on each webhook delivery",
+                "A failed delivery is then found by ID in seconds"
+              ],
+              "style": "check",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Mistake",
+                "Fix"
+              ],
+              "rows": [
+                [
+                  "Logging secrets, signatures, tokens, full PII payloads",
+                  "==Redact== sensitive fields"
+                ],
+                [
+                  "`error` level for non-actionable noise",
+                  "`info` = normal, `error` = actionable only"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Trace one request",
+              "text": "Same `request_id` on every log line, outbound call, queue message and response header."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "RED Metrics and OpenTelemetry Tracing",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "RED Metrics and OpenTelemetry Tracing",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. RED Metrics",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Rate}: requests/sec",
+                "{red:Errors}: failed requests/sec or ratio",
+                "{green:Duration}: latency distribution",
+                "RED fits every ==request-driven service==; USE is for resources",
+                "Report duration as a ==histogram==; alert on **p95/p99**, never the average (hides tail latency)"
+              ],
+              "style": "dot",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Label Cardinality",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Label by",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Route template `/users/:id`",
+                  "{green:bounded}"
+                ],
+                [
+                  "Method, status class (`5xx`)",
+                  "{green:bounded}"
+                ],
+                [
+                  "User ID",
+                  "{red:explodes time series}"
+                ],
+                [
+                  "Raw URL `/users/8812`",
+                  "{red:explodes time series}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. OpenTelemetry Traces",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A ==trace== is a tree of **spans** sharing one `trace_id`",
+                "W3C `traceparent` carries context between services"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+              ],
+              "note": "version - trace-id - span-id - flags"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Auto + manual spans",
+                    "note": "around key work",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "OTLP export",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Collector",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Link logs to traces",
+              "text": "Inject ==trace_id== and ==span_id== into every log line."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Webhooks and Observability Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Webhooks and Observability Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Receiver Flow",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Raw body",
+                    "sub": "before parsing",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Verify",
+                    "sub": "HMAC + timestamp",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Dedupe",
+                    "sub": "event ID",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Enqueue",
+                    "sub": "worker does the work",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Return 2xx",
+                    "sub": "fast",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Signature and Retries",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==HMAC-SHA256==(secret, `t.rawBody`)",
+                "Constant-time compare: `hmac.compare_digest`",
+                "==5-minute== timestamp tolerance blocks replay",
+                "Rotate secrets: accept old + new signature (dual verification)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Signal",
+                "Provider action"
+              ],
+              "rows": [
+                [
+                  "Delivery",
+                  "**at-least-once**, duplicates normal"
+                ],
+                [
+                  "{green:2xx}",
+                  "done"
+                ],
+                [
+                  "{red:5xx} / timeout",
+                  "retry: exponential backoff + jitter"
+                ],
+                [
+                  "Max attempts hit",
+                  "dead-letter"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Observability Trio",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Pillar",
+                "Must have"
+              ],
+              "rows": [
+                [
+                  "Logs",
+                  "JSON with `request_id`, `trace_id`"
+                ],
+                [
+                  "Metrics",
+                  "RED histograms, low-cardinality labels"
+                ],
+                [
+                  "Traces",
+                  "`traceparent` header, OTLP export"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Top Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Parsing the body before verifying",
+                "Check-then-insert dedupe",
+                "Slow synchronous handlers",
+                "High-cardinality labels (user ID, raw URL)",
+                "Logging secrets"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Verify raw bytes, dedupe on a ==UNIQUE== event ID, ack fast."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A handler runs `express.json()`, then computes the HMAC over `JSON.stringify(req.body)`. Valid webhooks sometimes fail verification. Why?",
+              "a_bullets": [
+                "Re-serializing can change whitespace and key order, so the bytes differ from what was signed.",
+                "Verify against the ==raw body== bytes, before any parsing."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The handler does SELECT on `event_id`, and if no row exists it charges the customer and then INSERTs the ID. Two retries arrive together. What happens?",
+              "a_bullets": [
+                "Both SELECTs find nothing, so the customer is charged twice.",
+                "Insert into a UNIQUE column in the same transaction as the charge. On a duplicate-key error, skip and return 200."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A dashboard labels request metrics by raw URL such as `/users/8431` and alerts on average latency. What two things are wrong?",
+              "a_bullets": [
+                "Raw URLs create endless time series. Label by route template `/users/:id`.",
+                "The average hides slow tail requests. Alert on p95/p99 from a histogram."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

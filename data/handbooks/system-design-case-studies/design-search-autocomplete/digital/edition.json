@@ -1,0 +1,2091 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-search-autocomplete",
+  "category": "system-design",
+  "inputsHash": "a5ab3cb6e7bde2fa485940de4800feb1fb514a8eeded2a6b30e8f0e7bbe4b911",
+  "generatedAt": "2026-10-28T12:55:26.163Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Problem and Scope",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: **Search Autocomplete** (typeahead) for a search box handling 10B searches/day."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Input: a ==prefix== typed so far, e.g. `wor`",
+                "Output: the ==top 5 ranked completions==, refreshed on every keystroke",
+                "Ranked by popularity, not alphabetical order"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Prefix match== on the typed text",
+                "Return ==5 suggestions== per prefix",
+                "{blue:English only}",
+                "{blue:No personalization} in v1",
+                "{red:Offensive terms filtered} out of results"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Non-Functional Targets",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Property",
+                "Target",
+                "Meaning"
+              ],
+              "rows": [
+                [
+                  "Latency",
+                  "==p99 under 100 ms==",
+                  "End to end, keystroke to dropdown"
+                ],
+                [
+                  "Availability",
+                  "==99.99%==",
+                  "About 52 min of downtime per year"
+                ],
+                [
+                  "Consistency",
+                  "**Eventual**",
+                  "New trends visible within ==15 min=="
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stale suggestions are acceptable; a slow or missing dropdown is not",
+                "Strong consistency is not needed for suggestions"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Scale and Storage",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "10B searches/day",
+                    "sub": "input",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "~115K searches/s",
+                    "sub": "10B / 86,400 s, avg",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "x ~4 per search",
+                    "sub": "keystrokes after debounce",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "~460K prefix requests/s",
+                    "sub": "avg",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "~1M prefix requests/s",
+                    "sub": "peak",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Data",
+                "Estimate",
+                "Where"
+              ],
+              "rows": [
+                [
+                  "Unique queries",
+                  "==100M== x 50 B",
+                  "~5 GB raw"
+                ],
+                [
+                  "Trie with top-5 per node",
+                  "~==50 GB==",
+                  "In memory, ~10x raw"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Read-heavy, memory-bound",
+              "text": "Capacity is sized for ==~1M prefix requests/s peak== against a ==~50 GB== in-memory trie, so one machine cannot hold or serve it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Two Paths (Search Autocomplete)",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Search Autocomplete splits into a ==read path== that serves prefixes and a ==write path== that rebuilds the trie. They meet only at the snapshot."
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Read path",
+                "Write path"
+              ],
+              "rows": [
+                [
+                  "Parts",
+                  "query service, cache, trie",
+                  "log, aggregate, build trie"
+                ],
+                [
+                  "Job",
+                  "prefix → top 5",
+                  "searches → new trie"
+                ],
+                [
+                  "Load",
+                  "~1M QPS peak",
+                  "~115K searches/s avg"
+                ],
+                [
+                  "Speed",
+                  "p99 under 100 ms",
+                  "new trends within 15 min"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "2. Read Path and Write Path",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "debounce 150 ms",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "CDN / edge cache",
+                    "sub": "hot prefixes",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "API gateway",
+                    "sub": "routing",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Suggestion service",
+                    "sub": "stateless",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Trie replicas",
+                    "sub": "in memory",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Search logs",
+                    "sub": "every search",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "event stream",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Aggregator",
+                    "sub": "query counts",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Trie builder",
+                    "sub": "every 15 min",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Snapshot",
+                    "sub": "object storage",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "Hot-swap",
+                    "sub": "into servers",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Servers load the ==snapshot== and swap it in; the write path never touches live nodes",
+                "The trie lives only in ==RAM== replicas; the edge cache absorbs most reads before they reach it"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Offline Rebuild vs Online Update",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Offline rebuild",
+                "Online per-query update"
+              ],
+              "rows": [
+                [
+                  "Cadence",
+                  "every ==15 min==",
+                  "on every search"
+                ],
+                [
+                  "Trie writes",
+                  "none on live nodes",
+                  "~115K/s avg on live nodes"
+                ],
+                [
+                  "Read impact",
+                  "none, swap a pointer",
+                  "locks contend with ~1M read QPS"
+                ],
+                [
+                  "Rollback",
+                  "keep the old snapshot",
+                  "hard"
+                ],
+                [
+                  "Freshness",
+                  "up to 15 min stale",
+                  "instant"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Offline wins}: eventual consistency is allowed, a 15 min delay is fine",
+                "Live trie stays ==read-only==, so lookups need no locks",
+                "A bad build is discarded before it reaches users"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Latency Budget",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Request budget, p99 under 100 ms",
+                "steps": [
+                  {
+                    "text": "Edge",
+                    "note": "5 ms",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Gateway",
+                    "note": "10 ms",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Trie lookup",
+                    "note": "under 1 ms",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Network",
+                    "note": "~30 ms",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Reads hit a ==read-only trie in RAM==. Writes happen offline: build, snapshot, swap. Budget is ~46 ms of 100 ms, so ~54 ms of headroom stays for p99 spikes."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Trie with Top-K Suggestions",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Trie with Top-K Suggestions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and the Fix",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Maps a typed prefix to its 5 best completions in ==O(L)==, L = prefix length (Search Autocomplete)."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Naive}: walk to the prefix node, then DFS every descendant: ==O(L + N)==",
+                "Too slow at ~1M peak QPS: N can be millions of nodes",
+                "{green:Fix}: store the **top-k list on every node**, so lookup is ==O(L)== and k = 5 is constant",
+                "Cost: ~**k x memory** per node, paid once at build time"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Naive DFS",
+                "Top-k per node"
+              ],
+              "rows": [
+                [
+                  "Lookup",
+                  "O(L + N)",
+                  "**O(L)**"
+                ],
+                [
+                  "Work per request",
+                  "visits N descendants",
+                  "reads k = 5 entries"
+                ],
+                [
+                  "Memory",
+                  "1x",
+                  "~k x per node"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Node Layout and Compression",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Node = ==children map== + ==top-k array== of (query id, score)",
+                "Store **query ids**, not strings: 5 small ints per node instead of 5 copies of text",
+                "Text lives once in a query table, resolved only for the final 5",
+                "==Radix trie== merges single-child chains (`s`,`e`,`a` into `sea`)",
+                "Radix compression cuts node count by ~**5x**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. API",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /v1/suggest?q=wor&limit=5",
+                "Cache-Control: max-age=300"
+              ],
+              "note": "returns [{text, score}]"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "[{\"text\":\"world cup\",\"score\":700000},",
+                "{\"text\":\"word counter\",\"score\":310000}]"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Stale or corrupt snapshot",
+                "rows": [
+                  [
+                    "l"
+                  ],
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "l": {
+                    "text": "Load new snapshot",
+                    "shape": "box"
+                  },
+                  "q1": {
+                    "text": "Checksum OK?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Hot-swap new version",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "b": {
+                    "text": "Keep previous, roll back",
+                    "shape": "box",
+                    "ink": "red"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "l",
+                    "to": "q1"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Lookup p99",
+                  "under **1 ms**"
+                ],
+                [
+                  "Trie memory per shard",
+                  "~5 GB after sharding into 10 shards"
+                ],
+                [
+                  "Empty-result rate",
+                  "alert on a rise"
+                ],
+                [
+                  "Snapshot age",
+                  "about 15 min (rebuild interval)"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never serve a bad trie",
+              "text": "Keep the ==previous version== loaded until the new one passes its **checksum**; on failure, roll back."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Data Collection Pipeline",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Data Collection Pipeline",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Turn ==raw search events== into **aggregated query counts**",
+                "Output feeds the {purple:trie builder} for Search Autocomplete",
+                "Kafka is partitioned by ==query hash==, so one query always lands on one aggregator"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Write path, event to trie",
+                "steps": [
+                  {
+                    "text": "Client log",
+                    "note": "one event per search",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Kafka",
+                    "note": "partition by hash(query)",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Stream aggregator",
+                    "note": "1-min windows",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Hourly / weekly tables",
+                    "note": "counts per query",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Trie builder",
+                    "note": "rebuild every 15 min",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Log Record and Volume",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Each search logs one record of ~==100 B==",
+                "~10B events/day x 100 B = ~**1 TB/day**",
+                "==Sample 1 in 100== queries for the trie",
+                "Popular queries stay accurate; the long tail is the cost"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"query\": \"world cup\", \"ts\": 1730100000,",
+                "\"region\": \"us-east\", \"lang\": \"en\",",
+                "\"session_id\": \"s_9f3a\"}"
+              ],
+              "note": "log record: {query, ts, region, lang, session_id}"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Events/day",
+                "Avg rate",
+                "Size/day"
+              ],
+              "rows": [
+                [
+                  "Raw",
+                  "~10B",
+                  "~115K/s",
+                  "~1 TB"
+                ],
+                [
+                  "Sampled 1%",
+                  "~100M",
+                  "~1.2K/s",
+                  "~10 GB"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "3. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Failure: {red:consumer lag} or {red:duplicate events}",
+                "Aggregation is ==idempotent==, keyed by `(query, window)`",
+                "A replayed window overwrites its row, so counts never double",
+                "Recovery: ==replay from Kafka offsets== after a crash or lag spike"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Consumer lag",
+                  "under 1 min"
+                ],
+                [
+                  "Events dropped",
+                  "alert on any sustained rise"
+                ],
+                [
+                  "Build duration",
+                  "under 10 min"
+                ],
+                [
+                  "Pipeline freshness",
+                  "event to trie within the 15-min rebuild"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Key by ==(query, window)== so replays are safe, and sample ==1 in 100== to cut 1 TB/day to ~10 GB/day."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Ranking: Frequency and Recency",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Ranking: Frequency and Recency",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Running example: **Search Autocomplete** at 10B searches/day, top 5 completions per prefix."
+            },
+            {
+              "type": "heading",
+              "text": "1. Score and Decay",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Score = ==frequency over a decay window==, not a lifetime total",
+                "Raw all-time count **buries new trends** under old giants",
+                "Exponential decay: `score = sum(count_i x 0.5^(age_i / half-life))`",
+                "==Half-life = 7 days==: a search from 7 days ago counts half, 14 days ago a quarter"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. The Blend",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`score = 0.7 x decayed_weekly + 0.3 x last_hour_count`",
+                "Weekly term gives {green:stability}; hourly term gives {orange:speed}",
+                "A breaking-news query rises within ==15 min== (one trie rebuild)"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Score to trie",
+                "rows": [
+                  [
+                    "w",
+                    "h"
+                  ],
+                  [
+                    "s"
+                  ],
+                  [
+                    "t"
+                  ]
+                ],
+                "nodes": {
+                  "w": {
+                    "text": "Decayed weekly",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "h": {
+                    "text": "Last-hour count",
+                    "shape": "box",
+                    "ink": "orange"
+                  },
+                  "s": {
+                    "text": "Score",
+                    "shape": "diamond",
+                    "ink": "blue"
+                  },
+                  "t": {
+                    "text": "Top 5 per node",
+                    "shape": "pill",
+                    "ink": "purple"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "w",
+                    "to": "s",
+                    "label": "x 0.7"
+                  },
+                  {
+                    "from": "h",
+                    "to": "s",
+                    "label": "x 0.3"
+                  },
+                  {
+                    "from": "s",
+                    "to": "t",
+                    "label": "tie: lower query id"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Example: world cup vs earthquake today",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Query",
+                "Weekly",
+                "Last hour",
+                "Score"
+              ],
+              "rows": [
+                [
+                  "world cup",
+                  "1M",
+                  "0",
+                  "0.7 x 1M = ==700K=="
+                ],
+                [
+                  "earthquake today (new)",
+                  "~0",
+                  "200K",
+                  "0.3 x 200K = ==60K=="
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "60K is the hourly term only; the weekly term grows ==200K per hour== while traffic stays",
+                "Formula after h hours: `0.7 x (200K x h) + 60K`",
+                "Hourly traffic drops: weekly stops growing and the query stays below 700K"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Hours",
+                "0.7 x weekly",
+                "+ hourly",
+                "Score",
+                "vs 700K"
+              ],
+              "rows": [
+                [
+                  "1",
+                  "140K",
+                  "60K",
+                  "200K",
+                  "below"
+                ],
+                [
+                  "3",
+                  "420K",
+                  "60K",
+                  "480K",
+                  "below"
+                ],
+                [
+                  "4",
+                  "560K",
+                  "60K",
+                  "620K",
+                  "below"
+                ],
+                [
+                  "5",
+                  "700K",
+                  "60K",
+                  "==760K==",
+                  "{green:above}"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes and Filters",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Ranking by all-time count: old queries **never drop**",
+                "Ties left unresolved: the order flips between rebuilds, so break them by a ==stable query id==",
+                "No floor: typos and one-off queries pollute the trie",
+                "Floor: ==min 100 searches/day== to enter the trie",
+                "Check it on raw counts, or on sampled counts scaled x100 (1-in-100 sampling)"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Score = ==0.7 x weekly decayed (7-day half-life) + 0.3 x last hour==. Fresh trends overtake only when traffic **stays**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Suggestion Query Service",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Suggestion Query Service",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: Search Autocomplete, ~460K QPS avg, ~1M QPS peak, p99 under 100 ms end to end."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Stateless} service: any instance can answer any prefix",
+                "==Normalizes== the prefix: lowercase, trim, collapse spaces",
+                "`\"  World   CUP \"` becomes `world cup`",
+                "Queries the ==right trie shard== and returns the top 5"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Request Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "sub": "raw prefix",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Normalize",
+                    "sub": "lower, trim, collapse",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Local LRU",
+                    "sub": "hit: return now",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Route",
+                    "sub": "first 2 characters",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Top 5",
+                    "sub": "from trie shard",
+                    "ink": "blue"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Normalize ==before== the cache lookup so `World` and `world` share one entry",
+                "Cache miss: shard chosen by the ==first 2 characters== of the prefix"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Response and Client",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{",
+                "  \"prefix\": \"wor\",",
+                "  \"suggestions\": [",
+                "    {\"text\": \"world cup\", \"score\": 700000}",
+                "  ],",
+                "  \"version\": \"v1042\"",
+                "}"
+              ],
+              "note": "version = trie snapshot that answered"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Client ==debounces 150 ms==: waits for a typing pause before sending",
+                "Client ==cancels in-flight== requests when a newer keystroke fires"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Shard down",
+                    "note": "request fails or times out",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Replica",
+                    "note": "fail over to another copy",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Shorter prefix",
+                    "note": "reuse result of `wor` for `worl`",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Empty list",
+                    "note": "last resort",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never block typing",
+              "text": "On any failure return the next fallback ==fast==. An empty list is fine; a hung dropdown is not."
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "QPS per instance",
+                  "~20K"
+                ],
+                [
+                  "p50 / p99 latency",
+                  "track both, p99 under 100 ms end to end"
+                ],
+                [
+                  "Local LRU hit rate",
+                  "track; misses go to the shard"
+                ],
+                [
+                  "Error rate",
+                  "under 0.01%"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Caching at the Edge",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Caching at the Edge",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Layers",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "**Search Autocomplete** at ~1M peak QPS: the edge answers the hottest prefixes, so the origin sees only ~150K QPS."
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "A request falls through four layers",
+                "steps": [
+                  {
+                    "text": "Browser cache",
+                    "note": "max-age 300",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "CDN edge",
+                    "note": "TTL 5 min",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Service local LRU",
+                    "note": "in-process",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Trie",
+                    "note": "lookup under 1 ms",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Browser TTL is ==capped at 300 s==: a CDN purge **cannot clear** browsers",
+                "Most requests stop at the browser or CDN and ==never reach the origin==",
+                "Only a miss at every layer reaches the trie"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Skew and Cache Key",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Top ==1% of prefixes== cover ~60-80% of requests",
+                "Edge hit-rate target: ==above 85%==",
+                "Hottest keys are ==1 to 3 chars==, so keep the key short",
+                "Key = {blue:normalized prefix} + {green:language} + {orange:region}"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /v1/suggest?q=wo&lang=en&region=IN",
+                "Cache-Control: public, max-age=300",
+                "cache key -> wo|en|IN"
+              ],
+              "note": "same key for every user in that language and region"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failure Handling",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stale suggestions after a trie rebuild: ==accept 5 min TTL staleness==",
+                "Block-list update: ==purge the CDN== at once, do not wait for the TTL",
+                "Popular key expires: thousands of misses hit the origin together (**thundering herd**)"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Many misses",
+                    "sub": "same key",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Coalesce",
+                    "sub": "one request goes upstream",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Origin answers",
+                    "sub": "one lookup",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Fan out",
+                    "sub": "all waiters served",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Edge hit ratio",
+                  "==above 85%=="
+                ],
+                [
+                  "Origin QPS",
+                  "~150K"
+                ],
+                [
+                  "Bytes per response",
+                  "under 1 KB"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "~1M peak QPS x (1 - 0.85) = ~150K origin QPS. The browser TTL stays at ==300 s== because only the CDN can be purged."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Sharding the Trie",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Sharding the Trie",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Sharding the Trie (Search Autocomplete): split a ~50 GB trie across **10 shards**, each served by 3 replicas."
+            },
+            {
+              "type": "heading",
+              "text": "1. Why Shard",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Split the ==~50 GB trie== when one node's RAM or QPS cannot hold it",
+                "Memory: ~50 GB / 10 shards = ==~5 GB== per shard",
+                "QPS (est.): ~150K origin QPS / 10 shards = ~15K per shard",
+                "One prefix is served by **one shard**, so its top-5 is precomputed there"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Picking the Split",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Scheme",
+                "Locality",
+                "Hot prefixes",
+                "Verdict"
+              ],
+              "rows": [
+                [
+                  "Range by first letters (a-c, d-f...)",
+                  "{green:good}",
+                  "{red:'s' and 'c' far hotter than 'x'}",
+                  "simple, but skewed"
+                ],
+                [
+                  "Range with measured shard map",
+                  "{green:good}",
+                  "{green:splittable}",
+                  "==preferred=="
+                ],
+                [
+                  "Hash of full prefix",
+                  "{red:lost}",
+                  "{red:hard to split}",
+                  "avoid"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Hash loses locality: neighbouring prefixes and trie walks spread across shards",
+                "Fix for range skew: build the shard map from ==measured prefix frequency==",
+                "Split heavy prefixes: 's' becomes `sa-sm` and `sn-sz`"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"version\": 42, \"ranges\": [",
+                "  {\"from\": \"sa\", \"to\": \"sm\", \"shard\": \"s7\"},",
+                "  {\"from\": \"sn\", \"to\": \"sz\", \"shard\": \"s8\"},",
+                "  {\"from\": \"xa\", \"to\": \"zz\", \"shard\": \"s10\"}",
+                "]}"
+              ],
+              "note": "versioned shard map, rebuilt with every trie build"
+            },
+            {
+              "type": "heading",
+              "text": "3. Serving Layout",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Prefix",
+                    "sub": "first 2 chars",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Shard map",
+                    "sub": "ZooKeeper/etcd, versioned",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Shard",
+                    "sub": "1 of 10",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Replica",
+                    "sub": "1 of 3, ~5 GB RAM",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==3 replicas== per shard",
+                "10 shards x 3 = ==30 servers==, each holding ~5 GB in memory"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Hot shard: ==add replicas== to it right away",
+                "Then rebalance the shard map from the next build",
+                "Shard map lives in ZooKeeper/etcd and is {purple:versioned}"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "QPS per shard",
+                  "~15K (est.), watch hottest"
+                ],
+                [
+                  "Memory per shard",
+                  "~5 GB"
+                ],
+                [
+                  "Skew ratio (max/avg)",
+                  "==under 2x=="
+                ],
+                [
+                  "Replica lag",
+                  "one snapshot version at most"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Prefer ==prefix-range== sharding with a **versioned shard map**. Hashing keeps one prefix on one shard but loses locality and makes hot prefixes harder to split."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Filtering Offensive Terms",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Filtering Offensive Terms",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Layers",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Search Autocomplete never suggests ==slurs, adult or harmful terms==",
+                "A flagged term must disappear within ==minutes== (under 5 min)",
+                "Two layers: {blue:build-time} filter, then {red:serve-time} filter on the output",
+                "Build-time = blocklist + ML classifier, before queries enter the trie"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Search logs",
+                    "sub": "raw queries",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Build filter",
+                    "sub": "blocklist + ML",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Trie",
+                    "sub": "top-5 per node",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Serve filter",
+                    "sub": "versioned blocklist",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Client",
+                    "sub": "safe top 5",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Blocklist Matching",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Blocklist lives in a ==hash set==: O(1) check per token",
+                "==Normalize== first: unicode (NFKC), lowercase, leetspeak map",
+                "Catches `b4d w0rd` style evasion; fullwidth letters fold to ASCII",
+                "Match whole tokens, not substrings"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import unicodedata",
+                "LEET = str.maketrans({\"@\":\"a\",\"4\":\"a\",\"0\":\"o\",\"3\":\"e\",\"1\":\"i\",\"$\":\"s\"})",
+                "def norm(q): return \" \".join(unicodedata.normalize(\"NFKC\", q).lower().translate(LEET).split())",
+                "BLOCK = {\"bad\"}",
+                "def blocked(q): return any(t in BLOCK for t in norm(q).split())",
+                "print(norm(\"b4d w0rd\"), blocked(\"ＢＡＤ\"), blocked(\"scunthorpe\"))"
+              ],
+              "note": "normalize, then token lookup"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "bad word True False"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Urgent Removal and Data",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Urgent removal, under 5 min",
+                "steps": [
+                  {
+                    "text": "Flag",
+                    "note": "user report or ML",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Review queue",
+                    "note": "human decision",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Blocklist vN+1",
+                    "note": "version-stamped",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Push to all nodes",
+                    "note": "serve filter, under 5 min",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "CDN purge",
+                    "note": "browser capped at max-age 300",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "blocked_terms",
+                "Holds"
+              ],
+              "rows": [
+                [
+                  "`term`",
+                  "normalized word or phrase"
+                ],
+                [
+                  "`category`",
+                  "slur, adult, harmful"
+                ],
+                [
+                  "`added_at`",
+                  "timestamp; drives time-to-block"
+                ],
+                [
+                  "`source`",
+                  "user report, ML classifier, human review"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Scunthorpe problem",
+              "text": "Substring matching hides legit queries like ==scunthorpe==. Match **whole tokens** and keep an allowlist."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Filtered rate: share of candidates removed",
+                "Time-to-block under ==5 min==",
+                "User report count per day",
+                "False-positive appeals, resolved via review and allowlist"
+              ],
+              "style": "checkbox",
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scaling and Degradation",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "**Search Autocomplete** at ~1M peak QPS: fix each bottleneck with its own lever, and fail soft."
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Bottleneck",
+                "Lever",
+                "Example"
+              ],
+              "rows": [
+                [
+                  "==Read QPS==",
+                  "Add **replicas**",
+                  "3 replicas per shard"
+                ],
+                [
+                  "==Memory==",
+                  "Add **shards**",
+                  "~50 GB / 10 shards = ~5 GB each"
+                ],
+                [
+                  "==Latency==",
+                  "Add **regions**",
+                  "Local trie copy in each region"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Origin dies",
+                "steps": [
+                  {
+                    "text": "Origin down",
+                    "note": "trie or service fails",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Edge cache",
+                    "note": "serves {orange:stale} results",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Client timeout",
+                    "note": "request exceeds budget",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Hide dropdown",
+                    "note": "typing never blocks",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Trade-offs and Personalization",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Trade-off",
+                "Option A",
+                "Option B"
+              ],
+              "rows": [
+                [
+                  "==Freshness== vs build cost",
+                  "15 min: fresh trends, many builds",
+                  "1 h: cheaper, trends lag"
+                ],
+                [
+                  "==Top-k memory== vs lookup speed",
+                  "Top-5 per node: ~k x memory, O(L)",
+                  "No top-k: small, DFS O(L + N)"
+                ],
+                [
+                  "==Sampling== vs long-tail accuracy",
+                  "1 in 100: 1 TB to ~10 GB/day",
+                  "All events: exact tail, huge cost"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Personalize at the ==query service==, {red:not} inside the trie",
+                "Merge the **global top-k** with a small per-user history list",
+                "The trie stays shared and cacheable; only the merge is per user"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Global top-5",
+                    "sub": "from trie shard",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "User history",
+                    "sub": "small list",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Merge at service",
+                    "sub": "dedupe, rerank",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Top 5",
+                    "sub": "to client",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Interview Questions",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Typo tolerance?** ==Edit-distance fallback== only when the prefix returns fewer than 5 results",
+                "**Update the trie with no downtime?** Build offline, load as a new version, ==swap the pointer== atomically"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Typo fallback",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "a",
+                    "b"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Prefix returns < 5?",
+                    "shape": "diamond"
+                  },
+                  "a": {
+                    "text": "Edit-distance lookup",
+                    "shape": "box",
+                    "ink": "orange"
+                  },
+                  "b": {
+                    "text": "Return trie top 5",
+                    "shape": "pill",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "a",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "b",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Zero-downtime trie update",
+                "steps": [
+                  {
+                    "text": "Build offline",
+                    "note": "trie builder",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Load new version",
+                    "note": "beside the live one",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Atomic swap",
+                    "note": "one pointer flip",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Keep old",
+                    "note": "for rollback",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Fail soft",
+              "text": "A ==stale== or empty dropdown is fine; a **blocked** keystroke is not. Never mutate the live trie: swap a **new version** in."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Cheatsheet: Typeahead Numbers and Rules",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Cheatsheet: Typeahead Numbers and Rules",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale and Trie (Search Autocomplete)",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Number",
+                "Value"
+              ],
+              "rows": [
+                [
+                  "Peak load",
+                  "~1M QPS (~460K avg x ~2.2)"
+                ],
+                [
+                  "Latency",
+                  "p99 under **100 ms** end to end"
+                ],
+                [
+                  "Trie size",
+                  "~**50 GB** in memory"
+                ],
+                [
+                  "Shards",
+                  "10 shards x 3 replicas = **30 servers**"
+                ],
+                [
+                  "Per shard",
+                  "50 GB / 10 = ~**5 GB** each"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Top-5== list stored on **every node**, so lookup is ==O(L)==, L = prefix length",
+                "Naive DFS is O(L + N): too slow at 1M QPS",
+                "**Radix compression** merges single-child chains: ~5x fewer nodes",
+                "Store query ids, not strings, in the top-k array"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Ranking and Pipeline",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Score = ==0.7 x weekly decayed== + ==0.3 x last hour==",
+                "Decay: `sum(count x 0.5^(age / 7 days))`, **7-day half-life**",
+                "Hourly term lets a breaking-news query rise within 15 min",
+                "Min-count 100 searches/day keeps typos out; break ties by query id"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Search log",
+                    "sub": "1% sampled",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "partition by query hash",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Aggregate",
+                    "sub": "1-min windows",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Trie rebuild",
+                    "sub": "every 15 min",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Hot-swap",
+                    "sub": "snapshot, keep old",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Sampling 1 in 100: ~1 TB/day drops to ~10 GB/day",
+                "Aggregation is idempotent, keyed by (query, window)",
+                "Consumer lag under 1 min; build under 10 min"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Edge and Safety",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Layer",
+                "TTL",
+                "Note"
+              ],
+              "rows": [
+                [
+                  "Browser",
+                  "max-age 300",
+                  "purge cannot clear it"
+                ],
+                [
+                  "CDN edge",
+                  "**5 min**",
+                  "hit ratio above **85%**"
+                ],
+                [
+                  "Service LRU",
+                  "local",
+                  "then trie, under 1 ms"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Cache key = ==prefix + lang + region==, normalized",
+                "Blocklist filters at build time and again at **serve time**",
+                "Urgent removal: versioned blocklist pushed + CDN purge in ==under 5 min=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Ranking by all-time count buries new trends. Use the ==0.7 / 0.3 blend== with a **7-day half-life** instead."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Both 'earth day' (weekly decayed count 500K, 0 in the last hour) and the new 'earthquake today' (weekly 200K, 200K in the last hour) match the prefix 'earth'. With score = 0.7 x weekly + 0.3 x last hour, which is suggested first?",
+              "a_bullets": [
+                "'earth day' scores 0.7 x 500K + 0.3 x 0 = ==350K==",
+                "'earthquake today' scores 0.7 x 200K + 0.3 x 200K = ==200K==",
+                "So 'earth day' ranks first, even though 'earthquake today' is the one trending",
+                "The new query overtakes only if its traffic is sustained, since its weekly part keeps growing with each hour"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A teammate wants to increment the trie on every search, so trends show instantly. What goes wrong at this scale?",
+              "a_bullets": [
+                "Every search becomes a write, and the trie is read at ~1M QPS peak",
+                "Writes must lock nodes and rewrite top-5 lists up the path, so they contend with reads and hurt p99",
+                "Instead, rebuild offline every 15 min from the aggregated counts",
+                "Load it as a new version and atomically swap the pointer, keeping the old one for rollback"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A slur starts trending and is flagged. The trie rebuild runs every 15 min and the CDN TTL is 5 min. What is the fastest safe way to stop it appearing, and what can still linger?",
+              "a_bullets": [
+                "Wait for the rebuild: up to 15 min plus the cache TTLs, which is too slow",
+                "Push a version-stamped blocklist to every serving node, so the serve-time filter drops it in under 5 min",
+                "Purge the CDN right away",
+                "Browsers that cached the response (max-age 300) can still show it for up to ~5 min, because a CDN purge cannot clear browser caches"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The shard for 'sa' loses all replicas while a user types 'sam'. What should the user experience, and what must never happen?",
+              "a_bullets": [
+                "The service tries a replica first, then falls back to the shorter prefix's result, then returns an empty list",
+                "Falling back to a shorter prefix gives slightly less precise suggestions, but something useful appears",
+                "The dropdown can simply stay empty or hide on timeout",
+                "Never block or error the input box: typing must keep working"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

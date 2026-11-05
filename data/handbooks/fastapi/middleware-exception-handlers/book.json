@@ -1,0 +1,109 @@
+{
+  "title": "HTTP Middleware & Error Handling in ASGI: Quick Revision",
+  "summary": "Quick revision notes on HTTP and pure ASGI middleware, ordering, built-in middleware (GZip, TrustedHost), and error handling with HTTPException, custom handlers and RequestValidationError. Ends with consistent error responses and a cheat sheet.",
+  "chapters": [
+    {
+      "title": "Middleware Mental Model",
+      "points": [
+        "Middleware wraps the whole app: it sees every request before routing and every response after the endpoint, so it fits cross-cutting work like logging, timing, headers and auth checks",
+        "Onion model: code before call_next runs on the way in, code after it runs on the way out; the first middleware added to the stack is the innermost layer",
+        "@app.middleware('http') decorator with async def mw(request, call_next): response = await call_next(request); return response is the simplest form",
+        "BaseHTTPMiddleware (what @app.middleware('http') uses) vs dependency vs route handler: middleware is global and sees raw requests; dependencies are per-route and see parsed params",
+        "Mistake: forgetting to return the response, or reading request.body() inside BaseHTTPMiddleware, which can consume the stream and break the endpoint"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Pure ASGI Middleware",
+      "points": [
+        "ASGI app signature: async def __call__(self, scope, receive, send); a middleware is a class holding self.app and delegating to await self.app(scope, receive, send)",
+        "scope['type'] is 'http', 'websocket' or 'lifespan'; always pass non-http scopes straight through with if scope['type'] != 'http': return await self.app(scope, receive, send)",
+        "Modify responses by wrapping send: define async def send_wrapper(message) and intercept message['type'] == 'http.response.start' to edit message['headers'] (list of byte-tuple pairs) before forwarding",
+        "Register with app.add_middleware(MyMiddleware, option=value); kwargs go to __init__(self, app, option)",
+        "Pure ASGI vs BaseHTTPMiddleware: pure ASGI has no extra task per request, supports websockets and streaming correctly, and avoids contextvars propagation and background-task pitfalls; it costs more boilerplate and has no Request object unless you build Request(scope, receive)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Middleware Ordering",
+      "points": [
+        "Last add_middleware call becomes the outermost layer, so it sees the request first and the response last; the first one added is closest to the app",
+        "Request order is the reverse of registration order; response order is registration order. Registering A then B gives request path B → A → app",
+        "Put outer concerns outermost: TrustedHost and CORS first on the way in, then GZip, then auth, logging and request-ID closer to the app",
+        "CORS must wrap auth middleware so that error responses (401/403) still carry CORS headers and the browser can read them",
+        "Mistake: exceptions raised in endpoints are handled by ExceptionMiddleware inside the user stack, but unhandled 500s are turned into responses by ServerErrorMiddleware outside all of it, so custom middleware headers are missing on those 500s"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Built-in Middleware: GZip and TrustedHost",
+      "points": [
+        "GZipMiddleware: app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=9) compresses only when the client sends Accept-Encoding: gzip and the body is at least minimum_size bytes (default 500)",
+        "GZip adds Content-Encoding: gzip and Vary: Accept-Encoding; it skips already-encoded responses, and streaming responses are compressed chunk by chunk",
+        "TrustedHostMiddleware: app.add_middleware(TrustedHostMiddleware, allowed_hosts=['example.com', '*.example.com']) checks the Host header and returns 400 Invalid host header on mismatch; this blocks Host header attacks",
+        "Wildcard rules: '*.example.com' matches subdomains but not the bare domain, so list both; allowed_hosts=['*'] disables the check; www_redirect=True redirects the bare domain to www",
+        "Mistakes: setting allowed_hosts too tight and breaking health checks that hit by IP or localhost, and compressing small or already-compressed payloads (images, zips) which wastes CPU"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Exceptions and Custom Handlers",
+      "points": [
+        "raise HTTPException(status_code=404, detail='Item not found', headers={'X-Error': 'x'}) stops the endpoint and returns JSON {'detail': ...}; detail can be any JSON-serializable value, not only a string",
+        "Register a custom handler with @app.exception_handler(MyError) on async def h(request, exc): return JSONResponse(status_code=..., content=...); the handler is chosen by the exception class and its parents",
+        "Override defaults by handling StarletteHTTPException (from starlette.exceptions) rather than FastAPI's HTTPException so that 404s from unknown routes and other Starlette-raised errors are also caught",
+        "RequestValidationError is raised on invalid body, query or path params and returns 422 with exc.errors() as a list of dicts (loc, msg, type); override with @app.exception_handler(RequestValidationError) and read exc.errors() and exc.body",
+        "Mistake: HTTPException is for raising in endpoints and dependencies, not in middleware, because middleware exceptions bypass the exception handlers; return a JSONResponse directly there instead"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Consistent Errors and Cheat Sheet",
+      "points": [
+        "One error envelope for every failure, for example {'error': {'code': 'NOT_FOUND', 'message': '...', 'details': [...], 'request_id': '...'}}, produced by a single helper used in all handlers",
+        "Register three handlers to cover everything: StarletteHTTPException, RequestValidationError and a catch-all Exception handler for 500s, with the catch-all logging the traceback and returning a generic message without leaking internals",
+        "Request-ID middleware (pure ASGI) sets an ID in a contextvar and the X-Request-ID header so every error body and log line carries the same ID",
+        "Order cheat: TrustedHost → CORS → GZip → request-ID/logging → auth → app; last added = outermost, so add them in reverse of that list",
+        "Quick table: raise HTTPException in endpoints; return JSONResponse in middleware; use pure ASGI for websockets, streaming and perf; use BaseHTTPMiddleware for simple header or timing tweaks only"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

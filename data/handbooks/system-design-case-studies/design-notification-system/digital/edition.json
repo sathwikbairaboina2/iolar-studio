@@ -1,0 +1,2148 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-notification-system",
+  "category": "system-design",
+  "inputsHash": "a18003eaa05a264f3a3bee286336687f0c86c4cb8e0b738c6e7750d76f74cf92",
+  "generatedAt": "2026-10-28T12:22:52.986Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope",
+              "ink": "blue"
+            },
+            {
+              "type": "paragraph",
+              "text": "Running example: a multi-channel **Notification System** for an app with 10M daily active users."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Channels: ==push== (APNs/FCM), ==SMS==, ==email==, ==in-app==",
+                "Triggers: {blue:service call}, {purple:scheduled}, {orange:bulk campaign}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Out of scope: ==marketing UI==",
+                "Out of scope: ==content authoring=="
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Functional Requirements",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Send a **single** or a **bulk** notification",
+                "**Template** rendering with variables",
+                "Per-user ==opt-in/out== by channel and by category",
+                "**Scheduling** for a future time",
+                "**Delivery status** query by notification id"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "3. Estimates and Latency Targets",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Estimate",
+                "Working"
+              ],
+              "rows": [
+                [
+                  "Volume",
+                  "==50M/day==",
+                  "10M DAU x 5 per user"
+                ],
+                [
+                  "Average QPS",
+                  "about ==580==",
+                  "50M / 86,400 s"
+                ],
+                [
+                  "Peak QPS",
+                  "about ==5k==",
+                  "10x burst"
+                ],
+                [
+                  "Storage / day",
+                  "==50 GB==",
+                  "50M x 1 KB"
+                ],
+                [
+                  "Retention",
+                  "about ==4.5 TB==",
+                  "90 days x 50 GB"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tier",
+                "End-to-end target",
+                "Example"
+              ],
+              "rows": [
+                [
+                  "Critical",
+                  "{red:under 2 s}",
+                  "OTP, security alert"
+                ],
+                [
+                  "Transactional",
+                  "{orange:under 10 s}",
+                  "Order or payment receipt"
+                ],
+                [
+                  "Marketing",
+                  "{blue:within minutes}",
+                  "Campaign, digest"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "4. Non-Functional Requirements",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==At-least-once== delivery: duplicates are possible, loss is not",
+                "==99.95%== availability, about 4.4 h of downtime per year",
+                "==No loss after accept==: the ack is durable",
+                "==Idempotent sends==: same idempotency key, one delivery"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "sub": "from producer",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Persist",
+                    "sub": "durable write",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Ack",
+                    "sub": "202 accepted",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Deliver",
+                    "sub": "retry until done",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Ack means durable",
+              "text": "Never ack before the event is **persisted**. At-least-once delivery only works with an ==idempotency key==, so retries do not double-send."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Notification System)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (Notification System)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. End-to-End Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Producer",
+                    "sub": "service",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Notification API",
+                    "sub": "returns 202",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Validate + dedup + prefs",
+                    "sub": "intake checks",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Kafka topics",
+                    "sub": "channel x priority",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Channel workers",
+                    "sub": "render, limit, send",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Provider adapters",
+                    "sub": "one per vendor",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "Provider",
+                    "sub": "FCM, Twilio, SES",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Sync accept==: API validates, stores, replies `202` + `notification_id`",
+                "==Async delivery==: workers send later; caller polls `GET /v1/notifications/{id}`",
+                "Durable ack: row is written before the reply, so ==no loss after accept==",
+                "Workers re-check prefs (quiet hours, token) because state can change while queued"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /v1/notifications",
+                "{\"user_id\":\"u42\",\"template_id\":\"otp\",\"channel\":[\"sms\"],",
+                "  \"priority\":\"critical\",\"idempotency_key\":\"k-9\"}",
+                "",
+                "202 Accepted",
+                "{\"notification_id\":\"n_91f3\",\"status\":\"queued\"}"
+              ],
+              "note": "the reply says accepted, not delivered"
+            },
+            {
+              "type": "heading",
+              "text": "2. Components",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Component",
+                "Job",
+                "Backing"
+              ],
+              "rows": [
+                [
+                  "**Template Service**",
+                  "versioned templates per channel and locale; workers render",
+                  "DB + 5 min cache"
+                ],
+                [
+                  "**Preference Service**",
+                  "opt-in/out, quiet hours, device tokens",
+                  "DB + Redis cache"
+                ],
+                [
+                  "**Rate Limiter**",
+                  "per-user caps and per-provider caps",
+                  "{red:Redis}"
+                ],
+                [
+                  "**Scheduler**",
+                  "holds future-dated sends, releases them to Kafka at due time",
+                  "DB + timer"
+                ],
+                [
+                  "**Tracking Service**",
+                  "consumes status events and webhooks, serves status query",
+                  "append-only store"
+                ],
+                [
+                  "**Dead Letter Queue**",
+                  "parks messages that exhausted retries, with error payload",
+                  "Kafka topic"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Isolation and Scaling",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==One topic per channel x priority==, e.g. `sms.critical`, `sms.bulk`, `push.normal`",
+                "A slow SMS provider backs up only `sms.*` topics; ==push keeps flowing==",
+                "A bulk campaign fills `*.bulk` only, so it never queues ahead of an OTP",
+                "API and workers are ==stateless==: add pods behind a load balancer, no sticky sessions",
+                "Kafka key = `user_id`: same user, same partition, ==per-user order kept=="
+              ],
+              "style": "check",
+              "ink": "orange"
+            },
+            {
+              "type": "sidebox",
+              "title": "Ordering rules",
+              "items": [
+                "Order holds only inside one partition",
+                "No order across different users, none needed",
+                "Pick partition count up front (100 for a hot topic)",
+                "Adding partitions later re-maps keys"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "heading",
+              "text": "4. Build vs Buy",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Single vendor",
+                "Own pipeline + providers"
+              ],
+              "rows": [
+                [
+                  "Cost",
+                  "one price list, no routing by cost",
+                  "route to cheapest, e.g. SES for email"
+                ],
+                [
+                  "Failover",
+                  "vendor outage = our outage",
+                  "switch to a secondary provider"
+                ],
+                [
+                  "Control",
+                  "vendor limits and features",
+                  "our queues, retries, dedup, tracking"
+                ],
+                [
+                  "Effort",
+                  "low",
+                  "higher: we run the pipeline"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Own the pipeline, rent the last mile",
+              "text": "Keep routing, queues and tracking in-house. Twilio, SES and FCM sit behind ==adapters==, so changing a provider is config, not a rewrite."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Notification API and Intake Service",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Notification API and Intake Service",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and API",
+              "ink": "blue"
+            },
+            {
+              "type": "paragraph",
+              "text": "Intake for the ==Notification System==: ~5k QPS peak, accept is synchronous, delivery is asynchronous."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Authenticate} the producer service",
+                "{green:Validate} the payload: user_id, template_id, channel[], priority",
+                "Assign the ==notification_id== on the server",
+                "{purple:Enqueue} durably, then return ==202== with the id",
+                "`GET /v1/notifications/{id}` returns the current status"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "POST /v1/notifications",
+                "{\"user_id\": \"u_42\", \"template_id\": \"otp_login\",",
+                "\"channel\": [\"sms\", \"push\"], \"priority\": \"critical\",",
+                "\"idempotency_key\": \"login-9f3a\",",
+                "\"data\": {\"code\": \"481516\"}}"
+              ],
+              "note": "202 Accepted -> {\"notification_id\": \"...\"}"
+            },
+            {
+              "type": "heading",
+              "text": "2. Intake Flow: Two Lanes",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Validate",
+                    "sub": "bad payload: 400",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Idempotency",
+                    "sub": "Redis SETNX, 24h TTL",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "DB txn",
+                    "sub": "notification + outbox row",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "202",
+                    "sub": "id returned",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Relay polls",
+                    "sub": "pending outbox rows",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Publish to Kafka",
+                    "sub": "wait for broker ack",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Mark published",
+                    "sub": "row leaves pending",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "SETNX ==miss== = new send, continue down the lane",
+                "SETNX ==hit== = duplicate, return the original id, enqueue nothing",
+                "The 202 is sent after the DB commit, ==not== after the Kafka publish"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "schema",
+              "spec": {
+                "tables": [
+                  {
+                    "name": "notifications",
+                    "columns": [
+                      "id",
+                      "user_id",
+                      "template_id",
+                      "priority",
+                      "status",
+                      "idempotency_key UNIQUE",
+                      "created_at"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Partition by created_at==: drop old partitions for 90-day retention",
+                "UNIQUE on a partitioned table only guards inside one partition",
+                "So it is not a global dedup: the ==Redis SETNX gate== is"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Kafka down",
+              "text": "The outbox row commits with the notification row. The ==relay retries== the publish until Kafka acks, so an accepted event is **never lost**."
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Accept latency",
+                  "p99 under ==50 ms=="
+                ],
+                [
+                  "5xx rate",
+                  "under ==0.1%=="
+                ],
+                [
+                  "Enqueue lag",
+                  "pending outbox age: alert on growth"
+                ],
+                [
+                  "Rejected by validation",
+                  "rate per producer"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Templates and Localization Service",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Templates and Localization Service",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Render Path",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store ==versioned== templates per **channel** and **locale**",
+                "Render variables into subject and body",
+                "Enforce size limits: {orange:SMS 160 GSM-7 chars}, {orange:push payload 4 KB}",
+                "Render at ==worker time==, not at intake: the API only stores `template_id` + `data`",
+                "Worker input: `template_id` + `version` + `data`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Worker",
+                    "sub": "template_id + version + data",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "In-memory cache",
+                    "sub": "compiled, TTL 5 min",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Compile",
+                    "sub": "on miss only",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Render + size check",
+                    "sub": "160 chars / 4 KB",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Data Model and Locale Fallback",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Column",
+                "Type / values"
+              ],
+              "rows": [
+                [
+                  "`id`, `version`",
+                  "template key, one row per version"
+                ],
+                [
+                  "`channel`",
+                  "push / sms / email / in-app"
+                ],
+                [
+                  "`locale`",
+                  "`en`, `hi`, ..."
+                ],
+                [
+                  "`subject`",
+                  "email and push title"
+                ],
+                [
+                  "`body`",
+                  "text with `{{name}}` variables"
+                ],
+                [
+                  "`status`",
+                  "==draft== or ==active=="
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Lookup order: requested locale (`hi`) → ==fallback `en`==",
+                "Only an `active` version is rendered; `draft` is never sent",
+                "A new version is a new row, so old notifications stay reproducible"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. API",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "POST /templates",
+                "PUT  /templates/{id}/versions",
+                "GET  /templates/{id}?locale=hi"
+              ],
+              "note": "create template, add a version, fetch one locale"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "ok",
+                    "dlq"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Every variable present?",
+                    "shape": "diamond"
+                  },
+                  "ok": {
+                    "text": "Send via adapter",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "dlq": {
+                    "text": "DLQ with reason",
+                    "shape": "box",
+                    "ink": "red"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "ok",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "dlq",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never send a literal {{name}}",
+              "text": "A missing variable must ==fail fast== to the **DLQ** with a reason such as `missing: name`. Do not render a blank or a raw placeholder."
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics",
+              "items": [
+                "Render ==p99 under 5 ms==",
+                "Cache hit rate ==above 95%==",
+                "Render error rate (missing variable, oversize)"
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "User Preferences and Opt-Out",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "User Preferences and Opt-Out",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Per-user, per-channel, per-category== opt-in (push, SMS, email, in-app)",
+                "{blue:Quiet hours} stored with a **timezone** (`tz`), not a fixed UTC offset",
+                "{red:Global unsubscribe}: one switch that stops every non-critical message",
+                "==Legal opt-out==: TCPA (SMS STOP) and CAN-SPAM (email unsubscribe) must be honored"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Check Order and Failure",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Check order (first failure suppresses)",
+                "rows": [
+                  [
+                    "g",
+                    "c",
+                    "k"
+                  ],
+                  [
+                    "q",
+                    "t",
+                    "s"
+                  ]
+                ],
+                "nodes": {
+                  "g": {
+                    "text": "Global opt-out?",
+                    "shape": "diamond"
+                  },
+                  "c": {
+                    "text": "Channel enabled?",
+                    "shape": "diamond"
+                  },
+                  "k": {
+                    "text": "Category enabled?",
+                    "shape": "diamond"
+                  },
+                  "q": {
+                    "text": "Quiet hours?",
+                    "shape": "diamond"
+                  },
+                  "t": {
+                    "text": "Token valid?",
+                    "shape": "diamond"
+                  },
+                  "s": {
+                    "text": "Send",
+                    "shape": "box",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "g",
+                    "to": "c",
+                    "label": "no"
+                  },
+                  {
+                    "from": "c",
+                    "to": "k",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "k",
+                    "to": "q",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q",
+                    "to": "t",
+                    "label": "outside"
+                  },
+                  {
+                    "from": "t",
+                    "to": "s",
+                    "label": "yes"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Preference store down",
+                "Policy",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Critical (OTP)",
+                  "{green:Fail open}",
+                  "A blocked OTP locks the user out"
+                ],
+                [
+                  "Marketing",
+                  "{red:Fail closed}",
+                  "A wrong send breaks legal opt-out"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redis cache with ==10 min TTL==",
+                "**Invalidate on write**, so a new opt-out applies at once"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "user_prefs(user_id, channel, category,",
+                "           enabled, quiet_start, quiet_end, tz)",
+                "device_tokens(user_id, token,",
+                "              platform, last_seen)",
+                "GET /v1/users/{id}/preferences",
+                "PUT /v1/users/{id}/preferences",
+                "GET /unsubscribe?t=<signed_token>"
+              ],
+              "note": "signed token carries user_id + category, so no login is needed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Unsubscribe link holds a ==signed token== (HMAC), so it cannot be forged",
+                "Prune a `device_tokens` row on APNs 410 or FCM UNREGISTERED"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Cache hit rate} of the preference cache",
+                "==Opt-out rate== per category (spikes mean bad content)",
+                "**Suppressed-by-preference** count per rule",
+                "{red:Stale invalid token rate}: sends to dead tokens"
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Check ==cheapest and most legal first==. Opt-out beats everything except a critical message, and the cache must be **invalidated on write**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Priority Queues and Channel Workers",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Priority Queues and Channel Workers",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Priority Isolation",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Split traffic into ==4 priorities==: {red:critical}, {orange:high}, {blue:normal}, {purple:bulk}",
+                "Goal: a ==campaign never delays an OTP==",
+                "One Kafka topic per **channel x priority**, e.g. `sms.critical`, `push.bulk`",
+                "Separate topics also stop a slow SMS provider from blocking push"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Priority",
+                "Example",
+                "Weight",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "{red:critical}",
+                  "OTP, security alert",
+                  "**8**",
+                  "under 2s end to end"
+                ],
+                [
+                  "{orange:high}",
+                  "Ride accepted, payment receipt",
+                  "**4**",
+                  "under 10s"
+                ],
+                [
+                  "{blue:normal}",
+                  "Social activity",
+                  "**2**",
+                  "within minutes"
+                ],
+                [
+                  "{purple:bulk}",
+                  "Marketing campaign",
+                  "**1**",
+                  "within minutes, throttled"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Shared workers pull topics at ==8:4:2:1== weight, so bulk never starves critical",
+                "Or run a ==dedicated consumer group== for critical: own pods, own autoscaling"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "sidebox",
+              "title": "Isolation rules",
+              "items": [
+                "Never one shared queue for all priorities",
+                "Critical topic is never fed by the batch job",
+                "Partition by `user_id` to keep per-user order"
+              ],
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Worker Flow and Crash Recovery",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Consume",
+                    "sub": "poll topic",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Preference check",
+                    "sub": "opt-out, quiet hours",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Render",
+                    "sub": "template + data",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Rate limit",
+                    "sub": "user + provider",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Provider call",
+                    "sub": "adapter send()",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Emit status",
+                    "sub": "sent event",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Commit offset",
+                    "sub": "last step",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Commit the offset ==last==, after the provider call and the status event",
+                "Worker crash -> offset uncommitted -> ==Kafka redelivers== the message",
+                "Crash before the provider call: redelivery is safe, nothing was sent",
+                "Crash after the provider call: the user can get the message ==twice=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Dedup does not cover a post-send crash",
+              "text": "The Redis dedup key is set at ==intake==, before any worker runs, so it cannot see this duplicate. Pass the ==provider idempotency key== where supported."
+            },
+            {
+              "type": "heading",
+              "text": "3. Bulk Fan-out and Autoscaling",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A **batch job** expands a campaign audience into the `bulk` topic",
+                "Publish at a throttled ==2k msgs/sec==, well under the 5k QPS peak",
+                "Example: 1M recipients / 2k per sec = ==500 s== (about 8 min)",
+                "Bulk lag is allowed to grow; critical lag never is"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Lag-driven autoscaling",
+                "steps": [
+                  {
+                    "text": "Lag alert",
+                    "note": "consumer lag over threshold",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Scale out",
+                    "note": "add workers, up to partition count",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Lag drains",
+                    "note": "scale back in",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target or use"
+              ],
+              "rows": [
+                [
+                  "Consumer lag per topic",
+                  "alert on growth; drives autoscaling"
+                ],
+                [
+                  "Queue wait p99, critical",
+                  "==under 500 ms=="
+                ],
+                [
+                  "Worker throughput",
+                  "msgs/sec per pod, per channel"
+                ],
+                [
+                  "Autoscale events",
+                  "scale-out count per topic per day"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Retries, Dead Letters and Deduplication",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Retries, Dead Letters and Deduplication",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What to Retry",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Class",
+                "Action"
+              ],
+              "rows": [
+                [
+                  "5xx from provider",
+                  "{green:transient}",
+                  "==retry=="
+                ],
+                [
+                  "Timeout",
+                  "{green:transient}",
+                  "==retry=="
+                ],
+                [
+                  "429 (rate limited)",
+                  "{green:transient}",
+                  "==retry== after the backoff delay"
+                ],
+                [
+                  "Invalid token / 400",
+                  "{red:permanent}",
+                  "**no retry**, prune or reject"
+                ],
+                [
+                  "Unsubscribed user",
+                  "{red:permanent}",
+                  "**no retry**, mark `suppressed`"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Backoff, Delay Topics and DLQ",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Nominal curve is ==exponential with jitter==: 1s, 2s, 4s, 8s...",
+                "Curve is rounded up to the delay topics, so the effective schedule is the one below",
+                "Capped at ==5 attempts==; jitter stops retries from hitting the provider together"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Effective retry schedule",
+                "steps": [
+                  {
+                    "text": "retry-1m",
+                    "note": "attempts 1-2",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "retry-5m",
+                    "note": "attempts 3-4",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "retry-30m",
+                    "note": "attempt 5",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "DLQ",
+                    "note": "after max attempts",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "DLQ message keeps the original event plus an ==error payload== (reason, attempts, last status)",
+                "A **replay tool** re-injects DLQ messages after the fix is deployed",
+                "Alert when ==DLQ depth > 100=="
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Deduplication",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Key = `hash(user_id, template_id, idempotency_key)`, set at ==intake== with `SET NX EX` for 24h",
+                "The first call wins; a producer retry finds the key and is dropped",
+                "Producer retries are blocked here; a duplicate after a provider call is not"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "# call 1: first send",
+                "SET dedup:9f3a 1 NX EX 86400",
+                "# call 2: producer retry, same key",
+                "SET dedup:9f3a 1 NX EX 86400"
+              ],
+              "note": "NX = only if absent, EX 86400 = 24h TTL",
+              "result": {
+                "headers": [
+                  "Call",
+                  "Reply"
+                ],
+                "rows": [
+                  [
+                    "call 1",
+                    "OK (accepted)"
+                  ],
+                  [
+                    "call 2",
+                    "(nil) (duplicate suppressed)"
+                  ]
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==At-least-once + dedup = effectively-once==",
+                "Worker crashes after the provider call but before the offset commit: message redelivered, SMS can go out twice",
+                "The intake key cannot stop that duplicate; ==exactly-once is impossible== across a provider boundary",
+                "Mitigation: pass the ==provider idempotency key== where the provider supports it"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Mistake to avoid",
+              "text": "Retrying **permanent** errors (400, invalid token, unsubscribed) burns attempts and floods the DLQ. Classify the error ==before== scheduling a retry."
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Retry rate",
+                  "under ==5%=="
+                ],
+                [
+                  "DLQ rate",
+                  "under ==0.1%=="
+                ],
+                [
+                  "DLQ depth",
+                  "alert above 100"
+                ],
+                [
+                  "Duplicate-suppressed count",
+                  "tracked; spike means producer retry storm"
+                ],
+                [
+                  "Time-to-success after retry",
+                  "tracked per retry topic"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Rate Limiting and Throttling",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Rate Limiting and Throttling",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Three Limits, Three Jobs",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Limit",
+                "Example",
+                "Protects"
+              ],
+              "rows": [
+                [
+                  "{blue:Per-user}",
+                  "==5== marketing push/day, ==3== SMS/hour",
+                  "The user from spam"
+                ],
+                [
+                  "{red:Critical abuse}",
+                  "==5 OTPs / 10 min== per user",
+                  "The SMS bill and the user from OTP floods"
+                ],
+                [
+                  "{purple:Per-provider}",
+                  "SES ==14 emails/sec==, Twilio ==1 msg/sec== per number",
+                  "Us from vendor 429s and bans"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Per-user key: ==user:channel:category==, e.g. `user:42:sms:marketing`",
+                "Limiter runs in the worker after render, before the provider call",
+                "Per-provider limit is one **global** token bucket shared by all workers",
+                "OTP and security alerts ==bypass== per-user caps, but keep their own abuse limit"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Token Bucket vs Sliding Window",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Token bucket",
+                "Sliding window"
+              ],
+              "rows": [
+                [
+                  "Bursts",
+                  "{green:Allowed} up to bucket size",
+                  "{red:Strict}, no burst past the limit"
+                ],
+                [
+                  "Memory",
+                  "==O(1)== per key (tokens + timestamp)",
+                  "O(n) per key (one entry per event)"
+                ],
+                [
+                  "Accuracy",
+                  "Approximate over a period",
+                  "Exact over any trailing window"
+                ],
+                [
+                  "Best for",
+                  "Provider caps, global limits",
+                  "Per-user marketing caps"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Pick by cost of being wrong",
+              "text": "Provider cap: use a ==token bucket==, bursts are fine and memory stays flat. User spam cap: use a ==sliding window== when '5 per day' must be exact."
+            },
+            {
+              "type": "heading",
+              "text": "3. Over Limit and Redis Down",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "q"
+                  ],
+                  [
+                    "drop",
+                    "delay",
+                    "digest"
+                  ]
+                ],
+                "nodes": {
+                  "q": {
+                    "text": "Over limit?",
+                    "shape": "diamond"
+                  },
+                  "drop": {
+                    "text": "Drop",
+                    "shape": "box",
+                    "ink": "red"
+                  },
+                  "delay": {
+                    "text": "Delay to next window",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "digest": {
+                    "text": "Fold into digest",
+                    "shape": "box",
+                    "ink": "green"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q",
+                    "to": "drop",
+                    "label": "stale"
+                  },
+                  {
+                    "from": "q",
+                    "to": "delay",
+                    "label": "time-bound"
+                  },
+                  {
+                    "from": "q",
+                    "to": "digest",
+                    "label": "many"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Redis limiter down",
+              "items": [
+                "{green:Critical (OTP): fail open}, send anyway",
+                "{red:Bulk and marketing: fail closed}, hold or drop",
+                "Reason: a missed OTP locks users out; a missed promo costs nothing"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Throttled count **by rule** (user, abuse, provider)",
+                "==429 from providers== means the global bucket is set too high",
+                "Limiter latency p99 under ==2 ms==, it sits on the hot path"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Third-Party Providers and Failover",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Third-Party Providers and Failover",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Adapter Interface",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Provider layer of the Notification System: one adapter hides each vendor, so workers never see vendor APIs."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Every adapter exposes ==send(msg)== and returns `{provider_id, status}`",
+                "One adapter each: **FCM**, **APNs**, **Twilio**, **SES**, **SendGrid**",
+                "Adapter maps vendor errors to ==transient== or ==permanent==",
+                "Swapping or adding a vendor touches only its adapter"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "class Adapter(Protocol):",
+                "    def send(self, msg: dict) -> dict:",
+                "        \"\"\"Return {'provider_id': str, 'status': str}\"\"\"",
+                "        ..."
+              ],
+              "note": "same contract for FCM, APNs, Twilio, SES, SendGrid"
+            },
+            {
+              "type": "heading",
+              "text": "2. Providers per Channel",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Channel",
+                "Providers",
+                "Target",
+                "Note"
+              ],
+              "rows": [
+                [
+                  "Push iOS",
+                  "{blue:APNs}",
+                  "device token",
+                  "token per device"
+                ],
+                [
+                  "Push Android/web",
+                  "{blue:FCM}",
+                  "registration token",
+                  "token per device"
+                ],
+                [
+                  "SMS",
+                  "{purple:Twilio}, Vonage",
+                  "phone number",
+                  "secondary = Vonage"
+                ],
+                [
+                  "Email",
+                  "{orange:SES}, SendGrid",
+                  "email address",
+                  "SES cheap: ==~$0.10 per 1k=="
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Failover and Token Pruning",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Circuit breaker per provider",
+                "steps": [
+                  {
+                    "text": "Closed",
+                    "note": "traffic to primary",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Open",
+                    "note": "50% errors over 30s, route to secondary",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Half-open",
+                    "note": "probe after 60s",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Closed again",
+                    "note": "probe succeeds",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Failed probe sends the breaker ==back to open== for another 60s",
+                "Routing weights follow **cost** and **deliverability**, not a fixed primary",
+                "On APNs ==410== or FCM ==UNREGISTERED==, delete the row from `device_tokens`",
+                "Invalid token is a **permanent** error: never retry it"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Outage and Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Provider outage",
+                    "sub": "errors spike",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Breaker opens",
+                    "sub": "secondary takes load",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Queue buffers",
+                    "sub": "Kafka keeps messages",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Retries drain",
+                    "sub": "after recovery",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Provider success rate ==above 99%==",
+                "p99 provider latency",
+                "Cost per 1k messages",
+                "Failover count"
+              ],
+              "style": "dot",
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Breaker opens at ==50% errors over 30s== and probes after **60s**. The queue buffers during the outage, so nothing is dropped."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Delivery Tracking and In-App Inbox",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Delivery Tracking and In-App Inbox",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Running example: a **Food Delivery App** tracks an order-shipped notification from queued to clicked, and shows it in the inbox."
+            },
+            {
+              "type": "heading",
+              "text": "1. Status Lifecycle and Sources",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "queued",
+                    "sub": "accepted",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "sent",
+                    "sub": "to provider",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "delivered",
+                    "sub": "on device or inbox",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "opened",
+                    "sub": "user saw it",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "clicked",
+                    "sub": "link tapped",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Terminal states: {red:failed}, {orange:suppressed} (pref or limit), {red:bounced} (bad address)",
+                "Each status gets a ==rank==: queued 1, sent 2, delivered 3, opened 4, clicked 5"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Channel",
+                "Status source",
+                "Gives"
+              ],
+              "rows": [
+                [
+                  "Email",
+                  "SES via **SNS** webhook",
+                  "delivered, bounced"
+                ],
+                [
+                  "SMS",
+                  "Twilio **status callback**",
+                  "sent, delivered, failed"
+                ],
+                [
+                  "Push",
+                  "**Device ack** on open",
+                  "opened"
+                ],
+                [
+                  "Email",
+                  "Tracking **pixel**",
+                  "opened"
+                ],
+                [
+                  "Email",
+                  "**Redirect link** `/r/{token}`",
+                  "clicked"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Event Store and Inbox",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`notification_events(notification_id, status, ts, provider, error)`",
+                "==Append-only== in Cassandra or ClickHouse, never updated in place",
+                "About 50M events/day x 1 KB = 50 GB/day; 90 days = about 4.5 TB",
+                "{red:Current status} cached in Redis so the status API skips the event store"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`inbox(user_id, notif_id, read, created_at)` keyed by ==user_id==",
+                "Pushed live over **WebSocket / SSE**; offline users read it on next load",
+                "{purple:Unread count} kept in Redis: INCR on arrival, DECR on read"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. API",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET  /v1/notifications/{id}/events",
+                "GET  /v1/users/{id}/inbox?cursor=<c>",
+                "POST /inbox/{id}/read"
+              ],
+              "note": "events timeline, paged inbox, mark one item read"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Webhooks arrive {red:out of order} or {red:duplicated}: ==upsert by status rank==",
+                "Late `sent` after `delivered` is ignored; the same event twice is a no-op",
+                "Missed webhook: ==poll the provider== after **15 min** for the final status"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics to watch",
+              "items": [
+                "Delivery rate above ==98%==",
+                "Open rate (per channel)",
+                "Webhook lag under ==30s==",
+                "Unread count drift vs inbox rows"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Events are **append-only**; current status is the highest rank seen. Lower rank never overwrites higher, so duplicates and reordering are harmless."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale at 5k QPS Peak (Notification System)",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Layer",
+                "Sizing at 5k QPS peak",
+                "Rule"
+              ],
+              "rows": [
+                [
+                  "API pods",
+                  "==about 20== pods",
+                  "stateless, add pods behind the LB"
+                ],
+                [
+                  "Channel workers",
+                  "==about 50== workers",
+                  "autoscale on consumer lag"
+                ],
+                [
+                  "Kafka",
+                  "==100 partitions== per hot topic",
+                  "key = `user_id`, keeps per-user order"
+                ],
+                [
+                  "Redis",
+                  "shard by ==user_id==",
+                  "dedup, limits and prefs of a user on one shard"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Trade-offs and Multi-Region",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Choice",
+                "Pick",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Exactly-once vs at-least-once",
+                  "at-least-once + ==dedup==",
+                  "exactly-once is impossible across a provider boundary"
+                ],
+                [
+                  "Push vs pull",
+                  "push for {green:low latency}",
+                  "send to the device now"
+                ],
+                [
+                  "Inbox fan-out",
+                  "pull for {blue:reliable fan-out}",
+                  "client reads `inbox` by cursor, nothing is lost"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Producer",
+                    "sub": "nearest region",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Active-active",
+                    "sub": "each region runs the full stack",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Dedup keys",
+                    "sub": "replicated across regions",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Providers",
+                    "sub": "failover per region",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Dedup key is set at intake, so it cannot stop a repeat after a crash that follows the provider call",
+                "Real mitigation: pass the ==provider idempotency key== where the provider supports it"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One shared queue for all priorities: a campaign delays OTPs",
+                "Retrying permanent errors (invalid token, 400, unsubscribed)",
+                "No ==idempotency key==: producer retry sends twice",
+                "Sending inside the user's ==quiet hours==",
+                "Ignoring token cleanup: prune on APNs 410 / FCM UNREGISTERED"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Questions and Cheatsheet",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Duplicates on retry?** Redis `SET NX EX 24h` gate on the dedup key; a UNIQUE index guards only its own partition",
+                "**OTP delayed by a campaign?** Critical topic with its own consumer group; bulk throttled to 2k msgs/sec",
+                "**Provider outage?** Breaker opens at 50% errors over 30s, route to secondary, queue buffers, probe after 60s"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Cheatsheet: the whole path",
+                "steps": [
+                  {
+                    "text": "202 accept",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Outbox",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Kafka",
+                    "note": "channel x priority",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Prefs",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Render",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Limit",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Adapter",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Track",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Backoff then DLQ",
+              "text": "Nominal backoff ==1s-8s x5==, rounded up to the delay topics: attempts 1-2 at `retry-1m`, 3-4 at `retry-5m`, 5 at `retry-30m`, then ==DLQ==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A producer POSTs a notification with idempotency_key K, times out, and retries with the same K. What stops the user getting two pushes, and what is the UNIQUE column on idempotency_key for?",
+              "a_bullets": [
+                "The Redis `SET NX EX 24h` gate finds the existing key for the first request",
+                "The retry gets the original notification_id back with 202, and nothing new is enqueued",
+                "The UNIQUE column is only a per-partition backstop: the table is partitioned by created_at, so a retry in another partition would not collide",
+                "So the Redis gate is the dedup mechanism, not the UNIQUE index"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A 2M-message marketing campaign is running and users report OTP texts arriving minutes late. All SMS traffic shares one queue. What is the bug and the fix?",
+              "a_bullets": [
+                "OTPs sit behind the campaign messages in the same FIFO queue, so queue wait grows with the backlog",
+                "Use separate Kafka topics per channel x priority, so critical never queues behind bulk",
+                "Give critical its own consumer group, or weight consumption (for example 8:4:2:1)",
+                "Fan the campaign out at a throttled rate (for example 2k msgs/sec) into the bulk topic"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A worker gets APNs 410 UNREGISTERED for one message and a Twilio 503 for another. Which one is retried, and what happens to the other?",
+              "a_bullets": [
+                "Twilio 503 is transient: retry with exponential backoff and jitter, up to 5 attempts, then move to the DLQ",
+                "APNs 410 is permanent: the token is dead, so retrying can never succeed",
+                "For the 410, prune the device token and mark the message failed or suppressed",
+                "Retrying permanent errors only burns worker capacity and provider rate limits"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The preference store goes down. An OTP and a marketing push both arrive. What should each do, and why not treat them the same?",
+              "a_bullets": [
+                "OTP (critical) fails open: send it, because a blocked login costs more than a rare opt-out miss",
+                "Marketing fails closed: hold or drop it, because sending to someone who opted out is a legal risk (CAN-SPAM, TCPA)",
+                "Failure policy follows the cost of the wrong outcome, per priority",
+                "The same rule applies to the Redis rate limiter: open for critical, closed for bulk"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Twilio webhooks for one SMS arrive as delivered, then sent. A naive handler overwrites status with each event. What does the user-facing status show, and how do you fix it?",
+              "a_bullets": [
+                "The naive handler ends on sent, so a delivered message looks undelivered and the status goes backwards",
+                "Give each status a rank: queued < sent < delivered < opened < clicked",
+                "Upsert only when the new rank is higher, so out-of-order and duplicate webhooks are harmless",
+                "Keep every event in the append-only notification_events table, and poll the provider after 15 min if a webhook is missed"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

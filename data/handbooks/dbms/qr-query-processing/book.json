@@ -1,0 +1,109 @@
+{
+  "title": "Query Optimizer Handbook: From SQL to Execution Plan",
+  "summary": "Quick revision notes on how a database turns SQL into a plan: parsing and rewriting, cost-based choices driven by statistics, join algorithms, scan types, and how to read an execution plan.",
+  "chapters": [
+    {
+      "title": "Query Pipeline and Optimizer Mental Model",
+      "points": [
+        "Pipeline stages in order: parse (syntax check, build parse tree) → analyze/bind (resolve tables, columns, types, permissions) → rewrite (views expanded, subqueries flattened, constants folded) → plan/optimize → execute",
+        "SQL is declarative: you state what rows you want and the optimizer picks how, so the same query can run with very different plans as data changes",
+        "Rewriting is rule-based and cost-free: expand views, flatten IN/EXISTS subqueries into joins, fold constants, push predicates down before the planner runs",
+        "The planner enumerates candidate plans (access paths, join order, join methods), estimates the cost of each and keeps the cheapest; it does not guarantee the truly fastest one",
+        "Prepared statements and plan caches reuse one plan, which can go wrong when parameter values have very different selectivity (parameter sniffing / generic plan problem)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Cost-Based Optimization, Statistics and Selectivity",
+      "points": [
+        "Cost model: total cost = estimated I/O + CPU work, in abstract units (e.g. PostgreSQL seq_page_cost=1.0, random_page_cost=4.0 by default); costs compare plans, they are not milliseconds",
+        "Statistics gathered by ANALYZE / UPDATE STATISTICS: row count, page count, per-column distinct count, null fraction, most common values with frequencies, and histogram buckets",
+        "Selectivity = fraction of rows a predicate keeps (0 to 1); estimated rows = table rows × selectivity; for equality, selectivity ≈ 1 / distinct values unless the value is in the most-common list",
+        "Independent predicates multiply: sel(A AND B) = sel(A) × sel(B); this assumption breaks on correlated columns (city and zip) and underestimates rows by orders of magnitude",
+        "Stale statistics or skewed data cause bad row estimates, and a bad row estimate early in the plan compounds into the wrong join order and join method; fix with ANALYZE, extended/multi-column statistics, or a higher statistics target"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Index Scans vs Sequential Scans",
+      "points": [
+        "Sequential scan reads every page in order, cheap per page; index scan walks the B-tree then fetches each matching heap row with random I/O; index-only scan answers from the index alone if the visibility map shows pages are all-visible",
+        "Rule of thumb: the index wins when a predicate returns a small fraction of rows (roughly under 5-10%); above that, a seq scan is cheaper and the planner is right to choose it",
+        "Bitmap scan is the middle ground: build a bitmap of matching pages from the index, then read heap pages in physical order; used for medium selectivity and for combining several indexes with AND/OR",
+        "Index not used because: function or cast on the column (WHERE lower(email)=... needs an expression index), leading wildcard LIKE '%x', type mismatch, wrong column order in a composite index, or tiny table",
+        "A covering index (INCLUDE columns) allows an index-only scan; a composite index (a,b) serves filters on a or a+b but not b alone; low-cardinality columns rarely benefit from an index"
+      ],
+      "shape": [
+        "definition",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Join Algorithms: Nested Loop vs Hash vs Merge",
+      "points": [
+        "Nested loop: for each outer row, probe the inner side; cost ≈ outer rows × inner lookup cost; best when the outer side is small and the inner side has an index on the join key; the only method for non-equality joins without extra support",
+        "Hash join: build an in-memory hash table on the smaller input, then stream the larger input and probe it; equality joins only; no index or sort needed; if the build side exceeds work_mem/memory grant it spills to disk in batches and slows sharply",
+        "Merge join: both inputs sorted on the join key, then merged in one pass; equality (and range-ordered) joins; wins when inputs are already sorted by an index or ORDER BY, or are both very large",
+        "Choosing guide: small outer + indexed inner → nested loop; large unsorted equality join → hash; large pre-sorted inputs → merge; join order matters because the planner puts the smaller or more filtered input first",
+        "Classic trap: nested loop chosen because row estimate was 10 but actual was 1,000,000, causing a million index probes; fix the estimate (ANALYZE, extended stats) rather than forcing the join method with hints"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Reading an Execution Plan",
+      "points": [
+        "EXPLAIN shows the estimated plan without running; EXPLAIN ANALYZE (PostgreSQL) actually executes the query and adds real time and row counts, so wrap data-changing statements in a transaction and roll back; add BUFFERS to see page hits and reads",
+        "Read the tree from the innermost, most-indented node outward: leaf scans feed joins, joins feed sort/aggregate; each node shows cost=startup..total, rows=estimate, width=bytes per row",
+        "Compare estimated rows with actual rows on every node: a gap of 10x or more marks where the optimizer went wrong, and is the first thing to look for",
+        "Watch for red flags: Seq Scan on a large table with a selective filter, Rows Removed by Filter in the millions, Sort or Hash spilling to disk (Sort Method: external merge, Batches > 1), nested loop with huge loops count, and actual time multiplied by loops",
+        "Example fix flow: slow query → EXPLAIN (ANALYZE, BUFFERS) → find the node with the largest actual time → check its estimate vs actual → ANALYZE or add an index or rewrite the predicate → re-run and compare"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "mistakes",
+        "summary"
+      ],
+      "layout": []
+    },
+    {
+      "title": "Optimizer Cheat Sheet",
+      "points": [
+        "Pipeline: parse → bind → rewrite → plan → execute; the optimizer picks the cheapest estimated plan, not the guaranteed fastest",
+        "Selectivity = matching rows ÷ total rows; AND multiplies, OR adds minus overlap; refresh with ANALYZE after bulk loads",
+        "Scan choice: high selectivity (few rows) → index scan; medium → bitmap scan; most of the table → seq scan; index-only needs a covering index and a vacuumed table",
+        "Join choice: nested loop = small outer + indexed inner; hash = big equality join, watch memory spill; merge = pre-sorted inputs",
+        "Plan debugging checklist: EXPLAIN (ANALYZE, BUFFERS) → compare estimated vs actual rows → fix statistics first, then indexes, then rewrite the query; never rely on hints as the first fix"
+      ],
+      "shape": [
+        "cheatsheet"
+      ],
+      "layout": []
+    }
+  ]
+}

@@ -1,0 +1,221 @@
+{
+  "title": "Design a Web Crawler: Frontier, Politeness, Dedup and Scale",
+  "summary": "An end-to-end system design of a web crawler covering requirements, the URL frontier, politeness, DNS, fetching, parsing, URL and content dedup, recrawl scheduling, distributed scaling and crawler traps. Closes with failure handling, trade-offs and interview questions.",
+  "chapters": [
+    {
+      "title": "Web Crawler Design: What This Handbook Covers",
+      "points": [
+        "Problem and scope",
+        "Requirements and scale",
+        "High-level architecture",
+        "URL frontier",
+        "Politeness and robots.txt",
+        "Fetcher and DNS",
+        "Parser and URL dedup",
+        "Content dedup and recrawl",
+        "Scaling, traps and interviews"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "points": [
+        "Problem: crawl the public web from seed URLs and store pages for a search index (Web Crawler); out of scope: ranking, indexing, JS-heavy rendering, login-walled pages",
+        "Functional: seed intake, fetch HTML, extract links, dedupe URLs and content, respect robots.txt, recrawl by change rate",
+        "Non-functional: politeness (max 1 request/sec per host), robustness, extensibility, freshness, scalability",
+        "Scale estimate: 1B pages/month = ~400 pages/sec average, ~1,200 peak (3x)",
+        "Storage estimate: 1B pages x 100 KB avg = 100 TB/month raw HTML, ~30 TB compressed (gzip ~3x); metadata 1B x 500 B = 500 GB"
+      ],
+      "shape": [
+        "definition",
+        "summary",
+        "example"
+      ]
+    },
+    {
+      "title": "High-Level Architecture and Crawl Loop",
+      "points": [
+        "Pipeline: seeds → URL frontier → DNS resolver → fetcher → content store → parser → link extractor → URL filter/dedup → frontier",
+        "Components: frontier, fetcher workers, DNS cache, parser, dedup services (URL seen, content seen), content store, scheduler",
+        "Main flow: pop URL from frontier, check robots cache, resolve DNS, fetch with timeout, store body, parse, extract links, filter, enqueue new URLs",
+        "Storage choices: blob store (S3/HDFS) for pages, key-value store for URL metadata, Bloom filter plus KV for seen-URLs",
+        "Bandwidth estimate: 400 pages/sec x 100 KB = 40 MB/s = 320 Mbps average, ~1 Gbps at peak"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example"
+      ]
+    },
+    {
+      "title": "URL Frontier: Priority and Queues",
+      "points": [
+        "Responsibilities: hold URLs to crawl, order by priority, enforce politeness, survive restarts",
+        "Two-tier design: front queues by priority (F queues), back queues by host (B queues, one host per queue)",
+        "Prioritizer: score by PageRank, update frequency, depth; map score to one of F priority queues",
+        "Back-queue router: hash(host) → one back queue; a heap keyed by next-allowed-time picks the next host",
+        "Frontier size estimate: 10B known URLs x 100 B = ~1 TB, so disk-backed queues with an in-memory head buffer",
+        "Failure scenario: frontier node crash loses in-memory head; mitigate with persistent log (Kafka) and replay"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Politeness and robots.txt Handling",
+      "points": [
+        "Rule: one connection per host at a time, delay between requests = max(1s, 10x last fetch time) or Crawl-delay",
+        "robots.txt: fetched from /robots.txt per host, cached 24h, rules parsed for our User-agent; Disallow and Allow use longest-match",
+        "Status handling: 404 means allow all, 5xx means treat as disallow all and retry later, 429/503 means back off exponentially",
+        "Data model: host_policy(host, robots_body, crawl_delay, fetched_at, next_allowed_at)",
+        "Metrics: per-host request rate, robots cache hit rate (target >99%), 429 rate, blocked-by-robots count",
+        "Mistake: one worker thread per host is needed; random worker assignment breaks politeness"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "data model",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "DNS Resolution and Fetcher Design",
+      "points": [
+        "DNS is a bottleneck: synchronous lookups take 10-200 ms, so run a custom async resolver with a local cache (TTL honoring, ~10M entries)",
+        "Fetcher: async I/O workers, connect timeout 5s, read timeout 30s, max body 10 MB, follow at most 5 redirects",
+        "HTTP details: send User-Agent with contact URL, conditional GET with If-None-Match / If-Modified-Since, gzip accept",
+        "Throughput estimate: 1,200 peak fetches/sec at ~500 ms each = ~600 concurrent connections, so about 10 fetcher nodes at 60 each",
+        "Failure scenarios: timeout, DNS failure, TLS error, connection reset; retry 3 times with backoff then mark dead for 24h",
+        "Metrics: fetch success rate (target >90%), p99 fetch latency, DNS cache hit rate, bytes/sec"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Parser and Link Extraction",
+      "points": [
+        "Responsibilities: validate content type (text/html), detect encoding, extract text and links from a, link, and canonical tags",
+        "URL normalization: lowercase scheme and host, resolve relative paths, strip fragments (#), drop default ports, sort query params, remove tracking params",
+        "Filters: allowed schemes (http/https), max URL length 2,048, blocklist of file extensions (.jpg, .zip), per-domain depth cap",
+        "Parse in a separate worker pool from fetch, via a queue, so slow or malformed HTML cannot stall fetching",
+        "Failure scenarios: malformed HTML (use a tolerant parser), huge pages (truncate at 10 MB), wrong charset (sniff the meta tag)"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "example",
+        "failure scenarios"
+      ]
+    },
+    {
+      "title": "URL Deduplication: Seen-URL Test",
+      "points": [
+        "Goal: avoid re-enqueuing the 10B+ URLs already known; check on every extracted link (~50 links/page x 400 pages/sec = 20,000 checks/sec)",
+        "Exact store: 10B URLs x 8 byte hash = 80 GB, sharded KV keyed by 64-bit URL hash",
+        "Bloom filter: 10B entries at 1% false positives needs ~9.6 bits per entry = ~12 GB; no false negatives, so a miss means definitely new",
+        "Comparison: Bloom filter = small and fast but false positives drop some new URLs; exact hash set = precise but 7x larger; combine as Bloom first, KV on hit",
+        "Mistake: dedup before normalization, so http://A.com/ and http://a.com differ and the same page is crawled twice"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Content Deduplication with Fingerprints",
+      "points": [
+        "Why: ~30% of web pages are duplicates or near-duplicates (mirrors, tracking params, printer views)",
+        "Exact duplicates: store SHA-256 of the body; a hit means skip parsing and indexing",
+        "Near duplicates: SimHash gives a 64-bit fingerprint; pages are near-dupes if Hamming distance ≤ 3",
+        "Alternative: MinHash with shingles estimates Jaccard similarity; better for set overlap, heavier than SimHash",
+        "Lookup: split the 64-bit SimHash into 4 blocks of 16 bits and index each, so candidates within distance 3 share a block",
+        "Storage estimate: 1B fingerprints x 8 B = 8 GB, fits in memory across a few nodes"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example"
+      ]
+    },
+    {
+      "title": "Recrawl Scheduling and Freshness",
+      "points": [
+        "Goal: maximize fresh pages under a fixed budget of ~400 fetches/sec; not all pages change equally",
+        "Change-rate estimate: track change history per URL; adapt interval, halve it if changed, double it if unchanged, bounded 1 hour to 30 days",
+        "Priority tiers: news homepages hourly, popular sites daily, long tail monthly",
+        "Cheap checks: conditional GET returns 304 with no body, saving bandwidth; sitemap lastmod as a hint",
+        "Data model: url_meta(url_hash, last_crawled, next_crawl, etag, content_hash, change_count, interval)",
+        "Metrics: freshness (% pages younger than their change interval), average age, 304 ratio"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "data model",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Distributed Crawler and Crawler Traps",
+      "points": [
+        "Partition by host hash with consistent hashing, so each node owns whole hosts; this keeps politeness and robots cache local",
+        "Cross-node links: a node sends discovered URLs for other hosts to the owning node via a message queue (Kafka partitions by host hash)",
+        "Adding a node moves only ~1/N of the hosts; ownership handover drains the old node's queues",
+        "Trap types: infinite calendars, session IDs in the URL, repeated path segments (/a/b/a/b), dynamically generated infinite pages, spam sites",
+        "Defenses: max URL length 2,048, max depth ~15, max pages per host cap, detect repeated path segments, content-hash loop detection",
+        "Manual handling: flag hosts with abnormal page counts or low unique-content ratio, then blocklist or cap them"
+      ],
+      "shape": [
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "points": [
+        "Scale-out: ~10 fetcher nodes at 1,200 pages/sec peak; 10x growth means ~100 nodes, ~10 Gbps, ~1 PB/month storage",
+        "Failure handling: checkpoint frontier state, at-least-once processing with idempotent dedup, dead-letter queue for poison URLs",
+        "Trade-off: BFS gives broad coverage; priority crawling gives better quality sooner; freshness and coverage compete for the same budget",
+        "Trade-off: exact versus Bloom dedup (memory vs correctness) and SimHash threshold (recall vs false merges)",
+        "Interview Q: how do you stay polite at 1,000 fetches/sec? Answer: per-host back queues, one worker per host, next-allowed-time heap",
+        "Interview Q: how do you detect a crawler trap? Answer: depth and URL length caps, per-host page caps, repeated segment and content-hash checks"
+      ],
+      "shape": [
+        "summary"
+      ]
+    },
+    {
+      "title": "Web Crawler Cheatsheet",
+      "points": [
+        "Numbers: 1B pages/month = 400/sec avg, 1,200 peak; 100 KB/page = 100 TB/month; 40 MB/s bandwidth",
+        "Frontier: F priority queues feed B per-host back queues; heap by next-allowed-time",
+        "Politeness: 1 request/sec per host, cache robots.txt 24h, back off on 429/503",
+        "Dedup: Bloom 9.6 bits/URL at 1% FP; SHA-256 for exact content; SimHash 64-bit Hamming ≤ 3",
+        "Recrawl: adaptive interval 1h-30d, conditional GET, tiers by change rate",
+        "Distribute by host hash; defend traps with depth, length and per-host caps"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,767 @@
+{
+  "schema": 1,
+  "subject": "fastapi",
+  "chapter": "middleware-exception-handlers",
+  "category": "handbook",
+  "inputsHash": "7e2743894e1ce75bfb3d48a8ada5776a0338425162aa6c07b9b95c276f11c3e2",
+  "generatedAt": "2026-10-27T11:16:20.852Z",
+  "sections": [
+    {
+      "title": "Middleware Mental Model",
+      "role": "outline",
+      "outlineIndex": 0,
+      "pages": [
+        {
+          "title": "Middleware Mental Model",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Wraps the Whole App",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Sees ==every request== before routing and ==every response== after the endpoint",
+                "Fits cross-cutting work: **logging**, **timing**, **headers**, **auth checks**",
+                "Code before `call_next` runs {green:on the way in}; code after runs {orange:on the way out}",
+                "The ==first== middleware added is the **innermost** layer"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Last added",
+                    "sub": "outermost",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "First added",
+                    "sub": "innermost",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Endpoint",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Simplest Form",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`@app.middleware('http')` uses ==BaseHTTPMiddleware== underneath",
+                "Await `call_next`, then **return** its response"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "@app.middleware('http')",
+                "async def mw(request, call_next):",
+                "    # in: before the endpoint",
+                "    response = await call_next(request)",
+                "    # out: after the endpoint",
+                "    return response"
+              ]
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Middleware",
+                "Dependency",
+                "Route handler"
+              ],
+              "rows": [
+                [
+                  "Scope",
+                  "**global**",
+                  "per-route",
+                  "one route"
+                ],
+                [
+                  "Sees",
+                  "raw request",
+                  "parsed params",
+                  "parsed params"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Forgot to return}: must return what `call_next` gave, or the request fails",
+                "{red:Reading} ==await request.body()== in BaseHTTPMiddleware buffers it in memory; older Starlette broke the endpoint"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Pure ASGI Middleware",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Pure ASGI Middleware",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The ASGI Contract",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "App signature: ==async def `__call__(self, scope, receive, send)`==",
+                "Middleware = class holding `self.app`, delegating with `await self.app(scope, receive, send)`",
+                "`scope['type']` is {blue:http}, {purple:websocket} or {orange:lifespan}",
+                "Always pass non-http scopes straight through"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "class AddHeader:",
+                "  def __init__(self, app, value): self.app, self.value = app, value",
+                "  async def __call__(self, scope, receive, send):",
+                "    if scope['type'] != 'http': return await self.app(scope, receive, send)",
+                "    async def send_wrapper(message):",
+                "      if message['type'] == 'http.response.start': message['headers'].append((b'x-app', self.value))",
+                "      await send(message)",
+                "    await self.app(scope, receive, send_wrapper)"
+              ],
+              "note": "wrap send to edit the response"
+            },
+            {
+              "type": "heading",
+              "text": "2. Wrapping send and Registering",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Intercept ==http.response.start== to edit headers, then forward",
+                "`message['headers']` is a list of **byte-tuple** pairs",
+                "Register: `add_middleware(Cls, option=value)`; kwargs go to `__init__(self, app, option)`"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "app.add_middleware(AddHeader, value=b'v1')"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Pure ASGI vs BaseHTTPMiddleware",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Pure ASGI",
+                "BaseHTTPMiddleware"
+              ],
+              "rows": [
+                [
+                  "Extra task per request",
+                  "{green:None}",
+                  "{red:Yes}"
+                ],
+                [
+                  "Websockets, streaming",
+                  "{green:Correct}",
+                  "Pitfalls"
+                ],
+                [
+                  "Contextvars, background tasks",
+                  "{green:Safe}",
+                  "Pitfalls"
+                ],
+                [
+                  "Boilerplate",
+                  "More",
+                  "Less"
+                ],
+                [
+                  "Request object",
+                  "Build `Request(scope, receive)`",
+                  "Given"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Forgot the passthrough?",
+              "text": "Without the ==http== check, websocket and lifespan scopes hit your http-only code and break."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Middleware Ordering",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "Middleware Ordering",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Stack Order",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Last== `add_middleware` call = **outermost** layer: first to see the request, last to see the response",
+                "==First== one added sits closest to the app",
+                "Request order is the **reverse** of registration; response order is registration order",
+                "Register A then B: request path {blue:B → A → app}"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Where Each Layer Goes",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Layer",
+                "Registered",
+                "Order a request meets it (outermost first)"
+              ],
+              "rows": [
+                [
+                  "TrustedHost",
+                  "5th (last)",
+                  "1"
+                ],
+                [
+                  "CORS",
+                  "4th",
+                  "2"
+                ],
+                [
+                  "GZip",
+                  "3rd",
+                  "3"
+                ],
+                [
+                  "Request-ID / logging",
+                  "2nd",
+                  "4"
+                ],
+                [
+                  "Auth",
+                  "1st (first)",
+                  "5, then the app"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==CORS wraps auth==, so 401/403 responses still carry CORS headers",
+                "Without that, the browser cannot read the error"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. The 500 Gap",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "ServerError",
+                    "sub": "outside all",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Your middleware",
+                    "sub": "user stack",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "ExceptionMiddleware",
+                    "sub": "HTTPException",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Endpoint",
+                    "sub": "raises"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Missing headers on 500",
+              "text": "Unhandled 500s become responses in ==ServerErrorMiddleware==, outside your stack, so custom middleware headers are **missing** on them."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Built-in Middleware: GZip and TrustedHost",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Built-in Middleware: GZip and TrustedHost",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. GZipMiddleware",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "app.add_middleware(",
+                "    GZipMiddleware,",
+                "    minimum_size=1000,",
+                "    compresslevel=9)"
+              ],
+              "note": "minimum_size defaults to 500 bytes"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Accept-Encoding: gzip?",
+                    "sub": "client asks",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Body >= minimum_size?",
+                    "sub": "bytes",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Compress",
+                    "sub": "Content-Encoding: gzip",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Adds ==Content-Encoding: gzip== and ==Vary: Accept-Encoding==",
+                "Skips responses that are already encoded",
+                "Streaming responses are compressed **chunk by chunk**"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "2. TrustedHostMiddleware",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "app.add_middleware(",
+                "    TrustedHostMiddleware,",
+                "    allowed_hosts=['example.com',",
+                "                   '*.example.com'])"
+              ],
+              "note": "checks the Host header"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Setting",
+                "Effect"
+              ],
+              "rows": [
+                [
+                  "Host not allowed",
+                  "{red:400} `Invalid host header`"
+                ],
+                [
+                  "`'*.example.com'`",
+                  "Subdomains only, **not** the bare domain: list both"
+                ],
+                [
+                  "`allowed_hosts=['*']`",
+                  "Disables the check"
+                ],
+                [
+                  "`www_redirect=True`",
+                  "Bare host redirects if only its www form is listed"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Blocks ==Host header attacks==",
+                "Too tight: health checks by **IP** or `localhost` break",
+                "Do not compress small or already-compressed data (images, zips): wastes CPU"
+              ],
+              "style": "cross",
+              "ink": "red"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Exceptions and Custom Handlers",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Exceptions and Custom Handlers",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Raise and Register",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`raise HTTPException` stops the endpoint and returns JSON `{\"detail\": ...}`",
+                "==detail== can be any JSON-serializable value, not only a string",
+                "`headers=` adds custom response headers",
+                "Handler is chosen by the ==exception class== and its parents"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "class MyError(Exception): ...",
+                "@app.exception_handler(MyError)",
+                "async def h(request, exc):",
+                "    return JSONResponse(status_code=418, content={\"msg\": \"x\"})",
+                "",
+                "raise HTTPException(404, detail=\"Item not found\",",
+                "                    headers={\"X-Error\": \"x\"})"
+              ],
+              "note": "custom handler, then a raise"
+            },
+            {
+              "type": "heading",
+              "text": "2. Override the Defaults",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Handle",
+                "Catches"
+              ],
+              "rows": [
+                [
+                  "`StarletteHTTPException`",
+                  "your raises, unknown-route 404s, Starlette errors"
+                ],
+                [
+                  "FastAPI `HTTPException`",
+                  "only errors you raise"
+                ],
+                [
+                  "`RequestValidationError`",
+                  "bad body, query or path → ==422=="
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`exc.errors()` is a list of dicts: `loc`, `msg`, `type`",
+                "Custom validation handler reads `exc.errors()` and `exc.body`"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Mistakes and Interview Point",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Not in middleware",
+              "text": "Middleware exceptions bypass the handlers. ==Return a JSONResponse== there; keep HTTPException for endpoints and dependencies."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Why handle the Starlette class?** FastAPI's subclass misses unknown-route 404s",
+                "**Which handler runs?** The nearest class match, walking up the parents"
+              ],
+              "style": "dot"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Consistent Errors and Cheat Sheet",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Consistent Errors and Cheat Sheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. One Envelope, Three Handlers",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "def error(status, code, message, details=()):",
+                "    body = {\"error\": {\"code\": code, \"message\": message,",
+                "        \"details\": jsonable_encoder(details), \"request_id\": request_id.get()}}",
+                "    return JSONResponse(body, status_code=status)"
+              ],
+              "note": "one helper, used by every handler"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Handler",
+                "Covers",
+                "Returns"
+              ],
+              "rows": [
+                [
+                  "`StarletteHTTPException`",
+                  "HTTP errors, unknown routes",
+                  "`exc.status_code`"
+                ],
+                [
+                  "`RequestValidationError`",
+                  "bad body, query, path",
+                  "422, `exc.errors()`"
+                ],
+                [
+                  "`Exception`",
+                  "everything else",
+                  "500, generic"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Catch-all: ==log the traceback==, return a generic message",
+                "{red:Never} leak internals to the client"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Request-ID Middleware (pure ASGI)",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Set ID",
+                    "sub": "contextvar",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Echo",
+                    "sub": "X-Request-ID",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Log",
+                    "sub": "every line",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Error body",
+                    "sub": "request_id",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "500s sit outside",
+              "text": "The 500 handler runs outside user middleware: the ID is usually reset and no header is added. Catch errors inside the Request-ID middleware to keep the ID on 500s."
+            },
+            {
+              "type": "heading",
+              "text": "3. Order and Quick Table",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Add in reverse: Auth first, TrustedHost last",
+                "steps": [
+                  {
+                    "text": "TrustedHost",
+                    "note": "outermost",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "CORS",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "GZip",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Request-ID",
+                    "note": "and logging",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Auth",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "App",
+                    "note": "innermost",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Where / need",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "Endpoints, dependencies",
+                  "raise `HTTPException`"
+                ],
+                [
+                  "Middleware",
+                  "return `JSONResponse`"
+                ],
+                [
+                  "Websockets, streaming, perf",
+                  "pure ASGI"
+                ],
+                [
+                  "Simple header or timing tweak",
+                  "`BaseHTTPMiddleware`"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "You call `add_middleware(A)` and then `add_middleware(B)`. Each prints its name before and after `call_next`. What prints for one request?",
+              "a_bullets": [
+                "`B in, A in, endpoint, A out, B out`",
+                "The last one added is outermost, so it sees the request first."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A middleware does `raise HTTPException(401)` for a missing token. The client gets a 500. Why, and what is the fix?",
+              "a_bullets": [
+                "Exceptions raised in middleware bypass the exception handlers.",
+                "Return `JSONResponse(status_code=401, ...)` directly."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "With `allowed_hosts=['*.example.com']`, a request arrives with `Host: example.com`. What is the result?",
+              "a_bullets": [
+                "400 `Invalid host header`: the wildcard does not match the bare domain.",
+                "List both `example.com` and `*.example.com`."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,2073 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-ride-hailing",
+  "category": "system-design",
+  "inputsHash": "4a4168b245d0a9d4cdec4200bcf49af8d45c8de82864b9cf6b8914c3e505bd61",
+  "generatedAt": "2026-10-24T11:47:08.006Z",
+  "sections": [
+    {
+      "title": "Problem, Scope and Requirements (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem, Scope and Requirements (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Request ride==: rider picks pickup and dropoff",
+                "==Match nearby driver==: find and offer to the best one",
+                "==Live tracking==: rider sees the driver on a map",
+                "==Trip lifecycle==: requested, assigned, in progress, completed",
+                "==Fare and payment==: estimate up front, charge at the end"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Out}: ride pooling (shared rides)",
+                "{red:Out}: scheduled rides (book for later)",
+                "{red:Out}: driver onboarding (documents, background checks)"
+              ],
+              "style": "cross"
+            },
+            {
+              "type": "heading",
+              "text": "2. Functional Requirements",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "sub": "with fare estimate",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Offer",
+                    "sub": "nearest driver",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Accept / decline",
+                    "sub": "driver decides",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Track",
+                    "sub": "live trip tracking",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Pay and rate",
+                    "sub": "after the trip",
+                    "ink": "pink"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Scale Estimate",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Quantity",
+                "Estimate",
+                "How"
+              ],
+              "rows": [
+                [
+                  "Riders",
+                  "**20M**",
+                  "registered"
+                ],
+                [
+                  "Drivers",
+                  "**5M**",
+                  "registered"
+                ],
+                [
+                  "Online drivers",
+                  "**1.5M**",
+                  "concurrent"
+                ],
+                [
+                  "Trips",
+                  "**20M/day**",
+                  "≈ 230/s avg, 700/s peak"
+                ],
+                [
+                  "Location writes",
+                  "==375K/s==",
+                  "1.5M ÷ 4s"
+                ],
+                [
+                  "Location ingest",
+                  "==37 MB/s==",
+                  "375K × ~100 B"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Average trips: 20M ÷ 86,400 s ≈ ==230/s==",
+                "Peak is about 3× average ≈ ==700/s==",
+                "Each driver pings once per ==4s==, so 1.5M ÷ 4 = 375K writes/s"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Location dominates the load",
+              "text": "375K location writes/s vs ~230 trips/s is about **1,600×**. Location is the hot path; trip and payment writes are small but must be correct."
+            },
+            {
+              "type": "heading",
+              "text": "4. Non-Functional Requirements",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Requirement",
+                "Target",
+                "Consistency"
+              ],
+              "rows": [
+                [
+                  "Match latency",
+                  "p99 < 2s from request",
+                  "{blue:n/a}"
+                ],
+                [
+                  "Location freshness",
+                  "< 5s old",
+                  "{green:eventual}"
+                ],
+                [
+                  "Trip flow availability",
+                  "99.99% (≈ 52 min down/year)",
+                  "{red:strong}"
+                ],
+                [
+                  "Trip and payment",
+                  "no double charge, no double assignment",
+                  "{red:strong}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "sidebox",
+              "title": "Consistency split",
+              "items": [
+                "{red:Strong}: trip state, driver assignment, payment",
+                "{green:Eventual}: driver location (next ping fixes it)",
+                "A stale location costs seconds; a double charge costs trust"
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Edge and Core Services",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:API gateway}: REST for rides, fares and payments; handles auth and rate limits",
+                "{blue:WebSocket gateway}: live channels for drivers and riders",
+                "~==1.5M== persistent connections ÷ ~==50K== per node ≈ ==30+ gateway nodes==",
+                "Each service owns its own datastore; no service reads another's tables"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Service",
+                "Job",
+                "Owns"
+              ],
+              "rows": [
+                [
+                  "**Location**",
+                  "latest driver position",
+                  "Redis geo index"
+                ],
+                [
+                  "**Matching/Dispatch**",
+                  "pick driver, send offer",
+                  "Redis offer state"
+                ],
+                [
+                  "**Trip**",
+                  "trip lifecycle",
+                  "sharded SQL"
+                ],
+                [
+                  "**Pricing**",
+                  "fare estimate, surge",
+                  "Redis `surge:{cell}`"
+                ],
+                [
+                  "**ETA/Maps**",
+                  "routing, pickup ETA",
+                  "road graph cache"
+                ],
+                [
+                  "**Payment**",
+                  "authorize, capture, ledger",
+                  "sharded SQL"
+                ],
+                [
+                  "**Notification**",
+                  "push, SMS",
+                  "delivery log"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Where Data Lives",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Hot location state}: ==Redis== in-memory geo index, latest ping per driver",
+                "{green:Durable trip and payment data}: ==sharded SQL==, strong consistency",
+                "{purple:Location history}: ==Kafka== then ==object storage== (S3)",
+                "Location is eventually consistent; trips and payments are not"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Kafka Event Backbone",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Topic",
+                "Producer",
+                "Consumers"
+              ],
+              "rows": [
+                [
+                  "`location.updates`",
+                  "Location",
+                  "analytics, S3 archive"
+                ],
+                [
+                  "`trip.events`",
+                  "Trip",
+                  "surge calculation, notifications, analytics"
+                ],
+                [
+                  "`payment.events`",
+                  "Payment",
+                  "fraud, analytics"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "sidebox",
+              "title": "Architecture rules",
+              "items": [
+                "Synchronous calls only on the request path",
+                "Everything else flows as events on Kafka",
+                "Consumers are decoupled: a slow fraud job never delays a match"
+              ],
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Request Flow",
+              "ink": "orange"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Ride request",
+                "steps": [
+                  {
+                    "text": "Rider app",
+                    "note": "requests ride",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "API gateway",
+                    "note": "auth, routing",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Trip service",
+                    "note": "creates the trip",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Matching",
+                    "note": "queries Location index",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Offer to driver",
+                    "note": "WebSocket or push",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "==Edge== holds connections, ==services== own their data, ==Kafka== carries events. Redis is hot and fast; SQL is the source of truth."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Location Updates and Tracking Service (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Location Updates and Tracking Service (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Ingest== driver GPS pings every **4s** (every **1s** during a trip)",
+                "Keep the ==latest position== per driver",
+                "During a trip, ==fan out== each ping to the rider",
+                "Load: 1.5M drivers ÷ 4s ≈ **375K writes/s**, ~100 B each ≈ 37 MB/s"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Driver app",
+                    "sub": "GPS ping",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "WebSocket gateway",
+                    "sub": "persistent conn",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Location service",
+                    "sub": "validate",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Redis",
+                    "sub": "latest, TTL 30s",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "append history",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Batch** pings on the phone and send in one frame to save battery",
+                "**Adaptive frequency**: slower when parked or idle, 1s on a trip",
+                "Rider push: Location service reads the trip's driver and relays the ping on the rider's socket"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Data Model",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Store",
+                "Key / topic",
+                "Holds",
+                "Retention"
+              ],
+              "rows": [
+                [
+                  "Redis",
+                  "`driver:{id}`",
+                  "`{lat, lng, heading, speed, ts, status}`",
+                  "==TTL 30s=="
+                ],
+                [
+                  "Kafka",
+                  "`location.updates`",
+                  "history, partitioned by `driver_id`",
+                  "days"
+                ],
+                [
+                  "S3",
+                  "trip trace",
+                  "full path per trip, ~3 TB/day raw",
+                  "==90 days=="
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Partition by `driver_id`: pings of one driver stay **in order**",
+                "Redis TTL only drops the `driver:{id}` key; geo-set members never expire",
+                "A sweeper must `ZREM` expired drivers from the geo index"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. API and Validation",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"type\":\"loc.update\",\"lat\":12.9716,\"lng\":77.5946,",
+                "\"ts\":1767225600,\"heading\":90}"
+              ],
+              "note": "WebSocket message; polling fallback: GET /trips/{id}/driver-location"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Reject a **stale** `ts` (older than the stored one)",
+                "Reject **impossible speed**: jump implies > 200 km/h",
+                "Rejected pings are counted, never written to Redis"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Signal",
+                "Target / handling"
+              ],
+              "rows": [
+                [
+                  "Redis shard lost",
+                  "state rebuilt from the **next ping, within 4s**"
+                ],
+                [
+                  "Ingest latency",
+                  "p99 **< 100 ms**"
+                ],
+                [
+                  "Location staleness",
+                  "p99 **< 5s** (freshness NFR)"
+                ],
+                [
+                  "Dropped-update rate",
+                  "< 0.1% of pings"
+                ],
+                [
+                  "Active connections",
+                  "~1.5M WebSockets, ~50K per node"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Location is ==eventual consistency==: lose a ping, the next one arrives in **4s**. Latest position lives in Redis, history lives in Kafka and S3."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Geospatial Indexing: Geohash, Quadtree, H3 (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Geospatial Indexing: Geohash, Quadtree, H3 (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Geohash",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Geohash== interleaves lat/lng bits into a **base32 string**",
+                "{green:Shared prefix} = nearby cells",
+                "Precision 6 ≈ ==1.2 km × 0.6 km== cell",
+                "Precision 7 ≈ ==150 m== cell",
+                "Stored as a Redis **sorted set** or a prefix index"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Neighbors across a cell edge can have ==totally different prefixes==",
+                "A prefix match alone misses drivers just over the edge",
+                "Cell shapes distort near the poles"
+              ],
+              "style": "cross",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Rider pickup",
+                    "sub": "lat, lng",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Geohash cell",
+                    "sub": "precision 6",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Add 8 neighbors",
+                    "sub": "9 cells total",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Filter",
+                    "sub": "exact distance",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Quadtree vs H3 vs Geohash",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Quadtree}: splits a region into ==4== when a cell exceeds ~**100 drivers**",
+                "Dense city = deep tree, desert = shallow tree",
+                "It is a **pointer structure**: harder to shard and update at 375K writes/s"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{purple:H3} (Uber): **hexagonal grid**, 16 resolutions",
+                "Res 8 ≈ ==0.74 km²== per cell, res 9 ≈ ==0.1 km²==",
+                "All **6 neighbors are equidistant**, so k-ring lookups are uniform",
+                "Surge cells stay consistent across neighbors"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Geohash",
+                "Quadtree",
+                "H3"
+              ],
+              "rows": [
+                [
+                  "Cell shape",
+                  "rectangle",
+                  "adaptive square",
+                  "hexagon"
+                ],
+                [
+                  "Cell size",
+                  "fixed per precision",
+                  "splits at ~100 drivers",
+                  "16 resolutions"
+                ],
+                [
+                  "Neighbors",
+                  "8, prefixes differ",
+                  "walk the pointers",
+                  "6, equidistant"
+                ],
+                [
+                  "Sharding at 375K writes/s",
+                  "easy by prefix",
+                  "hard",
+                  "easy by cell id"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "heading",
+              "text": "3. Choice for the Live Driver Index",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Geohash / H3 in Redis} for live drivers: ==O(1) cell lookup==",
+                "Shard by **cell id** (or city / parent cell)",
+                "{blue:Quadtree} for in-memory static or low-churn data",
+                "Redis `GEOSEARCH` radius query is ==O(N+log M)==",
+                "GEO members have no TTL: stale drivers need an explicit `ZREM`"
+              ],
+              "style": "check",
+              "ink": "orange"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "GEOADD drivers 77.59 12.97 driver:42",
+                "GEOSEARCH drivers FROMLONLAT 77.59 12.97 BYRADIUS 2 km ASC COUNT 20"
+              ],
+              "note": "radius query for nearest drivers"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Edge rule",
+              "text": "Whichever grid you pick, never query one cell: query the ==cell plus its 8 neighbors== (geohash) or a **k-ring** (H3)."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Driver Matching and Dispatch (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Driver Matching and Dispatch (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Job and Candidate Search",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Pick the ==best available driver== for a ride request",
+                "Match SLA: {green:2s p99} to produce an offer",
+                "{blue:5–15s} end to end, including the driver accept"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Query the ==H3 res-8== cell plus `k-ring(1–2)` for `status=AVAILABLE`",
+                "Drop candidates whose `driver:{id}` is missing or whose `ts` is stale",
+                "Rank by {orange:ETA to pickup}, not straight-line distance",
+                "Tie-break: higher ==rating==, then higher ==acceptance rate=="
+              ],
+              "style": "number"
+            },
+            {
+              "type": "heading",
+              "text": "2. Offer Flow",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Ride request",
+                    "note": "POST /rides",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Rank candidates",
+                    "note": "ETA, rating, acceptance",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Claim top driver",
+                    "note": "AVAILABLE → OFFERED",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Push offer",
+                    "note": "WebSocket or push, 10–15s timeout",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Accept",
+                    "note": "DRIVER_ASSIGNED",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Decline or timeout: offer to the ==next driver==",
+                "After {red:3 attempts}: expand the radius (bigger k-ring)",
+                "==Batched matching== every 2s window beats greedy per request",
+                "Batch solves one assignment over all open riders and drivers, minimising total ETA"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Atomic Claim",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Claim with Redis `SET NX` (or a Lua compare-and-set) plus a ==TTL==",
+                "One driver never gets two offers; one ride never gets two drivers",
+                "The TTL frees the driver if the offer times out or the node dies"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "SET offer:driver:42 trip:9001 NX PX 15000",
+                "SET offer:driver:42 trip:9002 NX PX 15000"
+              ],
+              "note": "second claim on the same driver fails"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "OK",
+                "(nil)"
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never read-then-write",
+              "text": "Check-then-set on driver status races under concurrent requests. Claim and status flip must be ==one atomic step==."
+            },
+            {
+              "type": "heading",
+              "text": "4. Data, API and Metrics",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Item",
+                "Detail"
+              ],
+              "rows": [
+                [
+                  "`dispatch:{trip_id}`",
+                  "offer log: driver, outcome, ==attempt count=="
+                ],
+                [
+                  "`POST /rides`",
+                  "rider requests a ride, starts matching"
+                ],
+                [
+                  "`POST /offers/{id}/accept`",
+                  "driver accepts; claim must still be held"
+                ]
+              ]
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target / note"
+              ],
+              "rows": [
+                [
+                  "Match rate",
+                  "rides matched ÷ rides requested"
+                ],
+                [
+                  "Time-to-match",
+                  "p50 and p99, p99 under 2s to first offer"
+                ],
+                [
+                  "Offer acceptance rate",
+                  "~60–70%"
+                ],
+                [
+                  "Cancel-after-match rate",
+                  "watch for bad ETAs or far drivers"
+                ]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Trip State Machine (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Trip State Machine (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. States",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Happy path",
+                "steps": [
+                  {
+                    "text": "REQUESTED",
+                    "note": "rider asks",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "MATCHING",
+                    "note": "dispatch runs",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "DRIVER_ASSIGNED",
+                    "note": "driver accepted",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "DRIVER_ARRIVED",
+                    "note": "at pickup",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "IN_PROGRESS",
+                    "note": "trip started",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "COMPLETED",
+                    "note": "fare computed",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "PAID",
+                    "note": "charge captured",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:CANCELLED}: rider or driver cancels, from any state before IN_PROGRESS",
+                "{red:NO_DRIVER_FOUND}: MATCHING exhausted its attempts and radius expansion",
+                "Terminal states: ==PAID==, ==CANCELLED==, ==NO_DRIVER_FOUND=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Guarded Transitions",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Every transition is a ==compare-and-set== on `state` and `version`",
+                "The WHERE clause carries the **expected** state",
+                "{green:1 row updated}: transition applied",
+                "{red:0 rows updated}: duplicate or racing event, rejected"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE trips",
+                "SET state = :new,",
+                "    version = version + 1",
+                "WHERE id = :id",
+                "  AND state = :expected;"
+              ],
+              "note": "retrying the same event is harmless: the second run matches 0 rows"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Store",
+                "Shape",
+                "Notes"
+              ],
+              "rows": [
+                [
+                  "`trips`",
+                  "`id, rider_id, driver_id, state, version, pickup, dropoff, fare_estimate, requested_at, started_at, ended_at`",
+                  "sharded by ==trip_id=="
+                ],
+                [
+                  "`trip_events`",
+                  "one row per transition",
+                  "**append-only**, for audit and replay"
+                ]
+              ]
+            },
+            {
+              "type": "table",
+              "headers": [
+                "API",
+                "Purpose"
+              ],
+              "rows": [
+                [
+                  "`POST /trips`",
+                  "create trip in REQUESTED"
+                ],
+                [
+                  "`POST /trips/{id}/start`",
+                  "DRIVER_ARRIVED → IN_PROGRESS"
+                ],
+                [
+                  "`POST /trips/{id}/end`",
+                  "IN_PROGRESS → COMPLETED"
+                ],
+                [
+                  "`POST /trips/{id}/cancel`",
+                  "rider or driver exit to CANCELLED"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "All POSTs take an ==Idempotency-Key== header; a retry returns the first result",
+                "Each transition publishes `trip.events` to **Kafka**",
+                "Consumers: pricing, payment, notifications"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stuck-state **sweeper**: trips idle > ==10 min== in DRIVER_ASSIGNED go to CANCELLED",
+                "Track **state dwell time** per state",
+                "Track ==cancellation rate==, about 10–15%",
+                "Track **illegal-transition rejections** and stuck-trip count"
+              ],
+              "style": "check",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never skip the guard",
+              "text": "A transition without `AND state=:expected` lets a duplicate or late event overwrite a newer state. ==Guard every write==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "ETA and Routing Service (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "ETA and Routing Service (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What the Service Does",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Target: ==p99 < 100 ms== per estimate",
+                "Load: ~==100K estimates/s== at peak",
+                "Callers: Matching, Trip and Pricing services"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Estimate",
+                "Used for",
+                "Caller"
+              ],
+              "rows": [
+                [
+                  "**Pickup ETA**",
+                  "ranking drivers",
+                  "Matching"
+                ],
+                [
+                  "**Trip ETA**",
+                  "time shown to the rider",
+                  "Trip"
+                ],
+                [
+                  "**Distance**",
+                  "per-km part of the fare",
+                  "Pricing"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Road Graph and Routing",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Nodes} = intersections, {orange:edges} = road segments",
+                "Each edge carries a ==live speed==, so cost = length ÷ speed",
+                "Plain Dijkstra explores too many nodes for a city-scale graph"
+              ],
+              "style": "dot",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Algorithm",
+                "Idea",
+                "Verdict"
+              ],
+              "rows": [
+                [
+                  "Dijkstra",
+                  "expand outward from the origin",
+                  "{red:too slow} for 100 ms"
+                ],
+                [
+                  "A* + partitions",
+                  "heuristic plus precomputed regions",
+                  "{green:fast}, flexible"
+                ],
+                [
+                  "Contraction hierarchies",
+                  "precomputed shortcuts, query up then down",
+                  "{green:fastest} queries"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "3. Matching and Live Traffic",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "200 nearby",
+                    "sub": "drivers in the cells",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Haversine",
+                    "sub": "cheap straight-line filter",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "20 candidates",
+                    "sub": "closest by distance",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Batch ETA",
+                    "sub": "one routing call",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Ranked",
+                    "sub": "offer to the best",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Speed update loop",
+                "steps": [
+                  {
+                    "text": "Driver GPS traces",
+                    "note": "pings from the fleet",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Map-match",
+                    "note": "snap to road segments",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "1-min window",
+                    "note": "aggregate per segment",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Edge speed",
+                    "note": "written to the graph",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Routing all 200 drivers would {red:blow the 100 ms budget}",
+                "Blend live speed with ==historical speed by hour-of-week==",
+                "An ==ML model== corrects the graph ETA: error target **< 10%**"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. API, Fallback and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "POST /eta/batch",
+                "{\"origin\":{\"lat\":12.97,\"lng\":77.59},",
+                "\"destinations\":[{\"lat\":12.98,\"lng\":77.60},",
+                "{\"lat\":12.95,\"lng\":77.57}]}"
+              ],
+              "note": "one origin, up to 20 destinations per call",
+              "result": {
+                "headers": [
+                  "destination",
+                  "eta_s",
+                  "distance_m"
+                ],
+                "rows": [
+                  [
+                    "0",
+                    "240",
+                    "1800"
+                  ],
+                  [
+                    "1",
+                    "420",
+                    "3100"
+                  ]
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Routing down: ==haversine distance ÷ 25 km/h== city average",
+                "Track ETA error: predicted vs actual trip time",
+                "Track cache hit rate on ==cell-to-cell pairs==",
+                "Track p99 latency against the 100 ms target"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Haversine **filters** (cheap, 200 to 20); the routing engine **ranks** (accurate, only 20). Never route every nearby driver."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Surge Pricing (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Surge Pricing (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What Surge Does",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Goal: ==balance supply and demand== per {green:H3 cell}",
+                "multiplier = f(**open ride requests ÷ available drivers**)",
+                "Recomputed every ==1–2 minutes==, not per request",
+                "Higher price pulls drivers in and trims marginal demand"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Pipeline and Example",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Kafka",
+                    "sub": "trip requests + driver availability",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Flink job",
+                    "sub": "count per H3 res-8 cell, sliding 5-min window",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Redis",
+                    "sub": "surge:{cell} = multiplier",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Step",
+                "Cell value"
+              ],
+              "rows": [
+                [
+                  "Open requests (5-min window)",
+                  "40"
+                ],
+                [
+                  "Available drivers",
+                  "10"
+                ],
+                [
+                  "Ratio",
+                  "40 ÷ 10 = **4**"
+                ],
+                [
+                  "Multiplier after cap",
+                  "min(4, 2.5) = ==2.5×=="
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:EMA}: exponential moving average over past values stops flapping every cycle",
+                "{purple:Neighbor averaging}: blend with adjacent cells so price has no cliff at a cell edge"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Price Lock",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`GET /fare-estimate` shows the multiplier to the rider",
+                "A ==signed quote_id== is valid for ~**2 minutes**",
+                "Rider is charged what they saw, even if the cell moves"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"base\": 8.00,",
+                "\"multiplier\": 2.5,",
+                "\"quote_id\": \"q_81f3...sig\",",
+                "\"expires_at\": \"2026-10-24T17:16:00Z\"}"
+              ],
+              "note": "response of GET /fare-estimate"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Situation",
+                "Behaviour"
+              ],
+              "rows": [
+                [
+                  "Multiplier stale or missing",
+                  "default to ==1.0×==, **never block rides**"
+                ],
+                [
+                  "Runaway surge",
+                  "hard cap per region"
+                ],
+                [
+                  "Disaster or public event",
+                  "emergency override by ops"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Multiplier distribution across cells",
+                "Supply per cell",
+                "Conversion rate at surge",
+                "Stream lag < ==10 s=="
+              ],
+              "style": "checkbox",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Fail open",
+              "text": "Surge is an enhancement, not a dependency: on any doubt price at ==1.0×== and keep rides flowing."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Payments and Fare Settlement (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Payments and Fare Settlement (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibility and Flow",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Authorize} on request, ==charge== on trip end, pay out drivers, handle refunds and tips",
+                "Load: ~==230 charges/s== average (20M trips/day), 700/s peak",
+                "Hard rule: ==never charge twice==, so payment is strongly consistent"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Life of a fare",
+                "steps": [
+                  {
+                    "text": "Pre-authorize",
+                    "note": "hold estimate + 20% at request",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "COMPLETED",
+                    "note": "final = base + per-km + per-min × surge",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Capture",
+                    "note": "charge the final fare on the held card",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Ledger entry",
+                    "note": "one DB transaction",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Driver payout",
+                    "note": "weekly batch",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Idempotency",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One payment row per trip: ==trip_id UNIQUE== blocks a second row",
+                "Send a unique ==idempotency key== to the PSP (Stripe-style)",
+                "Retry after a timeout returns the {green:same charge}, not a second one"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "stripe.PaymentIntent.capture(",
+                "    payment.psp_ref,",
+                "    amount_to_capture=final_cents,",
+                "    idempotency_key=f\"capture-{trip_id}\",",
+                ")"
+              ],
+              "note": "same key on every retry of this capture"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Table",
+                "Columns",
+                "Notes"
+              ],
+              "rows": [
+                [
+                  "`payments`",
+                  "id, trip_id, amount, currency, status, psp_ref",
+                  "`trip_id` ==UNIQUE=="
+                ],
+                [
+                  "status",
+                  "AUTHORIZED, CAPTURED, FAILED, REFUNDED",
+                  "one status per payment"
+                ],
+                [
+                  "`ledger`",
+                  "rider debit, driver credit, platform fee",
+                  "double-entry rows"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Ledger rows for a trip are written in ==one DB transaction==",
+                "Debits equal credits, so any imbalance is a bug you can detect",
+                "Tips and refunds add new ledger rows; old rows are never edited"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Card declined",
+                    "sub": "after trip ends",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Retry",
+                    "sub": "with backoff",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Mark debt",
+                    "sub": "status FAILED",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Block next ride",
+                    "sub": "until paid",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "PSP webhooks ==reconcile unknown states== (timeouts, lost responses) nightly"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Auth success rate",
+                  "> 98%"
+                ],
+                [
+                  "Capture latency",
+                  "tracked (p99)"
+                ],
+                [
+                  "Reconciliation mismatches",
+                  "==0=="
+                ],
+                [
+                  "Refund rate",
+                  "tracked"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never charge twice",
+              "text": "`trip_id UNIQUE` plus a per-payment ==idempotency key== means a retry returns the first charge."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Handling Driver and Rider Disconnects (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Handling Driver and Rider Disconnects (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Detecting a Dead Connection",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Heartbeat}: ==WebSocket ping every 5s== in both directions",
+                "{orange:15s} with no heartbeat → connection marked ==suspect==",
+                "{red:30s} with no location → `driver:{id}` expires (==TTL 30s==)",
+                "Suspect is a flag only: nothing is removed from the geo index yet"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Silence timeline",
+                "steps": [
+                  {
+                    "text": "0s",
+                    "note": "last heartbeat",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "5s",
+                    "note": "heartbeat missed",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "15s",
+                    "note": "connection suspect",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "30s",
+                    "note": "driver:{id} TTL expires",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "~30s",
+                    "note": "listener ZREMs from GEO set",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Sorted-set members have ==no TTL==, so the GEO set never forgets a driver on its own",
+                "The ==expiry listener== subscribes to key-expiry events and removes the member from the GEO set",
+                "A ==backstop sweeper== scans the GEO set every 30s, since expiry events can be missed",
+                "Both remove the exact member name used by GEOADD: `driver:{id}`"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "CONFIG SET notify-keyspace-events Ex",
+                "SUBSCRIBE __keyevent@0__:expired",
+                "# message received: driver:42",
+                "ZREM drivers driver:42"
+              ],
+              "note": "GEOADD drivers 77.59 12.97 driver:42 created the member"
+            },
+            {
+              "type": "heading",
+              "text": "2. What Happens in Each Trip State",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Driver state",
+                "On disconnect",
+                "Outcome"
+              ],
+              "rows": [
+                [
+                  "==AVAILABLE==",
+                  "Listener removes them from the geo index; matching skips a missing or stale `driver:{id}`",
+                  "No new offers"
+                ],
+                [
+                  "==OFFERED==",
+                  "Offer hits its 10–15s timeout, then goes to the next driver",
+                  "Rider keeps matching"
+                ],
+                [
+                  "==IN_PROGRESS==",
+                  "Trip stays alive, **never auto-cancelled**",
+                  "Trip continues"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "heading",
+              "text": "3. Reconnect and Offline Trips",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Client sends ==last_seen_seq== and ==trip_id== on every reconnect",
+                "Server replays missed events plus the current state from the **trip store**",
+                "App resumes on the right screen after a tunnel or an app kill"
+              ],
+              "style": "number",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"type\":\"resume\",",
+                "\"trip_id\":\"t_981\",",
+                "\"last_seen_seq\":57}"
+              ],
+              "note": "sent as the first WS message after reconnect"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Rider drops mid-trip}: trip continues, fare comes from the ==server-side GPS trace==",
+                "{orange:Driver app buffers locations offline} for up to ==~10 min==",
+                "On reconnect it uploads the buffer; fare uses the **buffered trace**"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failure and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Gateway node crash} drops ==~50K connections== at once",
+                "Clients reconnect with ==jittered exponential backoff==: wait random(0, min(30s, 1s × 2^n))",
+                "Without jitter, 50K simultaneous reconnects hit the other gateways as a thundering herd",
+                "Track ==reconnect rate==, ==ghost-driver rate== (shown online but dead, target < 1%)",
+                "Track ==trace gap per trip== (p99 < 30s) and ==offers lost to disconnect=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "A dead connection frees an ==AVAILABLE== driver and times out an ==OFFERED== one, but never cancels an ==IN_PROGRESS== trip."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (Ride-Hailing App)",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions (Ride-Hailing App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scaling and Failure Handling",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Layer",
+                "Sharded by",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Redis geo index",
+                  "`city` or ==H3 parent cell==",
+                  "Hot cities get **dedicated shards**"
+                ],
+                [
+                  "Trips (SQL)",
+                  "`trip_id`",
+                  "Even spread, one trip = one shard"
+                ],
+                [
+                  "Kafka topics",
+                  "`driver_id` or cell",
+                  "Per-driver ordering kept"
+                ],
+                [
+                  "Whole stack",
+                  "**region**",
+                  "Each region runs independently"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Multi-AZ== inside every region",
+                "{red:Circuit breakers} on ETA, surge and maps calls",
+                "ETA down → ==haversine== ÷ 25 km/h; surge down → **1.0×**",
+                "==Idempotent retries== on every write (Idempotency-Key)"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Region fails",
+                    "sub": "traffic shifts",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Next ping",
+                    "sub": "within 4s",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Driver state rebuilt",
+                    "sub": "Redis refilled",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Matching resumes",
+                    "sub": "trips from SQL",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Key Trade-offs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Choice",
+                "Option A",
+                "Option B"
+              ],
+              "rows": [
+                [
+                  "Consistency",
+                  "{green:Strong}: trips, payments",
+                  "{orange:Eventual}: location"
+                ],
+                [
+                  "Matching",
+                  "Greedy: ==lowest latency==",
+                  "Batched (2s window): ==global optimum=="
+                ],
+                [
+                  "Delivery",
+                  "Polling: simple, wasteful",
+                  "WebSocket: live; push: offers when app is closed"
+                ],
+                [
+                  "Geo index",
+                  "Geohash: simple, edge gotchas",
+                  "H3: uniform 6 neighbors, more tooling"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Split the consistency",
+              "text": "Never double assign or double charge: ==strong== for trip and payment. A location that is 4s stale is fine: ==eventual==."
+            },
+            {
+              "type": "heading",
+              "text": "3. Interview Answers",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**One driver, two riders?** Atomic claim AVAILABLE→OFFERED with `SET NX` + TTL; the loser gets nil",
+                "**Why not SQL for drivers?** ==375K writes/s== of latest position; Redis in-memory fits, SQL does not",
+                "**Drivers near a cell edge?** Query the cell plus **8 neighbors** (geohash) or the H3 ==k-ring=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "SET offer:driver:42 trip:9 NX EX 15"
+              ],
+              "note": "nil means another ride claimed the driver first"
+            },
+            {
+              "type": "heading",
+              "text": "4. Cheatsheet",
+              "ink": "green"
+            },
+            {
+              "type": "sidebox",
+              "title": "Numbers to recall",
+              "items": [
+                "==4s== driver ping, **375K** location writes/s",
+                "H3 ==res 8== for index and surge cells",
+                "==2s== match SLA, **10–15s** offer timeout",
+                "==2.5×== surge cap",
+                "==Idempotency key== per payment",
+                "==Version-guarded== state transitions"
+              ],
+              "ink": "green"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "Two drivers are 50 m apart but sit on opposite sides of a geohash cell border. A rider's pickup is in cell A, and the service queries only cell A. Driver 2 is in cell B and is closer than anyone else. What happens, and what is the fix?",
+              "a_bullets": [
+                "Driver 2 is missed, so the rider is matched to a farther driver or to nobody.",
+                "Geohash prefixes only guarantee that a shared prefix means close. Close does not guarantee a shared prefix.",
+                "Fix: query the pickup cell plus its 8 neighbors. With H3, query the k-ring (k=1 or 2).",
+                "Then rank by ETA, not straight-line distance."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Spot the bug: two ride requests run at the same moment. Each one reads driver D's status from Redis, sees AVAILABLE, and then writes OFFERED. What goes wrong, and how do you fix it?",
+              "a_bullets": [
+                "Both reads happen before either write, so both requests send D an offer. That is a double assignment.",
+                "The check and the write are two separate steps, so another request can slip in between them.",
+                "Fix: make the claim atomic, using Redis SET NX or a Lua compare-and-set that moves AVAILABLE to OFFERED.",
+                "Add a TTL so a crashed dispatcher cannot hold the driver forever. Only the request that wins the claim sends the offer."
+              ],
+              "example_code": [
+                "-- Lua: claim only if still AVAILABLE",
+                "if redis.call('HGET', KEYS[1], 'status') == 'AVAILABLE' then",
+                "  redis.call('HSET', KEYS[1], 'status', 'OFFERED')",
+                "  redis.call('EXPIRE', KEYS[1], 15)",
+                "  return 1",
+                "end",
+                "return 0"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A capture call to the payment provider times out. The Payment service retries it. Did the rider get charged twice? Does your answer change if the retry carries a new random idempotency key?",
+              "a_bullets": [
+                "The timeout only means the service did not hear back. The first charge may well have succeeded.",
+                "With the same idempotency key (derived from trip_id), the provider returns the original charge, so there is one charge.",
+                "With a new random key on each retry, the provider sees two separate requests and can charge twice.",
+                "The UNIQUE constraint on payments.trip_id is a second guard, so a duplicate row is rejected."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A cell has 40 open requests and 10 available drivers. The formula gives a ratio of 4, the surge cap is 2.5×, and the rider was shown a quote of 2.0× 30 seconds ago. What multiplier does the quote use, and what applies if the Flink job stalls and the multiplier for a new request goes missing?",
+              "a_bullets": [
+                "The new multiplier is capped: ratio 4 gives 2.5×, not 4×.",
+                "The earlier quote is a signed quote id valid for about 2 minutes, so that rider is charged 2.0×, the price they saw.",
+                "A missing or stale multiplier defaults to 1.0×.",
+                "Rides are never blocked because pricing data is late."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A driver is IN_PROGRESS on a trip and drives through a tunnel. The app sends no pings for 40 seconds. Does the system cancel the trip, and what happens to the fare?",
+              "a_bullets": [
+                "No. The trip stays IN_PROGRESS, because auto-cancelling a live trip would strand a rider mid-journey.",
+                "After 30 seconds the Redis key driver:{id} expires. That only affects matching, and an in-progress driver is not being matched anyway.",
+                "The driver app buffers its GPS points (up to about 10 minutes) and uploads them on reconnect.",
+                "The client sends last_seen_seq and trip_id so the server replays missed events. The fare is computed from the buffered trace."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

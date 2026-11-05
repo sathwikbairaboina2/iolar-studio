@@ -1,0 +1,230 @@
+{
+  "title": "Design a Notification System",
+  "summary": "End-to-end system design of a multi-channel notification platform (push, SMS, email, in-app) covering requirements, architecture, templates, preferences, priority queues, retries, dedup, rate limiting, providers, delivery tracking, and scaling trade-offs.",
+  "chapters": [
+    {
+      "title": "Notification System Design Cover",
+      "points": [
+        "Scope and requirements",
+        "High-level architecture",
+        "Channels and providers",
+        "Templates and preferences",
+        "Priority queues and workers",
+        "Retries, DLQ, dedup",
+        "Rate limiting",
+        "Delivery tracking",
+        "Scaling and interview Q&A"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "points": [
+        "Scope: push (APNs/FCM), SMS, email, in-app; triggered by services, scheduled, or bulk campaigns; out of scope: marketing UI, content authoring",
+        "Functional: send single/bulk, template rendering, per-user opt-in/out per channel and category, scheduling, delivery status query",
+        "Scale estimate: 10M DAU, 5 notifications/user/day = 50M/day, about 580 QPS average, 5k QPS peak (10x burst)",
+        "Latency targets: OTP/critical under 2s end to end; transactional under 10s; marketing within minutes",
+        "Non-functional: at-least-once delivery, 99.95% availability, no loss after accept (durable ack), idempotent sends",
+        "Storage estimate: 50M events/day x 1 KB = 50 GB/day, 90-day retention = about 4.5 TB"
+      ],
+      "shape": [
+        "definition",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Notification System)",
+      "points": [
+        "Flow: producer service -> Notification API -> validator/dedup/preference check -> priority Kafka topics -> channel workers -> provider adapters -> provider",
+        "Separate queue per channel and per priority so a slow SMS provider cannot block push",
+        "Synchronous accept (202 + notification_id), asynchronous delivery",
+        "Stateless API and workers scale horizontally; Kafka partitioned by user_id preserves per-user ordering",
+        "Components: Template Service, Preference Service, Rate Limiter (Redis), Scheduler, Tracking Service, Dead Letter Queue",
+        "Build vs buy: own pipeline plus providers (Twilio, SES, FCM) beats a single vendor for cost and failover"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "summary"
+      ]
+    },
+    {
+      "title": "Notification API and Intake Service",
+      "points": [
+        "Responsibilities: authenticate producer, validate payload, assign notification_id, enqueue, return 202",
+        "POST /v1/notifications {user_id, template_id, channel[], priority, idempotency_key, data}; GET /v1/notifications/{id}",
+        "Flow: validate -> idempotency check (Redis SETNX, 24h TTL) -> write outbox row -> publish to Kafka -> ack",
+        "Table notifications(id, user_id, template_id, priority, status, idempotency_key UNIQUE, created_at); partition by created_at",
+        "Failure: Kafka down -> transactional outbox plus relay retries so accepted events are never lost",
+        "Metrics: accept p99 under 50 ms, 5xx rate under 0.1%, enqueue lag, rejected-by-validation rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Templates and Localization Service",
+      "points": [
+        "Responsibilities: store versioned templates per channel and locale, render variables, enforce size limits (SMS 160 GSM-7 chars, push payload 4 KB)",
+        "Render at worker time using template_id + version + data; cache compiled templates in memory, TTL 5 min",
+        "Table templates(id, version, channel, locale, subject, body, status draft/active); locale fallback en",
+        "API: POST /templates, PUT /templates/{id}/versions, GET /templates/{id}?locale=hi",
+        "Failure: missing variable -> fail fast to DLQ with reason, never send a literal {{name}}",
+        "Metrics: render p99 under 5 ms, cache hit rate above 95%, render error rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "User Preferences and Opt-Out",
+      "points": [
+        "Responsibilities: per-user, per-channel, per-category opt-in, quiet hours with timezone, global unsubscribe, legal opt-out (TCPA, CAN-SPAM)",
+        "Check order: global opt-out -> channel enabled -> category enabled -> quiet hours -> device token valid",
+        "Table user_prefs(user_id, channel, category, enabled, quiet_start, quiet_end, tz); device_tokens(user_id, token, platform, last_seen)",
+        "API: GET/PUT /v1/users/{id}/preferences; unsubscribe link with signed token",
+        "Failure: preference store down -> critical (OTP) fails open, marketing fails closed; Redis cache 10 min TTL, invalidate on write",
+        "Metrics: cache hit rate, opt-out rate, suppressed-by-preference count, stale invalid token rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Priority Queues and Channel Workers",
+      "points": [
+        "Responsibilities: isolate traffic by priority (critical, high, normal, bulk) so a campaign never delays an OTP",
+        "Kafka topics per channel x priority; workers weight consumption 8:4:2:1 or run dedicated consumer groups for critical",
+        "Flow: consume -> preference check -> render -> rate limit -> provider call -> emit status event -> commit offset",
+        "Bulk campaigns fan out via a batch job into the bulk topic at throttled rate (for example 2k msgs/sec)",
+        "Failure: worker crash -> offset uncommitted -> redelivery; consumer lag alert triggers autoscaling",
+        "Metrics: consumer lag per topic, queue wait p99 (critical under 500 ms), worker throughput, autoscale events"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Retries, Dead Letters and Deduplication",
+      "points": [
+        "Retry only transient errors (5xx, timeout, 429); never retry permanent ones (invalid token, 400, unsubscribed)",
+        "Exponential backoff with jitter: 1s, 2s, 4s, 8s... capped at 5 attempts, via delay topics retry-1m, retry-5m, retry-30m",
+        "After max attempts move to DLQ with error payload; replay tool re-injects after fix; alert if DLQ depth above 100",
+        "Dedup key = hash(user_id, template_id, idempotency_key) in Redis SET NX EX 24h; blocks duplicate sends on producer retry",
+        "At-least-once plus dedup gives effectively-once; exactly-once is impossible across a provider boundary, so pass provider idempotency key where supported",
+        "Metrics: retry rate under 5%, DLQ rate under 0.1%, duplicate-suppressed count, time-to-success after retry"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "state or sequence flow",
+        "data model",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Rate Limiting and Throttling",
+      "points": [
+        "Per-user limit: for example 5 marketing push/day and 3 SMS/hour via Redis token bucket or sliding window keyed user:channel:category",
+        "Critical categories (OTP, security alerts) bypass per-user caps but have their own abuse limit (5 OTPs/10 min)",
+        "Per-provider limit: stay under vendor caps (for example SES 14 emails/sec per account tier, Twilio 1 msg/sec per number) with a global token bucket",
+        "Token bucket vs sliding window: bucket allows bursts and O(1) memory; sliding window is stricter but costs more memory",
+        "Over-limit action: drop, delay to a later window, or digest; Redis down -> fail open for critical, fail closed for bulk",
+        "Metrics: throttled count by rule, 429 from providers, limiter p99 under 2 ms"
+      ],
+      "shape": [
+        "responsibilities",
+        "mechanism",
+        "comparison",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Third-Party Providers and Failover",
+      "points": [
+        "Provider adapter interface send(msg) -> {provider_id, status}, one adapter each for FCM, APNs, Twilio, SES, SendGrid",
+        "Push: APNs (iOS) and FCM (Android/web) with token per device; SMS: Twilio, Vonage; email: SES (cheap, about $0.10 per 1k), SendGrid",
+        "Failover: circuit breaker per provider (open after 50% errors over 30s), route to secondary provider, half-open probe after 60s",
+        "Prune invalid tokens on APNs 410 / FCM UNREGISTERED responses",
+        "Failure: provider outage -> breaker opens, queue buffers, retries drain after recovery; routing weights by cost and deliverability",
+        "Metrics: provider success rate above 99%, p99 provider latency, cost per 1k messages, failover count"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "comparison",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Delivery Tracking and In-App Inbox",
+      "points": [
+        "Status lifecycle: queued -> sent -> delivered -> opened -> clicked, or failed / suppressed / bounced",
+        "Sources: provider webhooks (SES SNS, Twilio status callback), device ack for push open, tracking pixel and redirect links for email",
+        "Table notification_events(notification_id, status, ts, provider, error) append-only in Cassandra/ClickHouse; current status cached in Redis",
+        "In-app inbox: table inbox(user_id, notif_id, read, created_at) keyed by user_id, delivered live over WebSocket/SSE, unread count in Redis",
+        "API: GET /v1/notifications/{id}/events; GET /v1/users/{id}/inbox?cursor=; POST /inbox/{id}/read",
+        "Failure: webhooks are out of order or duplicated -> upsert by status rank; missed webhook -> poll provider after 15 min; metrics: delivery rate above 98%, open rate, webhook lag under 30s"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "points": [
+        "Scale: 5k QPS peak needs about 20 API pods and 50 workers; Kafka 100 partitions per hot topic; shard Redis by user_id",
+        "Trade-off: at-least-once + dedup versus exactly-once; push (low latency) versus pull (reliable fan-out for inbox)",
+        "Multi-region active-active: route producers to the nearest region, dedup keys replicated, provider failover per region",
+        "Mistakes: single shared queue for all priorities, retrying permanent errors, no idempotency key, sending in user's quiet hours, ignoring token cleanup",
+        "Interview Q: how to avoid duplicates on retry, how to prevent OTP delay during a campaign, how to handle a provider outage",
+        "Cheatsheet: 202 accept -> outbox -> Kafka per channel x priority -> prefs -> render -> limit -> adapter -> track; backoff 1s-8s x5 then DLQ"
+      ],
+      "shape": [
+        "mechanism",
+        "comparison",
+        "mistakes",
+        "summary",
+        "cheatsheet"
+      ]
+    }
+  ]
+}

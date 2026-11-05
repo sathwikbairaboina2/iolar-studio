@@ -1,0 +1,2146 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-rate-limiter",
+  "category": "system-design",
+  "inputsHash": "4a6bc6562d3fcdb040dbeaa5d3ff8568b94d0a308b0ea8f726dd01e25be3b629",
+  "generatedAt": "2026-10-24T11:34:44.233Z",
+  "sections": [
+    {
+      "title": "Problem, Scope and Requirements (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem, Scope and Requirements (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Problem",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Cap requests== per **client** per **time window**",
+                "Protects backends from {red:abuse}, {orange:overload} and {purple:noisy neighbours}",
+                "Decision per request: ==allow== or ==reject==, before the backend is touched"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "In scope",
+                "Out of scope"
+              ],
+              "rows": [
+                [
+                  "Per-client request limits",
+                  "DDoS scrubbing at L3/L4"
+                ],
+                [
+                  "Allow/reject decision, 429 reply",
+                  "Billing and usage invoicing"
+                ],
+                [
+                  "Live rule changes",
+                  "Network-level traffic filtering"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "2. Functional Requirements",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Configurable ==rules==: client, endpoint, limit, window",
+                "Return **429** with `Retry-After` when rejected",
+                "Rule changes go ==live without redeploy==",
+                "Example tiers: free 100/min per API key, paid 1,000/min, login 5/min per IP"
+              ],
+              "style": "check",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "yaml",
+              "lines": [
+                "free:  key=api_key  limit=100   window=60s",
+                "paid:  key=api_key  limit=1000  window=60s",
+                "login: key=ip       limit=5     window=60s  endpoint=/login"
+              ],
+              "note": "one rule = client key + endpoint + limit + window"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "sub": "API key / IP",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Match rule",
+                    "sub": "client + endpoint",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Check count",
+                    "sub": "limit per window",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Allow or 429",
+                    "sub": "Retry-After",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Scale Estimate",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Quantity",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Peak traffic",
+                  "==1M req/s=="
+                ],
+                [
+                  "Gateway nodes",
+                  "50 (about 20k req/s each)"
+                ],
+                [
+                  "Active clients",
+                  "10M"
+                ],
+                [
+                  "State per client-rule",
+                  "about 100 bytes"
+                ],
+                [
+                  "Total counters",
+                  "10M × 100 B = about ==1 GB=="
+                ]
+              ],
+              "highlightRow": 4
+            },
+            {
+              "type": "heading",
+              "text": "4. Non-Functional Targets",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Added latency under ==2 ms p99==",
+                "Availability ==99.99%== (about 52 min downtime a year)",
+                "Eventual consistency is fine: about ==5% overshoot== tolerated",
+                "Counters fit in memory: 1 GB, so throughput is the hard part"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never the cause of an outage",
+              "text": "The limiter protects the backend, so it must **never** be the thing that takes the API down. A limiter failure must not block healthy traffic."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Request Path",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "sends request",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Load balancer",
+                    "sub": "spreads over 50 gateways",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Gateway",
+                    "sub": "limiter middleware",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Redis cluster",
+                    "sub": "counter check",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Backend or 429",
+                    "sub": "allow or reject",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Enforce at the ==edge==: rejected traffic **never reaches** the backend",
+                "{green:Local} in-process check first (cheap, no network)",
+                "{red:Redis} check second, only when the local check passes",
+                "Reject answers ==429== straight from the gateway"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Components",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "cards",
+              "spec": {
+                "cards": [
+                  {
+                    "title": "Rules store",
+                    "lines": [
+                      "client, endpoint, limit, window"
+                    ],
+                    "ink": "blue"
+                  },
+                  {
+                    "title": "Config service",
+                    "lines": [
+                      "pushes rules to gateways",
+                      "no redeploy"
+                    ],
+                    "ink": "purple"
+                  },
+                  {
+                    "title": "Limiter middleware",
+                    "lines": [
+                      "local check, then Redis"
+                    ],
+                    "ink": "green"
+                  },
+                  {
+                    "title": "Redis cluster",
+                    "lines": [
+                      "shared counters"
+                    ],
+                    "ink": "red"
+                  },
+                  {
+                    "title": "Metrics pipeline",
+                    "lines": [
+                      "allowed vs rejected per rule"
+                    ],
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Placement Options",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Placement",
+                "Cost / risk",
+                "Verdict"
+              ],
+              "rows": [
+                [
+                  "Client-side",
+                  "{red:Untrusted}: caller can skip it",
+                  "Never the only check"
+                ],
+                [
+                  "API gateway / middleware",
+                  "No extra hop",
+                  "{green:Default choice}"
+                ],
+                [
+                  "Separate limiter service",
+                  "Extra hop, about ==1 ms==",
+                  "Use to share rules"
+                ],
+                [
+                  "Sidecar per service",
+                  "One proxy per service to run",
+                  "Per-service limits"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "4. Gateway vs Shared Service",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Gateway embedded",
+                "Shared service"
+              ],
+              "rows": [
+                [
+                  "Latency",
+                  "{green:Lowest}, in-process",
+                  "Adds a network hop"
+                ],
+                [
+                  "Reuse",
+                  "Per gateway codebase",
+                  "{green:Reusable} by many callers"
+                ],
+                [
+                  "Failure",
+                  "Fails with the gateway",
+                  "{red:New failure point}"
+                ]
+              ]
+            },
+            {
+              "type": "sidebox",
+              "title": "Rules to keep",
+              "items": [
+                "Do not trust the client to limit itself",
+                "Local check first, Redis second",
+                "Limiter must never be the cause of an outage"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Default design",
+              "text": "Limiter middleware **inside the API gateway**, local check first, shared ==Redis cluster== second, rules pushed by a config service."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Token Bucket and Leaky Bucket (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Token Bucket and Leaky Bucket (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Token Bucket",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Bucket holds up to ==B== tokens (capacity), refilled at ==R== tokens/s",
+                "Each request takes **1 token**; empty bucket means {red:reject} with 429",
+                "Allows ==bursts up to B==, then settles to R req/s"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "sub": "key = client",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Lazy refill",
+                    "sub": "min(B, tokens + elapsed × R)",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "tokens ≥ 1?",
+                    "sub": "take 1 token",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Allow or 429",
+                    "sub": "empty = reject",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Lazy Refill and Example",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store only ==tokens== and ==last_refill== per key",
+                "On request: `tokens = min(B, tokens + (now - last) * R)`",
+                "{green:No background timer} needed; refill is computed on demand",
+                "State is **2 numbers per key**"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "def allow(s, now, B=10, R=5):",
+                "    s[0] = min(B, s[0] + (now - s[1]) * R); s[1] = now",
+                "    ok = s[0] >= 1; s[0] -= ok; return ok",
+                "s = [10, 0]  # tokens, last_refill",
+                "print(sum(allow(s, 0) for _ in range(11)))",
+                "print(sum(allow(s, 1) for _ in range(7)))"
+              ],
+              "note": "B=10, R=5/s: burst at t=0, then one second later"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "10",
+                "5"
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "B=10, R=5/s: a burst of ==10 passes instantly==, the 11th is rejected",
+                "After that only **5 req/s** are sustained"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Leaky Bucket vs Token Bucket",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Leaky bucket = ==FIFO queue of size N== drained at a constant rate",
+                "Queue full: new requests are {red:dropped}",
+                "Output is **smooth**, but a burst waits in the queue (extra delay)",
+                "Old queued requests can ==starve new ones=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Token bucket",
+                "Leaky bucket"
+              ],
+              "rows": [
+                [
+                  "Bursts",
+                  "pass at once, up to B",
+                  "queued, delayed"
+                ],
+                [
+                  "Output rate",
+                  "bursty, avg R",
+                  "constant"
+                ],
+                [
+                  "State",
+                  "2 numbers per key",
+                  "queue of up to N requests"
+                ],
+                [
+                  "Overflow",
+                  "reject when empty",
+                  "drop when queue full"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Whose clock?",
+              "text": "Never use the **client's clock** for refill: it can be skewed or forged. Always use the ==server clock or Redis TIME==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Fixed and Sliding Window Algorithms (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Fixed and Sliding Window Algorithms (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Fixed Window and Its Flaw",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Key = `client:floor(now/window)`, so every request in one window hits the ==same counter==",
+                "Per request: `INCR` the key, and `EXPIRE` it on the first hit",
+                "{green:O(1) memory}: one integer per client, the ==simplest== algorithm",
+                "Reject once the count passes the limit, e.g. 100/min"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "window = floor(now / 60)",
+                "key   = \"u42:\" + window",
+                "count = INCR key",
+                "if count == 1: EXPIRE key 120",
+                "allow = count <= 100"
+              ],
+              "note": "limit 100/min, TTL 2 × window"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Boundary burst: limit 100/min",
+                "steps": [
+                  {
+                    "text": "12:00:59",
+                    "note": "100 requests pass",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "12:01:00",
+                    "note": "new key, counter back to 0",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "12:01:00",
+                    "note": "100 more requests pass",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "200 in 2 s",
+                    "note": "2× the limit",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Sliding Window Log",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store one ==timestamp per request== in a Redis sorted set",
+                "Drop entries older than `now − window`, then count what is left",
+                "{green:Exact}: the window moves with every request, no boundary burst",
+                "{red:O(N) memory}: a limit of 100 means ==100 entries per client=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "ZADD rl:u42 now now",
+                "ZREMRANGEBYSCORE rl:u42 0 (now - 60)",
+                "ZCARD rl:u42   # > 100 means reject"
+              ],
+              "note": "timestamps are the score and the member"
+            },
+            {
+              "type": "heading",
+              "text": "3. Sliding Window Counter",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Keeps two fixed-window counters: ==current== and ==previous==",
+                "Estimate = `cur + prev × (1 − elapsed fraction)`",
+                "Assumes the previous window's requests were spread evenly",
+                "{green:O(1) memory}; error ≈ ==0.003%== (Cloudflare's measurement)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "30% into the window, prev = 84, cur = 36",
+                "steps": [
+                  {
+                    "text": "Weight",
+                    "note": "1 − 0.3 = 0.7",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Prev part",
+                    "note": "84 × 0.7 = 58.8",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Estimate",
+                    "note": "36 + 58.8 = 94.8",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Decision",
+                    "note": "94.8 < 100, allow",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Comparison",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Algorithm",
+                "Strength",
+                "Cost / weakness"
+              ],
+              "rows": [
+                [
+                  "Token bucket",
+                  "Burst-friendly",
+                  "2 numbers per key"
+                ],
+                [
+                  "Leaky bucket",
+                  "Smooth output",
+                  "Queueing delay"
+                ],
+                [
+                  "Fixed window",
+                  "Cheapest, simplest",
+                  "Boundary burst, up to 2× limit"
+                ],
+                [
+                  "Sliding log",
+                  "Exact",
+                  "O(N) memory per client"
+                ],
+                [
+                  "Sliding counter",
+                  "==Best default balance==",
+                  "Approximate, tiny error"
+                ]
+              ],
+              "highlightRow": 4
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Pick the default",
+              "text": "Fixed window is cheap but lets ==2× the limit== through at a boundary. Use the ==sliding window counter== unless you need exact counts."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Redis-Based Counters and Data Model (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Redis-Based Counters and Data Model (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Key Schema",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Schema: `rl:{client_id}:{rule_id}:{window_start}`",
+                "Wrap ==only client_id== in braces: it is the **hash tag**",
+                "Redis Cluster hashes the first `{...}` pair only",
+                "So all of one client's keys share a ==slot== and one shard"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Algorithm",
+                "Key (client u42)",
+                "Type",
+                "Holds"
+              ],
+              "rows": [
+                [
+                  "Fixed window",
+                  "`rl:{u42}:api:1735689600`",
+                  "string",
+                  "counter"
+                ],
+                [
+                  "Sliding log",
+                  "`rl:{u42}:api:log`",
+                  "sorted set",
+                  "1 timestamp per request"
+                ],
+                [
+                  "Token bucket",
+                  "`rl:{u42}:api:tb`",
+                  "hash",
+                  "`tokens`, `ts`"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Commands per Algorithm",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Fixed window**: `INCR key`, then `EXPIRE key window` on the ==first hit== only",
+                "Set ==TTL = 2 × window==: old keys clean themselves up",
+                "**Sliding log**: `ZADD` the timestamp, trim old entries, `ZCARD` to count",
+                "**Token bucket**: `HSET` tokens and ts on a hash, give the hash a TTL"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "ZADD rl:{u42}:api:log 1735689600.5 req-9f3",
+                "ZREMRANGEBYSCORE rl:{u42}:api:log 0 1735689540.5",
+                "ZCARD rl:{u42}:api:log",
+                "HSET rl:{u42}:api:tb tokens 10 ts 1735689600",
+                "EXPIRE rl:{u42}:api:tb 120"
+              ],
+              "note": "sliding log (60 s window), then token bucket state"
+            },
+            {
+              "type": "heading",
+              "text": "3. Memory and Shards",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Estimate: **10M clients × 2 rules × ~100 B** = ==~2 GB==",
+                "Memory is small, so ==throughput== (not memory) sets the shard count"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Sizing the cluster",
+                "steps": [
+                  {
+                    "text": "2 GB of counters",
+                    "note": "10M × 2 × 100 B",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "8 masters",
+                    "note": "~250 MB each",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "1 replica each",
+                    "note": "failover copy",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`INCR` and `EXPIRE` as two separate commands",
+                "A crash between them leaves a key that ==never expires==",
+                "Fix: one atomic Lua call (window 60 s, TTL 120 s):"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "EVAL \"local c=redis.call('INCR',KEYS[1]) if c==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end return c\" 1 rl:{u42}:api:1735689600 120"
+              ],
+              "note": "INCR and EXPIRE run as one unit"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "One ==hash tag on client_id== keeps a client on one slot; ==TTL = 2 × window== plus an atomic INCR+EXPIRE means no key leaks."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Race Conditions and Atomicity (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Race Conditions and Atomicity (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. The Check-Then-Set Race",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Limit 100/min is checked by ==50 gateways== at the same time, so reads and writes interleave",
+                "A **GET then SET** is two round trips: nothing stops another node from slipping in between",
+                "Result: every lost update lets ==one extra request== through; under load the overshoot grows"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Two gateways, count = 99",
+                "steps": [
+                  {
+                    "text": "GW-A: GET",
+                    "note": "reads 99",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "GW-B: GET",
+                    "note": "reads 99",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Both allow",
+                    "note": "99 < 100",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Both SET 100",
+                    "note": "last write wins",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "101 served",
+                    "note": "1 extra slipped through",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Atomic Fixes: INCR and Lua",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Fix 1**: ==INCR== first, then compare the returned value to the limit",
+                "INCR is atomic and returns the new count: ==1 round trip==, no gap to race in",
+                "Fits ==fixed windows== only; refill and sliding logic need more than one command"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "n = r.incr(key)  # atomic +1, returns new value",
+                "allowed = n <= 100"
+              ],
+              "note": "no GET, so nothing to interleave"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Fix 2**: a ==Lua script== runs on Redis's single thread; no other command runs mid-script",
+                "Script does read, refill, decide, write as one unit: ==1 round trip, about 0.2 ms==",
+                " Call it with `EVALSHA sha 1 key B R`; load once with `SCRIPT LOAD` to skip resending the body"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "lua",
+              "lines": [
+                "local t = redis.call('TIME')",
+                "local now = t[1]*1000 + math.floor(t[2]/1000)",
+                "local s = redis.call('HMGET', KEYS[1], 'tokens', 'ts')",
+                "local tok = math.min(ARGV[1], (s[1] or ARGV[1]) + (now-(s[2] or now))*ARGV[2]/1000)",
+                "local ok = tok >= 1",
+                "if ok then tok = tok-1 end",
+                "redis.call('HSET', KEYS[1], 'tokens', tok, 'ts', now)",
+                "return ok and 1 or 0"
+              ],
+              "note": "token bucket: ARGV[1] = B, ARGV[2] = R per second"
+            },
+            {
+              "type": "heading",
+              "text": "3. Fix 3: MULTI/EXEC and WATCH",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`WATCH key`, read, then `MULTI` ... `EXEC`: EXEC ==aborts== if the key changed since WATCH",
+                "This is ==optimistic locking==: on abort the client must retry the whole read-decide-write",
+                "Under contention on a hot key, retries pile up and latency climbs"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Fix",
+                "Round trips",
+                "Works for",
+                "Cost"
+              ],
+              "rows": [
+                [
+                  "INCR + compare",
+                  "1",
+                  "fixed window",
+                  "cheapest"
+                ],
+                [
+                  "Lua via EVALSHA",
+                  "1 (about 0.2 ms)",
+                  "any algorithm",
+                  "{green:best default}"
+                ],
+                [
+                  "MULTI/EXEC + WATCH",
+                  "2+ and retries",
+                  "any algorithm",
+                  "{red:slower than Lua}"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "One clock for all nodes",
+              "text": "Never read time on the app server and pass it in as ARGV. Clocks drift between nodes, so refill math disagrees. Call ==redis.call('TIME')== inside the script so every node shares **one clock**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Limit Keys and Rules: User, IP, API Key (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Limit Keys and Rules: User, IP, API Key (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Pick the Limit Key",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "title": "Identify in this order",
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "k",
+                    "q2"
+                  ],
+                  [
+                    "u",
+                    "ip"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "API key sent?",
+                    "shape": "diamond"
+                  },
+                  "k": {
+                    "text": "Key = API key",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "q2": {
+                    "text": "Authenticated user?",
+                    "shape": "diamond"
+                  },
+                  "u": {
+                    "text": "Key = user ID",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "ip": {
+                    "text": "Key = client IP",
+                    "shape": "pill",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "k",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q1",
+                    "to": "q2",
+                    "label": "no"
+                  },
+                  {
+                    "from": "q2",
+                    "to": "u",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q2",
+                    "to": "ip",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Order: {green:API key} → {blue:user ID} → {orange:IP}",
+                "==IP is only the fallback== for anonymous traffic",
+                "Rule = (key, endpoint, limit, window), looked up per request"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Why IP Alone Fails",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**NAT or office**: many users share one IP, so legit users get blocked",
+                "**Attackers rotate IPs**: each new IP gets a fresh limit",
+                "Behind a proxy, the socket IP is the proxy, not the client"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "X-Forwarded-For",
+              "items": [
+                "Trust `X-Forwarded-For` ==only from your own proxies==",
+                "Read the client IP from the hop your proxy appended",
+                "Anyone else can forge the header and dodge the limit"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "heading",
+              "text": "3. Tiers and Endpoint Cost",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Tier",
+                "Limit",
+                "Stops"
+              ],
+              "rows": [
+                [
+                  "Per second",
+                  "==20/s==",
+                  "burst spikes"
+                ],
+                [
+                  "Per minute",
+                  "==1,000/min==",
+                  "sustained load"
+                ],
+                [
+                  "Per day",
+                  "==50,000/day==",
+                  "total quota"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Check every tier; ==deny if any one tier fails==",
+                "Weight expensive calls: spend more tokens per request",
+                "With 1,000 tokens/min: 200 searches or 1,000 reads"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Call",
+                "Cost",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "`GET /items/{id}` (read)",
+                  "1 token",
+                  "cheap lookup"
+                ],
+                [
+                  "`GET /search` (search)",
+                  "==5 tokens==",
+                  "heavy query"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistake",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "One global limit for all clients",
+              "text": "A single shared limit lets ==one abusive tenant exhaust it for everyone==. Always key the limit **per client** (API key, user or IP)."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Response Headers and Client Behaviour (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Response Headers and Client Behaviour (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Rejecting and Headers",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Reject with ==429 Too Many Requests==",
+                "{red:Never 503} (looks like an outage) and {red:never 403} (looks like a permission failure)",
+                "Send the headers on every response, so clients can slow down before they hit 429"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Header",
+                "Meaning",
+                "Unit"
+              ],
+              "rows": [
+                [
+                  "`X-RateLimit-Limit`",
+                  "Allowed requests in the window",
+                  "count (100)"
+                ],
+                [
+                  "`X-RateLimit-Remaining`",
+                  "Requests left in this window",
+                  "count"
+                ],
+                [
+                  "`X-RateLimit-Reset`",
+                  "When the window resets",
+                  "==epoch seconds=="
+                ],
+                [
+                  "`Retry-After`",
+                  "How long to wait, sent on **429**",
+                  "==seconds=="
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "IETF draft names: `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`",
+                "Same three values, no `X-` prefix"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "HTTP/1.1 429 Too Many Requests",
+                "Retry-After: 30",
+                "X-RateLimit-Limit: 100",
+                "X-RateLimit-Remaining: 0",
+                "X-RateLimit-Reset: 1735689600"
+              ],
+              "note": "free tier, 100 req/min per API key, bucket empty"
+            },
+            {
+              "type": "heading",
+              "text": "2. Client Backoff",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Retry with ==exponential backoff== plus ==full jitter==",
+                "`sleep = random(0, min(cap, base × 2^attempt))`",
+                "Jitter spreads retries out, so no **synchronized retry storm**",
+                "If `Retry-After` is present, wait at least that long"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Request",
+                    "sub": "gets 429",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Read headers",
+                    "sub": "Retry-After",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Sleep",
+                    "sub": "random(0, window)",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Retry",
+                    "sub": "attempt + 1",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "python",
+              "lines": [
+                "import random",
+                "base, cap = 1, 30",
+                "def sleep_for(n):",
+                "    return random.uniform(0, min(cap, base * 2**n))",
+                "print([min(cap, base * 2**n) for n in range(6)])",
+                "print(all(sleep_for(n) <= min(cap, base * 2**n) for n in range(6)))"
+              ],
+              "note": "upper bound of the sleep window per attempt"
+            },
+            {
+              "type": "code",
+              "lang": "output",
+              "lines": [
+                "[1, 2, 4, 8, 16, 30]",
+                "True"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Rejected requests that still count against the limit, so a client can never recover",
+                "Retries with no jitter: all clients return in the same second",
+                "Using 503 or 403 instead of 429, so clients do not back off"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "==429 + Retry-After== tells the client when to return. ==Full jitter== keeps 1,000 blocked clients from returning in the same second."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Distributed Deployment and Synchronization (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Distributed Deployment and Synchronization (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Centralized Redis",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Exact counts==: every gateway updates one shared counter",
+                "Cost: one network hop, about ==0.5 ms== per request",
+                "Redis becomes a {red:hot dependency}: 1M req/s peak all lands on it",
+                "Fits the budget: under 2 ms p99 added latency"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Local Counters and Token Leases",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Local counters sync with Redis every ==100 ms==: no hop per request",
+                "Overshoot is up to ==nodes × local batch size==",
+                "Batching: a gateway ==leases 10 tokens== from Redis, spends them locally"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Lease",
+                    "sub": "10 tokens from Redis",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Spend",
+                    "sub": "1 per request, no hop",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Empty",
+                    "sub": "local bucket at 0",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Lease again",
+                    "sub": "1 Redis call per 10",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Redis calls drop ==10×== versus one call per request",
+                "Worst case held unspent: 50 nodes × 10 tokens = ==500==",
+                "10,000/min rule: 500 is 5%, inside the ~5% tolerance",
+                "1,000/min rule: 500 is {red:50% overshoot}, ten times too much",
+                "Size the lease from the limit: 5% of 1,000 = 50 tokens = ==1 per node=="
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "3. Choosing a Strategy",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Strategy",
+                "Redis calls",
+                "Accuracy",
+                "Weak spot"
+              ],
+              "rows": [
+                [
+                  "Centralized Redis",
+                  "1 per request (~0.5 ms)",
+                  "exact",
+                  "hot dependency"
+                ],
+                [
+                  "Local + 100 ms sync",
+                  "none per request",
+                  "over by up to nodes × batch",
+                  "overshoot"
+                ],
+                [
+                  "Leased 10 tokens",
+                  "1 per 10 requests",
+                  "over by up to 50 × 10",
+                  "small limits"
+                ],
+                [
+                  "Sticky routing",
+                  "none",
+                  "exact per client",
+                  "node loss resets counters"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Sticky routing: ==hash(client)== puts a client on one node",
+                "Local limit is ==exact==, nothing to sync",
+                "{red:Node loss} resets its clients' counters to a fresh limit"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "4. Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Limit ÷ node count",
+              "text": "100 limit ÷ 50 nodes = ==2 each==. With uneven load balancing a busy node rejects at 2 while idle nodes waste their share, so clients are blocked **below** the real limit of 100."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Failure Modes and Metrics (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Failure Modes and Metrics (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. When Redis Is Down",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Fail-open",
+                "Fail-closed"
+              ],
+              "rows": [
+                [
+                  "Action",
+                  "Allow all requests",
+                  "Reject requests"
+                ],
+                [
+                  "Protects",
+                  "==Availability==",
+                  "==Security=="
+                ],
+                [
+                  "Use for",
+                  "Default for most APIs",
+                  "Login, payments"
+                ],
+                [
+                  "Risk",
+                  "Abuse while blind",
+                  "Outage for users"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Limiter must **never** cause an outage, so ==fail-open== is the default",
+                "Choose fail-closed per endpoint, e.g. login at 5 req/min per IP"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Timeout, Breaker, Hot Key",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Circuit breaker",
+                "steps": [
+                  {
+                    "text": "Redis call",
+                    "note": "timeout 5 ms",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "5 failures",
+                    "note": "consecutive",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Skip Redis",
+                    "note": "for 10 s",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Local limits",
+                    "note": "in-memory",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "A timed-out call adds up to ==5 ms==, over the 2 ms p99 budget",
+                "The timeout only **caps** the worst-case wait",
+                "The breaker stops paying it: skipping Redis keeps most requests under 2 ms"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Hot key}: one huge client hammers a single Redis shard",
+                "Example: 1 client at 20k req/s loads one shard of ~150k ops/s",
+                "Fix 1: ==local pre-check== rejects obvious over-limit calls in-process",
+                "Fix 2: ==per-key local cache== of the denied state until reset, no Redis call"
+              ],
+              "style": "dot",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "3. Clock Skew and Failover",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Node clocks drift, so never read time on the gateway",
+                "Read ==Redis TIME== inside the Lua script: one clock for all nodes",
+                "Replica failover can lose the last ==1 s== of counters",
+                "Accepted overshoot: briefly more requests allowed, within the ~5% tolerance"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "lua",
+              "lines": [
+                "local t = redis.call('TIME')",
+                "local now = t[1] * 1000 + math.floor(t[2] / 1000)"
+              ],
+              "note": "now in ms from Redis, not from the app server"
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics to Watch",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target / alert"
+              ],
+              "rows": [
+                [
+                  "Allowed vs rejected per rule",
+                  "Spike in rejects = abuse or bad rule"
+                ],
+                [
+                  "Limiter p99 latency",
+                  "==under 2 ms=="
+                ],
+                [
+                  "Redis CPU and memory",
+                  "Alert on CPU above 70%, memory near ~250 MB per shard"
+                ],
+                [
+                  "Fail-open count",
+                  "Any rise = Redis trouble, page"
+                ],
+                [
+                  "Top 10 rejected clients",
+                  "Find abusers and misconfigured clients"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Redis timeout **5 ms**, breaker trips after **5** failures for **10 s**. Fail-open by default, fail-closed on login and payments."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Trade-offs and Interview Questions (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Scaling, Trade-offs and Interview Questions (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scale Path to 1M req/s",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Shard",
+                    "sub": "8 masters",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Replicate",
+                    "sub": "1 replica each",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Cache locally",
+                    "sub": "-80% Redis calls",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:Shard}: 1M req/s ÷ 150k ops/s ≈ 7, so ==8 masters== sized for the uncached peak",
+                "Only the 8 masters hold counters: ==about 250 MB each== (2 GB total)",
+                "{blue:Replicate}: 1 replica per master for failover; replicas hold copies, not extra capacity",
+                "{orange:Local cache}: 80% fewer Redis calls leaves about ==200k ops/s==",
+                "After the cache, 2 shards could carry the load; the other 6 are ==headroom== for spikes and failover"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Accuracy vs Latency vs Memory",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Accuracy",
+                "Latency",
+                "Memory"
+              ],
+              "rows": [
+                [
+                  "Fixed window",
+                  "Boundary burst, up to 2×",
+                  "Lowest",
+                  "O(1)"
+                ],
+                [
+                  "Sliding log",
+                  "Exact",
+                  "Higher, sorted-set ops",
+                  "O(N), 100 entries per client"
+                ],
+                [
+                  "Sliding counter + Lua",
+                  "About 0.003% error",
+                  "One trip, Lua about 0.2 ms",
+                  "O(1)"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Standard interview answer: ==sliding window counter + Lua script== on Redis",
+                "Multi-region: **per-region limits**, async replication between regions",
+                "Global limit is ==approximate==; accept the overshoot instead of a cross-region call per request"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "sidebox",
+              "title": "Split quota by traffic share",
+              "items": [
+                "Paid tier 1,000 req/min across 2 regions",
+                "Region A (60% of traffic): 600 req/min",
+                "Region B (40% of traffic): 400 req/min",
+                "Re-balance the split as traffic shifts"
+              ],
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Interview Questions",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**How do you stop a boundary burst?** Use a ==sliding window counter== (cur + prev × (1 − fraction)) or a ==token bucket==",
+                "Why it works: fixed windows reset at a hard edge (100 at 12:00:59 + 100 at 12:01:00); both smooth that edge"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**What if Redis dies?** {green:Fail-open} with local fallback limits, {red:alert}, and {red:fail-closed} on sensitive endpoints"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "q1"
+                  ],
+                  [
+                    "q2"
+                  ],
+                  [
+                    "b",
+                    "c"
+                  ],
+                  [
+                    "d"
+                  ]
+                ],
+                "nodes": {
+                  "q1": {
+                    "text": "Redis down or over 5 ms?",
+                    "shape": "diamond"
+                  },
+                  "q2": {
+                    "text": "Sensitive endpoint?",
+                    "shape": "diamond"
+                  },
+                  "b": {
+                    "text": "Fail-closed: reject",
+                    "shape": "box",
+                    "ink": "red"
+                  },
+                  "c": {
+                    "text": "Fail-open on local limits",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "d": {
+                    "text": "Alert on fail-open count",
+                    "shape": "pill",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "q1",
+                    "to": "q2",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q2",
+                    "to": "b",
+                    "label": "login, payments"
+                  },
+                  {
+                    "from": "q2",
+                    "to": "c",
+                    "label": "other"
+                  },
+                  {
+                    "from": "c",
+                    "to": "d"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Size for the peak, not the cache",
+              "text": "Size shards for the ==uncached 1M req/s== peak; treat the 80% cache cut as headroom, never as the reason to run fewer masters."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Rate Limiter Cheatsheet (API Rate Limiter)",
+      "role": "outline",
+      "outlineIndex": 12,
+      "pages": [
+        {
+          "title": "Rate Limiter Cheatsheet (API Rate Limiter)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Algorithms to Remember",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Token bucket}: capacity ==B==, refill rate ==R== tokens/s, 1 token per request",
+                "==Lazy refill==: `tokens = min(B, tokens + (now - last) × R)`, no timer",
+                "State is 2 numbers per key; ==burst friendly== up to B",
+                "Example: B=10, R=5/s lets 10 pass instantly, then 5 req/s",
+                "Time comes from the **server or Redis TIME**, never the client"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{purple:Sliding counter}: `est = cur + prev × (1 - fraction)`",
+                "Example: 30% into window, prev=84, cur=36 gives 36 + 84×0.7 = ==94.8==",
+                "O(1) memory and no boundary burst: the best default balance"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "2. Redis Rules",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Run check, refill and write as one ==Lua script== called by `EVALSHA`",
+                "==Hash tag== `{client_id}` keeps all of a client's keys on one slot",
+                "==TTL = 2 × window== so idle keys clean themselves up",
+                "Use `redis.call('TIME')` inside the script, one clock for all nodes"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "EVALSHA <sha> 1 rl:r1:{u42}:1735689600 10 5 1"
+              ],
+              "note": "1 key, then args B=10, R=5, cost=1; one round trip"
+            },
+            {
+              "type": "heading",
+              "text": "3. Key Order and Tiers",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "API key",
+                    "sub": "first choice",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "User ID",
+                    "sub": "if authenticated",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "IP",
+                    "sub": "anonymous fallback",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Check all tiers",
+                    "sub": "20/s, 1,000/min, 50,000/day",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Any tier fails",
+                    "sub": "deny with 429",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Responses and Failure",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Reject with ==429== plus `Retry-After: 30` (seconds)",
+                "`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (epoch seconds)",
+                "Client retries with ==jittered backoff==: `sleep = random(0, min(cap, base × 2^attempt))`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Case",
+                "Policy",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Most APIs",
+                  "{green:fail-open}",
+                  "Redis outage must not become an API outage"
+                ],
+                [
+                  "Login, payments",
+                  "{red:fail-closed}",
+                  "Allowing everything invites abuse"
+                ],
+                [
+                  "Redis call",
+                  "timeout ==5 ms==",
+                  "Protects the 2 ms p99 budget"
+                ],
+                [
+                  "5 failures in a row",
+                  "breaker open 10 s",
+                  "Skip Redis, use in-memory local limits"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "==Lua + EVALSHA== for atomic decisions, ==fail-open== by default, and ==jitter== on every client retry."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A fixed-window limiter allows 100 requests per minute. A client sends 100 requests at 12:00:59 and 100 more at 12:01:00. How many are allowed, and does a sliding window counter allow the second batch?",
+              "a_bullets": [
+                "Fixed window: all 200 pass, because the two batches fall in different window keys.",
+                "That is 200 requests in about 1 second, double the intended rate (the boundary burst).",
+                "Sliding counter at 12:01:00: elapsed fraction is 0, so the estimate is cur + prev × 1 = 0 + 100 = 100.",
+                "That already hits the limit, so the second batch is rejected."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Sliding window counter, limit 100. You are 30% into the current window, prev=84 and cur=36. What is the estimate, and is the next request allowed?",
+              "a_bullets": [
+                "Estimate = cur + prev × (1 − 0.3) = 36 + 84 × 0.7 = 94.8.",
+                "94.8 is below 100, so the request is allowed, and cur becomes 37.",
+                "Adding the raw counts (36 + 84 = 120) would wrongly reject it.",
+                "The previous window's weight shrinks as the current window ages."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Spot the bug: a fixed-window limiter runs INCR key, and when the result is 1 it runs EXPIRE key 60 as a separate command. What can go wrong and how do you fix it?",
+              "a_bullets": [
+                "If the gateway crashes or the connection drops between the two commands, the key has no TTL.",
+                "The counter then never resets, so that client is blocked forever once it reaches the limit.",
+                "Fix: run INCR and EXPIRE inside one Lua script via EVALSHA, so they apply together.",
+                "Also set TTL = 2 × window so stale keys clean themselves up."
+              ],
+              "example_code": [
+                "local n = redis.call('INCR', KEYS[1])",
+                "if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end",
+                "return n"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Two gateways each run GET count and both see 99 with a limit of 100. Each then allows the request and runs SET count 100. What is wrong, and what does an atomic INCR change?",
+              "a_bullets": [
+                "Check-then-set race: both read 99 before either writes, so both allow. The count ends at 100 but 101 requests passed.",
+                "With atomic INCR, Redis serializes the two calls and returns 100 to one gateway and 101 to the other.",
+                "The gateway that gets 101 is over the limit and rejects, so exactly 100 pass.",
+                "For token buckets, which need read, refill, decide and write, use a Lua script so the whole sequence is atomic."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Token bucket with B=10 and R=5 tokens/s. It starts empty at t=0. At t=1s a client sends 8 requests at once. How many pass? How many tokens does it hold after sitting idle for 10 s?",
+              "a_bullets": [
+                "Lazy refill at t=1s: tokens = min(10, 0 + 1 × 5) = 5.",
+                "So 5 requests pass and 3 are rejected with 429.",
+                "After 10 s idle: min(10, 0 + 10 × 5) = min(10, 50) = 10, so the bucket caps at B.",
+                "The cap is why bursts are limited to B. Compute time from the server or Redis TIME, never the client's clock."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

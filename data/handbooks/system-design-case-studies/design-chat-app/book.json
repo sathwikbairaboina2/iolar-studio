@@ -1,0 +1,230 @@
+{
+  "title": "Design WhatsApp: Chat App System Design",
+  "summary": "An end-to-end system design of a WhatsApp-style chat app: requirements with scale estimates, architecture, WebSocket gateways, message storage, receipts, offline delivery, presence, push, ordering, media and E2EE, closing with scaling, failure handling and interview questions.",
+  "chapters": [
+    {
+      "title": "Design WhatsApp: Handbook Cover",
+      "points": [
+        "Requirements and scale estimates",
+        "High-level architecture",
+        "Connection gateway and message flow",
+        "Storage, receipts and offline delivery",
+        "Presence, push, media and E2EE"
+      ],
+      "shape": [
+        "cover"
+      ]
+    },
+    {
+      "title": "Problem, Scope and Requirements",
+      "points": [
+        "Scope in: 1:1 chat, groups up to 1,024 members, media, receipts, presence, push, E2EE; out: calls, status, payments",
+        "Scale: 2B users, 500M DAU, 100B messages/day ≈ 1.2M msg/s average, ~3M msg/s peak",
+        "Storage: 100B msgs/day × ~100 B ≈ 10 TB/day text; media ~5% of messages at ~200 KB ≈ 1 PB/day, stored briefly",
+        "Connections: 500M concurrent WebSockets; at ~200K per server ≈ 2,500+ gateway servers",
+        "Latency targets: online delivery p99 < 200 ms; availability 99.99%; no message loss (at-least-once, deduped to exactly-once display)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "summary"
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "points": [
+        "Clients hold a persistent WebSocket to a stateless-logic gateway behind an L4 load balancer",
+        "Session service maps user_id → gateway node in Redis; used to route messages to the right gateway",
+        "Chat service: validates, assigns ID, persists, then routes or queues for offline",
+        "Async backbone: Kafka partitioned by conversation_id for fan-out, push and storage writers",
+        "Separate HTTP path for media upload/download via object store and CDN"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "summary"
+      ]
+    },
+    {
+      "title": "WebSocket Connection Gateway",
+      "points": [
+        "Responsibility: hold long-lived sockets, authenticate, heartbeat every ~30 s, forward frames to chat service",
+        "One server holds ~200K–1M idle connections: tune file descriptors, ~10 KB memory per connection",
+        "Connect flow: TLS handshake → auth token → register user_id→gateway in Redis with TTL ~60 s refreshed by heartbeat",
+        "APIs: WS frames send, ack, receipt, typing, presence; REST fallback for long-poll on bad networks",
+        "Failures: gateway crash drops its sockets, clients reconnect with exponential backoff plus jitter to avoid thundering herd; metrics: connections per node, connect rate, reconnect rate, heartbeat misses"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "One-to-One Message Flow and Ordering",
+      "points": [
+        "Flow: sender → gateway A → chat service persists → lookup session → gateway B → receiver; server ACK to sender after persist",
+        "Client generates a client_msg_id (UUID) so retries are idempotent and deduplicated server-side",
+        "Ordering is per conversation only: server assigns monotonic sequence number per conversation_id, no global order",
+        "Snowflake-style 64-bit message IDs (timestamp + shard + sequence) are sortable and unique without coordination",
+        "Failure: lost ACK triggers client retry with same client_msg_id, server returns the stored result; metrics: send-to-deliver latency p50/p99, duplicate rate"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Message Storage",
+      "points": [
+        "Access pattern: write-heavy, append-only, read recent messages by conversation, so use a wide-column store (Cassandra/HBase) over SQL",
+        "Table messages: partition key conversation_id, clustering key message_id DESC, columns sender_id, body, type, created_at",
+        "Large chats bucket partitions by (conversation_id, month) to avoid hot, unbounded partitions",
+        "Inbox table per user holds undelivered messages and is deleted after delivery ACK, so the server is a transit buffer",
+        "API: GET /conversations/{id}/messages?before=message_id&limit=50; failure: node loss tolerated with replication factor 3 and quorum writes; metrics: write p99, partition size, disk usage"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Delivery and Read Receipts",
+      "points": [
+        "Three states: sent (server stored, one tick), delivered (device received, two ticks), read (user opened, blue ticks)",
+        "Receipts are small messages routed back to the sender over the same path, with batched read receipts per conversation up to a last_read_message_id",
+        "Data model: per-user last_delivered_id and last_read_id per conversation, not one row per message",
+        "Group receipts: aggregate per member, shown as delivered/read only when all members reach it; details in message-info view",
+        "Failure: offline sender gets receipts queued in its inbox; metrics: receipt latency p99, receipt share of traffic (~30%)"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Group Messaging and Fan-out",
+      "points": [
+        "Group table: group_id, members list (max 1,024), admins; membership cached in Redis",
+        "Fan-out on write: store one message copy, then push a delivery task per member via Kafka; a 1,024-member group yields 1,024 deliveries",
+        "Server-side fan-out beats client sending N copies: saves mobile bandwidth and keeps one canonical order",
+        "Sequence per group gives all members an identical order; member added gets history only from the join point",
+        "Failure: partial fan-out is retried per member from Kafka, idempotent by (message_id, member); metrics: fan-out lag, deliveries per message"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Offline Delivery and Push Notifications",
+      "points": [
+        "If session lookup misses, message stays in the recipient's inbox queue and a push job is created",
+        "Push via APNs (iOS) and FCM (Android) with a small payload, no plaintext under E2EE; the app wakes and fetches",
+        "On reconnect the client sends last_seen_message_id and the server drains the inbox in order, then deletes after ACK",
+        "Inbox retention ~30 days, then dropped; collapse key merges multiple pushes into one notification",
+        "Failure: invalid or expired push token pruned on APNs/FCM error; push provider outage degrades to fetch-on-open; metrics: push success rate, offline-to-delivered latency"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Presence and Typing Indicators",
+      "points": [
+        "Presence = online if heartbeat seen within ~60 s; stored in Redis as key with TTL, last_seen written on disconnect",
+        "Subscribe model: push presence only to contacts with the chat open, not all contacts, to cut fan-out (500 contacts × status flaps)",
+        "Typing indicators are ephemeral: sent through the gateway, never persisted, dropped if recipient offline",
+        "Debounce flapping: delay offline status ~5–10 s to ignore brief network drops",
+        "Failure: Redis loss only shows stale presence, which is acceptable; metrics: presence update QPS, Redis memory, staleness"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Media Sharing and End-to-End Encryption",
+      "points": [
+        "Media flow: client encrypts file with a random key, uploads blob via pre-signed URL to object store, sends URL + key + hash inside the E2EE message",
+        "Server stores only ciphertext; thumbnails are generated on the client, CDN caches ciphertext; blobs expire after ~30 days",
+        "E2EE uses the Signal protocol: identity key, signed prekey and one-time prekeys uploaded to the server; X3DH sets up a session",
+        "Double Ratchet derives a new key per message, giving forward secrecy; groups use sender keys, one encrypt per message",
+        "Trade-off: server cannot search or moderate content; multi-device needs per-device keys; metrics: upload success rate, key-fetch latency"
+      ],
+      "shape": [
+        "responsibilities",
+        "high level design",
+        "state or sequence flow",
+        "data model",
+        "apis",
+        "failure scenarios",
+        "metrics"
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "points": [
+        "Shard chat service and storage by conversation_id; shard sessions by user_id with consistent hashing; add gateways horizontally",
+        "Deploy multi-region: user homed to nearest region, cross-region replication via Kafka; region failover with DNS",
+        "Trade-offs: at-least-once plus dedupe vs exactly-once; fan-out on write vs read; WebSocket vs long polling",
+        "Interview Q: how do you keep order in a group, and what happens when a gateway dies mid-delivery?",
+        "Interview Q: how to handle a celebrity-size group or channel with 1M members (switch to fan-out on read, pull model)"
+      ],
+      "shape": [
+        "summary",
+        "comparison",
+        "mistakes"
+      ]
+    },
+    {
+      "title": "WhatsApp Design Cheatsheet",
+      "points": [
+        "Numbers: 500M concurrent sockets, 1.2M msg/s avg, 10 TB/day text, 200K sockets per gateway",
+        "Path: client → gateway → chat service → Kafka → inbox/store → gateway or push",
+        "Keys: client_msg_id for idempotency, per-conversation sequence for order, last_read_id for receipts",
+        "Stores: Cassandra messages, Redis sessions and presence, S3 plus CDN media, Kafka queues",
+        "Pitfalls: global ordering, per-message receipt rows, storing plaintext media, presence broadcast to all contacts"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

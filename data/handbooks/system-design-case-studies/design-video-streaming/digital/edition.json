@@ -1,0 +1,2106 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-video-streaming",
+  "category": "system-design",
+  "inputsHash": "3419949afd896658888aff70a86e93aa11a87fa721a9c20790bd2a4b9d680d09",
+  "generatedAt": "2026-10-28T12:27:54.508Z",
+  "sections": [
+    {
+      "title": "Problem Statement, Scope and Requirements",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem Statement, Scope and Requirements",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope and Functional Needs (Video Streaming Platform)",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Features"
+              ],
+              "rows": [
+                [
+                  "{green:In scope}",
+                  "**upload**, **transcode**, **stream**, **search metadata**, **view counts**, **recommendations**"
+                ],
+                [
+                  "{red:Out of scope}",
+                  "live streaming, DRM licensing, ads, comments"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Upload== a video",
+                "==Watch== on any device",
+                "==Search== videos by metadata",
+                "Like/comment-free ==watch history==",
+                "==Resume playback== from the last position"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Non-Functional Targets",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Playback start under ==2 s== at **p95**",
+                "Rebuffer ratio under ==0.5%==",
+                "Playback availability ==99.99%==",
+                "Uploads durable at ==11 nines==",
+                "Reads dominate: read:write about ==5000:1=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "3. Back-of-Envelope Estimates",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Daily numbers, each step feeds the next",
+                "steps": [
+                  {
+                    "text": "500M DAU",
+                    "note": "5 videos each",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "2.5B plays/day",
+                    "note": "/ 86,400 s",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "29K play QPS",
+                    "note": "peak about 90K",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "250 PB/day egress",
+                    "note": "2.5B x 100 MB",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Quantity",
+                "Math",
+                "Result"
+              ],
+              "rows": [
+                [
+                  "Plays",
+                  "500M x 5",
+                  "==2.5B/day=="
+                ],
+                [
+                  "Play QPS",
+                  "2.5B / 86,400",
+                  "~29K avg, 90K peak"
+                ],
+                [
+                  "Raw uploads",
+                  "500K x 500 MB",
+                  "==250 TB/day=="
+                ],
+                [
+                  "Stored (6 renditions)",
+                  "about 2x raw",
+                  "==500 TB/day=="
+                ],
+                [
+                  "Storage growth",
+                  "500 TB x 365",
+                  "~180 PB/year"
+                ],
+                [
+                  "Egress",
+                  "2.5B x 100 MB avg",
+                  "==250 PB/day=="
+                ],
+                [
+                  "Bandwidth",
+                  "250 PB / 86,400 s",
+                  "~23 Tbps avg"
+                ],
+                [
+                  "Read:write",
+                  "2.5B plays / 500K uploads",
+                  "~5000:1"
+                ]
+              ],
+              "highlightRow": 7,
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "What the numbers force",
+              "text": "At ~23 Tbps average egress a ==CDN is mandatory==, and at 5000:1 the **read path** is designed first."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Running example: **Video Streaming Platform** at 500M DAU, ~90K peak play QPS, read:write about ==5000:1==."
+            },
+            {
+              "type": "heading",
+              "text": "1. Two Planes, Two Paths",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Write path",
+                "Read path"
+              ],
+              "rows": [
+                [
+                  "Steps",
+                  "upload, transcode, publish",
+                  "metadata, manifest, CDN segments"
+                ],
+                [
+                  "Load",
+                  "~500K uploads/day",
+                  "~2.5B plays/day, 90K peak QPS"
+                ],
+                [
+                  "Scales on",
+                  "queue depth, worker count",
+                  "CDN capacity, cache hit ratio"
+                ],
+                [
+                  "Fails as",
+                  "slow time-to-ready",
+                  "playback stall"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Paths scale ==independently==: a write backlog must never slow playback",
+                "The read path gets the 99.99% availability budget",
+                "{blue:Control plane}: API servers handle metadata and ==signed URLs==",
+                "{orange:Data plane}: video bytes flow client to object store and CDN",
+                "Video bytes ==never pass through API servers=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Component Map and Async Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Edge: **API gateway** (auth, rate limits) in front of the **upload service**",
+                "Storage: ==object store== for raw and encoded files, **metadata DB** for state",
+                "Processing: **transcode workers** fed by a queue",
+                "Delivery: ==CDN== serving segments",
+                "Side systems: **view-count pipeline** and **recommender**"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Client",
+                    "sub": "pre-signed PUT",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Object store",
+                    "sub": "raw file",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Kafka event",
+                    "sub": "upload complete",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Consumers",
+                    "sub": "transcode, thumbnail, index",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "State READY",
+                    "sub": "metadata DB",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Async by default==: upload completion emits one event on Kafka or a queue",
+                "Transcoding, thumbnailing and indexing each consume it on their own",
+                "The upload request returns at once; processing never blocks the user"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Build vs Buy",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Component",
+                "Decision",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Object store",
+                  "{green:Buy} S3",
+                  "11 nines durability, no ops"
+                ],
+                [
+                  "CDN",
+                  "{green:Buy} CloudFront / Akamai",
+                  "global POPs on day one"
+                ],
+                [
+                  "Transcoding",
+                  "{orange:Build}",
+                  "cost and quality control (VMAF, per-title)"
+                ],
+                [
+                  "Recommendation",
+                  "{orange:Build}",
+                  "core product differentiator"
+                ],
+                [
+                  "Own CDN",
+                  "only above ~Tbps scale",
+                  "Netflix Open Connect"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Buy commodity infrastructure, build what differentiates. At 23 Tbps average egress, own CDN hardware starts to pay off; below that, rent."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Upload Pipeline",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Upload Pipeline",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design (Video Streaming Platform)",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Accept large files== reliably: 500 MB average raw, 500K uploads/day",
+                "**Validate** the file, then store the ==raw original== durably (11 nines)",
+                "Only then **trigger processing** (transcode, thumbnails, indexing)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Client uploads ==straight to object storage== via a **pre-signed URL**",
+                "Chunked **multipart**: ==5-10 MB parts==, sent in parallel",
+                "API servers never carry bytes: they only issue URLs and track state",
+                "500 MB at 8 MB parts is about 63 parts; 250 TB/day is about 23 Gbps ingest"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Flow and Data Model",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "POST /uploads",
+                    "sub": "returns upload_id",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PUT parts",
+                    "sub": "parallel, to object store",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "POST /uploads/{id}/complete",
+                    "sub": "object store assembles",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "UPLOADED",
+                    "sub": "state saved",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Transcode queue",
+                    "sub": "event emitted",
+                    "ink": "black"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "uploads column",
+                "Holds"
+              ],
+              "rows": [
+                [
+                  "`upload_id`",
+                  "PK, returned by POST /uploads"
+                ],
+                [
+                  "`user_id`, `size`",
+                  "owner and declared bytes"
+                ],
+                [
+                  "`parts_done`",
+                  "progress counter"
+                ],
+                [
+                  "`state`",
+                  "INITIATED to READY or FAILED"
+                ],
+                [
+                  "`raw_object_key`, `created_at`",
+                  "raw file location, start time"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "INITIATED",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "UPLOADED",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "PROCESSING",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "READY",
+                    "sub": "or FAILED",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Failures",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Dropped connection: ==list uploaded parts==, resend only the missing ones",
+                "Orphan parts from abandoned uploads: ==24 h lifecycle rule== aborts them",
+                "File type, size and malware are ==checked after upload==; bad file goes to FAILED"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "aws s3api list-parts --bucket raw --key $KEY --upload-id $ID"
+              ],
+              "note": "resume: compare returned PartNumbers with the client's parts"
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Upload success rate== above 99%",
+                "p95 ==time-to-complete==",
+                "==Resume rate== (share of uploads that needed a resume)",
+                "Bytes uploaded/s, and ==abandoned upload %=="
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never proxy the bytes",
+              "text": "Streaming uploads through API servers makes them a **bandwidth bottleneck** and gives no resumability. Use ==pre-signed multipart URLs==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Transcoding Pipeline and Renditions",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Transcoding Pipeline and Renditions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Video Streaming Platform: one raw upload goes in, a ladder of playable renditions comes out."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Convert one raw file into a ==ladder of renditions==",
+                "Plus ==audio tracks== and ==thumbnails==",
+                "Ladder example: 240p at 0.4 Mbps up to 4K at 16 Mbps (about 6 rungs)"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Rung",
+                "Bitrate (est.)"
+              ],
+              "rows": [
+                [
+                  "240p",
+                  "0.4 Mbps"
+                ],
+                [
+                  "480p",
+                  "1 Mbps"
+                ],
+                [
+                  "720p",
+                  "3 Mbps"
+                ],
+                [
+                  "1080p",
+                  "5 Mbps"
+                ],
+                [
+                  "1440p",
+                  "9 Mbps"
+                ],
+                [
+                  "4K",
+                  "16 Mbps"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Split into ==2-10 s GOP-aligned chunks== so each chunk starts on a keyframe",
+                "Encode chunks in ==parallel== on a worker fleet, run as a {blue:DAG of tasks}",
+                "A 1 h video finishes in ==minutes==, not hours",
+                "{purple:Per-title encoding}: ladder fitted to content complexity (Netflix), saves ~==20%== bitrate",
+                "{orange:AV1} saves ~30% vs H.264 but encodes ==5-10x slower==: popular titles only"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Flow and Data Model",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Split",
+                    "sub": "GOP-aligned chunks",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Encode",
+                    "sub": "H.264 / VP9 / AV1 per rung",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Package",
+                    "sub": "fMP4 / TS segments",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Manifests",
+                    "sub": "per rendition",
+                    "ink": "pink"
+                  },
+                  {
+                    "text": "READY",
+                    "sub": "state flips",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Every chunk task is a row in ==transcode_jobs==; finished renditions are recorded in ==renditions==",
+                "Manifest path in `renditions` is what the player is later handed"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "transcode_jobs(job_id, video_id, rendition,",
+                "  chunk_idx, status, attempts, worker_id)",
+                "renditions(video_id, codec, resolution,",
+                "  bitrate, manifest_path)"
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Failures",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Chunk tasks are ==idempotent==: same input, same output key, safe to rerun",
+                "==3 retries==, then the chunk goes to a ==dead-letter queue==",
+                "Spot-instance preemption just ==reruns the chunk==",
+                "A ==poison video== (crashes every worker) is quarantined, not retried forever"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Mark READY last",
+              "text": "Set `READY` only after ==all chunks== are packaged and manifests are written. A partly encoded ladder must never be playable."
+            },
+            {
+              "type": "heading",
+              "text": "4. Metrics",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Queue depth==: also the autoscale signal for the worker fleet",
+                "==Time-to-ready p95==: target under ==2x video duration==",
+                "==Cost per encoded minute==, tracked per codec",
+                "==Failure rate== and dead-letter queue size",
+                "==VMAF== quality score per rendition"
+              ],
+              "style": "checkbox"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Adaptive Bitrate Streaming: HLS and DASH",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Adaptive Bitrate Streaming: HLS and DASH",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What ABR Is and What the Manifest Lists",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==ABR== = video cut into **2-6 s segments**, one set per bitrate",
+                "The player picks the **next segment's rendition** only, never the whole video",
+                "Inputs: ==measured throughput== and ==buffer level== (seconds of video queued)",
+                "{blue:HLS}: `.m3u8` playlists, master playlist → media playlist per rendition",
+                "{purple:DASH}: one XML `.mpd` file; both list renditions and segment URLs"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "code",
+              "lang": "text",
+              "lines": [
+                "#EXTM3U",
+                "#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720",
+                "720p/index.m3u8",
+                "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=854x480",
+                "480p/index.m3u8"
+              ],
+              "note": "HLS master playlist: one entry per rung, each points to a media playlist"
+            },
+            {
+              "type": "heading",
+              "text": "2. Player Algorithm and Example",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{blue:Throughput-based}: ==EWMA== of the last few segment download speeds",
+                "{purple:Buffer-based (BBA)}: pick the rung from buffer seconds, ignore speed",
+                "{green:Hybrid}: buffer sets the safe zone, throughput picks inside it",
+                "Switch **down fast** (one bad segment), switch **up slowly** (several good ones)",
+                "Slow up-switching stops ==oscillation== between two rungs"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "4 Mbps link, 4 s segments",
+                "steps": [
+                  {
+                    "text": "Link 4 Mbps, buffer 8 s",
+                    "note": "measured throughput leaves headroom",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Fetch 720p (3 Mbps)",
+                    "note": "12 Mb in 3 s, buffer grows",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Throughput drops to 1 Mbps",
+                    "note": "EWMA falls, player reacts at once",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Next segment 480p (0.8 Mbps)",
+                    "note": "3.2 Mb in 3.2 s, 8 s buffer holds, no stall",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. HLS vs DASH",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "HLS",
+                "DASH"
+              ],
+              "rows": [
+                [
+                  "Manifest",
+                  "`.m3u8` text playlists",
+                  "`.mpd` XML"
+                ],
+                [
+                  "Support",
+                  "==Native on Apple==",
+                  "Open standard, most other players"
+                ],
+                [
+                  "Codecs",
+                  "Apple-defined set",
+                  "**Codec-agnostic**"
+                ],
+                [
+                  "Segments",
+                  "TS or fMP4",
+                  "fMP4"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==CMAF fMP4== segments: one set serves both HLS and DASH",
+                "Only the manifests differ, so storage and cache footprint ==halve=="
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Common Mistakes",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Segments too long (**10 s+**): slow switching, stalls before a down-switch",
+                "Segments too short: request overhead and low CDN efficiency",
+                "Keyframes not aligned across renditions: switch causes a glitch",
+                "Ladder with huge gaps between rungs: big quality jumps, oscillation"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "The player decides, not the server. Segments are **2-6 s** and **GOP-aligned** across every rung so switching is seamless: ==down fast, up slow==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "CDN Delivery and Caching",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "CDN Delivery and Caching",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "(Video Streaming Platform) 250 PB/day egress is about **23 Tbps** average, so the CDN carries the read path."
+            },
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Tiers",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Serve segments from ==close to the viewer==",
+                "Target ==95%+ edge hit ratio==",
+                "Origin sees under **5%** of 23 Tbps, about 1.15 Tbps",
+                "Netflix places Open Connect appliances ==inside ISPs=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Tiered caching",
+                "steps": [
+                  {
+                    "text": "Edge POP",
+                    "note": "closest to viewer",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Regional mid-tier",
+                    "note": "bigger, shared",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Origin shield",
+                    "note": "one per region",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Object store",
+                    "note": "source of truth",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Request Flow and Cache Policy",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "req"
+                  ],
+                  [
+                    "dns"
+                  ],
+                  [
+                    "edge"
+                  ],
+                  [
+                    "hit",
+                    "mid"
+                  ],
+                  [
+                    "shield"
+                  ],
+                  [
+                    "origin"
+                  ]
+                ],
+                "nodes": {
+                  "req": {
+                    "text": "Player requests segment URL",
+                    "shape": "box"
+                  },
+                  "dns": {
+                    "text": "DNS / anycast to nearest edge",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "edge": {
+                    "text": "Edge has it?",
+                    "shape": "diamond"
+                  },
+                  "hit": {
+                    "text": "HIT: serve from edge",
+                    "shape": "box",
+                    "ink": "green"
+                  },
+                  "mid": {
+                    "text": "Mid-tier has it?",
+                    "shape": "diamond"
+                  },
+                  "shield": {
+                    "text": "Origin shield collapses concurrent misses",
+                    "shape": "box",
+                    "ink": "purple"
+                  },
+                  "origin": {
+                    "text": "ONE fetch from object store",
+                    "shape": "pill",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "req",
+                    "to": "dns"
+                  },
+                  {
+                    "from": "dns",
+                    "to": "edge"
+                  },
+                  {
+                    "from": "edge",
+                    "to": "hit",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "edge",
+                    "to": "mid",
+                    "label": "MISS"
+                  },
+                  {
+                    "from": "mid",
+                    "to": "shield",
+                    "label": "no"
+                  },
+                  {
+                    "from": "shield",
+                    "to": "origin"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Object",
+                "TTL",
+                "Rule"
+              ],
+              "rows": [
+                [
+                  "Segments `.m4s`",
+                  "**1 year**",
+                  "immutable, versioned path"
+                ],
+                [
+                  "Manifest, VOD",
+                  "**1 h**",
+                  "short, may be re-published"
+                ],
+                [
+                  "Manifest, live",
+                  "**2 s**",
+                  "playlist grows every segment"
+                ],
+                [
+                  "New release",
+                  "pre-warm",
+                  "push to edges by predicted popularity"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "3. Access Control",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Signed URL or cookie with ==expiry== (e.g. **6 h**)",
+                "Token is ==bound to video_id== to stop hotlinking",
+                "Edge verifies the signature itself, no origin call",
+                "==Range requests== supported (seek, resume, partial fetch)"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /v7/vid_81f2/720p/00042.m4s?exp=1761700000&tok=ab12 HTTP/1.1",
+                "Range: bytes=0-1048575",
+                "",
+                "HTTP/1.1 206 Partial Content"
+              ],
+              "note": "tok = HMAC(secret, video_id + path + exp)"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Response"
+              ],
+              "rows": [
+                [
+                  "Edge POP down",
+                  "DNS failover to the next POP"
+                ],
+                [
+                  "Origin overload",
+                  "request coalescing + ==stale-if-error=="
+                ],
+                [
+                  "One CDN degraded",
+                  "multi-CDN, health-based traffic steering"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Cache hit ratio, origin egress Gbps",
+                "Startup time p95, rebuffer ratio",
+                "5xx rate per POP, cost per GB"
+              ],
+              "style": "checkbox",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Immutable segments get a ==1 year== TTL under versioned paths. Only the short-TTL manifests change, and the shield sends **one** origin fetch per miss."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Metadata Service and Search",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Metadata Service and Search",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store ==title, description, tags, owner, visibility== and **rendition pointers**",
+                "Serve the {blue:watch page} and {purple:search}",
+                "==Read-heavy==: about **90K peak reads/s** (5000:1 read:write)",
+                "With a 99% cache hit, the DB sees only about ==900 reads/s== at peak"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Store: sharded SQL/NoSQL by ==video_id== (MySQL + Vitess, or Cassandra)",
+                "Cache: ==Redis== in front, **99% hit** target",
+                "Search: ==Elasticsearch== index fed by change events (**CDC**)",
+                "Search is a derived copy; the DB stays the source of truth"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "2. Read and Edit Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Watch page",
+                    "sub": "GET /videos/{id}",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Redis lookup",
+                    "sub": "hit: return",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "DB read",
+                    "sub": "only on miss",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Response",
+                    "sub": "metadata + signed manifest URL",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Edit",
+                    "sub": "PATCH /videos/{id}",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "DB write",
+                    "sub": "primary shard",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Invalidate cache",
+                    "sub": "delete key",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "CDC event",
+                    "sub": "change stream",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Search index",
+                    "sub": "within seconds",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "CREATE TABLE videos (",
+                "  video_id BIGINT PRIMARY KEY,  -- 64-bit snowflake",
+                "  owner_id BIGINT NOT NULL, title TEXT, description TEXT,",
+                "  state VARCHAR(16), duration INT, created_at TIMESTAMP",
+                "  -- video_tags and renditions are keyed by video_id",
+                ");",
+                "CREATE INDEX idx_owner ON videos(owner_id);"
+              ],
+              "note": "shard key is video_id; owner_id is indexed for a channel's videos"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Endpoint",
+                "Does",
+                "Notes"
+              ],
+              "rows": [
+                [
+                  "`GET /videos/{id}`",
+                  "metadata + signed manifest URL",
+                  "cached in Redis"
+                ],
+                [
+                  "`PATCH /videos/{id}`",
+                  "edit title, tags, visibility",
+                  "write, then invalidate"
+                ],
+                [
+                  "`GET /search?q=&page_token=`",
+                  "ranked results",
+                  "**cursor** pagination, no offset"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Cache stampede}: hot key expires, so use ==request coalescing== and **jittered TTL**",
+                "{red:Replica lag}: a fresh upload may ==404 for seconds==; retry or read from the primary",
+                "{red:Search index lost}: ==rebuild from the DB== by re-reading every video"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics and targets",
+              "items": [
+                "Read latency **p99 under 50 ms**",
+                "Search latency **p95 under 200 ms**",
+                "Cache hit ratio (target **99%**)",
+                "Replication lag and index freshness lag"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "The DB is the ==source of truth==. Cache and search are derived copies, so a lost index is rebuilt from the DB."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "View Counts and Watch History",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "View Counts and Watch History",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Count views ==accurately enough== for display and creator payouts",
+                "Track the ==resume position== per user and video",
+                "Load: **29K** view starts/s avg, **90K** peak",
+                "Heartbeats (~1 per 30 s) give ~5x events, so ~**150K events/s** avg"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Players send ==view== and ==heartbeat== events to **Kafka**",
+                "**Flink** aggregates per video in ==1-min windows==",
+                "Counter store is updated in ==batches==, never per event"
+              ],
+              "style": "number"
+            },
+            {
+              "type": "heading",
+              "text": "2. Event Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Event",
+                    "sub": "view / heartbeat",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "key = video_id",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Dedup + bots",
+                    "sub": "(user, video, 30 s)",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Window agg",
+                    "sub": "1 min, Flink",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Cassandra + Redis",
+                    "sub": "counter + display",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Display count",
+                "Billing count"
+              ],
+              "rows": [
+                [
+                  "Source",
+                  "Stream pipeline",
+                  "Raw log, batch job"
+                ],
+                [
+                  "Accuracy",
+                  "**Approximate**",
+                  "==Exact=="
+                ],
+                [
+                  "Lag",
+                  "Seconds to minutes",
+                  "Hours (offline)"
+                ],
+                [
+                  "Used for",
+                  "Watch page, search",
+                  "Creator payouts"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Example: stream says 1,000,000, batch says 1,004,000, so the ==batch is the truth==",
+                "Drift is 0.4%, above the 0.1% target: ==tune== the late-event watermark"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "schema",
+              "spec": {
+                "tables": [
+                  {
+                    "name": "view_events",
+                    "columns": [
+                      "video_id",
+                      "user_id",
+                      "ts",
+                      "watch_ms"
+                    ]
+                  },
+                  {
+                    "name": "view_counts",
+                    "columns": [
+                      "video_id",
+                      "count"
+                    ]
+                  },
+                  {
+                    "name": "watch_history",
+                    "columns": [
+                      "user_id",
+                      "video_id",
+                      "position_ms",
+                      "updated_at"
+                    ]
+                  }
+                ],
+                "links": []
+              }
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Hot video: split counter into ==N sub-counters==, **sum on read**",
+                "Kafka replay: ==idempotent `event_id`== so reprocessing never double counts",
+                "Late events: ==watermark of 5 min==, later ones fixed by the batch job"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Event ingestion lag p99",
+                  "under 10 s"
+                ],
+                [
+                  "Count drift vs batch truth",
+                  "under 0.1%"
+                ],
+                [
+                  "Dedup ratio",
+                  "tracked"
+                ],
+                [
+                  "Bot-filtered %",
+                  "tracked"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Never bill from the stream count. Display is ==approximate==; payouts come from the ==exact batch recompute== of the raw log."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Recommendations (High Level)",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Recommendations (High Level)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Job and Funnel",
+              "ink": "green"
+            },
+            {
+              "type": "paragraph",
+              "text": "Home feed and up-next list for the **Video Streaming Platform**, ranked per user within a ==150 ms== p99 budget."
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Ranks the ==personalized home feed== and the **up-next** list",
+                "Drives most **watch time**, so it must be {green:fast} and {green:fresh}",
+                "{blue:Candidate generation}: collaborative filtering / two-tower embeddings",
+                "{purple:Ranking}: model scoring on watch time and CTR features"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "All videos",
+                    "sub": "millions",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Candidate gen",
+                    "sub": "~500 (cheap, ANN)",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Ranking model",
+                    "sub": "500 -> 20 (heavy)",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Feed",
+                    "sub": "n = 20",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Request Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Request",
+                    "note": "user_id, n",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "Feature store",
+                    "note": "user features",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "ANN lookup",
+                    "note": "candidates",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Rank",
+                    "note": "top 20",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Filter",
+                    "note": "watched / blocked",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Diversify",
+                    "note": "mix genres, creators",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Return",
+                    "note": "feed",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Model training is ==offline==, run **daily**",
+                "Embeddings are refreshed ==hourly==",
+                "Served events are logged for **retraining**"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data and API",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Store",
+                "Key",
+                "Holds"
+              ],
+              "rows": [
+                [
+                  "`user_embedding`",
+                  "`user_id`",
+                  "`vec`"
+                ],
+                [
+                  "`video_embedding`",
+                  "`video_id`",
+                  "`vec` (ANN index)"
+                ],
+                [
+                  "Feature store",
+                  "`user_id`",
+                  "watch history, genre affinity"
+                ],
+                [
+                  "Event log",
+                  "`event_id`",
+                  "impressions, clicks, watch time"
+                ]
+              ]
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /feed?user_id=&n=20",
+                "GET /videos/{id}/related"
+              ],
+              "note": "both within the p99 under 150 ms budget"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Fallback"
+              ],
+              "rows": [
+                [
+                  "Model down",
+                  "cached {orange:trending list} per region"
+                ],
+                [
+                  "Feature store down",
+                  "cached {orange:trending list} per region"
+                ],
+                [
+                  "Cold-start user",
+                  "==popularity== + onboarding picks"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==CTR== and average **watch time per session**",
+                "Coverage / **diversity** of what gets recommended",
+                "==p99 latency== under 150 ms",
+                "Offline ==AUC== vs online **A/B lift**"
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Offline AUC is not enough",
+              "text": "A better offline ==AUC== does not guarantee a win. Ship a model only after the online **A/B lift** on watch time confirms it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling, Trade-offs and Interview Questions",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scaling Levers (Video Streaming Platform)",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Layer",
+                "Lever",
+                "Number"
+              ],
+              "rows": [
+                [
+                  "Metadata DB",
+                  "**Shard by `video_id`**",
+                  "~90K peak reads/s"
+                ],
+                [
+                  "Transcode",
+                  "**Autoscale on queue depth**",
+                  "time-to-ready under 2x duration"
+                ],
+                [
+                  "CDN",
+                  "Absorbs ==95%+== of reads",
+                  "origin under 5% of 23 Tbps"
+                ],
+                [
+                  "Read path",
+                  "**Multi-region active-active**",
+                  "no single-region read dependency"
+                ]
+              ],
+              "highlightRow": 2
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Write path scales on {orange:queue depth}, read path on {blue:edge capacity}",
+                "Two planes scale independently",
+                "Redis cache in front of metadata, 99% hit target"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "blue"
+            },
+            {
+              "type": "heading",
+              "text": "2. Failure Handling",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Metadata region failover with ==RPO under 1 min==",
+                "Object store ==replicated cross-region==",
+                "Raw uploads stay durable at 11 nines",
+                "Edge down: DNS failover to next POP"
+              ],
+              "style": "check",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Graceful degradation, in order",
+                "steps": [
+                  {
+                    "text": "Rendition drop",
+                    "note": "serve lower rungs",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Hide recommendations",
+                    "note": "cached trending list",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Keep playback",
+                    "note": "99.99% availability",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Trade-offs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Axis",
+                "Option A",
+                "Option B",
+                "Pick"
+              ],
+              "rows": [
+                [
+                  "Storage vs compute",
+                  "Pre-encode all renditions",
+                  "On-demand encode",
+                  "A for hot, B for long-tail"
+                ],
+                [
+                  "Quality vs cost",
+                  "AV1: ~30% smaller, 5-10x slower encode",
+                  "H.264 default",
+                  "AV1 only for hot titles"
+                ],
+                [
+                  "Accuracy vs latency",
+                  "Exact count",
+                  "Windowed stream count",
+                  "Stream to display, batch to bill"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Batch count (1-min stream windows vs raw log) is the billing truth; display count is approximate",
+                "Drift above ==0.1%== (e.g. 0.4%) is a tuning issue: check late events and the 5 min watermark"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Answers",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Viral video?** ==CDN pre-warm==, ==origin shield==, sharded counters, rate limits on metadata reads",
+                "**Why not proxy uploads?** Bandwidth bottleneck, no resumability; use ==pre-signed multipart URLs==",
+                "**Cut storage cost?** Tiered storage, drop renditions idle 90 days, per-title encoding, content-hash dedupe"
+              ],
+              "style": "number",
+              "ink": "orange"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Video bytes never touch API servers. The ==CDN== carries reads, **sharding** carries metadata, and degrading quality beats failing playback."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Video Streaming Design Cheatsheet",
+      "role": "outline",
+      "outlineIndex": 11,
+      "pages": [
+        {
+          "title": "Video Streaming Design Cheatsheet",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Numbers (Video Streaming Platform)",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Users and plays",
+                  "**500M** DAU x 5 videos = ==2.5B plays/day=="
+                ],
+                [
+                  "Play QPS",
+                  "~**29K** avg, ~90K peak"
+                ],
+                [
+                  "Egress",
+                  "2.5B x 100 MB = ==250 PB/day== (~23 Tbps)"
+                ],
+                [
+                  "Storage added",
+                  "500K x 500 MB = 250 TB raw; with 6 renditions ==500 TB/day=="
+                ],
+                [
+                  "Read:write",
+                  "about **5000:1**, so a CDN is mandatory"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Upload and Transcode",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "INITIATED",
+                    "sub": "upload_id",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "UPLOADED",
+                    "sub": "complete call",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "PROCESSING",
+                    "sub": "transcode",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "READY",
+                    "sub": "or FAILED",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Pre-signed multipart== PUT, 5-10 MB parts in parallel, straight to the object store",
+                "API servers never carry video bytes; resume by listing uploaded parts",
+                "Orphan parts cleaned by a 24 h lifecycle rule"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Chunk-parallel DAG==: split into GOP-aligned chunks, encode in parallel, package, manifest",
+                "Ladder ==240p to 4K==; **H.264** default, **AV1** only for hot titles (~30% smaller, 5-10x slower)",
+                "Package as ==CMAF fMP4== segments: one set serves HLS and DASH",
+                "Chunk tasks idempotent, 3 retries, then dead-letter queue"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Adaptive Bitrate (ABR)",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Rung",
+                "Bitrate"
+              ],
+              "rows": [
+                [
+                  "240p",
+                  "0.4 Mbps"
+                ],
+                [
+                  "480p",
+                  "==0.8 Mbps=="
+                ],
+                [
+                  "720p",
+                  "3 Mbps"
+                ],
+                [
+                  "4K",
+                  "16 Mbps"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Segments of ==2-6 s== at every rung; player picks the next one from throughput and buffer",
+                "HLS `.m3u8` (master then media playlist); DASH `.mpd` (XML)",
+                "Switch ==down fast==, switch ==up slowly== to avoid oscillation",
+                "4 Mbps link, 8 s buffer: fetch 3 Mbps 720p; link falls to 1 Mbps: next is 480p"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Why 480p does not stall",
+              "text": "A 4 s segment at 0.8 Mbps is 3.2 Mb. On a 1 Mbps link it downloads in **3.2 s**, under 4 s, so the buffer still grows."
+            },
+            {
+              "type": "heading",
+              "text": "4. Delivery and Counting",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "CDN edge hit ratio ==95%+==, so origin sees under 5% of 23 Tbps",
+                "Segments are ==immutable== (TTL 1 year, versioned paths); manifests get a short TTL",
+                "==Signed URLs== with expiry, token bound to video_id, stop hotlinking"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Player events",
+                    "sub": "view + heartbeat",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "by video_id",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Flink",
+                    "sub": "dedup, 1-min window",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Cassandra + Redis",
+                    "sub": "batched write",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "Counting rules",
+              "items": [
+                "Display count: ==approximate==, eventually consistent",
+                "Billing count: ==exact==, recomputed offline from the raw log",
+                "Hot video: N sub-counters summed on read"
+              ],
+              "ink": "orange"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "The ladder is 240p 0.4, 360p 0.8, 480p 1.5, 720p 3 and 1080p 6 Mbps, with 4 s segments. Throughput falls from 4 Mbps to 1 Mbps while the buffer holds 8 s. Which rung should the next segment use, and what happens if the player picks 480p?",
+              "a_bullets": [
+                "Pick ==360p==: it is the highest rung at or below 1 Mbps.",
+                "360p segment = 0.8 x 4 = 3.2 Mb, so it downloads in 3.2 s and the buffer grows by 0.8 s.",
+                "480p segment = 1.5 x 4 = 6 Mb, so it takes 6 s to download against 4 s of playback.",
+                "The buffer drains 2 s per segment, so it empties after about 4 segments and the player stalls.",
+                "Switch down fast: waiting to confirm the drop costs buffer."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A re-encoded rendition is written to the same path as before, /v/123/720p/seg5.m4s. Segments carry a 1-year TTL. Viewers keep seeing the old video. What is the bug and the fix?",
+              "a_bullets": [
+                "Immutable caching assumes a path never changes content, so edges keep serving the old bytes for up to a year.",
+                "Fix: put a version or content hash in the path, such as /v/123/v2/720p/seg5.m4s.",
+                "The manifest has a short TTL and points to the new paths, so players move to the new segments.",
+                "Purging the CDN instead is slow and unreliable across POPs."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A new video goes viral and 200 POPs miss on the same segment within one second. How many origin fetches reach the object store?",
+              "a_bullets": [
+                "Without coalescing, every viewer request that misses can reach origin, so thousands of fetches.",
+                "Edge request coalescing leaves 1 request per POP, so up to 200 origin fetches.",
+                "With an origin shield, the POPs' misses are collapsed into ==1 fetch==, assuming all POPs route through one shield.",
+                "If there is one shield per region, expect a few fetches, one per region.",
+                "The origin never sees the load, because the first fetch fills the shield and the rest are HITs."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The stream job shows 1,000,000 views for a video. The nightly batch over the raw log says 1,004,000. Which number is wrong, and is that a bug?",
+              "a_bullets": [
+                "Neither is a bug: the display count is approximate and the batch count is the exact one.",
+                "Events arriving after the 5-minute watermark are dropped from the windowed count but stay in the raw log.",
+                "The batch job recomputes from the raw log, so it is the source of truth for payouts.",
+                "A drift of 0.4% is above the 0.1% target, so investigate lag or the watermark size, but do not bill from the stream."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

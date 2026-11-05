@@ -1,0 +1,2026 @@
+{
+  "schema": 1,
+  "subject": "system-design-case-studies",
+  "chapter": "design-food-delivery",
+  "category": "system-design",
+  "inputsHash": "37aacc38a4e33e535c5192ee8e7be8f53ffc9f344a10a87e7d50e0c97b5d616b",
+  "generatedAt": "2026-10-24T11:25:33.104Z",
+  "sections": [
+    {
+      "title": "Problem, Scope and Requirements (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 1,
+      "pages": [
+        {
+          "title": "Problem, Scope and Requirements (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Scope and Features",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "cards",
+              "spec": {
+                "cards": [
+                  {
+                    "title": "Customer app",
+                    "lines": [
+                      "browse, order, pay",
+                      "track, rate"
+                    ],
+                    "ink": "blue"
+                  },
+                  {
+                    "title": "Restaurant app",
+                    "lines": [
+                      "accept orders",
+                      "menu and stock"
+                    ],
+                    "ink": "orange"
+                  },
+                  {
+                    "title": "Delivery-partner app",
+                    "lines": [
+                      "accept offers",
+                      "share GPS"
+                    ],
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Functional flow of one order",
+                "steps": [
+                  {
+                    "text": "Search",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Menu",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Cart",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Order",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Pay",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Assign partner",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Track",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Notify",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Rate",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{red:Out of scope}: ==grocery== delivery",
+                "{red:Out of scope}: ==table booking==",
+                "{red:Out of scope}: ==ads=="
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Scale and Traffic",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Math",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Orders per day",
+                  "given",
+                  "==20M=="
+                ],
+                [
+                  "Average orders",
+                  "20M / 86,400 s",
+                  "==230 orders/s=="
+                ],
+                [
+                  "Peak orders",
+                  "3x at lunch and dinner",
+                  "==700 orders/s=="
+                ],
+                [
+                  "Peak browse reads",
+                  "10x browse-to-order",
+                  "==7,000 search/menu reads/s=="
+                ],
+                [
+                  "Partner location writes",
+                  "500K partners / 5 s ping",
+                  "==100K writes/s=="
+                ]
+              ],
+              "highlightRow": 4
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Location writes (100K/s) are about ==140x== the order rate (700/s)",
+                "Reads dominate orders: 7,000 reads/s against 700 writes/s",
+                "Design for the ==peak==, never the average"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Size for peak",
+              "text": "The lunch and dinner peak is ==3x== the 230/s average. Capacity planned on the average fails at exactly the busiest hour."
+            },
+            {
+              "type": "heading",
+              "text": "3. Non-Functional Targets",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Requirement",
+                "Target",
+                "Applies to"
+              ],
+              "rows": [
+                [
+                  "Search latency",
+                  "**p99 < 200 ms**",
+                  "Restaurant and dish search"
+                ],
+                [
+                  "Order placement latency",
+                  "**p99 < 500 ms**",
+                  "Checkout to confirmed order"
+                ],
+                [
+                  "Availability",
+                  "**99.95%** (about 4.4 h downtime/year)",
+                  "Whole platform"
+                ],
+                [
+                  "Double charge",
+                  "{red:never}",
+                  "Payments"
+                ],
+                [
+                  "Lost order",
+                  "{red:never}",
+                  "Orders"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "sidebox",
+              "title": "Correctness rules",
+              "items": [
+                "A customer is charged ==once== per order",
+                "A placed order is never ==lost==",
+                "Search may be slightly stale; money and orders may not"
+              ],
+              "ink": "red"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "High-Level Architecture (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 2,
+      "pages": [
+        {
+          "title": "High-Level Architecture (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Edge and Core Services",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "{green:CDN}: serves ==images and menus== close to the user",
+                "{blue:API gateway}: ==auth==, **rate limit** and routing to services",
+                "Clients never call a core service directly"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Apps",
+                    "sub": "customer, restaurant, partner",
+                    "ink": "black"
+                  },
+                  {
+                    "text": "CDN",
+                    "sub": "images, menus",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "API gateway",
+                    "sub": "auth, rate limit, routing",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "8 core services",
+                    "sub": "behind the gateway",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "diagram",
+              "kind": "cards",
+              "spec": {
+                "cards": [
+                  {
+                    "title": "Discover",
+                    "lines": [
+                      "Search",
+                      "Catalog",
+                      "Cart"
+                    ],
+                    "ink": "blue"
+                  },
+                  {
+                    "title": "Transact",
+                    "lines": [
+                      "Order",
+                      "Payment"
+                    ],
+                    "ink": "green"
+                  },
+                  {
+                    "title": "Fulfil",
+                    "lines": [
+                      "Dispatch",
+                      "Tracking",
+                      "Notification"
+                    ],
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Sync vs Async Communication",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "",
+                "Sync REST/gRPC",
+                "Async Kafka"
+              ],
+              "rows": [
+                [
+                  "Used for",
+                  "reads and ==checkout==",
+                  "everything ==downstream=="
+                ],
+                [
+                  "Caller waits?",
+                  "{red:yes}",
+                  "{green:no}"
+                ],
+                [
+                  "Examples",
+                  "menu read, create order",
+                  "`OrderPlaced`, `OrderAccepted`, `PartnerAssigned`"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Event fan-out",
+                "steps": [
+                  {
+                    "text": "Order Service",
+                    "note": "emits OrderPlaced",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Kafka",
+                    "note": "topic per event type",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Dispatch, Notification, Tracking",
+                    "note": "each reacts on its own",
+                    "ink": "purple"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Storage and Ownership",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Store",
+                "Holds",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "{blue:Postgres}",
+                  "orders, payments",
+                  "transactions, strong consistency"
+                ],
+                [
+                  "{green:Elasticsearch}",
+                  "search index",
+                  "text + geo queries"
+                ],
+                [
+                  "{red:Redis}",
+                  "cart, geo",
+                  "fast, in-memory"
+                ],
+                [
+                  "{purple:Cassandra}",
+                  "location history",
+                  "heavy append-only writes"
+                ]
+              ]
+            },
+            {
+              "type": "sidebox",
+              "title": "Ownership rules",
+              "items": [
+                "==Order Service== alone creates the **order ID**",
+                "Other services react to events",
+                "They ==never write== the Order tables",
+                "Each service owns its own database"
+              ],
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Common mistake",
+              "text": "One ==shared DB== for all services couples them. Share **events**, not tables."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Restaurant Search and Discovery (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 3,
+      "pages": [
+        {
+          "title": "Restaurant Search and Discovery (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Find ==open==, ==deliverable== restaurants and dishes near the user",
+                "Rank by {blue:relevance}, {green:ETA}, {orange:rating} and {purple:offers}",
+                "One **Elasticsearch** index, sharded by a ==city-region geo cell==",
+                "Query = `geo_distance` filter + text `match` + ranking score",
+                "Shard by city-region so a 5-8 km query hits ==one shard=="
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Cell",
+                "Size",
+                "Use"
+              ],
+              "rows": [
+                [
+                  "S2 level 5-6",
+                  "about 150-300 km",
+                  "{green:Shard key}"
+                ],
+                [
+                  "Geohash precision 3",
+                  "about 150 km",
+                  "{green:Shard key} (alternative)"
+                ],
+                [
+                  "Geohash precision 5-6",
+                  "about 5 km / 1 km",
+                  "{red:Too small} to shard; fine for cache keys"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "heading",
+              "text": "2. Query Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Gateway",
+                    "sub": "auth, rate limit",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Search",
+                    "sub": "shard by geo cell",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Radius filter",
+                    "sub": "5-8 km serviceable",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Rank",
+                    "sub": "relevance, ETA, rating, offers",
+                    "ink": "green"
+                  },
+                  {
+                    "type": "x",
+                    "text": "Hydrate",
+                    "sub": "open/closed + ETA from Redis",
+                    "ink": "red"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Peak load: ==7K QPS== (10x browse-to-order ratio)",
+                "Hydrate **after** ranking: Redis lookup for the 20 page results only",
+                "Index holds slow-changing data; open/closed and ETA stay live in Redis"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "One doc per restaurant, with **menu items text** so dishes are searchable",
+                "Fed by ==CDC== from Catalog, index lag under ==5 s==",
+                "Endpoint returns ==20 results== per page with a **cursor**, not an offset"
+              ],
+              "style": "check",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "{\"id\":\"r42\",\"name\":\"Biryani House\",",
+                "\"cuisines\":[\"biryani\",\"north-indian\"],",
+                "\"location\":{\"lat\":12.93,\"lon\":77.62},",
+                "\"rating\":4.4,\"avg_prep_min\":18,",
+                "\"is_open\":true,",
+                "\"menu_text\":\"dum biryani, raita\"}"
+              ],
+              "note": "restaurant document in the index"
+            },
+            {
+              "type": "code",
+              "lang": "http",
+              "lines": [
+                "GET /search?lat=12.93&lng=77.62",
+                "    &q=biryani&cuisine=north-indian",
+                "    &sort=eta&cursor=eyJzIjoyMH0",
+                "-> {\"results\":[...20 items...],",
+                "    \"next_cursor\":\"eyJzIjo0MH0\"}"
+              ],
+              "note": "p99 target 200 ms at 7K QPS"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Stale index shows a closed restaurant: ==re-check availability at cart time==",
+                "ES is down: serve ==cached top-N per geo cell==",
+                "Trusting the index for open/closed instead of Redis"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Why it matters"
+              ],
+              "rows": [
+                [
+                  "Zero-result rate",
+                  "Coverage or query-parsing gaps"
+                ],
+                [
+                  "Search-to-cart conversion",
+                  "Result quality"
+                ],
+                [
+                  "p99 latency",
+                  "Target under 200 ms"
+                ],
+                [
+                  "Index lag",
+                  "Target under 5 s"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "The index is ==eventually consistent==. Open/closed comes from **Redis**, and cart time is the final availability check."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Menu and Cart (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 4,
+      "pages": [
+        {
+          "title": "Menu and Cart (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. What the Service Owns",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Serve menus: ==read-heavy==, about **100:1** reads to writes",
+                "Peak figures: about 7,000 menu reads/s vs 70 writes/s",
+                "Track ==item availability== and current prices",
+                "One cart per user, bound to ==one restaurant==",
+                "Cart holds intent only; the price is never final until checkout"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "heading",
+              "text": "2. Design and Caching",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Restaurant app",
+                    "sub": "stock flag, price",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Catalog DB",
+                    "sub": "Postgres / MongoDB",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Redis",
+                    "sub": "60s TTL",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "CDN",
+                    "sub": "60s TTL",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Customer app",
+                    "sub": "menu screen",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Menu **source of truth**: Postgres or MongoDB",
+                "Menu cached in ==Redis== and the ==CDN==, each with a 60s TTL",
+                "Availability flag pushed from the restaurant app ==invalidates both caches==",
+                "Without a push the layers stack: worst-case staleness is about ==120s== (60s + 60s)",
+                "Cart: Redis hash `cart:{userId}`, ==TTL 24h==",
+                "Item from a different restaurant: **prompt to clear** the cart first"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and APIs",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Entity",
+                "Fields"
+              ],
+              "rows": [
+                [
+                  "Menu",
+                  "`restaurantId`, `category`, item list"
+                ],
+                [
+                  "Menu item",
+                  "`id`, `price_paise`, `veg`, `available`, `variants[]`, `addons[]`"
+                ],
+                [
+                  "Cart",
+                  "`restaurantId`, `lines[{itemId, qty, addons}]`"
+                ]
+              ]
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Money is an ==integer in paise==, never a float",
+                "`GET /restaurants/{id}/menu` returns the cached menu",
+                "`PUT /cart/items` adds or changes a line in the cart",
+                "Checkout ==re-prices server-side== from Catalog",
+                "Client prices are **never trusted**"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Price or stock changed between add and pay",
+                "steps": [
+                  {
+                    "text": "Checkout",
+                    "note": "re-price from Catalog",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Mismatch found",
+                    "note": "sold out or new price",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Return diff",
+                    "note": "changed lines only",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "User confirms",
+                    "note": "then pay",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Metric",
+                "Target"
+              ],
+              "rows": [
+                [
+                  "Menu cache hit rate",
+                  "above 95%"
+                ],
+                [
+                  "Cart-to-checkout rate",
+                  "watch for drops"
+                ],
+                [
+                  "Price-mismatch count",
+                  "low and stable"
+                ]
+              ]
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never charge on a stale price",
+              "text": "The cart is a hint. Charge only the ==server-computed total==, and make the user confirm any diff."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Order Service and State Machine (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 5,
+      "pages": [
+        {
+          "title": "Order Service and State Machine (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and States",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Be the ==single source of truth== for order status",
+                "==Validate== every transition; reject illegal jumps",
+                "==Emit an event== on each change (Kafka)",
+                "{red:Side exits}: `CANCELLED`, `REJECTED`, `REFUNDED`",
+                "Other services react to events, they never write `orders`"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "CREATED",
+                    "sub": "order saved",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "PAYMENT_PENDING",
+                    "sub": "awaiting PSP",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "PAID",
+                    "sub": "webhook ok",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "RESTAURANT_ACCEPTED",
+                    "sub": "within 3 min",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "PREPARING",
+                    "sub": "kitchen",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "READY",
+                    "sub": "packed",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "PICKED_UP",
+                    "sub": "partner has it",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "DELIVERED",
+                    "sub": "terminal",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Guarded Transitions",
+              "ink": "blue"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "UPDATE orders",
+                "SET status = ?, version = version + 1",
+                "WHERE id = ? AND version = ? AND status = ?;"
+              ],
+              "note": "optimistic check: 0 rows updated = another writer won"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Check ==version== and ==current status== in the same WHERE",
+                "0 rows affected: reload the order, then retry or reject",
+                "No row locks held across the PSP or restaurant wait"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Table",
+                "Holds"
+              ],
+              "rows": [
+                [
+                  "`orders`",
+                  "id, user_id, restaurant_id, status, `version`, total_paise, address, created_at"
+                ],
+                [
+                  "`order_items`",
+                  "one row per line item of an order"
+                ],
+                [
+                  "`order_events`",
+                  "==append-only== audit log of every transition"
+                ],
+                [
+                  "Shard key",
+                  "`order_id`"
+                ]
+              ]
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Endpoint",
+                "Notes"
+              ],
+              "rows": [
+                [
+                  "`POST /orders`",
+                  "needs `Idempotency-Key` header"
+                ],
+                [
+                  "`GET /orders/{id}`",
+                  "current status"
+                ],
+                [
+                  "`POST /orders/{id}/cancel`",
+                  "allowed only from early states"
+                ]
+              ]
+            },
+            {
+              "type": "sidebox",
+              "title": "Accept timer",
+              "items": [
+                "Restaurant must accept within ==3 min==",
+                "Timer fires: auto-cancel the order",
+                "Then refund via Payment (`CANCELLED` then `REFUNDED`)"
+              ],
+              "ink": "orange"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Transactional outbox",
+                "steps": [
+                  {
+                    "text": "One DB transaction",
+                    "note": "update orders + insert order_events + outbox row",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Relay reads outbox",
+                    "note": "poller or CDC",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Publish to Kafka",
+                    "note": "at-least-once",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Mark row sent",
+                    "note": "consumers dedupe",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Duplicate submit: ==same Idempotency-Key== returns the same order",
+                "DB write then Kafka publish as two steps can lose an event",
+                "Metrics: {green:accept rate}, {red:cancellation rate}",
+                "Metrics: {blue:time in each state}, {orange:stuck-order count}"
+              ],
+              "style": "cross",
+              "frame": "dashed",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Never publish directly",
+              "text": "A direct Kafka publish after the DB commit can drop the event on a crash. Write the event to the ==outbox in the same transaction==."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Payments (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 6,
+      "pages": [
+        {
+          "title": "Payments (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Charge once==: no double charge, ever",
+                "Methods: UPI, cards, wallet, COD",
+                "COD: collected at delivery, no PSP charge",
+                "Also owns {blue:refunds} and {blue:restaurant settlements}"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Order Service",
+                    "sub": "asks to charge",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Payment Service",
+                    "sub": "one PSP interface",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "Razorpay",
+                    "sub": "primary PSP",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Paytm",
+                    "sub": "fallback on gateway error",
+                    "ink": "orange"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "sidebox",
+              "title": "PSP rules",
+              "items": [
+                "**Never** store raw card data: PCI scope stays with the PSP",
+                "`idempotency_key` is honoured only {red:within one PSP}",
+                "After a timeout, query the first PSP by `psp_ref` or wait for its webhook",
+                "Charge the fallback only once the first charge is confirmed absent",
+                "Record each attempt as its own `payments` row"
+              ],
+              "ink": "red"
+            },
+            {
+              "type": "heading",
+              "text": "2. Payment Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "steps": [
+                  {
+                    "text": "Create intent",
+                    "note": "payment row, status pending",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Collect",
+                    "note": "redirect or PSP SDK",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "PSP webhook",
+                    "note": "confirms the charge",
+                    "ink": "green"
+                  },
+                  {
+                    "text": "PaymentSucceeded",
+                    "note": "event emitted by Payment",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Order PAID",
+                    "note": "PAYMENT_PENDING to PAID",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Only the ==webhook== confirms a payment",
+                "Client polling is {red:only a hint}, never the source of truth"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "payments(",
+                "  id, order_id, amount_paise,",
+                "  method, psp_ref, status,",
+                "  idempotency_key",
+                ")"
+              ],
+              "note": "one row per PSP attempt; money in integer paise"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Ledger entries are ==double-entry== and **immutable**",
+                "Refunds are {blue:separate rows}, never edits to the charge",
+                "Fix mistakes with a reversing entry, not an update"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Handling"
+              ],
+              "rows": [
+                [
+                  "Webhook lost or delayed",
+                  "Reconciler polls the PSP for payments pending over ==5 min=="
+                ],
+                [
+                  "Charge succeeded but order creation failed",
+                  "Refund automatically"
+                ],
+                [
+                  "PSP timeout on charge",
+                  "Query that PSP by `psp_ref` first, then fall back"
+                ],
+                [
+                  "Duplicate webhook",
+                  "Dedupe on `psp_ref`"
+                ]
+              ],
+              "highlightRow": 1
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Payment success rate above ==97%==",
+                "Webhook lag",
+                "Refund time"
+              ],
+              "style": "checkbox"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Failover trap",
+              "text": "Retrying on the fallback PSP with the **same key** does not stop a double charge. Confirm the first charge failed before charging again."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Delivery Partner Assignment (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 7,
+      "pages": [
+        {
+          "title": "Delivery Partner Assignment (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Goal and Candidate Matching",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Goal: ==pickup time = food-ready time== for every order",
+                "Minimise partner {orange:idle wait} at the restaurant and total delivery time",
+                "Locations live in ==Redis GEO== or an in-memory **H3 cell** index",
+                "Candidates: status `AVAILABLE` within ==3 km==, expand to ==5 km==",
+                "Score = distance + load + rating + predicted prep time"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Score factor",
+                "Effect on rank"
+              ],
+              "rows": [
+                [
+                  "Distance to restaurant",
+                  "Closer partner ranks higher"
+                ],
+                [
+                  "Current load",
+                  "Fewer active orders ranks higher"
+                ],
+                [
+                  "Rating",
+                  "Higher rating ranks higher"
+                ],
+                [
+                  "Predicted prep time",
+                  "Partner arrives when food is ready"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Offer Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "Offer loop",
+                "steps": [
+                  {
+                    "text": "Trigger",
+                    "note": "at ~70% of prep time",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Rank",
+                    "note": "top-scored candidates",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Lock",
+                    "note": "SET NX on partner",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Offer",
+                    "note": "20s accept window",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Assigned",
+                    "note": "PartnerAssigned event",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "code",
+              "lang": "redis",
+              "lines": [
+                "SET lock:partner:{id} {offerId} NX EX 20"
+              ],
+              "note": "returns nil if the partner already holds another offer"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Reject or 20s timeout: {red:release the lock}, offer to the **next** partner",
+                "Lock fails: skip that partner, so one partner never gets ==two offers==",
+                "Batching: one partner may carry ==2 orders== on one route"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Dispatch early, not at order time",
+              "text": "Dispatch at about ==70% of prep time==, not when the order is placed. Example: 20 min prep means dispatch at minute 14, so the partner does not wait at the restaurant."
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "schema",
+              "spec": {
+                "tables": [
+                  {
+                    "name": "partners",
+                    "columns": [
+                      "id",
+                      "status",
+                      "location",
+                      "active_order_ids",
+                      "shift"
+                    ]
+                  },
+                  {
+                    "name": "assignments",
+                    "columns": [
+                      "order_id",
+                      "partner_id",
+                      "offered_at",
+                      "outcome"
+                    ]
+                  }
+                ],
+                "links": [
+                  {
+                    "from": "assignments",
+                    "to": "partners"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`POST /partners/{id}/offers/{offerId}/accept`",
+                "Accept writes the assignment outcome and emits `PartnerAssigned`"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Response"
+              ],
+              "rows": [
+                [
+                  "No partner found",
+                  "Widen radius, add an incentive, then notify the user of delay"
+                ],
+                [
+                  "Partner offline mid-order",
+                  "{red:Reassign} the order to the next-best partner"
+                ]
+              ],
+              "highlightRow": 0
+            },
+            {
+              "type": "sidebox",
+              "title": "Metrics",
+              "items": [
+                "Assignment time under ==30s== p90",
+                "Offer acceptance rate",
+                "Partner idle %",
+                "Food wait time"
+              ],
+              "ink": "blue"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Live Order Tracking (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 8,
+      "pages": [
+        {
+          "title": "Live Order Tracking (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Ingest",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Ingest== partner GPS from the delivery app",
+                "Show a ==live map + ETA== to the customer",
+                "Keep ==trip history== per order (track points)"
+              ],
+              "style": "check",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Input",
+                "Estimate"
+              ],
+              "rows": [
+                [
+                  "Ping interval",
+                  "every **5 s** per partner"
+                ],
+                [
+                  "Transport",
+                  "MQTT, or HTTP batch of several points"
+                ],
+                [
+                  "Partners online",
+                  "**500K** concurrent"
+                ],
+                [
+                  "Write rate",
+                  "500K / 5 s = {orange:100K writes/s}"
+                ],
+                [
+                  "Payload",
+                  "about **100 B** per point"
+                ],
+                [
+                  "Bandwidth",
+                  "100K x 100 B = {orange:10 MB/s}"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "heading",
+              "text": "2. Design",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Partner app",
+                    "sub": "GPS every 5s",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Ingest",
+                    "sub": "MQTT / HTTP batch",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Redis",
+                    "sub": "latest point, TTL 30s",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Kafka",
+                    "sub": "location events",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Cassandra",
+                    "sub": "history",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Latest point goes to ==Redis== (key `partner:{id}`, TTL 30s); history goes ==Kafka -> Cassandra==",
+                "Customer gets updates over ==WebSocket/SSE== every 5s",
+                "Push only while the order is {green:active}; stop after DELIVERED"
+              ],
+              "style": "dot"
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "bash",
+              "lines": [
+                "HSET partner:42 lat 12.97 lng 77.59 ts 1767000000",
+                "EXPIRE partner:42 30",
+                "GEOADD geo:blr 77.59 12.97 42",
+                "GEOSEARCH geo:blr FROMLONLAT 77.59 12.97 BYRADIUS 3 km ASC"
+              ],
+              "note": "hash = latest point; per-city GEO set = radius search"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "GEO set is one sorted set: ==members cannot expire individually==",
+                "So read each hit's `ts` and drop entries that are stale",
+                "Cassandra `track_points`: partition `(order_id)`, cluster by `ts`",
+                "ETA = ==route time== from a maps engine + ==remaining prep time==, recalculated every **30 s**"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Failure",
+                "Handling"
+              ],
+              "rows": [
+                [
+                  "GPS gap / tunnel",
+                  "interpolate; show **last-known** marker"
+                ],
+                [
+                  "WebSocket drop",
+                  "client polls `GET /orders/{id}/track`"
+                ],
+                [
+                  "Partner stops pinging",
+                  "Redis TTL 30s expires the hash"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Location staleness under ==10 s==",
+                "ETA error under ==3 min== at p90",
+                "WebSocket connection count",
+                "Battery drain per hour (partner app)"
+              ],
+              "style": "checkbox",
+              "ink": "red"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Remember",
+              "text": "Redis holds only the ==latest== point; ==history== goes through Kafka to Cassandra. Never write 100K pings/s straight to the history store."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Notifications (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 9,
+      "pages": [
+        {
+          "title": "Notifications (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Responsibilities and Design",
+              "ink": "green"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Tell the {blue:customer}, {orange:restaurant} and {purple:delivery partner} about each order event",
+                "Channels: ==push==, ==SMS==, **in-app**, **email**",
+                "{green:Transactional} (order updates, OTP) always beats {red:promotional}: it never waits behind promos"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "green"
+            },
+            {
+              "type": "diagram",
+              "kind": "flow",
+              "spec": {
+                "nodes": [
+                  {
+                    "text": "Kafka consumers",
+                    "sub": "order events",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Template + preference",
+                    "sub": "render, opt-outs",
+                    "ink": "purple"
+                  },
+                  {
+                    "text": "Channel workers",
+                    "sub": "one pool per channel",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "FCM / APNs / SMS / email",
+                    "sub": "external providers",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "2. Event Flow",
+              "ink": "blue"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "`OrderPlaced` → push to the ==restaurant== with a sound, loud retry every **30s** until accepted",
+                "`PartnerAssigned` → push to the customer",
+                "`Delivered` → push to the customer",
+                "Push first; ==fall back to SMS== if undelivered after **60s**"
+              ],
+              "style": "check",
+              "ink": "blue"
+            },
+            {
+              "type": "diagram",
+              "kind": "flowchart",
+              "spec": {
+                "rows": [
+                  [
+                    "send"
+                  ],
+                  [
+                    "q"
+                  ],
+                  [
+                    "ok",
+                    "sms"
+                  ]
+                ],
+                "nodes": {
+                  "send": {
+                    "text": "Send push",
+                    "shape": "box",
+                    "ink": "blue"
+                  },
+                  "q": {
+                    "text": "Delivered in 60s?",
+                    "shape": "diamond"
+                  },
+                  "ok": {
+                    "text": "Done",
+                    "shape": "pill",
+                    "ink": "green"
+                  },
+                  "sms": {
+                    "text": "Send SMS",
+                    "shape": "box",
+                    "ink": "orange"
+                  }
+                },
+                "edges": [
+                  {
+                    "from": "send",
+                    "to": "q"
+                  },
+                  {
+                    "from": "q",
+                    "to": "ok",
+                    "label": "yes"
+                  },
+                  {
+                    "from": "q",
+                    "to": "sms",
+                    "label": "no"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "heading",
+              "text": "3. Data Model and API",
+              "ink": "purple"
+            },
+            {
+              "type": "diagram",
+              "kind": "schema",
+              "spec": {
+                "tables": [
+                  {
+                    "name": "notifications",
+                    "columns": [
+                      "id",
+                      "user_id",
+                      "event_id",
+                      "channel",
+                      "status",
+                      "sent_at"
+                    ]
+                  },
+                  {
+                    "name": "device_tokens",
+                    "columns": [
+                      "user_id",
+                      "token",
+                      "platform"
+                    ]
+                  }
+                ],
+                "links": [
+                  {
+                    "from": "notifications",
+                    "to": "device_tokens"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Idempotency==: unique key on `(event_id, channel, user_id)`, a replayed event sends nothing twice",
+                "Internal API only: `POST /notify`, called by consumers, never by clients"
+              ],
+              "style": "dot",
+              "ink": "purple"
+            },
+            {
+              "type": "code",
+              "lang": "json",
+              "lines": [
+                "POST /notify",
+                "{ \"user_id\": 42,",
+                "  \"event_id\": \"ord_9\",",
+                "  \"channel\": \"push\",",
+                "  \"template\": \"order_placed\" }"
+              ],
+              "note": "duplicate key returns the stored result"
+            },
+            {
+              "type": "heading",
+              "text": "4. Failures and Metrics",
+              "ink": "red"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Problem",
+                "Response"
+              ],
+              "rows": [
+                [
+                  "FCM throttling or outage",
+                  "Retry with ==exponential backoff==, then **dead-letter queue**"
+                ],
+                [
+                  "Stale device token",
+                  "`404` from provider: ==prune== the row"
+                ],
+                [
+                  "Promo spike",
+                  "Separate queues, transactional never blocked"
+                ],
+                [
+                  "Metrics",
+                  "Delivery rate, send latency **< 2s p99**, opt-out rate"
+                ]
+              ],
+              "frame": "dashed"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Isolate the lanes",
+              "text": "Transactional and promotional get ==separate queues and worker pools==. A marketing blast must never delay an `OrderPlaced` push."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Scaling, Failure Handling and Interview Questions (Food Delivery App)",
+      "role": "outline",
+      "outlineIndex": 10,
+      "pages": [
+        {
+          "title": "Scaling, Failure Handling and Interview Questions (Food Delivery App)",
+          "blocks": [
+            {
+              "type": "heading",
+              "text": "1. Peak Hours and Sharding",
+              "ink": "orange"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "Lunch/dinner is {orange:3x}: 230 orders/s avg → ==700 orders/s== peak, 7,000 search/menu reads/s",
+                "Spikes are predictable, so ==pre-scale== autoscaling groups on a **schedule**, not on CPU alone",
+                "**Shed** non-critical load first: recommendations, promos. Never shed order or payment paths",
+                "==Rate-limit per user== at the API gateway so one client cannot eat the peak"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "orange"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Data",
+                "Shard key",
+                "Why"
+              ],
+              "rows": [
+                [
+                  "Orders (Postgres)",
+                  "`order_id`",
+                  "Even spread, every order read is by id"
+                ],
+                [
+                  "Search (Elasticsearch)",
+                  "city-region geo cell",
+                  "A 5-8 km query hits one shard"
+                ],
+                [
+                  "Track points (Cassandra)",
+                  "`order_id`",
+                  "One trip's points in one partition"
+                ],
+                [
+                  "Whole stack",
+                  "**city = cell**",
+                  "One city outage never spreads"
+                ]
+              ],
+              "highlightRow": 3
+            },
+            {
+              "type": "heading",
+              "text": "2. Consistency Trade-offs",
+              "ink": "blue"
+            },
+            {
+              "type": "table",
+              "headers": [
+                "Data",
+                "Choice",
+                "Cost and fallback"
+              ],
+              "rows": [
+                [
+                  "Search",
+                  "{blue:AP}, eventually consistent",
+                  "Index lag under 5s; re-check availability at cart time"
+                ],
+                [
+                  "Orders, payments",
+                  "{green:CP}, strongly consistent",
+                  "Rejects writes during a partition rather than risk a wrong charge"
+                ],
+                [
+                  "Cart (Redis)",
+                  "Fast but **volatile**",
+                  "If lost, ==rebuild from the client== cart"
+                ]
+              ]
+            },
+            {
+              "type": "heading",
+              "text": "3. Failure Handling",
+              "ink": "red"
+            },
+            {
+              "type": "diagram",
+              "kind": "chain",
+              "spec": {
+                "title": "PSP or maps call fails",
+                "steps": [
+                  {
+                    "text": "Timeout",
+                    "note": "fail fast, never hang",
+                    "ink": "orange"
+                  },
+                  {
+                    "text": "Breaker opens",
+                    "note": "stop hammering the dependency",
+                    "ink": "red"
+                  },
+                  {
+                    "text": "Fallback",
+                    "note": "second PSP / cached ETA",
+                    "ink": "blue"
+                  },
+                  {
+                    "text": "Half-open probe",
+                    "note": "close when healthy",
+                    "ink": "green"
+                  }
+                ]
+              }
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "==Idempotency keys everywhere==: order submit, PSP call, notify, consumers",
+                "==Outbox== writes the DB row and the event together; failed events go to a **DLQ**",
+                "**Multi-AZ** failover with ==RTO under 5 min==; a retry must be safe to repeat"
+              ],
+              "style": "check"
+            },
+            {
+              "type": "code",
+              "lang": "sql",
+              "lines": [
+                "INSERT INTO payments (order_id, amount_paise, idempotency_key)",
+                "VALUES (?, ?, ?)",
+                "ON CONFLICT (idempotency_key) DO NOTHING;"
+              ],
+              "note": "a retried charge hits the unique key and creates no second row"
+            },
+            {
+              "type": "heading",
+              "text": "4. Interview Checks",
+              "ink": "purple"
+            },
+            {
+              "type": "bullets",
+              "items": [
+                "**Avoid double charge?** Idempotency-Key, unique `psp_ref` webhook dedupe, reconciler for pending payments",
+                "**Partners scarce?** Widen radius 3 → 5 km, add incentive, batch 2 orders, then notify the user of delay",
+                "**Track at 100K writes/s?** Latest point to Redis (TTL 30s); history via Kafka to Cassandra; ~10 MB/s",
+                "**Why not poll?** Every active customer polling every 5s is wasted load; push over WebSocket/SSE, poll only as fallback"
+              ],
+              "style": "dot",
+              "frame": "dashed",
+              "ink": "purple"
+            },
+            {
+              "type": "callout",
+              "style": "sticky",
+              "title": "Common mistake",
+              "text": "One ==shared DB for all services==: a promo or search spike then slows orders and payments. Give each service its **own store**."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Check yourself",
+      "role": "quiz",
+      "pages": [
+        {
+          "title": "Check yourself",
+          "blocks": [
+            {
+              "type": "qa",
+              "q": "A customer taps Pay, the network times out, and they tap Pay again. The client sends POST /orders twice. What stops a double charge, and where does it hold?",
+              "a_bullets": [
+                "Both requests carry the same `Idempotency-Key`, so Order Service returns the **same order** for the second call instead of creating another.",
+                "The payments row also stores an `idempotency_key`, so the PSP is asked to charge only once.",
+                "If the PSP webhook arrives twice, the duplicate is dropped by matching `psp_ref`.",
+                "One check is not enough. The key has to be enforced at order creation, at the charge and at the webhook."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "An order is PAID at version 5. The restaurant's Accept and the 3-minute auto-cancel timer both read version 5 and run their UPDATE at the same moment. What happens?",
+              "a_bullets": [
+                "Each runs `UPDATE orders SET status=?, version=version+1 WHERE id=? AND version=5 AND status='PAID'`.",
+                "The database applies one first. Say Accept wins: 1 row changes and the order becomes RESTAURANT_ACCEPTED at version 6.",
+                "The cancel's WHERE clause no longer matches, so it changes **0 rows** and knows it lost.",
+                "It must reload the order, see it was accepted, and drop the cancel. This is optimistic locking, so no row lock is held."
+              ],
+              "example_code": [
+                "UPDATE orders",
+                "SET status='RESTAURANT_ACCEPTED', version=version+1",
+                "WHERE id=:id AND version=5 AND status='PAID';"
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "Dispatch is triggered the moment the order is placed. A biryani takes 20 minutes to prepare. What goes wrong, and what is the fix?",
+              "a_bullets": [
+                "A partner is assigned and reaches the restaurant in about 5 minutes, then **waits roughly 15 minutes** for the food.",
+                "That hurts the partner's earnings and idle %. It also ties up a partner who could have delivered other orders.",
+                "The fix is to dispatch at about **70% of predicted prep time**, around minute 14 here, so pickup lines up with food-ready.",
+                "If the prep estimate is wrong, the matching score still uses predicted prep time and the offer flow still handles reject and timeout."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "A partner drives through a tunnel and sends no GPS for 40 seconds. Their Redis hash `partner:{id}` has a 30s TTL. What happens to the hash, and what about the per-city GEO set?",
+              "a_bullets": [
+                "The hash expires at 30s, so the latest-location read returns nothing for that partner.",
+                "GEO set members **cannot expire individually**, so the partner's old coordinates stay in the set.",
+                "The radius search can still return them as nearby, so a stale-`ts` filter has to drop them.",
+                "The customer's map keeps the last-known marker and interpolates until pings resume."
+              ]
+            },
+            {
+              "type": "qa",
+              "q": "The client cart shows Paneer Tikka at 24900 paise. The restaurant raised the price to 26900 after it was added. The user taps Pay. What should checkout do?",
+              "a_bullets": [
+                "Checkout **re-prices server-side** from Catalog and ignores the client's price.",
+                "It sees the mismatch and returns a **diff** of old price against new, without silently charging 26900.",
+                "The user must confirm the new total before the payment intent is created.",
+                "Trusting the client price would let a tampered cart pay less, and charging a hidden higher price would cause disputes."
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

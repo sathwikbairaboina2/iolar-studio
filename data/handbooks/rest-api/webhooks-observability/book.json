@@ -1,0 +1,109 @@
+{
+  "title": "Webhooks & Observability: Quick Revision",
+  "summary": "Quick revision notes on reliable webhook delivery, signature verification, idempotent consumers, and production observability with structured logs, correlation IDs, RED metrics and OpenTelemetry tracing.",
+  "chapters": [
+    {
+      "title": "Webhooks and Delivery Retries",
+      "points": [
+        "Webhook = provider sends an HTTP POST to your URL when an event occurs (push, not polling); the consumer must return 2xx fast",
+        "Delivery guarantee is at-least-once, never exactly-once: duplicates and out-of-order events are normal",
+        "Retry policy: any non-2xx or timeout triggers retry with exponential backoff plus jitter (e.g. 1m, 5m, 30m, 2h) up to a max, then dead-letter or disable the endpoint",
+        "Ack-then-process: verify, enqueue the payload, return 200 immediately; do heavy work in a background worker to avoid provider timeouts (often 5-10s)",
+        "Mistake: returning 500 for permanently bad payloads causes endless retries; use 2xx for 'accepted but ignored' and 4xx only for truly invalid requests"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "HMAC Signatures and Timestamps",
+      "points": [
+        "HMAC-SHA256(secret, signed_payload) is sent in a header; consumer recomputes it and compares to prove authenticity and integrity",
+        "Signed payload is usually `timestamp + '.' + rawBody`; including the timestamp binds the signature to a point in time",
+        "Verify against the RAW request bytes, not re-serialized JSON: a body parser that reparses changes whitespace/key order and breaks the signature",
+        "Reject if |now - timestamp| exceeds a tolerance (about 5 minutes) to block replay attacks; replay protection needs the timestamp inside the signature",
+        "Compare with constant-time equality (crypto.timingSafeEqual / hmac.compare_digest), never ==; support secret rotation by accepting multiple signatures"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Idempotent Consumers",
+      "points": [
+        "Idempotent = processing the same event N times has the same effect as processing it once; required because delivery is at-least-once",
+        "Dedupe on the provider's unique event ID (e.g. `evt_123`), not on payload hash or arrival time",
+        "Insert the event ID into a table with a UNIQUE constraint in the same DB transaction as the side effect; a duplicate-key error means skip and return 200",
+        "Check-then-insert (SELECT then INSERT) races under concurrent retries; rely on the unique constraint or an atomic `SET NX` in Redis with a TTL",
+        "Handle out-of-order events by comparing version/timestamp or re-fetching current state from the provider API instead of trusting the payload order"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Structured Logs and Correlation IDs",
+      "points": [
+        "Structured log = one JSON object per line with fixed keys (ts, level, msg, service, event_id, request_id, duration_ms) so logs are queryable, not grep-only",
+        "Correlation ID: generate at the edge (or accept inbound `X-Request-ID`), store in request-scoped context (AsyncLocalStorage / contextvars), attach to every log line",
+        "Propagate the ID on all outbound calls and queue messages, and return it in the response header so support can trace one request across services",
+        "Log event_id, status code, and latency for each webhook delivery so a failed delivery can be located by ID in seconds",
+        "Mistake: logging secrets, signatures, tokens or full PII payloads; redact them, and use levels consistently (info for normal, error only for actionable failures)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "RED Metrics and OpenTelemetry Tracing",
+      "points": [
+        "RED = Rate (requests/sec), Errors (failed requests/sec or ratio), Duration (latency distribution); use for every request-driven service (USE is for resources)",
+        "Report duration as a histogram and alert on percentiles (p95/p99), never the average, which hides tail latency",
+        "Keep metric label cardinality low: label by route template (`/users/:id`), method, status class; never by user ID or raw URL (explodes time series)",
+        "OpenTelemetry trace = tree of spans sharing a trace_id; context propagates between services via the W3C `traceparent` header (version-traceid-spanid-flags)",
+        "Instrument with auto-instrumentation plus manual spans around key work, export via OTLP to a Collector, and link logs by injecting trace_id/span_id into each log line"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Webhooks and Observability Cheat Sheet",
+      "points": [
+        "Receiver flow: read raw body → verify HMAC + timestamp → dedupe event ID → enqueue → return 2xx fast",
+        "Signature: HMAC-SHA256(secret, `t.rawBody`), constant-time compare, 5-minute tolerance, rotate secrets with dual verification",
+        "Retries: exponential backoff + jitter, at-least-once delivery, dead-letter after max attempts; 2xx = done, 5xx/timeout = retry",
+        "Observability trio: JSON logs with request_id/trace_id, RED metrics (histograms, low-cardinality labels), OTel traces via `traceparent` + OTLP",
+        "Top mistakes: parsing body before verifying, check-then-insert dedupe, slow synchronous handlers, high-cardinality labels, logging secrets"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

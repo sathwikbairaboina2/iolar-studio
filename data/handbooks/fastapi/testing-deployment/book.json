@@ -1,0 +1,115 @@
+{
+  "title": "Testing and Deploying FastAPI: Quick Revision",
+  "summary": "Quick revision notes on testing FastAPI apps with TestClient and httpx AsyncClient, dependency overrides and pytest fixtures, then configuring with pydantic-settings and running with Uvicorn workers, Gunicorn and Docker.",
+  "chapters": [
+    {
+      "title": "Testing Mental Model",
+      "points": [
+        "TestClient (from fastapi.testclient) wraps your ASGI app and calls it in-process with no real server or network port; it is built on httpx",
+        "TestClient is synchronous: call client.get('/items') in a plain def test, no await needed",
+        "Use the client as a context manager (with TestClient(app) as client) so startup and shutdown lifespan events run; a bare TestClient(app) skips them",
+        "Test pyramid for APIs: unit-test pure functions, test endpoints through the client, keep real-network tests few",
+        "Mistake: testing against a running uvicorn server and a real database, which makes tests slow and flaky"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "TestClient and AsyncClient Workflow",
+      "points": [
+        "TestClient basics: r = client.post('/items', json={'name':'x'}); assert r.status_code == 201; assert r.json()['name'] == 'x'",
+        "httpx.AsyncClient needs transport=ASGITransport(app=app) and base_url='http://test' (the app= shortcut is removed in current httpx)",
+        "Async test: async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as ac: r = await ac.get('/'); needs pytest-asyncio or anyio marker",
+        "Choose AsyncClient when the test itself must await things (async DB calls, async fixtures); choose TestClient otherwise",
+        "Mistake: AsyncClient with ASGITransport does not run lifespan events; wrap with asgi-lifespan LifespanManager or run startup yourself",
+        "Mistake: forgetting the @pytest.mark.anyio / asyncio marker, so the async test is skipped or errors out"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Dependency Overrides and Fixtures",
+      "points": [
+        "app.dependency_overrides[get_db] = fake_get_db replaces a Depends callable; the key is the original function object, not a string",
+        "Override the same callable the route uses via Depends, e.g. get_current_user, to skip auth in tests",
+        "Always clear overrides after the test: app.dependency_overrides.clear() or pop inside a yield fixture, otherwise they leak into other tests",
+        "Fixture pattern in conftest.py: @pytest.fixture def client(): with TestClient(app) as c: yield c; app.dependency_overrides.clear()",
+        "Test DB pattern: fixture creates a session in a transaction or in-memory SQLite, override get_db to yield it, roll back after each test",
+        "Fixture scope: function (default) isolates tests; session scope speeds up expensive setup like creating tables",
+        "Mistake: overriding a dependency imported under a different object (wrapped or re-created), so the override never matches"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Settings with pydantic-settings",
+      "points": [
+        "Install pydantic-settings separately; class Settings(BaseSettings) with typed fields reads environment variables and .env",
+        "Config: model_config = SettingsConfigDict(env_file='.env', env_prefix='APP_'); env var names are case-insensitive by default",
+        "Value precedence: init arguments, then environment variables, then .env file, then field defaults; the environment beats .env",
+        "Cache with @lru_cache on get_settings() and inject via Depends(get_settings); tests override it with dependency_overrides[get_settings]",
+        "Missing required fields raise ValidationError at startup (fail fast); use SecretStr for secrets so they are masked in repr and logs",
+        "Mistake: committing .env, or reading os.environ directly so values are untyped and unvalidated"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "example",
+        "comparison",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Uvicorn, Gunicorn and Docker",
+      "points": [
+        "Run dev: uvicorn app.main:app --reload (one process, auto reload, never in production); --host 0.0.0.0 is needed inside containers",
+        "Uvicorn multiple processes: uvicorn app.main:app --workers 4 (or fastapi run --workers 4); --reload and --workers cannot be combined",
+        "Gunicorn as process manager: gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000; newer Uvicorn also ships its own supervisor, so Gunicorn is optional",
+        "Workers are separate processes with no shared memory: in-memory caches and globals differ per worker, so use Redis or a DB for shared state",
+        "Docker: python slim base, copy requirements first for layer caching, CMD in exec form: CMD [\"uvicorn\",\"app.main:app\",\"--host\",\"0.0.0.0\",\"--port\",\"80\"]",
+        "On Kubernetes run one Uvicorn process per container and scale with replicas; on a single VM use workers near CPU core count",
+        "Mistake: shell-form CMD so signals are not forwarded and graceful shutdown breaks; binding 127.0.0.1 so the container port is unreachable"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Cheat Sheet",
+      "points": [
+        "TestClient: with TestClient(app) as c: c.get('/') ; sync, runs lifespan only inside with",
+        "AsyncClient: AsyncClient(transport=ASGITransport(app=app), base_url='http://test') plus an async marker; no lifespan",
+        "Override: app.dependency_overrides[dep] = fake; clear in fixture teardown",
+        "Settings: BaseSettings + SettingsConfigDict(env_file, env_prefix); @lru_cache get_settings; SecretStr for secrets",
+        "Run: uvicorn app.main:app --workers N; gunicorn -k uvicorn.workers.UvicornWorker -w N; Docker exec-form CMD with --host 0.0.0.0"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}

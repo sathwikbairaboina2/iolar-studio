@@ -1,0 +1,116 @@
+{
+  "title": "Build Once, Deploy Many: CI/CD Container Images",
+  "summary": "Quick revision notes on building a container image once in CI and promoting that exact artifact through every environment. Covers tags vs digests, multi-stage builds, layer caching, registries, scanning and promotion.",
+  "chapters": [
+    {
+      "title": "Build Once, Deploy Many: The Mental Model",
+      "points": [
+        "Build once, deploy many: CI builds the image a single time and every environment runs that exact artifact",
+        "Rebuilding per environment gives different bytes for the same commit, so staging proves nothing about prod",
+        "Environment differences live in runtime config (env vars, secrets, mounted config), never baked into the image",
+        "An image is a stack of immutable layers plus a manifest; the manifest hash is its identity",
+        "Pipeline shape: build → test → scan → push → promote (dev → staging → prod)"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Tags vs Immutable Digests",
+      "points": [
+        "A tag is a mutable pointer: myapp:1.4 can be re-pushed to point at different content",
+        "A digest (sha256:...) is the hash of the manifest, so it is immutable and content-addressed",
+        "Reference by digest: docker pull myapp@sha256:<digest>; the form myapp:1.4@sha256:<digest> pins the digest and the tag is only a label",
+        "Tag with the git SHA (myapp:3f9c2ab) for traceability; avoid :latest in any deployed manifest",
+        "Read the digest after push: docker buildx imagetools inspect myapp:3f9c2ab or docker inspect --format '{{index .RepoDigests 0}}'",
+        "Enable tag immutability on the registry (e.g. ECR immutable tags) so re-pushing an existing tag is rejected"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Multi-Stage Builds and Layer Caching in CI",
+      "points": [
+        "Multi-stage: FROM node:22 AS build compiles, then FROM node:22-slim copies only artifacts via COPY --from=build /app/dist ./dist",
+        "Final stage drops compilers and dev dependencies, so the image is smaller with a smaller attack surface",
+        "Layer order for cache hits: base image, then COPY package*.json and install deps, then COPY source last",
+        "A changed layer invalidates every layer after it, so put the slowest-changing steps first",
+        "CI runners are ephemeral, so the local cache is empty: use docker buildx build --cache-from type=registry,ref=myapp:cache --cache-to type=registry,ref=myapp:cache,mode=max",
+        "Alternatives: type=gha for GitHub Actions cache; BuildKit cache mounts (RUN --mount=type=cache,target=/root/.npm) for package managers",
+        "A .dockerignore (node_modules, .git, .env) keeps the build context small and stops secrets leaking into layers"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Registries, Retention and Image Scanning",
+      "points": [
+        "Registry stores images by repository, tag and digest (ECR, GHCR, Docker Hub, Harbor); CI pushes with a short-lived credential, not a personal password",
+        "Retention/lifecycle policies expire untagged and old images, e.g. ECR: keep the last 30 images, expire untagged after 7 days",
+        "Never expire the digests currently deployed in any environment, or rollbacks and pod restarts fail with ImagePullBackOff",
+        "Scan in CI before push or promotion with Trivy or Grype: trivy image --severity HIGH,CRITICAL --exit-code 1 myapp:3f9c2ab",
+        "Registry scan on push (ECR basic or enhanced scanning) plus periodic rescans, because new CVEs appear for images already deployed",
+        "Scan results attach to a digest, not a tag, so a gate result stays valid only for that exact image",
+        "Sign images (cosign) and verify the signature at deploy time to prove the digest came from your pipeline"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Promoting the Same Image Across Environments",
+      "points": [
+        "Promotion moves the same digest forward; it never rebuilds: dev → staging → prod",
+        "Promote by retagging the existing manifest: docker buildx imagetools create -t myapp:prod myapp@sha256:<digest>, which copies no layers",
+        "Deploy manifests reference the digest, e.g. image: myapp@sha256:<digest> in a Kubernetes Deployment",
+        "GitOps promotion: a pipeline or PR bumps the digest in the env's manifest or Helm values; Git history is the audit trail and rollback is a revert",
+        "Gate each promotion on tests, scan result and approval; the gate evaluates the digest it will deploy",
+        "Per-environment config via env vars, ConfigMaps, Secrets or a secrets manager injected at runtime",
+        "Rollback means redeploying the previous digest, which is only possible if retention kept it"
+      ],
+      "shape": [
+        "definition",
+        "mechanism",
+        "comparison",
+        "example",
+        "mistakes",
+        "summary"
+      ]
+    },
+    {
+      "title": "Common Mistakes and Cheat Sheet",
+      "points": [
+        "Mistake: rebuilding in each environment's pipeline, so prod runs an image no test ever saw",
+        "Mistake: deploying :latest or a mutable tag, so pods on different nodes run different code",
+        "Mistake: baking secrets or env-specific config into layers, which stay readable in image history",
+        "Mistake: building without registry cache in CI, so every run reinstalls all dependencies",
+        "Cheat sheet: build once → tag with git SHA → push → record digest → scan → deploy by digest → promote via retag or manifest bump → retain deployed digests"
+      ],
+      "shape": [
+        "cheatsheet"
+      ]
+    }
+  ]
+}
