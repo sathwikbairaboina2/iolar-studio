@@ -30,7 +30,7 @@ schema     {"tables":[{"name":"users","columns":["id","name"]}],"links":[{"from"
 er         {"entities":[{"name":"User","attrs":["id"]}],"relations":[{"from":"User","to":"Order","name":"places"}]}
 ink values: blue, red, green, black, purple, orange, pink. Never use the diagram kinds compare, tree or memory-cells.`;
 
-export const INLINE_SYNTAX = `Inline text (paragraph, bullets, table cells, callouts, qa) uses only: **bold**, ==mark==, \`code\`, __underline__, {icon:name}, and {blue|red|green|black|purple|orange|pink:text}. No single-asterisk italics, no markdown headings, no markdown links.`;
+export const INLINE_SYNTAX = `Inline text (paragraph, bullets, table cells, callouts, qa) uses only: **bold**, ==mark==, \`code\`, __underline__, {icon:name}, and {blue|red|green|black|purple|orange|pink:text}. No single-asterisk italics, no markdown headings, no markdown links. Python names with double underscores always go in code, like \`__init__\`: bare, they draw as an underlined word.`;
 
 /** The limits validateEdition enforces, in words the writer can follow. */
 export const capsText = (caps: PageCaps) => `Hard limits, checked by a program (a page over any of them is thrown away): at most ${caps.blocks} blocks on the page, at most ${caps.code} code blocks (an output block does not count), at most ${caps.tables} tables, at most ${caps.codeLines} lines per code block, at most ${MAX_PARAGRAPHS_PER_PAGE} paragraph of at most ${MAX_PARAGRAPH_CHARS} characters, and every bullet item at most ${MAX_BULLET_CHARS} characters${caps.words ? `, and at most ${caps.words} words of visible text on the page in all (cut to the must-know lines)` : ''}.`;

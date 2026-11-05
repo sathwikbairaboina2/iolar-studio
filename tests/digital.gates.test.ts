@@ -142,6 +142,20 @@ describe('editionGates', () => {
     expect(f.every((x) => x.severity === 'minor')).toBe(true);
   });
 
+  it('flags Python dunder names outside code, because the reader draws them as underlines', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('`@dataclass` writes ==__init__== for you'), para('Forgot super().__repr__()'), para('if __name__ is set')]);
+    const f = (await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.dunder');
+    expect(f).toHaveLength(3);
+    expect(f.every((x) => x.severity === 'major')).toBe(true);
+  });
+
+  it('leaves dunder names in code and real underlines alone', async () => {
+    const { editionGates } = await import('@/lib/digital/gates');
+    const m = mini([para('Define `__init__` and `super().__repr__()`'), para('The list must be __sorted__ first'), para('`?` is __not__ nullable')]);
+    expect((await editionGates(m.edition, m.book)).filter((x) => x.rule === 'rules.dunder')).toEqual([]);
+  });
+
   it('flags a compare diagram and a cover page as kinds the reader does not draw', async () => {
     const { editionGates } = await import('@/lib/digital/gates');
     const m = mini([{ type: 'diagram', kind: 'compare', spec: { left: { title: 'a', items: ['x'] }, right: { title: 'b', items: ['y'] } } }, { type: 'labelrows', rows: [{ icon: 'python', label: 'l', text: 't' }] }]);

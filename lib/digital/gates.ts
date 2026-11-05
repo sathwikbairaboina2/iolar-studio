@@ -99,6 +99,9 @@ const MARKDOWN: [RegExp, string][] = [
   [/\[[^\]]+\]\([^)]+\)/, 'a markdown link'],
 ];
 
+/** `__init__` outside code is the underline marker, so the reader shows an underlined "init". Real words like __sorted__ are fine. */
+const DUNDER = /__(init|new|del|repr|str|eq|ne|lt|le|gt|ge|hash|bool|len|iter|next|getitem|setitem|delitem|contains|call|enter|exit|aenter|aexit|aiter|anext|await|get|set|delete|set_name|getattr|setattr|post_init|init_subclass|class_getitem|name|main|file|doc|dict|class|module|qualname|slots|mro|bases|cause|context|traceback|suppress_context|package|path|pycache|all|wrapped|annotations|defaults|add|sub|mul|truediv|proto)__/;
+
 /** Output the printed text of a run is compared against. */
 function firstLines(s: string) {
   return s.trim().split('\n').slice(0, 3).join(' | ').slice(0, 160);
@@ -223,6 +226,7 @@ export async function editionGates(e: Edition, book: Book, opts: { budgetMs?: nu
     for (const { block, page } of p.blocks) {
       for (const t of texts(block)) {
         const bare = t.replace(/`[^`]*`/g, '');
+        if (block.type !== 'code' && DUNDER.test(bare)) out.push(finding('rules.dunder', 'major', page, 'A Python name with double underscores sits outside code, so the reader draws it as an underlined word.', t.slice(0, 100), 'Put the name in backticks, like `__init__`.'));
         for (const [re, what] of MARKDOWN) {
           if (re.test(bare)) { out.push(finding('rules.markdown', 'minor', page, `The text uses ${what}, which the reader does not draw.`, t.slice(0, 100), 'Use the studio syntax: **bold**, ==mark==, `code`, __underline__.')); break; }
         }
