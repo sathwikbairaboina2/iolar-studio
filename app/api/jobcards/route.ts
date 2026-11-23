@@ -2,14 +2,15 @@ import { NextResponse } from 'next/server';
 import { thinker } from '@/lib/ai/runner';
 import { poolRowById } from '@/lib/jobs/ledger';
 import type { ResearchJob } from '@/lib/jobs/researchApi';
-import { fromPoolRow, fromUrl, marksForUrl, type Runner } from '@/lib/jobcard/extract';
+import { fromPoolRow, fromScrapedPost, fromUrl, marksForUrl, type Runner } from '@/lib/jobcard/extract';
 import { isUsableMark, searxngSearch, type FoundMark } from '@/lib/jobcard/logo';
+import { getScraped, ScraperUnreachable } from '@/lib/jobcard/scraped';
 import { getSettings } from '@/lib/settings';
 import { cardId, listPage, saveCard, saveLogo } from '@/lib/jobcard/store';
 import { missingMandatory, type JobCardDraft } from '@/lib/jobcard/schema';
 
 /**
- * The two ways into a card. A URL is fetched and read; a pool row is mapped across.
+ * The ways into a card. A URL is fetched and read; a pool row or a scraped post is mapped across.
  * Either way the answer is a document with its gaps named, never a card with a hole
  * in it. The model is asked for what only prose says, and a model that is down costs
  * eligibility and the rounds, not the whole card.
@@ -59,6 +60,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as {
     url?: string;
     poolId?: number;
+    scraped?: string;
     draft?: JobCardDraft;
     useModel?: boolean;
   };
@@ -77,6 +79,15 @@ export async function POST(req: Request) {
     draft = await fromPoolRow(job, run);
     // The row says where the listing lives; the mark is looked for there.
     marks = job.url ? await marksForUrl(job.url, { company: job.company, search }) : [];
+  } else if (typeof body.scraped === 'string') {
+    try {
+      const post = await getScraped(body.scraped);
+      if (!post) return NextResponse.json({ error: `the scraper has no post ${body.scraped}` }, { status: 404 });
+      draft = await fromScrapedPost(post, run);
+    } catch (err) {
+      if (err instanceof ScraperUnreachable) return NextResponse.json({ error: err.message }, { status: 502 });
+      throw err;
+    }
   } else if (body.url) {
     try {
       const read = await fromUrl(body.url, { run, search });
@@ -86,7 +97,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
     }
   } else {
-    return NextResponse.json({ error: 'a job URL, a pool row or a draft is needed' }, { status: 400 });
+    return NextResponse.json({ error: 'a job URL, a pool row, a scraped post or a draft is needed' }, { status: 400 });
   }
 
   const id = cardId(draft);

@@ -4,6 +4,7 @@ import { mapExperience, mapLocation, mapSalaryInr, mapWorkMode } from '@/lib/job
 import type { ResearchJob } from '@/lib/jobs/researchApi';
 import { markCandidates, type FoundMark, type SearchFn } from './logo';
 import { JobCardDraft } from './schema';
+import type { ScrapedItem } from './scraped';
 
 /**
  * Two ways in, one document out. A pool row maps straight across — the research plugin
@@ -208,6 +209,103 @@ export async function fromPoolRow(job: ResearchJob, run?: Runner): Promise<JobCa
     };
   }
   return base;
+}
+
+/* ---------- a scraped post ---------- */
+
+const LABELS: Record<string, string> = {
+  hiring: 'role',
+  role: 'role',
+  position: 'role',
+  company: 'company',
+  experience: 'experience',
+  location: 'location',
+  eligibility: 'eligibility',
+  skills: 'skills',
+  salary: 'salary',
+};
+
+/** `Label: value` lines, labels in any case; the first of each label wins. */
+function labelledLines(caption: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of caption.split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Za-z]+)\s*[:\-–]\s*(.+?)\s*$/);
+    const key = m ? LABELS[m[1].toLowerCase()] : undefined;
+    if (m && key && !(key in out)) out[key] = m[2];
+  }
+  return out;
+}
+
+/**
+ * A post the scraper holds, read into a document. The caption's labelled lines are the
+ * rules; the model, when there is one, only fills what the rules left empty. A model that
+ * is down costs that fill and nothing else. The post decides the facts; it names no look.
+ */
+export async function fromScrapedPost(item: ScrapedItem, run?: Runner): Promise<JobCardDraft> {
+  const f = labelledLines(item.caption);
+  const draft: JobCardDraft = {
+    cta: { channel: 'whatsapp' },
+    source: { url: item.igUrl, kind: 'reference', poolId: null },
+  };
+
+  if (f.company) draft.company = { name: f.company, logo: null, accent: null };
+  const skills = (f.skills ?? '').split(/[,;·|]/).map((x) => x.trim()).filter(Boolean);
+  if (f.role) draft.role = { title: f.role, skills, team: null };
+
+  if (f.experience) {
+    // mapExperience falls back to a band when the words hold no number; a post that says
+    // "fresher" keeps its own word rather than a range nobody printed.
+    const range = /(\d{1,2})\s*(?:-|–|to)\s*(\d{1,2})\+?\s*(?:years?|yrs?)/i.test(f.experience);
+    const plus = /(\d{1,2})\s*\+\s*(?:years?|yrs?)/i.test(f.experience);
+    if (range || plus) {
+      const exp = mapExperience(f.role ?? '', f.experience);
+      draft.experience = { min: exp.min, max: exp.max, label: range ? expLabel(exp.min, exp.max) : `${exp.min}+ Years` };
+    } else {
+      draft.experience = { min: null, max: null, label: f.experience };
+    }
+  }
+
+  if (f.location) {
+    const [city, ...rest] = f.location.split(',').map((x) => x.trim()).filter(Boolean);
+    if (city) {
+      draft.location = {
+        city,
+        region: rest.length ? rest.join(', ') : null,
+        workMode: mapWorkMode(false, f.location, ''),
+      };
+    }
+  }
+
+  if (f.eligibility) draft.eligibility = [f.eligibility];
+
+  if (f.salary) {
+    const inr = mapSalaryInr(f.salary);
+    if (inr.min !== null && inr.max !== null) {
+      draft.salary = {
+        min: Math.round(inr.min / 10_000) / 10,
+        max: Math.round(inr.max / 10_000) / 10,
+        currency: 'INR',
+        unit: 'LPA',
+        note: null,
+      };
+    }
+  }
+
+  if (run) {
+    try {
+      const facts = await factsFromText(item.caption, run);
+      if (draft.role && !draft.role.skills?.length) draft.role = { ...draft.role, skills: facts.skills };
+      if (draft.role && !draft.role.team && facts.team) draft.role = { ...draft.role, team: facts.team };
+      if (!draft.eligibility?.length && facts.eligibility.length) draft.eligibility = facts.eligibility;
+      if (facts.selectionProcess.length) {
+        draft.selectionProcess = facts.selectionProcess.map((x, i) => ({ step: i + 1, label: x.label, detail: x.detail ?? null }));
+      }
+      if (draft.salary && !draft.salary.note && facts.salaryNote) draft.salary = { ...draft.salary, note: facts.salaryNote };
+    } catch {
+      // A model that is down costs the fill, never the card.
+    }
+  }
+  return draft;
 }
 
 export type PageFetch = (url: string) => Promise<{ html: string; url: string }>;

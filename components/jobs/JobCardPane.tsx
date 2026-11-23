@@ -19,6 +19,7 @@ import { message } from '@/lib/ui/message';
 import { FileImageOutlined, PictureOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { Family, JobCardDraft } from '@/lib/jobcard/schema';
 import type { CardRow } from '@/lib/jobcard/store';
+import type { ScrapedItem } from '@/lib/jobcard/scraped';
 
 /**
  * One job, one card. Paste a listing or name a row already in the pool, correct what the
@@ -27,6 +28,7 @@ import type { CardRow } from '@/lib/jobcard/store';
  */
 
 type Score = { family: Family; score: number; why: string };
+type ScrapedRow = ScrapedItem & { cardId: string | null };
 type Detail = { row: CardRow; draft: JobCardDraft; missing: string[]; families: Score[] };
 
 const MODES = ['onsite', 'hybrid', 'remote'] as const;
@@ -43,9 +45,13 @@ export default function JobCardPane() {
   const [id, setId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [draft, setDraft] = useState<JobCardDraft | null>(null);
-  const [way, setWay] = useState<'url' | 'pool'>('url');
+  const [way, setWay] = useState<'url' | 'pool' | 'scraped'>('url');
   const [url, setUrl] = useState('');
   const [poolId, setPoolId] = useState<number | null>(null);
+  // null until the scraper has answered once, which is what 'loading' means here.
+  const [scraped, setScraped] = useState<ScrapedRow[] | null>(null);
+  const [scrapedError, setScrapedError] = useState<string | null>(null);
+  const [making, setMaking] = useState<string | null>(null);
   const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [rendering, setRendering] = useState(false);
@@ -79,6 +85,28 @@ export default function JobCardPane() {
     void refresh();
   }, [refresh]);
 
+  // setState only inside the promise callbacks, so the effect below never sets state itself.
+  const loadScraped = useCallback(
+    () =>
+      fetch('/api/jobcards/scraped', { cache: 'no-store' })
+        .catch(() => null)
+        .then(async (r) => {
+          if (!r?.ok) {
+            const body = (await r?.json().catch(() => null)) as { error?: string } | null;
+            setScraped([]);
+            setScrapedError(body?.error ?? 'the scraper could not be reached');
+            return;
+          }
+          setScrapedError(null);
+          setScraped(((await r.json()) as { items?: ScrapedRow[] }).items ?? []);
+        }),
+    []
+  );
+
+  useEffect(() => {
+    if (way === 'scraped') void loadScraped();
+  }, [way, loadScraped]);
+
   const read = async () => {
     setReading(true);
     setError(null);
@@ -97,6 +125,26 @@ export default function JobCardPane() {
     setPage(1);
     await refresh();
     await open(made.id);
+  };
+
+  const makeFromScraped = async (shortcode: string) => {
+    setMaking(shortcode);
+    setError(null);
+    const r = await fetch('/api/jobcards', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ scraped: shortcode }),
+    }).catch(() => null);
+    setMaking(null);
+    if (!r?.ok) {
+      setError(((await r?.json().catch(() => null)) as { error?: string } | null)?.error ?? 'the post could not be read');
+      return;
+    }
+    const made = (await r.json()) as { id: string };
+    setPage(1);
+    await refresh();
+    await open(made.id);
+    void loadScraped();
   };
 
   const save = async () => {
@@ -149,12 +197,59 @@ export default function JobCardPane() {
         <Segmented
           block
           value={way}
-          onChange={(v) => setWay(v as 'url' | 'pool')}
+          onChange={(v) => setWay(v as 'url' | 'pool' | 'scraped')}
           options={[
             { label: 'A job URL', value: 'url' },
             { label: 'A pool row', value: 'pool' },
+            { label: 'A scraped post', value: 'scraped' },
           ]}
         />
+        {way === 'scraped' ? (
+          <div style={{ marginTop: 8 }} data-testid="scraped-list">
+            {scrapedError ? (
+              <Alert type="error" showIcon title={scrapedError} data-testid="scraped-error" />
+            ) : (scraped ?? []).length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={scraped === null ? 'asking the scraper' : 'nothing queued in the scraper'}
+              />
+            ) : (
+              (scraped ?? []).map((p) => (
+                <div
+                  key={p.shortcode}
+                  style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0' }}
+                  data-testid={`scraped-row-${p.shortcode}`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={p.thumbUrl} alt="" width={44} height={44} style={{ borderRadius: 6, objectFit: 'cover', flex: 'none' }} />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 12, color: '#7b8798' }}>
+                      @{p.username} <Tag style={{ marginLeft: 4 }}>{p.status}</Tag>
+                    </div>
+                    <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {p.caption.split('\n').find((l) => l.trim()) ?? 'no caption'}
+                    </div>
+                  </div>
+                  {p.cardId ? (
+                    <Button size="small" onClick={() => open(p.cardId as string)} data-testid={`scraped-open-${p.shortcode}`}>
+                      Open card
+                    </Button>
+                  ) : (
+                    <Button
+                      size="small"
+                      type="primary"
+                      loading={making === p.shortcode}
+                      onClick={() => makeFromScraped(p.shortcode)}
+                      data-testid={`scraped-make-${p.shortcode}`}
+                    >
+                      Make card
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        ) : (
         <Space.Compact style={{ width: '100%', marginTop: 8 }}>
           {way === 'url' ? (
             <Input
@@ -182,6 +277,7 @@ export default function JobCardPane() {
             Read it
           </Button>
         </Space.Compact>
+        )}
         <Typography.Text type="secondary" style={{ fontSize: 12, display: 'block', margin: '8px 0' }}>
           A reference post decides the look, never the facts — and needs a vision model, which is not installed.
         </Typography.Text>
