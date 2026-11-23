@@ -99,6 +99,8 @@ export type Settings = {
   launchVoice: 'qwen' | 'kokoro';
   /** The Kokoro voice for a launch reel; hm_psi is Indian English, male. */
   launchKokoroVoice: string;
+  /** The aiiolar.com jobs page a job card's apply link points at. AIIOLAR_JOBS_URL in the environment wins. */
+  aiiolarJobsUrl: string;
 };
 
 const DEFAULTS: Settings = {
@@ -164,6 +166,7 @@ const DEFAULTS: Settings = {
   explainerKokoroSpeed: 1.08,
   launchVoice: 'qwen',
   launchKokoroVoice: 'hm_psi',
+  aiiolarJobsUrl: 'https://aiiolar.com/jobs',
 };
 
 function file() {
@@ -189,7 +192,8 @@ function agreeOnProvider(raw: Record<string, unknown>, previous?: Settings): Rec
   return { ...raw, llmProvider: provider, researchProvider: provider, agentProvider: provider };
 }
 
-export function getSettings(): Settings {
+/** What the file says, with no environment override: the only thing a save may merge onto. */
+function readSettings(): Settings {
   try {
     const raw = JSON.parse(readFileSync(file(), 'utf8')) as Record<string, unknown>;
     // The preset key was renamed on 3 September 2026; an old settings file still reads.
@@ -201,9 +205,15 @@ export function getSettings(): Settings {
   }
 }
 
+export function getSettings(): Settings {
+  const s = readSettings();
+  const env = process.env.AIIOLAR_JOBS_URL?.trim();
+  return env ? { ...s, aiiolarJobsUrl: env } : s;
+}
+
 export function saveSettings(s: Partial<Settings>): Settings {
   mkdirSync(path.dirname(file()), { recursive: true });
-  const previous = getSettings();
+  const previous = readSettings();
   const merged = { ...previous, ...agreeOnProvider(s as Record<string, unknown>, previous) } as Settings;
   writeFileSync(file(), JSON.stringify(merged, null, 2));
   return merged;

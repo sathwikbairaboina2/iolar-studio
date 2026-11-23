@@ -24,9 +24,17 @@ describe('the job card document', () => {
   it('fills the defaults a card needs and the source did not say', () => {
     const card = whole();
     expect(card.cta.keyword).toBe('ZOHO');
-    expect(card.cta.channel).toBe('whatsapp');
+    expect(card.cta.channel).toBe('site');
+    expect(card.cta.url).toBeUndefined();
     expect(card.selectionProcess).toEqual([]);
     expect(card.dates).toEqual([]);
+  });
+
+  it('keeps a stored channel and takes a site link', () => {
+    expect(parseJobCard({ ...whole(), cta: { channel: 'whatsapp' } }).cta.channel).toBe('whatsapp');
+    const site = parseJobCard({ ...whole(), cta: { channel: 'site', url: 'https://aiiolar.com/jobs?q=zoho' } });
+    expect(site.cta).toMatchObject({ channel: 'site', url: 'https://aiiolar.com/jobs?q=zoho' });
+    expect(parseJobCard({ ...whole(), source: { url: 'x', kind: 'pool', poolId: 1, familyKey: 'zoho|sde' } }).source.familyKey).toBe('zoho|sde');
   });
 
   it('takes the comment keyword the writer chose over the company name', () => {
@@ -38,13 +46,23 @@ describe('the job card document', () => {
     expect(() => parseJobCard({ ...whole(), salary: { min: 18, max: 8, currency: 'INR', unit: 'LPA' } })).toThrow();
   });
 
+  it('parses a card with no salary and leaves it unset', () => {
+    const { salary: _drop, ...rest } = whole();
+    void _drop;
+    const card = parseJobCard(rest);
+    expect(card.salary).toBeUndefined();
+    expect(missingMandatory(card)).toEqual([]);
+    expect(MANDATORY.map((m) => m.label)).not.toContain('salary range');
+    expect(parseJobCard({ ...rest, salary: null }).salary).toBeNull();
+  });
+
   it('names every mandatory field a draft is still missing', () => {
     const draft = { company: { name: 'Zoho' }, role: { title: 'SDE', skills: [] } };
     const missing = missingMandatory(draft);
     expect(missing).toContain('skill');
     expect(missing).toContain('experience');
     expect(missing).toContain('location');
-    expect(missing).toContain('salary range');
+    expect(missing).not.toContain('salary range');
     expect(missing).toContain('eligibility');
     expect(missing).not.toContain('company');
   });

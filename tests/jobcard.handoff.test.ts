@@ -85,7 +85,7 @@ describe('handing a card to IntaBot', () => {
       cardId: id,
       role: 'Software Development Engineer',
       company: 'Zoho Corporation',
-      applyUrl: 'https://aiiolar.com/jobs',
+      applyUrl: 'https://aiiolar.com/jobs?q=Software%20Development%20Engineer%20Zoho%20Corporation',
     });
     for (const k of ['experience', 'location', 'eligibility']) expect(typeof card[k]).toBe('string');
     expect(card.eligibility.length).toBeGreaterThan(0);
@@ -105,6 +105,17 @@ describe('handing a card to IntaBot', () => {
     const { calls, http } = intabot(created);
     await handoffCard(id, { http });
     expect(JSON.parse(String((calls[0].init.body as FormData).get('card'))).applyUrl).toBe('https://aiiolar.com/jobs?job=zoho-sde');
+  });
+
+  it('builds the apply link when the card carries none: the job for a pool card, a search otherwise', async () => {
+    const draft = fixture();
+    draft.cta = { channel: 'site' };
+    draft.source = { url: 'https://careers.zohocorp.com/jobs/sde', kind: 'pool', poolId: 412, familyKey: 'zoho|sde' };
+    const id = await seed({ draft });
+    const { handoffCard } = await import('@/lib/jobcard/handoff');
+    const { calls, http } = intabot(created);
+    await handoffCard(id, { http });
+    expect(JSON.parse(String((calls[0].init.body as FormData).get('card'))).applyUrl).toBe('https://aiiolar.com/jobs?job=zoho%7Csde');
   });
 
   it('surfaces IntaBot errors with their status and writes nothing', async () => {

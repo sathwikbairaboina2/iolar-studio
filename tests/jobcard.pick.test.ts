@@ -45,3 +45,11 @@ describe('picking a family', () => {
     expect(scores[0].score).toBeGreaterThanOrEqual(scores[5].score);
   });
 });
+
+describe('a card with no salary', () => {
+  it('scores every family without crashing and ranks the same as with a salary', () => {
+    const none = withOut((c) => ({ ...c, salary: undefined }));
+    expect(scoreFamilies(none).map((s) => s.family)).toEqual(scoreFamilies(base).map((s) => s.family));
+    expect(pickFamily(none)).toBe(pickFamily(base));
+  });
+});

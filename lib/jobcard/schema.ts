@@ -5,11 +5,12 @@ import { z } from 'zod';
  * a job URL read by the model, a pool row mapped across, or a draft corrected by
  * hand all end up here.
  *
- * Seven things must be true before a card is worth posting — skill, company,
- * experience, location, salary range, eligibility, and a source to point at. The
- * selection process joins them when the source has one; a card that invents rounds
- * nobody announced is worse than a card without that panel. `missingMandatory`
- * names the gaps so the page can ask rather than render a hole.
+ * Six things must be true before a card is worth posting — skill, company,
+ * experience, location, eligibility, and a source to point at. The salary range and
+ * the selection process join them when the source has them: a card prints "Not
+ * disclosed" for pay nobody announced, and one that invents rounds is worse than a
+ * card without that panel. `missingMandatory` names the gaps so the page can ask
+ * rather than render a hole.
  */
 
 export const FAMILIES = ['split-hero', 'infographic', 'campaign', 'bento', 'ticket', 'band-stack'] as const;
@@ -61,13 +62,15 @@ export const JobCardSchema = z
       region: z.string().nullable().default(null),
       workMode: z.enum(['onsite', 'hybrid', 'remote']),
     }),
-    salary: z.object({
-      min: z.number().min(0),
-      max: z.number().min(0),
-      currency: z.string().default('INR'),
-      unit: z.string().default('LPA'),
-      note: z.string().nullable().default(null),
-    }),
+    salary: z
+      .object({
+        min: z.number().min(0),
+        max: z.number().min(0),
+        currency: z.string().default('INR'),
+        unit: z.string().default('LPA'),
+        note: z.string().nullable().default(null),
+      })
+      .nullish(),
     eligibility: z.array(z.string().min(1)).default([]),
     selectionProcess: z
       .array(z.object({ step: z.number().int().min(1), label: z.string().min(1), detail: z.string().nullable().default(null) }))
@@ -76,12 +79,19 @@ export const JobCardSchema = z
       .array(z.object({ kind: z.enum(['walk-in', 'deadline', 'test', 'drive']), date: z.string().min(1), time: z.string().nullable().default(null) }))
       .default([]),
     cta: z
-      .object({ keyword: z.string().min(1).optional(), channel: z.enum(['whatsapp', 'bio', 'dm']).default('whatsapp') })
-      .default({ channel: 'whatsapp' }),
+      .object({
+        keyword: z.string().min(1).optional(),
+        channel: z.enum(['site', 'whatsapp', 'bio', 'dm']).default('site'),
+        /** Where "apply" points, for the `site` channel: a page on aiiolar.com. */
+        url: z.string().min(1).optional(),
+      })
+      .default({ channel: 'site' }),
     source: z.object({
       url: z.string().min(1),
       kind: z.enum(['job-url', 'pool', 'reference']),
       poolId: z.number().int().nullable().default(null),
+      /** A pool card's family key, which aiiolar.com opens the job by. */
+      familyKey: z.string().min(1).optional(),
     }),
     /** Set once the card has been sent on to IntaBot; the document's only memory of it. */
     handoff: z
@@ -89,7 +99,7 @@ export const JobCardSchema = z
       .optional(),
   })
   .transform((c) => ({ ...c, cta: { ...c.cta, keyword: keywordFrom(c.cta.keyword ?? c.company.name) } }))
-  .refine((c) => c.salary.max >= c.salary.min, {
+  .refine((c) => !c.salary || c.salary.max >= c.salary.min, {
     message: 'the top of a salary range cannot sit below its floor',
     path: ['salary'],
   });
@@ -116,7 +126,6 @@ export const MANDATORY: { label: string; has: (d: JobCardDraft) => boolean }[] =
   { label: 'skill', has: (d) => (d.role?.skills?.length ?? 0) > 0 },
   { label: 'experience', has: (d) => !!d.experience?.label },
   { label: 'location', has: (d) => !!d.location?.city },
-  { label: 'salary range', has: (d) => typeof d.salary?.max === 'number' },
   { label: 'eligibility', has: (d) => (d.eligibility?.length ?? 0) > 0 },
   { label: 'source', has: (d) => !!d.source?.url },
 ];

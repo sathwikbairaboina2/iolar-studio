@@ -102,6 +102,8 @@ describe('reading a listing', () => {
   it('reads a URL without a model, and says what is still missing', async () => {
     const { draft } = await fromUrl('https://careers.zohocorp.com/jobs/sde', { page });
     expect(missingMandatory(draft)).toEqual(['skill', 'eligibility']);
+    expect(draft.cta?.channel).toBe('site');
+    expect(draft.cta?.url).toMatch(/^https:\/\/aiiolar\.com\/jobs\?q=Software%20Development%20Engineer%20Zoho/);
   });
 
   it('maps a pool row across and asks the model only for what the row cannot say', async () => {
@@ -110,7 +112,8 @@ describe('reading a listing', () => {
     expect(draft.location).toMatchObject({ city: 'Chennai', workMode: 'hybrid' });
     expect(draft.salary).toMatchObject({ min: 8, max: 18, unit: 'LPA' });
     expect(draft.experience).toMatchObject({ min: 2, max: 5 });
-    expect(draft.source).toMatchObject({ kind: 'pool', poolId: 412 });
+    expect(draft.source).toMatchObject({ kind: 'pool', poolId: 412, familyKey: 'zoho|sde' });
+    expect(draft.cta).toEqual({ channel: 'site', url: 'https://aiiolar.com/jobs?job=zoho%7Csde' });
     expect(missingMandatory(draft)).toEqual([]);
   });
 

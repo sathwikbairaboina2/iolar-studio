@@ -94,12 +94,13 @@ describe('scraped posts through the job cards api', () => {
     expect(items.find((i) => i.shortcode === 'hiring.daily.mock-1')?.cardId).toBeNull();
   });
 
-  it('names the gap when the post has no salary', async () => {
+  it('needs nothing more when the post has no salary', async () => {
     scraper();
     const list = await import('@/app/api/jobcards/route');
     const made = await (await list.POST(req('POST', { scraped: 'hiring.daily.mock-1', useModel: false }))).json();
     expect(made.draft.location).toMatchObject({ city: 'Remote', workMode: 'remote' });
-    expect(made.missing).toEqual(['salary range']);
+    expect(made.missing).toEqual([]);
+    expect(made.draft.salary).toBeUndefined();
   });
 
   it('answers 404 for a shortcode the scraper does not hold, and 502 when it is down', async () => {

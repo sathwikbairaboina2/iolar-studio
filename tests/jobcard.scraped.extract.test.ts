@@ -29,7 +29,7 @@ describe('fromScrapedPost', () => {
     expect(d.eligibility).toEqual(['B.E/B.Tech 2024 or 2025 graduates']);
     expect(d.salary).toMatchObject({ min: 6, max: 9, currency: 'INR', unit: 'LPA' });
     expect(d.source).toEqual({ url: 'https://instagram.com/p/hiring.daily.mock-0/', kind: 'reference', poolId: null });
-    expect(d.cta).toEqual({ channel: 'whatsapp' });
+    expect(d.cta).toEqual({ channel: 'site', url: 'https://aiiolar.com/jobs?q=Software%20Engineer%20I%20Zoho' });
     expect(missingMandatory(d)).toEqual([]);
   });
 
@@ -43,7 +43,7 @@ describe('fromScrapedPost', () => {
       expect(d.location?.city).toBeTruthy();
       expect(d.eligibility?.length).toBe(1);
       expect(d.salary).toBeUndefined();
-      expect(missingMandatory(d)).toEqual(['salary range']);
+      expect(missingMandatory(d)).toEqual([]);
     }
     const remote = await fromScrapedPost(item(1));
     expect(remote.location).toMatchObject({ city: 'Remote', workMode: 'remote' });

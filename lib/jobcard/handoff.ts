@@ -1,4 +1,6 @@
 import { promises as fs } from 'fs';
+import { getSettings } from '@/lib/settings';
+import { applyUrlFor } from './cta';
 import type { JobCard, JobCardDraft } from './schema';
 import { hasImage, imagePath, readCard, readDraft, saveCard } from './store';
 
@@ -17,9 +19,6 @@ type Deps = { http?: typeof fetch };
 
 export const intabotBase = () => (process.env.INTABOT_URL ?? 'http://localhost:4100').replace(/\/+$/, '');
 
-/** Where "apply" points until a card carries its own link. */
-const DEFAULT_APPLY_URL = 'https://aiiolar.com/jobs';
-
 /** "Chennai (hybrid)": the city, and the work mode when it adds something. */
 function locationLabel(card: JobCard): string {
   const { city, workMode } = card.location;
@@ -27,11 +26,10 @@ function locationLabel(card: JobCard): string {
   return `${city} (${workMode})`;
 }
 
-/** A card's own link when it has one, else the jobs page. */
-function applyUrlOf(draft: JobCardDraft | null): string {
-  // `cta.url` is item 4's field; read it off the stored document so it flows through once it lands.
-  const url = (draft?.cta as { url?: unknown } | undefined)?.url;
-  return typeof url === 'string' && url.trim() ? url.trim() : DEFAULT_APPLY_URL;
+/** A card's own link when it has one, else the one its rule gives (a stored card may predate the field). */
+function applyUrlOf(card: JobCard, draft: JobCardDraft | null): string {
+  const own = (draft?.cta?.url ?? card.cta.url)?.trim();
+  return own || applyUrlFor(card, getSettings().aiiolarJobsUrl);
 }
 
 /** IntaBot's errors are Nest's `{ message: string | issue[] }`; say what it said. */
@@ -68,7 +66,7 @@ export async function handoffCard(id: string, deps: Deps = {}): Promise<HandoffO
       experience: card.experience.label,
       location: locationLabel(card),
       eligibility: card.eligibility.join('; '),
-      applyUrl: applyUrlOf(draft),
+      applyUrl: applyUrlOf(card, draft),
     })
   );
 

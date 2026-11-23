@@ -34,6 +34,38 @@ describe('a job card renders', () => {
     }
   });
 
+  it.each(FAMILIES)('%s says "Apply on aiiolar.com" for the site channel, and keeps the old wording otherwise', (family) => {
+    const site = buildCardHtml({ ...card, cta: { ...card.cta, channel: 'site' } }, family);
+    expect(site, `${family} did not name the site`).toMatch(/aiiolar\.com/);
+    expect(site).not.toContain('WhatsApp');
+    expect(buildCardHtml({ ...card, cta: { ...card.cta, channel: 'whatsapp' } }, family)).toContain('WhatsApp');
+  });
+
+  it('words the site channel as an apply line on the card', () => {
+    const html = buildCardHtml({ ...card, cta: { ...card.cta, channel: 'site' } }, 'band-stack');
+    expect(html).toContain('apply on aiiolar.com, link in bio');
+    const rich = buildCardHtml({ ...card, cta: { ...card.cta, channel: 'site' } }, 'campaign');
+    expect(rich).toContain('Apply on <b>aiiolar.com</b>');
+  });
+
+  it.each(FAMILIES)('%s prints Not disclosed when the card has no salary', (family) => {
+    const { salary: _drop, ...rest } = card;
+    void _drop;
+    const html = buildCardHtml(rest as typeof card, family);
+    expect(html, `${family} lost its salary line`).toContain('Not disclosed');
+    expect(html).not.toContain('LPA');
+    expect(html).not.toContain('NaN');
+  });
+
+  it('renders a card with no salary to a PNG that fits', async () => {
+    const { salary: _drop, ...rest } = card;
+    void _drop;
+    const out = path.join(tmpdir(), `iolar-jobcard-nosalary-${Date.now()}.png`);
+    const r = await renderCard(rest as typeof card, 'band-stack', out);
+    expect(existsSync(out)).toBe(true);
+    expect(r.overflowPx).toBe(0);
+  }, 180_000);
+
   it.each(FAMILIES)(
     '%s renders a card that fits, itself or through the fallback',
     async (family) => {

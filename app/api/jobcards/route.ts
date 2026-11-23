@@ -6,6 +6,7 @@ import { fromPoolRow, fromScrapedPost, fromUrl, marksForUrl, type Runner } from 
 import { isUsableMark, searxngSearch, type FoundMark } from '@/lib/jobcard/logo';
 import { getScraped, ScraperUnreachable } from '@/lib/jobcard/scraped';
 import { getSettings } from '@/lib/settings';
+import { withApplyUrl } from '@/lib/jobcard/cta';
 import { cardId, listPage, saveCard, saveLogo } from '@/lib/jobcard/store';
 import { missingMandatory, type JobCardDraft } from '@/lib/jobcard/schema';
 
@@ -75,7 +76,8 @@ export async function POST(req: Request) {
   } else if (typeof body.poolId === 'number') {
     const row = poolRowById(body.poolId);
     if (!row) return NextResponse.json({ error: `no pool row ${body.poolId}` }, { status: 404 });
-    const job = row.raw as unknown as ResearchJob;
+    // The family key lives on the pool row, not in the listing the research service sent.
+    const job = { ...(row.raw as unknown as ResearchJob), familyKey: row.familyKey };
     draft = await fromPoolRow(job, run);
     // The row says where the listing lives; the mark is looked for there.
     marks = job.url ? await marksForUrl(job.url, { company: job.company, search }) : [];
@@ -100,6 +102,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'a job URL, a pool row, a scraped post or a draft is needed' }, { status: 400 });
   }
 
+  draft = withApplyUrl(draft);
   const id = cardId(draft);
   const logo = await pullLogo(id, marks);
   if (logo && draft.company) draft = { ...draft, company: { ...draft.company, logo, accent: draft.company.accent ?? null } };

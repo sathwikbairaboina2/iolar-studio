@@ -100,6 +100,10 @@ const DATE_LABEL: Record<JobCard['dates'][number]['kind'], string> = {
 
 /** The plain wording of the CTA, and the same wording once for a band that cannot hold markup. */
 const CHANNEL: Record<JobCard['cta']['channel'], { rich: string; plain: string }> = {
+  site: {
+    rich: 'Apply on <b>aiiolar.com</b> &middot; <span class="hi">link in bio</span>',
+    plain: 'apply on aiiolar.com, link in bio',
+  },
   whatsapp: {
     rich: 'Apply link on our <b>WhatsApp Channel</b> &middot; <span class="hi">link in bio</span>',
     plain: 'apply link on our WhatsApp Channel, link in bio',
@@ -114,8 +118,10 @@ export type CardView = ReturnType<typeof viewOf>;
 
 export function viewOf(card: JobCard, brand: string) {
   const { accent, navy } = coloursFor(card);
-  const sym = CURRENCY[card.salary.currency.toUpperCase()] ?? `${esc(card.salary.currency)} `;
-  const unit = esc(card.salary.unit);
+  // Pay nobody announced reads "Not disclosed" everywhere; `salary` is never touched when absent.
+  const pay = card.salary ?? null;
+  const sym = pay ? (CURRENCY[pay.currency.toUpperCase()] ?? `${esc(pay.currency)} `) : '';
+  const unit = pay ? esc(pay.unit) : '';
   const num = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
   const deadline = card.dates.find((d) => d.kind === 'deadline') ?? null;
   const words = card.role.title.split(/\s+/);
@@ -158,9 +164,9 @@ export function viewOf(card: JobCard, brand: string) {
       card.location.city.trim().toLowerCase() === MODE[card.location.workMode].toLowerCase()
         ? esc(card.location.city)
         : `${esc(card.location.city)} &middot; ${MODE[card.location.workMode]}`,
-    money: `${sym} ${num(card.salary.min)} &ndash; ${sym} ${num(card.salary.max)} ${unit}`,
-    moneyShort: `${sym}${num(card.salary.min)} &ndash; ${sym}${num(card.salary.max)} ${unit}`,
-    moneyNote: card.salary.note ? esc(card.salary.note) : null,
+    money: pay ? `${sym} ${num(pay.min)} &ndash; ${sym} ${num(pay.max)} ${unit}` : 'Not disclosed',
+    moneyShort: pay ? `${sym}${num(pay.min)} &ndash; ${sym}${num(pay.max)} ${unit}` : 'Not disclosed',
+    moneyNote: pay?.note ? esc(pay.note) : null,
     eligibility: card.eligibility.map(esc),
     /** The same lines run into one sentence, kept apart so two rules never read as one. */
     eligInline: card.eligibility.map(esc).join(' &middot; '),

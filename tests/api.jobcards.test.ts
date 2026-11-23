@@ -64,13 +64,46 @@ describe('the job cards api', () => {
     const render = await import('@/app/api/jobcards/[id]/render/route');
 
     const draft = fixture();
-    delete draft.salary;
+    delete draft.eligibility;
     const made = await (await list.POST(req('POST', { draft }))).json();
-    expect(made.missing).toContain('salary range');
+    expect(made.missing).toContain('eligibility');
 
     const reply = await render.POST(req('POST', {}), { params: Promise.resolve({ id: made.id }) });
     expect(reply.status).toBe(400);
-    expect((await reply.json()).missing).toContain('salary range');
+    expect((await reply.json()).missing).toContain('eligibility');
+  });
+
+  it('renders a card with no salary: no 400, a PNG on disk', async () => {
+    const list = await import('@/app/api/jobcards/route');
+    const render = await import('@/app/api/jobcards/[id]/render/route');
+    const image = await import('@/app/api/jobcards/[id]/image/route');
+
+    const draft = fixture();
+    delete draft.salary;
+    const made = await (await list.POST(req('POST', { draft }))).json();
+    expect(made.missing).toEqual([]);
+
+    const reply = await render.POST(req('POST', { family: 'band-stack' }), { params: Promise.resolve({ id: made.id }) });
+    expect(reply.status).toBe(200);
+    expect(await reply.json()).toMatchObject({ family: 'band-stack', overflowPx: 0 });
+    const png = await image.GET(req('GET'), { params: Promise.resolve({ id: made.id }) });
+    expect(png.headers.get('content-type')).toBe('image/png');
+    expect((await png.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+  }, 180_000);
+
+  it('fills the site link when a card on the site channel has none, and leaves other channels alone', async () => {
+    const list = await import('@/app/api/jobcards/route');
+    const one = await import('@/app/api/jobcards/[id]/route');
+    const site = { ...fixture(), cta: { channel: 'site' } };
+    const made = await (await list.POST(req('POST', { draft: site }))).json();
+    expect(made.draft.cta.url).toBe('https://aiiolar.com/jobs?q=Software%20Development%20Engineer%20Zoho%20Corporation');
+    const stored = await (await one.GET(req('GET'), { params: Promise.resolve({ id: made.id }) })).json();
+    expect(stored.draft.cta.url).toBe(made.draft.cta.url);
+
+    const kept = await (await list.POST(req('POST', { draft: { ...fixture(), cta: { channel: 'whatsapp' } } }))).json();
+    expect(kept.draft.cta).toEqual({ channel: 'whatsapp' });
+    const own = await (await list.POST(req('POST', { draft: { ...fixture(), cta: { channel: 'site', url: 'https://x.test/y' } } }))).json();
+    expect(own.draft.cta.url).toBe('https://x.test/y');
   });
 
   it('reads a pool row the ledger already holds', async () => {
@@ -105,7 +138,8 @@ describe('the job cards api', () => {
     // No model: the row still maps across, and the gaps it cannot fill are named.
     const made = await (await list.POST(req('POST', { poolId: 412, useModel: false }))).json();
     expect(made.draft.company.name).toBe('Zoho Corporation');
-    expect(made.draft.source).toMatchObject({ kind: 'pool', poolId: 412 });
+    expect(made.draft.source).toMatchObject({ kind: 'pool', poolId: 412, familyKey: 'zoho|sde' });
+    expect(made.draft.cta).toEqual({ channel: 'site', url: 'https://aiiolar.com/jobs?job=zoho%7Csde' });
     expect(made.missing).toEqual(['skill', 'eligibility']);
   });
 

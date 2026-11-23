@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { getDb } from '@/lib/db';
 import { jobcardDir, jobcardFile, jobcardImage } from '@/lib/paths';
+import { withApplyUrl } from './cta';
 import { Family, JobCard, JobCardDraft, missingMandatory, parseJobCard } from './schema';
 
 /**
@@ -67,7 +68,9 @@ export function cardId(draft: JobCardDraft): string {
   return `${stem || 'job-card'}-${tag}`;
 }
 
-export async function saveCard(id: string, draft: JobCardDraft, now = new Date().toISOString()): Promise<CardRow> {
+export async function saveCard(id: string, input: JobCardDraft, now = new Date().toISOString()): Promise<CardRow> {
+  // A site card with no link of its own is given the rule's, so what is stored always says where "apply" goes.
+  const draft = withApplyUrl(input);
   const missing = missingMandatory(draft);
   await fs.mkdir(jobcardDir(id), { recursive: true });
   await fs.writeFile(jobcardFile(id), JSON.stringify(draft, null, 2));

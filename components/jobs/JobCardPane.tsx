@@ -33,7 +33,16 @@ type Handoff = { postId: string; accountId: string; at: string; status: 'queued'
 type Detail = { row: CardRow; draft: JobCardDraft; missing: string[]; families: Score[]; handoff?: Handoff | null };
 
 const MODES = ['onsite', 'hybrid', 'remote'] as const;
-const CHANNELS = ['whatsapp', 'bio', 'dm'] as const;
+const CHANNELS = ['site', 'whatsapp', 'bio', 'dm'] as const;
+
+/** A salary with one end typed stands for a single figure; the other end takes its value. */
+function whole(d: JobCardDraft): JobCardDraft {
+  const pay = d.salary;
+  if (!pay) return d;
+  const min = pay.min ?? pay.max;
+  const max = pay.max ?? pay.min;
+  return { ...d, salary: { ...pay, min, max } };
+}
 
 const lines = (v: string) => v.split('\n').map((s) => s.trim()).filter(Boolean);
 
@@ -160,7 +169,7 @@ export default function JobCardPane() {
     const r = await fetch(`/api/jobcards/${id}`, {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(draft),
+      body: JSON.stringify(whole(draft)),
     }).catch(() => null);
     setSaving(false);
     if (!r?.ok) return void message.error('the document was not saved');
@@ -206,6 +215,26 @@ export default function JobCardPane() {
   };
 
   const set = (patch: Partial<JobCardDraft>) => setDraft((d) => ({ ...(d ?? {}), ...patch }));
+  /**
+   * Pay is all or nothing: emptying both numbers removes it. One number may sit empty
+   * while the other is typed; `whole` fills it from the other at save, so no 0 to 0
+   * placeholder is ever written.
+   */
+  const setPay = (patch: { min?: number | null; max?: number | null; unit?: string }) => {
+    const cur = draft?.salary;
+    const min = 'min' in patch ? patch.min : cur?.min;
+    const max = 'max' in patch ? patch.max : cur?.max;
+    if (min == null && max == null) return set({ salary: undefined });
+    set({
+      salary: {
+        min: min ?? undefined,
+        max: max ?? undefined,
+        currency: cur?.currency ?? 'INR',
+        unit: patch.unit ?? cur?.unit ?? 'LPA',
+        note: cur?.note ?? null,
+      },
+    });
+  };
   const missing = useMemo(() => detail?.missing ?? [], [detail]);
 
   return (
@@ -455,23 +484,37 @@ export default function JobCardPane() {
                 <Typography.Text type="secondary">Salary range</Typography.Text>
                 <Space.Compact style={{ width: '100%' }}>
                   <InputNumber
-                    style={{ width: '35%' }}
+                    style={{ width: '28%' }}
                     value={draft.salary?.min}
-                    onChange={(v) => set({ salary: { ...(draft.salary ?? { max: 0, currency: 'INR', unit: 'LPA', note: null }), min: Number(v ?? 0) } })}
+                    onChange={(v) => setPay({ min: v })}
                     data-testid="jobcard-salary-min"
                   />
                   <InputNumber
-                    style={{ width: '35%' }}
+                    style={{ width: '28%' }}
                     value={draft.salary?.max}
-                    onChange={(v) => set({ salary: { ...(draft.salary ?? { min: 0, currency: 'INR', unit: 'LPA', note: null }), max: Number(v ?? 0) } })}
+                    onChange={(v) => setPay({ max: v })}
                     data-testid="jobcard-salary-max"
                   />
                   <Input
-                    style={{ width: '30%' }}
+                    style={{ width: '20%' }}
                     value={draft.salary?.unit ?? 'LPA'}
-                    onChange={(e) => set({ salary: { ...(draft.salary ?? { min: 0, max: 0, currency: 'INR', note: null }), unit: e.target.value } })}
+                    disabled={!draft.salary}
+                    onChange={(e) => setPay({ unit: e.target.value })}
                   />
+                  <Button
+                    style={{ width: '24%' }}
+                    disabled={!draft.salary}
+                    onClick={() => set({ salary: undefined })}
+                    data-testid="jobcard-salary-clear"
+                  >
+                    Not disclosed
+                  </Button>
                 </Space.Compact>
+                {!draft.salary && (
+                  <Typography.Text type="secondary" data-testid="jobcard-salary-hint">
+                    No pay on this card: it prints Not disclosed.
+                  </Typography.Text>
+                )}
               </label>
             </div>
 
@@ -506,16 +549,26 @@ export default function JobCardPane() {
                   <Input
                     value={draft.cta?.keyword ?? ''}
                     placeholder={(draft.company?.name ?? '').split(' ')[0]?.toUpperCase()}
-                    onChange={(e) => set({ cta: { ...(draft.cta ?? { channel: 'whatsapp' }), keyword: e.target.value } })}
+                    onChange={(e) => set({ cta: { ...(draft.cta ?? { channel: 'site' }), keyword: e.target.value } })}
                     data-testid="jobcard-keyword"
                   />
                   <Select
                     style={{ width: 130 }}
-                    value={draft.cta?.channel ?? 'whatsapp'}
+                    value={draft.cta?.channel ?? 'site'}
                     onChange={(v) => set({ cta: { ...(draft.cta ?? {}), channel: v } })}
                     options={CHANNELS.map((c) => ({ value: c, label: c }))}
+                    data-testid="jobcard-channel"
                   />
                 </Space.Compact>
+                {(draft.cta?.channel ?? 'site') === 'site' && (
+                  <Input
+                    style={{ marginTop: 4 }}
+                    value={draft.cta?.url ?? ''}
+                    placeholder="the aiiolar.com page apply points at; filled in when saved if left empty"
+                    onChange={(e) => set({ cta: { ...(draft.cta ?? { channel: 'site' }), url: e.target.value } })}
+                    data-testid="jobcard-cta-url"
+                  />
+                )}
               </label>
             </div>
 

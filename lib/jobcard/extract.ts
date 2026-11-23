@@ -3,6 +3,7 @@ import { extractJson } from '@/lib/ai/revise';
 import { mapExperience, mapLocation, mapSalaryInr, mapWorkMode } from '@/lib/jobs/map';
 import type { ResearchJob } from '@/lib/jobs/researchApi';
 import { markCandidates, type FoundMark, type SearchFn } from './logo';
+import { applyUrlOf } from './cta';
 import { JobCardDraft } from './schema';
 import type { ScrapedItem } from './scraped';
 
@@ -195,9 +196,10 @@ export async function fromPoolRow(job: ResearchJob, run?: Runner): Promise<JobCa
     eligibility: facts?.eligibility ?? [],
     selectionProcess: (facts?.selectionProcess ?? []).map((s, i) => ({ step: i + 1, label: s.label, detail: s.detail ?? null })),
     dates: [],
-    cta: { channel: 'whatsapp' },
-    source: { url: job.url, kind: 'pool', poolId: job.id },
+    cta: { channel: 'site' },
+    source: { url: job.url, kind: 'pool', poolId: job.id, familyKey: job.familyKey },
   };
+  base.cta = { channel: 'site', url: applyUrlOf(base) };
   // A row with no rupee figure has no salary the card may print, and says so.
   if (inr.min !== null && inr.max !== null) {
     base.salary = {
@@ -244,7 +246,6 @@ function labelledLines(caption: string): Record<string, string> {
 export async function fromScrapedPost(item: ScrapedItem, run?: Runner): Promise<JobCardDraft> {
   const f = labelledLines(item.caption);
   const draft: JobCardDraft = {
-    cta: { channel: 'whatsapp' },
     source: { url: item.igUrl, kind: 'reference', poolId: null },
   };
 
@@ -305,6 +306,7 @@ export async function fromScrapedPost(item: ScrapedItem, run?: Runner): Promise<
       // A model that is down costs the fill, never the card.
     }
   }
+  draft.cta = { channel: 'site', url: applyUrlOf(draft) };
   return draft;
 }
 
@@ -361,9 +363,10 @@ export async function fromUrl(
     ...(marked.role?.title
       ? { role: { title: marked.role.title, skills: facts?.skills ?? [], team: facts?.team ?? null } }
       : {}),
-    cta: { channel: 'whatsapp' },
+    cta: { channel: 'site' },
     source: { url: finalUrl, kind: 'job-url', poolId: null },
   });
+  draft.cta = { channel: 'site', url: applyUrlOf(draft) };
 
   return {
     draft,
