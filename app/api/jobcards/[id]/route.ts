@@ -24,7 +24,7 @@ export async function GET(_req: Request, ctx: Ctx) {
       families = [];
     }
   }
-  return NextResponse.json({ row, draft, missing, families });
+  return NextResponse.json({ row, draft, missing, families, handoff: draft.handoff ?? null });
 }
 
 /** A corrected document. What the user typed is what is stored; nothing is filled in behind them. */

@@ -16,7 +16,7 @@ import {
   Typography,
 } from 'antd';
 import { message } from '@/lib/ui/message';
-import { FileImageOutlined, PictureOutlined, ReloadOutlined } from '@ant-design/icons';
+import { FileImageOutlined, PictureOutlined, ReloadOutlined, SendOutlined } from '@ant-design/icons';
 import type { Family, JobCardDraft } from '@/lib/jobcard/schema';
 import type { CardRow } from '@/lib/jobcard/store';
 import type { ScrapedItem } from '@/lib/jobcard/scraped';
@@ -29,7 +29,8 @@ import type { ScrapedItem } from '@/lib/jobcard/scraped';
 
 type Score = { family: Family; score: number; why: string };
 type ScrapedRow = ScrapedItem & { cardId: string | null };
-type Detail = { row: CardRow; draft: JobCardDraft; missing: string[]; families: Score[] };
+type Handoff = { postId: string; accountId: string; at: string; status: 'queued' };
+type Detail = { row: CardRow; draft: JobCardDraft; missing: string[]; families: Score[]; handoff?: Handoff | null };
 
 const MODES = ['onsite', 'hybrid', 'remote'] as const;
 const CHANNELS = ['whatsapp', 'bio', 'dm'] as const;
@@ -57,6 +58,9 @@ export default function JobCardPane() {
   const [rendering, setRendering] = useState(false);
   const [family, setFamily] = useState<Family | null>(null);
   const [shot, setShot] = useState<string | null>(null);
+  const [handoff, setHandoff] = useState<Handoff | null>(null);
+  const [sending, setSending] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -72,12 +76,15 @@ export default function JobCardPane() {
   const open = useCallback(async (cardId: string) => {
     setId(cardId);
     setShot(null);
+    setHandoff(null);
+    setHandoffError(null);
     const r = await fetch(`/api/jobcards/${cardId}`, { cache: 'no-store' }).catch(() => null);
     if (!r?.ok) return;
     const d = (await r.json()) as Detail;
     setDetail(d);
     setDraft(d.draft);
     setFamily(d.row.family ?? d.families[0]?.family ?? null);
+    setHandoff(d.handoff ?? null);
     if (d.row.renderedAt) setShot(`/api/jobcards/${cardId}/image?v=${Date.parse(d.row.renderedAt)}`);
   }, []);
 
@@ -182,6 +189,20 @@ export default function JobCardPane() {
     setShot(`/api/jobcards/${id}/image?v=${Date.now()}`);
     await refresh();
     if (out?.family) setFamily(out.family);
+  };
+
+  const sendToIntabot = async () => {
+    if (!id || sending) return;
+    setSending(true);
+    setHandoffError(null);
+    const r = await fetch(`/api/jobcards/${id}/handoff`, { method: 'POST' }).catch(() => null);
+    const out = (await r?.json().catch(() => null)) as { handoff?: Handoff; error?: string; missing?: string[] } | null;
+    setSending(false);
+    if (!r?.ok || !out?.handoff) {
+      setHandoffError(out?.missing?.length ? `still missing: ${out.missing.join(', ')}` : (out?.error ?? 'IntaBot could not be reached'));
+      return;
+    }
+    setHandoff(out.handoff);
   };
 
   const set = (patch: Partial<JobCardDraft>) => setDraft((d) => ({ ...(d ?? {}), ...patch }));
@@ -512,6 +533,27 @@ export default function JobCardPane() {
                 <Divider style={{ margin: '16px 0 12px' }} />
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={shot} alt="the rendered card" style={{ maxWidth: 380, borderRadius: 8, border: '1px solid #eee' }} data-testid="jobcard-image" />
+                <div style={{ marginTop: 12 }}>
+                  <Space wrap>
+                    <Button
+                      icon={<SendOutlined />}
+                      loading={sending}
+                      disabled={sending}
+                      onClick={sendToIntabot}
+                      data-testid="jobcard-handoff"
+                    >
+                      Send to IntaBot
+                    </Button>
+                    {handoff && (
+                      <Typography.Text type="success" data-testid="jobcard-handoff-status">
+                        Queued in IntaBot · post {handoff.postId}
+                      </Typography.Text>
+                    )}
+                  </Space>
+                  {handoffError && (
+                    <Alert type="error" showIcon style={{ marginTop: 8 }} title={handoffError} data-testid="jobcard-handoff-error" />
+                  )}
+                </div>
               </>
             )}
           </>

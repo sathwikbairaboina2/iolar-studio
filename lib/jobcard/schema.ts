@@ -83,6 +83,10 @@ export const JobCardSchema = z
       kind: z.enum(['job-url', 'pool', 'reference']),
       poolId: z.number().int().nullable().default(null),
     }),
+    /** Set once the card has been sent on to IntaBot; the document's only memory of it. */
+    handoff: z
+      .object({ postId: z.string().min(1), accountId: z.string().min(1), at: z.string().min(1), status: z.literal('queued') })
+      .optional(),
   })
   .transform((c) => ({ ...c, cta: { ...c.cta, keyword: keywordFrom(c.cta.keyword ?? c.company.name) } }))
   .refine((c) => c.salary.max >= c.salary.min, {
