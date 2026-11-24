@@ -318,13 +318,13 @@ export default function ChapterPage({
       />
 
       <Row gutter={20}>
-        <Col span={12}>
+        <Col xs={24} lg={12}>
           <BlockEditor
             slide={post.slides[slide]}
             onChange={(s: Slide) => update({ ...post, slides: post.slides.map((x, j) => (j === slide ? s : x)) } as Post)}
           />
         </Col>
-        <Col span={12}>
+        <Col xs={24} lg={12}>
           <PreviewPane
             subject={subject}
             chapter={chapter}

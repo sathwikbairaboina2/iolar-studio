@@ -145,7 +145,7 @@ export default function BookPanel({
       <Drawer title="Handbook — topic coverage" open={open} onClose={() => setOpen(false)} size={520}>
         {!book && (
           <Empty description="No book yet — build one from reference images, or from a topic">
-            <Space direction="vertical" style={{ width: '100%' }}>
+            <Space orientation="vertical" style={{ width: '100%' }}>
               <Button loading={busy === 'generate'} onClick={generate}>
                 ✦ Build book from references
               </Button>

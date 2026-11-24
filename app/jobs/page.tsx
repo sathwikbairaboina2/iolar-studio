@@ -206,7 +206,7 @@ export default function JobsPage() {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="st-wrap" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Typography.Title level={3} style={{ margin: 0, flex: 1 }}>
           Jobs
         </Typography.Title>

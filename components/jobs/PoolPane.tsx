@@ -24,7 +24,7 @@ export default function PoolPane({ pool, pulling, onPull }: { pool: PoolStatus |
       {pool?.lastPull?.error && (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }} title="The last pull failed" description={pool.lastPull.error} />
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12 }}>
+      <div className="st-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12 }}>
         <Statistic title="Open" value={pool?.counts.open ?? 0} />
         <Statistic title="New since last pull" value={pool?.counts.newSinceLastPull ?? 0} />
         <Statistic title="Closed" value={pool?.counts.closed ?? 0} />

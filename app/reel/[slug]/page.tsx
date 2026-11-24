@@ -125,7 +125,7 @@ export default function ReelStudio() {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Typography.Title level={4} style={{ margin: 0, flex: 1 }}>
+        <Typography.Title className="st-head-title" level={4} style={{ margin: 0, flex: 1 }}>
           {reel.title}
         </Typography.Title>
         <Tag>{reel.style}</Tag>
@@ -146,7 +146,7 @@ export default function ReelStudio() {
       </div>
 
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) 1fr', gap: 16, alignItems: 'start' }}>
+      <div className="st-stack" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 420px) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
         <div>
           <Player
             reel={reel}

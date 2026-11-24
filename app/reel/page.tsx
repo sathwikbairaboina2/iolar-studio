@@ -136,7 +136,7 @@ export default function ReelList() {
         }}
         onRow={(row) => ({ onClick: () => router.push(`/reel/${row.slug}`), style: { cursor: 'pointer' } })}
         columns={[
-          { title: 'Title', dataIndex: 'title' },
+          { title: 'Title', dataIndex: 'title', className: 'st-title-col' },
           { title: 'Style', dataIndex: 'style' },
           { title: 'Beats', dataIndex: 'beats', width: 90 },
           {

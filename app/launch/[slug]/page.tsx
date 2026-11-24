@@ -57,7 +57,7 @@ export default function LaunchReel() {
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <div>
-        <Link href="/launch" style={{ fontSize: 12 }}>← Launch reels</Link>
+        <Link className="st-link" href="/launch" style={{ fontSize: 12 }}>← Launch reels</Link>
         <Typography.Title level={3} style={{ margin: 0 }}>{script?.headline ?? brief.title}</Typography.Title>
         <Typography.Text type="secondary">{brief.title} · {brief.seconds}s target · {brief.links.length ? `${brief.links.length} link${brief.links.length === 1 ? '' : 's'}` : brief.reference ? `paced like @${brief.reference.creator}` : '0 links'} · updated {ago(job.updatedAt)}</Typography.Text>
         {brief.mode === 'avatar' || spend ? <div><Typography.Text type="secondary">{creditsLine}</Typography.Text></div> : null}

@@ -122,7 +122,7 @@ export default function PluginsPage() {
         </Button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 340px) 1fr', gap: 16, alignItems: 'start' }}>
+      <div className="st-stack" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 340px) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
         <Space orientation="vertical" style={{ width: '100%' }} size="middle">
           {cards.map((p) => (
             <Card

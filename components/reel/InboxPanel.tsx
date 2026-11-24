@@ -78,6 +78,7 @@ export default function InboxPanel({ slug, onAdopted }: Props) {
         <Card key={box.beatId} size="small" data-testid={`inbox-${box.beatId}`} title={box.beatId}>
           <Space orientation="vertical" style={{ width: '100%' }} size="small">
             <Button
+              className="st-path"
               data-testid={`inbox-path-${box.beatId}`}
               size="small"
               icon={<CopyOutlined />}

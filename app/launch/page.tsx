@@ -103,7 +103,7 @@ function Inbox({ onMade }: { onMade: (slug: string) => void }) {
         {watch?.running ? (
           <Typography.Text type="secondary">Checking now…</Typography.Text>
         ) : watch?.skipped ? (
-          <Alert type="warning" showIcon message={`${watch.skipped.reason} (${ago(watch.skipped.at)})`} />
+          <Alert type="warning" showIcon title={`${watch.skipped.reason} (${ago(watch.skipped.at)})`} />
         ) : watch?.lastRunAt ? (
           <Typography.Text type="secondary">Checked {ago(watch.lastRunAt)}</Typography.Text>
         ) : (
@@ -228,7 +228,7 @@ export default function LaunchPage() {
                   onChange={(v) => form.setFieldValue('creditBudget', v === 'avatar' ? 120 : 0)}
                 />
               </Form.Item>
-              <Link href="/launch/anchor" style={{ fontSize: 12 }}>Anchor face</Link>
+              <Link className="st-link" href="/launch/anchor" style={{ fontSize: 12 }}>Anchor face</Link>
             </Space>
           </Form.Item>
           <Form.Item shouldUpdate={(a, b) => a.mode !== b.mode} noStyle>
@@ -268,7 +268,7 @@ export default function LaunchPage() {
           onRow={(r) => ({ onClick: () => router.push(`/launch/${r.slug}`), style: { cursor: 'pointer' } })}
           columns={[
             { title: '', key: 'cover', width: 70, render: (_v, r) => <Cover slug={r.slug} renderId={r.renderId} /> },
-            { title: 'Launch', dataIndex: 'title', key: 'title' },
+            { title: 'Launch', dataIndex: 'title', key: 'title', className: 'st-title-col' },
             { title: 'Stage', key: 'stage', render: (_v, r) => stageTag(r) },
             { title: 'Updated', key: 'updated', render: (_v, r) => <Typography.Text type="secondary">{ago(r.updatedAt)}</Typography.Text> },
           ]}

@@ -103,7 +103,7 @@ export default function CutView({
       )}
 
       {s && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 12, marginBottom: 12 }} data-testid="tiles">
+        <div className="st-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: 12, marginBottom: 12 }} data-testid="tiles">
           <Statistic title="Roles" value={s.counted} />
           <Statistic title="Remote" value={s.byWorkMode.remote} />
           <Statistic title="Close in 7 days" value={s.closingSoon.within7Days} />

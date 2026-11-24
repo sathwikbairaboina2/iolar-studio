@@ -113,7 +113,7 @@ export default function ExplainerEditor() {
       ) : null}
 
       <Row gutter={16}>
-        <Col span={7}>
+        <Col xs={24} lg={7}>
           <Card size="small" title="Beats">
             <BeatRail
               steps={data?.steps ?? []}
@@ -171,7 +171,7 @@ export default function ExplainerEditor() {
           </div>
         </Col>
 
-        <Col span={9}>
+        <Col xs={24} lg={9}>
           <Card size="small" title={step ? `The board at ${step.id}` : 'The board'}>
             <div style={{ containerType: 'inline-size' }}>
               {step ? (
@@ -190,7 +190,7 @@ export default function ExplainerEditor() {
           </Card>
         </Col>
 
-        <Col span={8}>
+        <Col xs={24} lg={8}>
           <Space orientation="vertical" size={12} style={{ width: '100%' }}>
             <Card size="small" title="Document">
               <textarea

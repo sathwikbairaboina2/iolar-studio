@@ -41,7 +41,7 @@ export default function AnchorPage() {
   return (
     <Space orientation="vertical" size={16} style={{ width: '100%' }}>
       <div>
-        <Link href="/launch" style={{ fontSize: 12 }}>← Launch reels</Link>
+        <Link className="st-link" href="/launch" style={{ fontSize: 12 }}>← Launch reels</Link>
         <Typography.Title level={3} style={{ margin: 0 }}>Anchor</Typography.Title>
         <Typography.Text type="secondary">The face of the channel in every avatar reel.</Typography.Text>
       </div>

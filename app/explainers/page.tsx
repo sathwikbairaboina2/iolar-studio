@@ -99,7 +99,7 @@ export default function ExplainersPage() {
       {rows.length === 0 && !loading ? (
         <Empty description="Nothing designed yet. Fill in a brief above." />
       ) : (
-        <div style={GRID}>
+        <div className="st-cards-2" style={GRID}>
           {rows.map((r) => (
             <div key={r.slug} style={TILE} role="button" tabIndex={0} onClick={() => router.push(`/explainers/designed/${r.slug}`)} onKeyDown={(e) => { if (e.key === 'Enter') router.push(`/explainers/designed/${r.slug}`); }}>
               <div style={FRAME}>
@@ -131,7 +131,7 @@ export default function ExplainersPage() {
             <Typography.Title level={4} style={{ margin: 0 }}>Legacy</Typography.Title>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>The earlier board explainers: their poster and last render only.</Typography.Text>
           </div>
-          <div style={GRID}>
+          <div className="st-cards-2" style={GRID}>
             {legacy.map((r) => (
               <div key={r.slug} style={TILE} role="button" tabIndex={0} onClick={() => setPlaying(r)} onKeyDown={(e) => { if (e.key === 'Enter') setPlaying(r); }}>
                 <div style={FRAME}>

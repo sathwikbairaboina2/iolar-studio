@@ -124,7 +124,7 @@ export default function GraphPage() {
         ]}
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
+      <div className="st-stack" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16, alignItems: 'start' }}>
         <div>
           {!loading && !error && nodes.length === 0 && (
             <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>

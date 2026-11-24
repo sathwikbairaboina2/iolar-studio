@@ -32,6 +32,7 @@ export default function ExplainerTable({
         {
           title: 'Title',
           dataIndex: 'title',
+          className: 'st-title-col',
           sorter: (a, b) => a.title.localeCompare(b.title),
           render: (v: string) => <strong>{v}</strong>,
         },

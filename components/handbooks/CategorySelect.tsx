@@ -58,7 +58,7 @@ export function ChapterCategory({ subject, chapter }: { subject: string; chapter
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
       <CategorySelect value={value} onChange={change} />
       <Tooltip title="This category's content, presentation and script rules">
-        <Link href={`/handbooks/categories#${value}`} style={{ fontSize: 12 }}>rules</Link>
+        <Link className="st-link" href={`/handbooks/categories#${value}`} style={{ fontSize: 12 }}>rules</Link>
       </Tooltip>
     </span>
   );

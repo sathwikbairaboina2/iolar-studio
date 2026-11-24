@@ -108,7 +108,7 @@ export default function ReviewPanel({
         />
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+      <div className="st-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
         {current.map((slideIndex, pos) => (
           <div
             key={slideIndex}

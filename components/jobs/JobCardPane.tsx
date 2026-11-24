@@ -238,7 +238,7 @@ export default function JobCardPane() {
   const missing = useMemo(() => detail?.missing ?? [], [detail]);
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 320px) 1fr', gap: 16 }} data-testid="job-card">
+    <div className="st-stack" style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 320px) minmax(0, 1fr)', gap: 16 }} data-testid="job-card">
       <Card
         size="small"
         title="Job cards"
@@ -424,7 +424,7 @@ export default function JobCardPane() {
               />
             )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="st-stack" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <label>
                 <Typography.Text type="secondary">Company</Typography.Text>
                 <Input
@@ -528,7 +528,7 @@ export default function JobCardPane() {
               />
             </label>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
+            <div className="st-stack" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 12 }}>
               <div>
                 <Typography.Text type="secondary">Selection process, as announced</Typography.Text>
                 <div style={{ fontSize: 13, marginTop: 4 }}>
@@ -585,7 +585,7 @@ export default function JobCardPane() {
               <>
                 <Divider style={{ margin: '16px 0 12px' }} />
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={shot} alt="the rendered card" style={{ maxWidth: 380, borderRadius: 8, border: '1px solid #eee' }} data-testid="jobcard-image" />
+                <img src={shot} alt="the rendered card" style={{ maxWidth: 'min(380px, 100%)', borderRadius: 8, border: '1px solid #eee' }} data-testid="jobcard-image" />
                 <div style={{ marginTop: 12 }}>
                   <Space wrap>
                     <Button

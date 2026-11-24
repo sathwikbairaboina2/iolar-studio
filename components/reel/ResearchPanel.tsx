@@ -361,7 +361,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
                   />
                   <Input
                     size="small"
-                    style={{ width: 460 }}
+                    style={{ width: 460, maxWidth: '100%' }}
                     data-testid={`plan-query-${i}`}
                     value={q.query}
                     onChange={(e) => editQuery(i, { query: e.target.value })}
@@ -377,7 +377,7 @@ export default function ResearchPanel({ slug, onApproved }: { slug: string; onAp
                     </Typography.Text>
                     <Select
                       size="small"
-                      style={{ minWidth: 320 }}
+                      style={{ minWidth: 'min(320px, 100%)' }}
                       value={q.proves}
                       options={(brief?.mustProve ?? []).map((c) => ({ label: c, value: c }))}
                       onChange={(v) => editQuery(i, { proves: v })}

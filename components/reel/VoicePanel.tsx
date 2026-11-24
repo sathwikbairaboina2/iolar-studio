@@ -95,7 +95,7 @@ export default function VoicePanel({ slug, onVoice }: Props) {
   const drift = status?.aligned && status.heardWords !== status.scriptWords;
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
       <Typography.Text type="secondary">
         One take covers the whole script. Copy it, speak it wherever you like, and drop the file back —
         or let this machine say it.
@@ -146,7 +146,7 @@ export default function VoicePanel({ slug, onVoice }: Props) {
         </Button>
       </Space>
 
-      <Descriptions size="small" column={2} bordered>
+      <Descriptions size="small" column={{ xs: 1, sm: 2 }} bordered>
         <Descriptions.Item label="Audio">
           {status?.hasAudio ? <Tag color="green">{kb(status.bytes)} on disk</Tag> : <Tag>none yet</Tag>}
         </Descriptions.Item>

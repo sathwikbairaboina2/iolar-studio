@@ -114,7 +114,7 @@ export default function PreviewPane({
       </Modal>
 
       <Modal open={sheet} onCancel={() => setSheet(false)} footer={null} width="90vw" title="Contact sheet">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
+        <div className="st-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
           {Array.from({ length: slideCount }, (_, i) => (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img

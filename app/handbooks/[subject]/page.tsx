@@ -113,12 +113,12 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+      <div className="st-wrap" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
         <Typography.Title level={5} style={{ margin: 0 }}>
           {meta ? `${meta.emoji} ${meta.name}` : subject} · {chapters.length} chapters
         </Typography.Title>
         <Space style={{ marginLeft: 'auto' }}>
-          <Link href="/handbooks/categories">category rules</Link>
+          <Link className="st-link" href="/handbooks/categories">category rules</Link>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>new chapter</Button>
         </Space>
       </div>
@@ -192,7 +192,7 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
             style={{ marginBottom: 9 }}
             onClick={() => router.push(`/handbooks/${subject}/${c.slug}`)}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+            <div className="st-row" style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
               <span onClick={(e) => e.stopPropagation()}>
                 <Checkbox aria-label={`select ${c.title}`} checked={sel.has(c.slug)} onChange={() => toggle(c.slug)} />
               </span>
@@ -204,7 +204,7 @@ export default function SubjectPage({ params }: { params: Promise<{ subject: str
               >
                 {String(chapters.indexOf(c) + 1).padStart(2, '0')}
               </span>
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="st-row-main" style={{ flex: 1, minWidth: 0 }}>
                 <b style={{ fontSize: 14 }}>{c.title}</b>
                 <Tag style={{ marginInlineStart: 8, fontSize: 11 }}>{categoryOf(c.category).emoji} {categoryOf(c.category).name}</Tag>
                 <div style={{ fontSize: 11.5, opacity: 0.65 }}>

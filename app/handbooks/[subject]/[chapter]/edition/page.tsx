@@ -12,7 +12,7 @@ export default async function EditionPage({ params }: { params: Promise<{ subjec
   return (
     <div>
       <div style={{ padding: '12px 16px' }}>
-        <Link href={`/handbooks/${subject}`}>Back to {subject}</Link>
+        <Link className="st-link" href={`/handbooks/${subject}`}>Back to {subject}</Link>
       </div>
       {edition ? <EditionView edition={edition} title={title} /> : <p style={{ padding: 24 }}>No edition has been written for this chapter yet. Run Review &amp; publish to write one.</p>}
     </div>

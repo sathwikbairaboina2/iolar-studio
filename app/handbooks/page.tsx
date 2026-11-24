@@ -50,10 +50,10 @@ export default function HandbooksPage() {
   return (
     <div>
       <Row gutter={14} style={{ marginBottom: 18 }}>
-        <Col span={6}><Card size="small"><Statistic title="Subjects" value={subjects.length} /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="Chapters" value={chapters} /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="Pages rendered" value={pages} /></Card></Col>
-        <Col span={6}>
+        <Col xs={12} lg={6}><Card size="small"><Statistic title="Subjects" value={subjects.length} /></Card></Col>
+        <Col xs={12} lg={6}><Card size="small"><Statistic title="Chapters" value={chapters} /></Card></Col>
+        <Col xs={12} lg={6}><Card size="small"><Statistic title="Pages rendered" value={pages} /></Card></Col>
+        <Col xs={12} lg={6}>
           <Card size="small">
             <Statistic title="Categories live" value={1} suffix={<span style={{ fontSize: 13, opacity: 0.6 }}>/ 5</span>} />
           </Card>
@@ -70,7 +70,7 @@ export default function HandbooksPage() {
       ) : (
         <Row gutter={[14, 14]}>
           {subjects.map((s) => (
-            <Col span={6} key={s.slug}>
+            <Col xs={24} sm={12} lg={6} key={s.slug}>
               <Card hoverable onClick={() => router.push(`/handbooks/${s.slug}`)}>
                 <div style={{ fontSize: 25 }}>{s.emoji}</div>
                 <Typography.Title level={5} style={{ margin: '9px 0 2px' }}>{s.name}</Typography.Title>
@@ -83,7 +83,7 @@ export default function HandbooksPage() {
               </Card>
             </Col>
           ))}
-          <Col span={6}>
+          <Col xs={24} sm={12} lg={6}>
             <Card
               hoverable
               onClick={() => setOpen(true)}
