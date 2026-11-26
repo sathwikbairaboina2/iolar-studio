@@ -105,6 +105,14 @@ export function getRow(id: string): CardRow | null {
   return r ? rowOf(r) : null;
 }
 
+/** The card made from a control-room job, newest first when a job was ever made into more than one. */
+export function findByPanelJob(jobId: string): CardRow | null {
+  const r = getDb()
+    .prepare(`SELECT * FROM jobcards WHERE json_extract(card_json, '$.panel.jobId') = ? ORDER BY created_at DESC LIMIT 1`)
+    .get(jobId) as Row | undefined;
+  return r ? rowOf(r) : null;
+}
+
 export function listRows(): CardRow[] {
   return (getDb().prepare(`SELECT * FROM jobcards ORDER BY created_at DESC`).all() as Row[]).map(rowOf);
 }

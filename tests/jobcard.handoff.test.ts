@@ -179,3 +179,112 @@ describe('handing a card to IntaBot', () => {
     expect(again).toMatchObject({ handoff: { postId: 'post-1' } });
   });
 });
+
+describe('the keyword on a handed-off card', () => {
+  it('sends the keyword the card asks viewers to comment', async () => {
+    const id = await seed();
+    const { handoffCard } = await import('@/lib/jobcard/handoff');
+    const { calls, http } = intabot(created);
+    await handoffCard(id, { http });
+    expect(JSON.parse(String((calls[0].init.body as FormData).get('card'))).keyword).toBe('ZOHO');
+  });
+
+  it('sends a keyword set on the card, and leaves it out when it is not 2-20 letters or digits', async () => {
+    const { handoffCard } = await import('@/lib/jobcard/handoff');
+    const withKeyword = fixture();
+    withKeyword.cta = { channel: 'site', url: 'https://aiiolar.com/jobs?job=a', keyword: 'zoho2026' };
+    const a = intabot(created);
+    await handoffCard(await seed({ draft: withKeyword }), { http: a.http });
+    expect(JSON.parse(String((a.calls[0].init.body as FormData).get('card'))).keyword).toBe('ZOHO2026');
+
+    const odd = fixture();
+    odd.company = { name: 'X', logo: null, accent: null };
+    odd.cta = { channel: 'site' };
+    const b = intabot(created);
+    await handoffCard(await seed({ draft: odd }), { http: b.http });
+    expect(JSON.parse(String((b.calls[0].init.body as FormData).get('card')))).not.toHaveProperty('keyword');
+  });
+});
+
+describe('handing a carousel to IntaBot', () => {
+  const carouselOk = () => json({ postId: 'post-c1', accountId: 'acct-1', status: 'PENDING_APPROVAL', caption: 'cap', created: true }, 201);
+
+  async function cards(n: number) {
+    const { saveCard } = await import('@/lib/jobcard/store');
+    const { jobcardDir, jobcardImage } = await import('@/lib/paths');
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const id = `card-${i}`;
+      await saveCard(id, fixture() as never);
+      mkdirSync(jobcardDir(id), { recursive: true });
+      writeFileSync(jobcardImage(id), Buffer.concat([PNG, Buffer.from([i])]));
+      ids.push(id);
+    }
+    return ids;
+  }
+
+  it('posts every PNG in order as files[] with the content card, and returns the post', async () => {
+    const ids = await cards(3);
+    const { handoffCarousel } = await import('@/lib/jobcard/handoff');
+    const { calls, http } = intabot(carouselOk);
+    const out = await handoffCarousel(
+      { contentId: 'c-1', title: 'Three jobs this week', caption: 'a caption', cardIds: [ids[2], ids[0], ids[1]], keyword: 'LIST' },
+      { http }
+    );
+    expect(out).toMatchObject({ status: 200, postId: 'post-c1', accountId: 'acct-1', created: true });
+
+    expect(calls[0].url).toBe('http://intabot.test:4100/handoff/carousel');
+    expect((calls[0].init.headers as Record<string, string>)['x-handoff-key']).toBe('k-123');
+    const form = calls[0].init.body as FormData;
+    const files = form.getAll('files[]') as File[];
+    expect(files).toHaveLength(3);
+    expect(files.every((f) => f.type === 'image/png')).toBe(true);
+    // The order sent is the order of the slides.
+    const lastBytes = await Promise.all(files.map(async (f) => new Uint8Array(await f.arrayBuffer()).at(-1)));
+    expect(lastBytes).toEqual([2, 0, 1]);
+    expect(JSON.parse(String(form.get('card')))).toEqual({
+      contentId: 'c-1',
+      title: 'Three jobs this week',
+      caption: 'a caption',
+      keyword: 'LIST',
+    });
+  });
+
+  it('answers 400 for fewer than 2 or more than 10 cards, 404 for an unknown card and 409 for an unrendered one, before calling IntaBot', async () => {
+    const ids = await cards(2);
+    const { handoffCarousel } = await import('@/lib/jobcard/handoff');
+    const { calls, http } = intabot(carouselOk);
+    const body = { contentId: 'c-1', title: 't' };
+    expect(await handoffCarousel({ ...body, cardIds: [ids[0]] }, { http })).toMatchObject({ status: 400 });
+    expect(await handoffCarousel({ ...body, cardIds: Array.from({ length: 11 }, () => ids[0]) }, { http })).toMatchObject({ status: 400 });
+    expect(await handoffCarousel({ ...body, cardIds: [ids[0], 'ghost'] }, { http })).toMatchObject({ status: 404 });
+    expect(await handoffCarousel({ ...body, cardIds: [ids[0], '../card-1'] }, { http })).toMatchObject({ status: 404 });
+    const { jobcardImage } = await import('@/lib/paths');
+    (await import('fs')).rmSync(jobcardImage(ids[1]));
+    expect(await handoffCarousel({ ...body, cardIds: ids }, { http })).toMatchObject({ status: 409, error: expect.stringMatching(/render/) });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('passes IntaBot refusals through, answers 502 when it is down and 503 without the key', async () => {
+    const ids = await cards(2);
+    const { handoffCarousel } = await import('@/lib/jobcard/handoff');
+    const body = { contentId: 'c-1', title: 't', cardIds: ids };
+    expect(await handoffCarousel(body, { http: intabot(() => json({ message: 'Unauthorized' }, 401)).http })).toMatchObject({
+      status: 401,
+      error: expect.stringContaining('Unauthorized'),
+    });
+    expect(await handoffCarousel(body, { http: intabot(() => new Error('connect ECONNREFUSED')).http })).toMatchObject({ status: 502 });
+    delete process.env.INTABOT_HANDOFF_KEY;
+    expect(await handoffCarousel(body, { http: intabot(carouselOk).http })).toMatchObject({ status: 503 });
+  });
+
+  it('keeps a repeat harmless: IntaBot answers with the first post', async () => {
+    const ids = await cards(2);
+    const { handoffCarousel } = await import('@/lib/jobcard/handoff');
+    const out = await handoffCarousel(
+      { contentId: 'c-1', title: 't', cardIds: ids },
+      { http: intabot(() => json({ postId: 'post-c1', accountId: 'acct-1', status: 'PENDING_APPROVAL', caption: 'cap', created: false })).http }
+    );
+    expect(out).toMatchObject({ status: 200, postId: 'post-c1', created: false });
+  });
+});

@@ -172,6 +172,20 @@ export function poolRowById(researchId: number): PoolRow | null {
   return r ? poolOf(r) : null;
 }
 
+/**
+ * Read-only listing for the control room: rows first seen at or after `since`, plus rows
+ * closed at or after it (so a closure shows up even when the row is older). Newest first.
+ */
+export function poolSince(since: string, category: string, limit: number, offset: number): { total: number; rows: PoolRow[] } {
+  const db = getDb();
+  const where = `WHERE (? = 'all' OR category = ?) AND (first_seen >= ? OR closed_at >= ?)`;
+  const total = Number((db.prepare(`SELECT count(*) AS n FROM jobs_pool ${where}`).get(category, category, since, since) as Row).n);
+  const rows = db
+    .prepare(`SELECT * FROM jobs_pool ${where} ORDER BY first_seen DESC, research_id LIMIT ? OFFSET ?`)
+    .all(category, category, since, since, limit, offset) as Row[];
+  return { total, rows: rows.map(poolOf) };
+}
+
 /** Open rows posted (or first seen, when the source gave no date) inside [from, to], dates inclusive. */
 export function poolInWindow(from: string, to: string, category: string): PoolRow[] {
   const rows = getDb()
@@ -264,6 +278,20 @@ export function setCutStatus(cutId: number, status: CutStatus, now = new Date().
 
 export function getCut(id: number): Cut | null {
   const r = getDb().prepare(`SELECT * FROM cuts WHERE id = ?`).get(id) as Row | undefined;
+  return r ? cutOf(r) : null;
+}
+
+/** The cut for one period and kind, if there is one. */
+export function getCutByPeriod(periodKey: string, kind: CutKind): Cut | null {
+  const r = getDb().prepare(`SELECT * FROM cuts WHERE period_key = ? AND kind = ?`).get(periodKey, kind) as Row | undefined;
+  return r ? cutOf(r) : null;
+}
+
+/** The cut made from the jobs of one piece of content: the control room's id is kept in the cut's filter. */
+export function findCutByContent(contentId: string): Cut | null {
+  const r = getDb()
+    .prepare(`SELECT * FROM cuts WHERE json_extract(filter_json, '$.fromJobs') = 1 AND json_extract(filter_json, '$.contentId') = ? ORDER BY id DESC LIMIT 1`)
+    .get(contentId) as Row | undefined;
   return r ? cutOf(r) : null;
 }
 

@@ -70,7 +70,8 @@ export async function listWeeks(opts: BoardOpts = {}): Promise<WeekRow[]> {
   });
 }
 
-const SAFE_WEEK = /^\d{4}-W\d{2}$/;
+/** A period key: an ISO week, or a day. The plugin takes both on every route but the mp4. */
+const SAFE_WEEK = /^\d{4}-W\d{2}$|^\d{4}-\d{2}-\d{2}$/;
 
 const STAGES: StageName[] = ['summarise', 'plan', 'script', 'build'];
 

@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import path from 'path';
 import { getSettings } from '@/lib/settings';
 import { applyUrlFor } from './cta';
 import type { JobCard, JobCardDraft } from './schema';
@@ -40,6 +41,42 @@ async function reasonOf(res: Response): Promise<string> {
   return text ? `IntaBot answered ${res.status}: ${text}` : `IntaBot answered ${res.status}`;
 }
 
+/** The word a viewer comments, as IntaBot accepts it (2-20 letters or digits); anything else is left for the account's own. */
+export function keywordField(keyword: string | undefined): { keyword?: string } {
+  const k = (keyword ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  return k.length >= 2 && k.length <= 20 ? { keyword: k } : {};
+}
+
+export type IntabotPost = { postId: string; accountId: string; caption?: string; created?: boolean };
+
+/** One multipart POST to IntaBot with the shared key; its refusal, or its silence, comes back as a status and a reason. */
+export async function postToIntabot(
+  route: string,
+  form: FormData,
+  key: string,
+  deps: Deps = {},
+  timeoutMs = 30_000
+): Promise<{ body: IntabotPost } | { status: number; error: string }> {
+  // Resolved per call so a test (or a hot reload) that swaps global fetch is honoured.
+  const http = deps.http ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  let res: Response;
+  try {
+    res = await http(`${intabotBase()}${route}`, {
+      method: 'POST',
+      headers: { 'x-handoff-key': key },
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    return { status: 502, error: `IntaBot did not answer (${err instanceof Error ? err.message : String(err)})` };
+  }
+  if (!res.ok) return { status: res.status, error: await reasonOf(res) };
+
+  const body = (await res.json().catch(() => null)) as Partial<IntabotPost> | null;
+  if (!body?.postId || !body.accountId) return { status: 502, error: 'IntaBot sent no post id' };
+  return { body: body as IntabotPost };
+}
+
 export async function handoffCard(id: string, deps: Deps = {}): Promise<HandoffOutcome> {
   const read = await readCard(id);
   if (!read) return { status: 404, error: `no card ${id}` };
@@ -67,30 +104,69 @@ export async function handoffCard(id: string, deps: Deps = {}): Promise<HandoffO
       location: locationLabel(card),
       eligibility: card.eligibility.join('; '),
       applyUrl: applyUrlOf(card, draft),
+      ...keywordField(card.cta.keyword),
     })
   );
 
-  // Resolved per call so a test (or a hot reload) that swaps global fetch is honoured.
-  const http = deps.http ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
-  let res: Response;
-  try {
-    res = await http(`${intabotBase()}/handoff/job-card`, {
-      method: 'POST',
-      headers: { 'x-handoff-key': key },
-      body: form,
-      signal: AbortSignal.timeout(30_000),
-    });
-  } catch (err) {
-    return { status: 502, error: `IntaBot did not answer (${err instanceof Error ? err.message : String(err)})` };
-  }
-  if (!res.ok) return { status: res.status, error: await reasonOf(res) };
-
-  const body = (await res.json().catch(() => null)) as
-    | { postId?: string; accountId?: string; caption?: string; created?: boolean }
-    | null;
-  if (!body?.postId || !body.accountId) return { status: 502, error: 'IntaBot sent no post id' };
+  const sent = await postToIntabot('/handoff/job-card', form, key, deps);
+  if ('error' in sent) return sent;
+  const { body } = sent;
 
   const handoff: Handoff = { postId: body.postId, accountId: body.accountId, at: new Date().toISOString(), status: 'queued' };
   await saveCard(id, { ...(draft ?? {}), handoff });
   return { status: 200, handoff, caption: body.caption ?? '', created: body.created !== false };
+}
+
+export type CarouselHandoff = {
+  contentId: string;
+  title: string;
+  caption?: string;
+  /** Slide order: the first id is the first slide. */
+  cardIds: string[];
+  keyword?: string;
+  applyUrl?: string;
+  accountId?: string;
+};
+
+export type CarouselOutcome =
+  | { status: 200; postId: string; accountId: string; caption: string; created: boolean }
+  | { status: number; error: string };
+
+/**
+ * Two to ten rendered cards, sent to IntaBot as one carousel in the order given. Nothing is
+ * written to the cards: the panel owns the content, and IntaBot answers a repeated content
+ * id with the first post.
+ */
+export async function handoffCarousel(req: CarouselHandoff, deps: Deps = {}): Promise<CarouselOutcome> {
+  const ids = req.cardIds;
+  if (ids.length < 2 || ids.length > 10) return { status: 400, error: `a carousel takes 2-10 cards, got ${ids.length}` };
+  for (const id of ids) {
+    // An id names a folder under data/jobcard; anything with a path in it names nothing.
+    if (id !== path.basename(id) || !(await readDraft(id))) return { status: 404, error: `no card ${id}` };
+    if (!(await hasImage(id))) return { status: 409, error: `render the card first: ${id}` };
+  }
+  const key = process.env.INTABOT_HANDOFF_KEY;
+  if (!key) return { status: 503, error: 'INTABOT_HANDOFF_KEY is not set, so Studio cannot hand cards to IntaBot' };
+
+  const form = new FormData();
+  for (const id of ids) {
+    const png = await fs.readFile(imagePath(id));
+    form.append('files[]', new Blob([new Uint8Array(png)], { type: 'image/png' }), `${id}.png`);
+  }
+  form.append(
+    'card',
+    JSON.stringify({
+      contentId: req.contentId,
+      title: req.title,
+      ...(req.caption ? { caption: req.caption } : {}),
+      ...(req.applyUrl ? { applyUrl: req.applyUrl } : {}),
+      ...keywordField(req.keyword),
+      ...(req.accountId ? { accountId: req.accountId } : {}),
+    })
+  );
+
+  const sent = await postToIntabot('/handoff/carousel', form, key, deps, 120_000);
+  if ('error' in sent) return sent;
+  const { body } = sent;
+  return { status: 200, postId: body.postId, accountId: body.accountId, caption: body.caption ?? '', created: body.created !== false };
 }
