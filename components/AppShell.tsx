@@ -1,6 +1,6 @@
 'use client';
 import React, { useEffect, useRef, useState } from 'react';
-import { Button, Drawer, Layout, Menu, Tag } from 'antd';
+import { Button, Drawer, Layout, Menu, Tag, theme as antdTheme } from 'antd';
 import Link from 'next/link';
 import {
   BookOutlined, VideoCameraOutlined, ClockCircleOutlined, MessageOutlined, SmileOutlined,
@@ -79,11 +79,13 @@ const navItems = (selected?: string) =>
   }));
 
 function Brand() {
+  // The text token, not the sider's inherited colour: it is chosen to read on the sidebar ground in both modes.
+  const { token } = antdTheme.useToken();
   return (
     <div
       style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '18px 18px 14px',
-        fontWeight: 800, fontSize: 17, letterSpacing: '-0.4px',
+        fontWeight: 800, fontSize: 17, letterSpacing: '-0.4px', color: token.colorText,
       }}
     >
       <span style={{ width: 28, height: 28, borderRadius: 9, backgroundImage: SWEEP, display: 'inline-block' }} />
@@ -101,6 +103,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { mode, toggle } = useTheme();
+  const { token } = antdTheme.useToken();
   const phone = usePhone();
   const selected = FLAT.filter((i) => pathname?.startsWith(i.key)).sort((a, b) => b.key.length - a.key.length)[0]?.key;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -141,7 +144,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         className="st-sider"
         width={232}
         theme={mode}
-        style={{ borderRight: '1px solid rgba(128,128,128,.18)', display: 'flex', flexDirection: 'column' }}
+        style={{ borderRight: `1px solid ${token.colorBorder}`, display: 'flex', flexDirection: 'column' }}
       >
         <Brand />
         <nav aria-label="Primary" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -154,7 +157,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           className="st-header"
           style={{
             display: 'flex', alignItems: 'center', gap: 12, padding: '0 22px', height: 52, lineHeight: '52px',
-            borderBottom: '1px solid rgba(128,128,128,.18)', background: 'transparent',
+            borderBottom: `1px solid ${token.colorBorder}`, background: 'transparent',
           }}
         >
           <Button
