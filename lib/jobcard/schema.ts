@@ -13,17 +13,13 @@ import { z } from 'zod';
  * rather than render a hole.
  */
 
-export const FAMILIES = ['split-hero', 'infographic', 'campaign', 'bento', 'ticket', 'band-stack'] as const;
+export const FAMILIES = ['infographic', 'campaign'] as const;
 export type Family = (typeof FAMILIES)[number];
 
-/** 3:4 for the tall families, 4:5 for the two that pack the width. */
+/** 3:4 for the tall family, 4:5 for the one that packs the width. */
 const RATIO: Record<Family, [number, number]> = {
-  'split-hero': [1080, 1440],
   infographic: [1080, 1350],
   campaign: [1080, 1440],
-  bento: [1080, 1350],
-  ticket: [1080, 1440],
-  'band-stack': [1080, 1440],
 };
 
 export const ratioFor = (family: Family): [number, number] => RATIO[family];
@@ -31,7 +27,7 @@ export const ratioFor = (family: Family): [number, number] => RATIO[family];
 const Hex = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'a colour is six hex digits behind a hash');
 
 /** The first word of the company, upper-cased: what a viewer is asked to comment. */
-const keywordFrom = (name: string) => (name.split(/[\s,.-]+/)[0] ?? 'JOBS').toUpperCase();
+export const keywordFrom = (name: string) => (name.split(/[\s,.-]+/)[0] ?? 'JOBS').toUpperCase();
 
 export const LogoSchema = z.object({
   /** A path under data/, never a remote URL: the renderer reads from disk. */
@@ -93,6 +89,8 @@ export const JobCardSchema = z
       /** A pool card's family key, which aiiolar.com opens the job by. */
       familyKey: z.string().min(1).optional(),
     }),
+    /** The control-room job this card was made from, and a hash of what it said, so a repeat is recognised. */
+    panel: z.object({ jobId: z.string().min(1), hash: z.string().min(1) }).optional(),
     /** Set once the card has been sent on to IntaBot; the document's only memory of it. */
     handoff: z
       .object({ postId: z.string().min(1), accountId: z.string().min(1), at: z.string().min(1), status: z.literal('queued') })

@@ -77,10 +77,8 @@ describe('the job card document', () => {
   });
 
   it('knows the ratio each family renders at', () => {
-    expect(FAMILIES).toEqual(['split-hero', 'infographic', 'campaign', 'bento', 'ticket', 'band-stack']);
+    expect(FAMILIES).toEqual(['infographic', 'campaign']);
     expect(ratioFor('infographic')).toEqual([1080, 1350]);
-    expect(ratioFor('bento')).toEqual([1080, 1350]);
-    expect(ratioFor('ticket')).toEqual([1080, 1440]);
-    expect(ratioFor('band-stack')).toEqual([1080, 1440]);
+    expect(ratioFor('campaign')).toEqual([1080, 1440]);
   });
 });

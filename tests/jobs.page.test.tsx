@@ -70,8 +70,8 @@ const cardRow = {
   fellBack: null,
 };
 const cardFamilies = [
-  { family: 'band-stack', score: 5, why: 'nothing may be cut' },
-  { family: 'bento', score: 2, why: 'facts short and of equal weight, one tile each' },
+  { family: 'campaign', score: 5, why: 'nothing may be cut' },
+  { family: 'infographic', score: 2, why: 'several requirements to list and no image worth showing' },
 ];
 let made = false;
 
@@ -100,11 +100,11 @@ beforeEach(() => {
       if (u.endsWith('/submit')) return json({ cut: { ...cut, status: 'planned' }, submissions: [] });
       if (u.endsWith('/pull')) return json({ fetched: 1, added: 1, refreshed: 0, closed: 0, error: null });
       if (u.endsWith('/api/jobcards')) { made = true; return json({ id: 'zoho-sde-1', row: cardRow, draft: cardDraft, missing: [] }, 201); }
-      if (u.endsWith('/api/jobcards/zoho-sde-1/render')) return json({ family: 'band-stack', overflowPx: 0, fellBack: false, row: cardRow });
+      if (u.endsWith('/api/jobcards/zoho-sde-1/render')) return json({ family: 'campaign', overflowPx: 0, fellBack: false, row: cardRow });
     }
     if (u.endsWith('/api/jobcards')) return json({ cards: made ? [cardRow] : [] });
     if (u.endsWith('/api/jobcards/zoho-sde-1')) return json({ row: cardRow, draft: cardDraft, missing: [], families: cardFamilies });
-    if (u.endsWith('/api/jobcards/zoho-sde-1/render')) return json({ family: 'band-stack', overflowPx: 0, fellBack: false, row: cardRow });
+    if (u.endsWith('/api/jobcards/zoho-sde-1/render')) return json({ family: 'campaign', overflowPx: 0, fellBack: false, row: cardRow });
     if (u.endsWith('/api/jobs/pool')) return json(pool);
     if (u.endsWith('/api/jobs/styles')) return json({ board: 'http://127.0.0.1:26100', styles: [{ style: 'paper-doodle', world: 'classic', displayName: 'Paper & Doodle', captionMode: 'plain', fixed: [], elastic: { slots: '4-5', secondsEach: '6.4-8s', rehook: null }, request: { jobs: { method: 'POST', path: '/api/weeks/{week}/jobs', body: 'JobsFile' }, script: { method: 'POST', path: '/api/weeks/{week}/script', body: {} }, build: { method: 'POST', path: '/api/weeks/{week}/run', body: { stage: 'build' } } } }] });
     if (u.endsWith('/api/jobs/cuts')) return json({ cuts: posted.some((p) => p.url.endsWith('/api/jobs/cuts')) ? [cut] : [] });

@@ -42,7 +42,9 @@ export type CardRender = {
   height: number;
   /** How far the card's content ran past its own frame. Zero is the only good answer. */
   overflowPx: number;
-  /** True when the asked-for family could not hold the document and band-stack rendered instead. */
+  /** The empty band between the last thing the card says and its footer; zero when it overflows. */
+  slackPx: number;
+  /** True when the asked-for family could not hold the document and the fallback rendered instead. */
   fellBack: boolean;
 };
 
@@ -83,11 +85,25 @@ export async function renderFamily(
         return Math.max(0, own, worst);
       });
 
+      // The bottom of the last thing the card prints, to the top of its footer. Boxes
+      // that merely stretch do not count: only text, icons and images say anything.
+      const slackPx = await page.evaluate(() => {
+        const foot = document.querySelector('#card .foot');
+        const pad = document.querySelector('#card .pad');
+        if (!foot || !pad) return 0;
+        let bottom = 0;
+        pad.querySelectorAll<Element>('*').forEach((el) => {
+          const says = el.tagName === 'svg' || el.tagName === 'IMG' || (!el.firstElementChild && (el.textContent ?? '').trim() !== '');
+          if (says) bottom = Math.max(bottom, el.getBoundingClientRect().bottom);
+        });
+        return Math.max(0, Math.round(foot.getBoundingClientRect().top - bottom));
+      });
+
       const shot = await page.screenshot({ type: 'png' });
       await fs.mkdir(path.dirname(outPath), { recursive: true });
       await sharp(shot).resize(w, h, { kernel: 'lanczos3' }).png().toFile(outPath);
 
-      return { family, file: outPath, width: w, height: h, overflowPx };
+      return { family, file: outPath, width: w, height: h, overflowPx, slackPx: overflowPx > 0 ? 0 : slackPx };
     } finally {
       await page.close();
     }
@@ -97,7 +113,7 @@ export async function renderFamily(
 }
 
 /**
- * The card as it should be posted: the family asked for, or band-stack when that
+ * The card as it should be posted: the family asked for, or campaign when that
  * family could not hold the document. A picked family is a preference, never a
  * promise to cut text to fit it.
  */

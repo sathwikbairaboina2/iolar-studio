@@ -18,7 +18,7 @@ const draft = {
 const row = (renderedAt: string | null) => ({
   id: 'zoho-se-1', createdAt: 'x', updatedAt: 'y', company: 'Zoho', role: 'Software Engineer I',
   sourceUrl: 'https://careers.example.com/1', sourceKind: 'job-url', poolId: null,
-  family: renderedAt ? 'band-stack' : null, missing: [], renderedAt, overflowPx: null, fellBack: null,
+  family: renderedAt ? 'campaign' : null, missing: [], renderedAt, overflowPx: null, fellBack: null,
 });
 
 let renderedAt: string | null = null;
@@ -48,12 +48,12 @@ beforeEach(() => {
     }
     if (u.endsWith('/api/jobcards/zoho-se-1/render') && init?.method === 'POST') {
       renderedAt = new Date().toISOString();
-      return json({ family: 'band-stack', fellBack: false });
+      return json({ family: 'campaign', fellBack: false });
     }
     if (u.endsWith('/api/jobcards/zoho-se-1')) {
       return json({
         row: row(renderedAt), draft, missing: [],
-        families: [{ family: 'band-stack', score: 5, why: 'x' }], handoff: existing,
+        families: [{ family: 'campaign', score: 5, why: 'x' }], handoff: existing,
       });
     }
     if (u.includes('/api/jobcards')) return json({ cards: [row(renderedAt)], total: 1 });

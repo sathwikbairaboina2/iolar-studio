@@ -36,7 +36,7 @@ beforeEach(() => {
         puts.push(JSON.parse(String(init.body)));
         return json({ row, draft: puts[puts.length - 1], missing: [] });
       }
-      return json({ row, draft: stored, missing: [], families: [{ family: 'band-stack', score: 5, why: 'x' }] });
+      return json({ row, draft: stored, missing: [], families: [{ family: 'campaign', score: 5, why: 'x' }] });
     }
     if (u.includes('/api/jobcards')) return json({ cards: [row], total: 1 });
     return json({});

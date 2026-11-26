@@ -18,6 +18,7 @@ import {
 import { message } from '@/lib/ui/message';
 import { FileImageOutlined, PictureOutlined, ReloadOutlined, SendOutlined } from '@ant-design/icons';
 import type { Family, JobCardDraft } from '@/lib/jobcard/schema';
+import { FALLBACK } from '@/lib/jobcard/pick';
 import type { CardRow } from '@/lib/jobcard/store';
 import type { ScrapedItem } from '@/lib/jobcard/scraped';
 
@@ -194,7 +195,7 @@ export default function JobCardPane() {
       setError(out?.missing?.length ? `still missing: ${out.missing.join(', ')}` : (out?.error ?? 'the card did not render'));
       return;
     }
-    if (out?.fellBack) message.warning(`${family} could not hold this job — rendered as band-stack`);
+    if (out?.fellBack) message.warning(`${family} could not hold this job — rendered as ${FALLBACK}`);
     setShot(`/api/jobcards/${id}/image?v=${Date.now()}`);
     await refresh();
     if (out?.family) setFamily(out.family);

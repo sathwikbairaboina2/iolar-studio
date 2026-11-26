@@ -36,17 +36,17 @@ describe('the job cards api', () => {
     const ctx = { params: Promise.resolve({ id: made.id as string }) };
     const got = await (await one.GET(req('GET'), ctx)).json();
     expect(got.row.company).toBe('Zoho Corporation');
-    // Every field filled, four rounds, two dates: the family that cannot run out of room.
-    expect(got.families[0].family).toBe('band-stack');
+    // Every field filled, four rounds, two dates: the family that holds a full job.
+    expect(got.families[0].family).toBe('campaign');
 
     const edited = { ...got.draft, role: { ...got.draft.role, title: 'Senior Backend Engineer' } };
     const put = await (await one.PUT(req('PUT', edited), { params: Promise.resolve({ id: made.id }) })).json();
     expect(put.row.role).toBe('Senior Backend Engineer');
 
     const shot = await (
-      await render.POST(req('POST', { family: 'band-stack' }), { params: Promise.resolve({ id: made.id }) })
+      await render.POST(req('POST', { family: 'campaign' }), { params: Promise.resolve({ id: made.id }) })
     ).json();
-    expect(shot).toMatchObject({ family: 'band-stack', overflowPx: 0, fellBack: false });
+    expect(shot).toMatchObject({ family: 'campaign', overflowPx: 0, fellBack: false });
     expect(shot.row.renderedAt).toBeTruthy();
 
     const png = await image.GET(req('GET'), { params: Promise.resolve({ id: made.id }) });
@@ -56,7 +56,7 @@ describe('the job cards api', () => {
     const all = await (await list.GET(req('GET'))).json();
     expect(all).toMatchObject({ total: 1 });
     expect(all.cards).toHaveLength(1);
-    expect(all.cards[0]).toMatchObject({ family: 'band-stack', fellBack: false });
+    expect(all.cards[0]).toMatchObject({ family: 'campaign', fellBack: false });
   }, 180_000);
 
   it('will not render a document that is still missing a mandatory field', async () => {
@@ -83,9 +83,9 @@ describe('the job cards api', () => {
     const made = await (await list.POST(req('POST', { draft }))).json();
     expect(made.missing).toEqual([]);
 
-    const reply = await render.POST(req('POST', { family: 'band-stack' }), { params: Promise.resolve({ id: made.id }) });
+    const reply = await render.POST(req('POST', { family: 'campaign' }), { params: Promise.resolve({ id: made.id }) });
     expect(reply.status).toBe(200);
-    expect(await reply.json()).toMatchObject({ family: 'band-stack', overflowPx: 0 });
+    expect(await reply.json()).toMatchObject({ family: 'campaign', overflowPx: 0 });
     const png = await image.GET(req('GET'), { params: Promise.resolve({ id: made.id }) });
     expect(png.headers.get('content-type')).toBe('image/png');
     expect((await png.arrayBuffer()).byteLength).toBeGreaterThan(1000);

@@ -54,7 +54,7 @@ beforeEach(() => {
       return scraperDown ? json({ error: 'the scraper did not answer (connect ECONNREFUSED)' }, 502) : json({ items });
     }
     if (u.endsWith('/api/jobcards/zoho-se-1') || u.endsWith('/api/jobcards/freshworks-data-analyst-ab12')) {
-      return json({ row: row('zoho-se-1'), draft, missing: [], families: [{ family: 'band-stack', score: 5, why: 'x' }] });
+      return json({ row: row('zoho-se-1'), draft, missing: [], families: [{ family: 'campaign', score: 5, why: 'x' }] });
     }
     if (u.includes('/api/jobcards')) return json({ cards: [], total: 0 });
     return json({});

@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { getSettings } from '@/lib/settings';
 import { FAMILIES, type Family } from '@/lib/jobcard/schema';
 import { pickFamily } from '@/lib/jobcard/pick';
 import { renderCard } from '@/lib/jobcard/render';
@@ -10,7 +9,7 @@ type Ctx = { params: Promise<{ id: string }> };
 /**
  * The card as a PNG. A document still missing a mandatory field is not rendered — the
  * page is told what to ask for. A family that cannot hold the document is not shrunk to
- * fit it: band-stack renders instead and the reply says so.
+ * fit it: campaign renders instead and the reply says so.
  */
 export async function POST(req: Request, ctx: Ctx) {
   const { id } = await ctx.params;
@@ -26,7 +25,7 @@ export async function POST(req: Request, ctx: Ctx) {
   }
   const family = (body.family as Family | undefined) ?? pickFamily(read.card);
 
-  const out = await renderCard(read.card, family, imagePath(id), { brand: getSettings().brand });
+  const out = await renderCard(read.card, family, imagePath(id));
   recordRender(id, out);
   return NextResponse.json({ ...out, asked: family, row: getRow(id) });
 }
